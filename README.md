@@ -6,7 +6,7 @@ Kuhn provides a browser-based LaTeX/Typst editor where AI agents deliver real-ti
 
 ## Status
 
-**Early stage.** We are currently researching which open-source editor foundation to build on. See [Epic 001](docs/epics/001-editor-foundation-research/index.md).
+**Early stage.** Editor-foundation research is complete enough to start implementation work on the TeXlyre path. Current execution is centered on [Epic 003](docs/epics/003-texlyre-citation-assistant/index.md), which bootstraps the vendored `texlyre/` fork and builds the first `/cite` assistant workflow.
 
 ## Goals
 
@@ -53,6 +53,7 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 |------|--------|-------------|
 | [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | In Progress | Evaluate open-source editor options (TeXlyre, BusyIDE, etc.) |
 | [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | Draft | Choose or build the runtime layer for agent dispatch, streaming, and tool use |
+| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | In Progress | Bring up the TeXlyre fork and implement the first grounded `/cite` editor workflow |
 
 ## Agents
 
@@ -62,7 +63,7 @@ The `agents/` directory contains the AI agent framework — six specialized agen
 
 ### Prerequisites
 
-- Node.js 20+ (TBD — depends on editor choice)
+- Node.js 24.13.1+ for `texlyre/` work; see [Epic 003 bootstrap notes](docs/epics/003-texlyre-citation-assistant/bootstrap-notes.md)
 - Python 3.11+ (for agent scripts and figure generation)
 - A LaTeX distribution (TeX Live or TinyTeX) and/or Typst
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)

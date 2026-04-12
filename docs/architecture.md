@@ -1,6 +1,6 @@
 # System Architecture
 
-> **Status:** Draft — the editor foundation has not been chosen yet. This document captures the target architecture and will be updated as decisions are made.
+> **Status:** Draft — provisional editor-foundation recommendation recorded on 2026-04-11. Final decision still depends on the extensibility spike in Epic 001.
 
 ## Overview
 
@@ -56,19 +56,44 @@ Kuhn is a web application with three main subsystems:
 
 ## Editor Foundation
 
-**Decision pending.** See [Epic 001](epics/001-editor-foundation-research/index.md).
+**Provisional recommendation:** build Kuhn's editor from primitives rather than adopt an existing AGPL editor wholesale. See [Epic 001](epics/001-editor-foundation-research/index.md).
 
-Candidates under evaluation:
-- **TeXlyre** — feature-rich, but AGPL-licensed (restrictive for SaaS)
-- **BusyIDE/BusyTeX** — MIT-licensed, WASM-based TeX compilation in browser
-- **Build from components** — CodeMirror 6 + custom LaTeX/Typst language support
+Recommended foundation:
 
-Key requirements:
-- Browser-based editing with syntax highlighting
-- LaTeX and Typst compilation (server-side or WASM)
-- SyncTeX-style source ↔ preview navigation
-- Extensible for slash commands and agent integration
-- License compatible with our distribution model
+- **Editor shell:** CodeMirror 6
+- **Preview pane:** custom PDF/document preview integration
+- **Language targets:** LaTeX and Typst behind a shared editor/workspace model
+- **Compilation adapters:** swappable server-side and WASM backends
+
+Reference implementations we should study but not assume we will adopt directly:
+
+- **TeXlyre** for UX patterns and dual LaTeX/Typst support
+- **BusyIDE/BusyTeX** for a permissive, browser-side compilation reference and spike target
+- **Overleaf CE** for workflow expectations around LaTeX collaboration and project structure
+
+Why this direction:
+
+- It gives us first-class control over slash commands and agent interactions.
+- It avoids AGPL risk in the core product shell.
+- It lets us choose compilation architecture independently from editor UX.
+
+Alternative strategy under consideration:
+
+- If Kuhn adopts an open-core model, the editor could instead be a public AGPL fork such as TeXlyre, with proprietary agent services behind a network boundary.
+- That is a product and licensing posture decision, not the default engineering recommendation.
+
+### Open-Core Checklist
+
+If Kuhn chooses the TeXlyre/AGPL path, developers should keep this checklist in mind:
+
+- Keep editor UI, slash-command plumbing, and client integration code in the public AGPL layer.
+- Keep proprietary value in separate network services: agents, prompts, orchestration, retrieval, billing, and operations.
+- Use explicit API boundaries between editor and backend services.
+- Do not share internal modules or source packages across the AGPL editor and proprietary backend.
+- Do not hide core editor behavior in private backend code.
+- Prefer documented, versioned protocols over editor-specific private hooks.
+- Upstream generally useful TeXlyre changes when practical to reduce fork burden.
+- Document public/private repo boundaries clearly enough for future compliance and diligence review.
 
 ## Slash Commands
 
@@ -87,10 +112,14 @@ The editor will support `/commands` that invoke agents inline:
 
 Two compilation targets:
 
-1. **LaTeX** → pdflatex/xelatex/lualatex → PDF
-2. **Typst** → typst compile → PDF
+1. **LaTeX** → `pdflatex` / `xelatex` / `lualatex` → PDF
+2. **Typst** → `typst compile` → PDF
 
-Compilation can run server-side (preferred for consistency) or client-side via WASM (for offline/low-latency use). The architecture should support both.
+Current architectural intent:
+
+- Prefer **server-side compilation** as the default production path for package completeness, reproducibility, and better control over security/resource limits.
+- Preserve a clean adapter boundary so we can add **WASM compilation** later for offline or low-latency modes.
+- Treat BusyTeX / SwiftLaTeX as potential implementation inputs, not as the product architecture itself.
 
 ## Data Model
 
@@ -102,8 +131,8 @@ Compilation can run server-side (preferred for consistency) or client-side via W
 
 ## Open Questions
 
-- [ ] Editor foundation choice (Epic 001)
-- [ ] Server-side vs WASM compilation (or hybrid)
+- [ ] Final editor foundation sign-off after Story 005 spike
+- [ ] Server-side vs WASM compilation defaults (or hybrid by document/runtime)
 - [ ] Authentication and multi-user support
 - [ ] File storage: local-first vs cloud-backed
 - [ ] Real-time collaboration (CRDT-based?)

@@ -29,19 +29,19 @@ We should also survey any other viable candidates (Overleaf CE, SwiftLaTeX, etc.
 
 ## Acceptance Criteria
 
-- [ ] All candidate projects evaluated against the decision factors above
-- [ ] License analysis completed with legal implications documented
+- [x] All candidate projects evaluated against the decision factors above
+- [x] License analysis completed with legal implications documented
 - [ ] Proof-of-concept spike for the top 1-2 candidates (can we add a slash command?)
-- [ ] Architecture recommendation written with trade-offs
+- [x] Architecture recommendation written with trade-offs
 - [ ] Decision made and documented
 
 ## Stories
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Survey candidate projects](stories/001-survey-candidates.md) | ready | M |
+| 001 | [Survey candidate projects](stories/001-survey-candidates.md) | done | M |
 | 002 | [Deep-dive: TeXlyre](stories/002-deep-dive-texlyre.md) | ready | L |
 | 003 | [Deep-dive: BusyIDE](stories/003-deep-dive-busyide.md) | ready | L |
-| 004 | [License analysis](stories/004-license-analysis.md) | ready | M |
+| 004 | [License analysis](stories/004-license-analysis.md) | done | M |
 | 005 | [Extensibility spike](stories/005-extensibility-spike.md) | draft | L |
-| 006 | [Recommendation & decision](stories/006-recommendation.md) | draft | M |
+| 006 | [Recommendation & decision](stories/006-recommendation.md) | in-progress | M |

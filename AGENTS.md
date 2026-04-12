@@ -41,6 +41,19 @@ docs/epics/NNN-epic-slug/
 
 Epic and story statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`.
 
+### Story lifecycle rules
+
+1. **A "done" story is read-only.** Once marked `done`, its content is historical record. It must not be the canonical location for open work items.
+
+2. **Every known issue must have an owning open story.** When completing a story that has unresolved issues, each issue must be captured in an existing open story (or a new one created for it). The receiving story must be self-contained — someone should be able to act on it without reading back into the done story.
+
+3. **Done stories use forward pointers, not detailed issue descriptions.** The "Known Issues" section of a done story should contain only a one-line summary and a forward reference (e.g., "Deferred to Story 009") for each item. The open story owns the full description, context, and acceptance criteria.
+
+4. **Marking a story done requires an issue audit.** Before changing status to `done`, verify:
+   - All acceptance criteria are met, or unmet criteria are explicitly deferred with a forward reference
+   - Every known issue has a receiving open story listed in the epic's story table
+   - The receiving stories are self-contained and actionable
+
 ## Key Commands
 
 ```bash
