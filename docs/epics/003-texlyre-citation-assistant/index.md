@@ -77,7 +77,8 @@ For on-device intelligence, we want to start by evaluating Qwen 3 1.7B in-browse
 | 004 | [Design the research assistant command UX](stories/004-design-command-ux.md) | done | M |
 | 005 | [Define configurable citation providers and validation rules](stories/005-define-citation-provider-layer.md) | done | L |
 | 006 | [Implement grounded retrieval for `/cite`](stories/006-implement-cite-retrieval.md) | done | XL |
-| 007 | [Integrate `/cite` into the editor and bibliography workflow](stories/007-integrate-cite-command.md) | ready | XL |
+| 007 | [Integrate `/cite` into the editor and bibliography workflow](stories/007-integrate-cite-command.md) | done | XL |
 | 008 | [Evaluate citation quality and hallucination resistance](stories/008-evaluate-citation-quality.md) | draft | M |
-| 009 | [Fix CORS failures for arXiv and PsyArXiv providers](stories/009-fix-provider-cors.md) | ready | M |
-| 010 | [Improve citation search quality with NLP and multi-variant queries](stories/010-improve-search-quality.md) | draft | L |
+| 009 | [Fix CORS failures for arXiv and PsyArXiv providers](stories/009-fix-provider-cors.md) | done | M |
+| 010 | [Improve citation search quality with NLP and multi-variant queries](stories/010-improve-search-quality.md) | in-progress | L |
+| 011 | [Fix inline `/cite` trigger and arXiv/PsyArXiv provider failures](stories/011-fix-inline-cite-and-provider-failures.md) | ready | M |

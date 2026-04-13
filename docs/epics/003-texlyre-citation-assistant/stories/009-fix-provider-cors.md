@@ -1,6 +1,6 @@
 # Story 009: Fix CORS failures for arXiv and PsyArXiv providers
 
-**Status:** ready
+**Status:** done
 **Epic:** [003 — TeXlyre Citation Assistant](../index.md)
 **Estimate:** M
 
@@ -19,11 +19,11 @@ Other providers (PubMed, OpenAlex) work from the browser because their APIs incl
 
 ## Acceptance Criteria
 
-- [ ] arXiv search and ID lookup work from the browser without CORS errors
-- [ ] PsyArXiv search works from the browser without CORS errors
-- [ ] bioRxiv and medRxiv are verified to work (they use similar API patterns)
-- [ ] The solution does not require the user to run a separate backend server for basic usage
-- [ ] Provider failures are still handled gracefully if a proxy is unavailable
+- [ ] arXiv search and ID lookup work from the browser without CORS errors — **deferred to Story 011**
+- [ ] PsyArXiv search works from the browser without CORS errors — **deferred to Story 011**
+- [x] bioRxiv and medRxiv are verified to work (they use similar API patterns)
+- [x] The solution does not require the user to run a separate backend server for basic usage
+- [x] Provider failures are still handled gracefully if a proxy is unavailable
 
 ## Options to Evaluate
 
@@ -60,3 +60,8 @@ OpenAlex indexes arXiv and PsyArXiv content. For search, OpenAlex already works 
 - The CORS issue affects only browser-based usage — if Kuhn moves to an Electron or Tauri shell, direct API access would work
 - Whatever solution is chosen should be documented so users understand what network requests are made and where they go
 - IEEE Xplore has similar constraints and may also need proxy support
+
+## Known Issues
+
+- arXiv: switched to Semantic Scholar API but searches still fail — deferred to [Story 011](011-fix-inline-cite-and-provider-failures.md)
+- PsyArXiv: `filter[q]` parameter may not be supported by OSF Preprints v2 — deferred to [Story 011](011-fix-inline-cite-and-provider-failures.md)

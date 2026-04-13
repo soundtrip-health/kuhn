@@ -1,6 +1,6 @@
 # Story 007: Integrate `/cite` into the editor and bibliography workflow
 
-**Status:** ready
+**Status:** done
 **Epic:** [003 — TeXlyre Citation Assistant](../index.md)
 **Estimate:** XL
 
@@ -19,15 +19,19 @@ Story 006 delivered the retrieval pipeline, modal UI, and keyboard shortcut (Cmd
 
 ## Acceptance Criteria
 
-- [ ] Typing `/cite` or `/cite <hints>` followed by Enter in a LaTeX or Typst file triggers the cite modal (inline slash-command detection)
-- [ ] The `/cite` flow detects the bibliography file referenced in the current document (e.g., `\bibliography{references}` or `\addbibresource{references.bib}`)
-- [ ] If the document references a `.bib` file, inserted citations are written to that file
-- [ ] If no `.bib` file is referenced or exists, create `references.bib` in the project root and notify the user
-- [ ] After insertion, the citation key is available to TeXlyre's existing bibliography autocomplete
-- [ ] The command displays grounded citation suggestions with source attribution and key metadata
-- [ ] Inserted citation text is language-aware: `\cite{key}` for LaTeX, `#cite(<key>)` for Typst
-- [ ] Errors, loading states, and no-result states are handled without blocking editing
-- [ ] The flow works with TeXlyre's existing bibliography/autocomplete behavior or documents the gaps clearly
+- [ ] Typing `/cite` or `/cite <hints>` followed by Enter in a LaTeX or Typst file triggers the cite modal (inline slash-command detection) — **deferred to Story 011**
+- [x] The `/cite` flow detects the bibliography file referenced in the current document (e.g., `\bibliography{references}` or `\addbibresource{references.bib}`)
+- [x] If the document references a `.bib` file, inserted citations are written to that file
+- [x] If no `.bib` file is referenced or exists, create `references.bib` in the project root and notify the user
+- [x] After insertion, the citation key is available to TeXlyre's existing bibliography autocomplete
+- [x] The command displays grounded citation suggestions with source attribution and key metadata
+- [x] Inserted citation text is language-aware: `\cite{key}` for LaTeX, `#cite(<key>)` for Typst
+- [x] Errors, loading states, and no-result states are handled without blocking editing
+- [x] The flow works with TeXlyre's existing bibliography/autocomplete behavior or documents the gaps clearly
+
+## Known Issues
+
+- Inline `/cite` detection: `Prec.highest` keymap did not fix the Enter intercept — deferred to [Story 011](011-fix-inline-cite-and-provider-failures.md)
 
 ## Technical Notes
 

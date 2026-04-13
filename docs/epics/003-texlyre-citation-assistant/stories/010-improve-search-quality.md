@@ -1,6 +1,6 @@
 # Story 010: Improve citation search quality with NLP and multi-variant queries
 
-**Status:** draft
+**Status:** in-progress
 **Epic:** [003 — TeXlyre Citation Assistant](../index.md)
 **Estimate:** L
 
@@ -20,16 +20,16 @@ Three complementary improvements can raise search quality without adding an LLM:
 
 ## Acceptance Criteria
 
-- [ ] Extract document-level keywords using basic NLP (e.g., [retext-keywords](https://github.com/retextjs/retext-keywords) or TF-IDF)
-- [ ] Maintain a lightweight keyword cache that updates as the document changes (debounced, not on every keystroke)
-- [ ] Extract context-specific keywords from the citation target text, filtering out stop words and common LaTeX/Typst markup
-- [ ] Include document-level and context-specific keywords in provider search queries
-- [ ] Generate multiple query variants per search, including at least:
-  - A structured query that treats author-like hint tokens as author fields (where the provider supports it)
-  - A title/topic query using extracted keywords
-  - A broad query using the original target text (current behavior, as fallback)
-- [ ] Providers that support structured search (PubMed, OpenAlex) receive field-specific queries
-- [ ] Search quality improves measurably on the evaluation set from Story 008
+- [x] Extract document-level keywords using basic NLP (pure regex + stop-word filtering in `extractKeywords.ts` — no external library dependency)
+- [x] Maintain a lightweight keyword cache that updates as the document changes (`DocumentKeywordService` — debounced 3s, updated synchronously on `/cite` invocation)
+- [x] Extract context-specific keywords from the citation target text, filtering out stop words and common LaTeX/Typst markup
+- [x] Include document-level and context-specific keywords in provider search queries
+- [x] Generate multiple query variants per search, including at least:
+  - A structured query that treats author-like hint tokens as author fields (PubMed: `[au]`/`[dp]` tags; OpenAlex: `filter=` params)
+  - A title/topic query using extracted keywords (Variant 1)
+  - A broad query using the original target text (Variant 3 — fallback)
+- [x] Providers that support structured search (PubMed, OpenAlex) receive field-specific queries
+- [ ] Search quality improves measurably on the evaluation set from Story 008 — pending Story 008 evaluation set
 
 ## Technical Approach
 
