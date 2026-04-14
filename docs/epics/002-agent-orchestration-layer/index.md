@@ -54,14 +54,14 @@ The current agent system (`agents/`) is built on Claude Code — each agent is a
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Map current agent patterns](stories/001-map-current-patterns.md) | ready | M |
+| 001 | [Map current agent patterns](stories/001-map-current-patterns.md) | done | M |
 | 008 | LLM provider abstraction spike — provider-agnostic interface with streaming + tool use | draft | M |
 
 ### Phase 1: Agent Backend + Signaling
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 009 | Backend scaffold — Node.js server, docker-compose (Postgres+pgvector), Yjs signaling + WebSocket | draft | L |
+| 009 | [Backend scaffold](stories/009-backend-scaffold.md) — Node.js server, docker-compose (Postgres+pgvector), Yjs signaling + WebSocket | done | L |
 | 010 | Database + seeding — Postgres schema, seed agent prompts + tool definitions from AGENTS.md, conversation logging | draft | L |
 | 011 | Agent router — route requests to agents, LLM streaming, conversation history, inter-agent dispatch | draft | XL |
 | 012 | PM agent — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
