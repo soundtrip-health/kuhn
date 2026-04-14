@@ -1,6 +1,6 @@
 # Story 011: Fix inline `/cite` trigger and arXiv/PsyArXiv provider failures
 
-**Status:** ready
+**Status:** done
 **Epic:** [003 — TeXlyre Citation Assistant](../index.md)
 **Estimate:** M
 
@@ -26,9 +26,9 @@ Finish two known issues deferred from Stories 007 and 009:
 
 ### Acceptance Criteria
 
-- [ ] Typing `/cite` followed by Enter on a blank line opens the cite modal
-- [ ] Typing `/cite <hints>` followed by Enter opens the modal with hints pre-filled
-- [ ] The detection does not fire spuriously when `/cite` appears inside LaTeX commands (e.g., `\citeauthor`)
+- [x] Typing `/cite` followed by Enter on a blank line opens the cite modal
+- [x] Typing `/cite <hints>` followed by Enter opens the modal with hints pre-filled
+- [x] The detection does not fire spuriously when `/cite` appears inside LaTeX commands (e.g., `\citeauthor`)
 
 ---
 
@@ -54,7 +54,34 @@ Story 009 changed the search parameter from `filter[title]` to `filter[q]`. The 
 
 ### Acceptance Criteria
 
-- [ ] arXiv search returns results in the browser without errors
-- [ ] arXiv ID lookup works in the browser
-- [ ] PsyArXiv search returns results in the browser without errors
-- [ ] Both providers fail gracefully (show as "failed" in the UI, not crash) if the API is unavailable
+- [x] arXiv search returns results in the browser without errors
+- [x] arXiv ID lookup works in the browser
+- [x] PsyArXiv search returns results in the browser without errors
+- [x] Both providers fail gracefully (show as "failed" in the UI, not crash) if the API is unavailable
+
+---
+
+## Implementation Notes
+
+### Inline `/cite` trigger fix
+
+Replaced `Prec.highest(keymap.of([...]))` with `Prec.highest(EditorView.domEventHandlers({...}))`.
+DOM event handlers fire **before** CodeMirror's keymap system, avoiding priority conflicts with
+autocompletion (which also uses `Prec.highest` internally when its popup is open), vim mode,
+list continuation, and other Enter handlers. Also added modifier key guards so Shift+Enter,
+Ctrl+Enter etc. pass through normally.
+
+### Provider CORS / rate-limit fix
+
+The "CORS errors" in the browser console were actually masking underlying API errors (429 rate
+limit, 400 bad request). When these APIs return error responses, the error responses lack CORS
+headers, causing the browser to report CORS failure.
+
+**Root cause 1 — rate limiting:** `searchProvider()` used `Promise.all` to send all 3 query
+variants simultaneously per provider. For PubMed (3 req/sec unauthenticated) and Semantic
+Scholar (burst limit), this caused immediate 429s. Fix: serialize variant requests per provider
+with 350ms delays.
+
+**Root cause 2 — PsyArXiv `filter[q]`:** The OSF Preprints v2 API does not support `filter[q]`
+for full-text search, returning 400. Fix: switched PsyArXiv to use the Semantic Scholar API
+(same pattern as ArxivProvider). OSF API is still used for DOI lookups where it works reliably.

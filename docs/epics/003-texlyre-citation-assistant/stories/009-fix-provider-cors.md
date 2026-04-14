@@ -19,8 +19,8 @@ Other providers (PubMed, OpenAlex) work from the browser because their APIs incl
 
 ## Acceptance Criteria
 
-- [ ] arXiv search and ID lookup work from the browser without CORS errors — **deferred to Story 011**
-- [ ] PsyArXiv search works from the browser without CORS errors — **deferred to Story 011**
+- [x] arXiv search and ID lookup work from the browser without CORS errors — resolved in Story 011
+- [x] PsyArXiv search works from the browser without CORS errors — resolved in Story 011
 - [x] bioRxiv and medRxiv are verified to work (they use similar API patterns)
 - [x] The solution does not require the user to run a separate backend server for basic usage
 - [x] Provider failures are still handled gracefully if a proxy is unavailable

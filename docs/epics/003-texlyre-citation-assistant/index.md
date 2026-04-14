@@ -1,6 +1,6 @@
 # Epic 003: TeXlyre Citation Assistant
 
-**Status:** In Progress
+**Status:** Done
 **Created:** 2026-04-11
 
 ## Goal
@@ -58,14 +58,14 @@ For on-device intelligence, we want to start by evaluating Qwen 3 1.7B in-browse
 
 ## Acceptance Criteria
 
-- [ ] `texlyre` runs locally in this repo with Kuhn-specific setup notes documented
-- [ ] Editor extension points for slash commands and citation insertion are mapped
-- [ ] In-browser Qwen 3 1.7B feasibility is evaluated with concrete performance and packaging constraints
-- [ ] `/cite` flow is specified end-to-end, from sentence capture to validated reference insertion
-- [ ] `/cite` supports optional user hints that influence query generation without bypassing validation
-- [ ] Citation providers are configurable and at least the initial default set is supported at the interface level
-- [ ] Suggested references are grounded in retrieved source metadata rather than model-only generation
-- [ ] Evaluation plan exists for citation quality, hallucination resistance, and UX usefulness
+- [x] `texlyre` runs locally in this repo with Kuhn-specific setup notes documented
+- [x] Editor extension points for slash commands and citation insertion are mapped
+- [x] In-browser Qwen 3 1.7B feasibility is evaluated with concrete performance and packaging constraints
+- [x] `/cite` flow is specified end-to-end, from sentence capture to validated reference insertion
+- [x] `/cite` supports optional user hints that influence query generation without bypassing validation
+- [x] Citation providers are configurable and at least the initial default set is supported at the interface level
+- [x] Suggested references are grounded in retrieved source metadata rather than model-only generation
+- [x] Evaluation plan exists for citation quality, hallucination resistance, and UX usefulness
 
 ## Stories
 
@@ -78,7 +78,7 @@ For on-device intelligence, we want to start by evaluating Qwen 3 1.7B in-browse
 | 005 | [Define configurable citation providers and validation rules](stories/005-define-citation-provider-layer.md) | done | L |
 | 006 | [Implement grounded retrieval for `/cite`](stories/006-implement-cite-retrieval.md) | done | XL |
 | 007 | [Integrate `/cite` into the editor and bibliography workflow](stories/007-integrate-cite-command.md) | done | XL |
-| 008 | [Evaluate citation quality and hallucination resistance](stories/008-evaluate-citation-quality.md) | draft | M |
+| 008 | [Evaluate citation quality and hallucination resistance](stories/008-evaluate-citation-quality.md) | done | M |
 | 009 | [Fix CORS failures for arXiv and PsyArXiv providers](stories/009-fix-provider-cors.md) | done | M |
-| 010 | [Improve citation search quality with NLP and multi-variant queries](stories/010-improve-search-quality.md) | in-progress | L |
-| 011 | [Fix inline `/cite` trigger and arXiv/PsyArXiv provider failures](stories/011-fix-inline-cite-and-provider-failures.md) | ready | M |
+| 010 | [Improve citation search quality with NLP and multi-variant queries](stories/010-improve-search-quality.md) | done | L |
+| 011 | [Fix inline `/cite` trigger and arXiv/PsyArXiv provider failures](stories/011-fix-inline-cite-and-provider-failures.md) | done | M |

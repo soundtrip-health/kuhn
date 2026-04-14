@@ -1,6 +1,6 @@
 # Story 010: Improve citation search quality with NLP and multi-variant queries
 
-**Status:** in-progress
+**Status:** done
 **Epic:** [003 — TeXlyre Citation Assistant](../index.md)
 **Estimate:** L
 

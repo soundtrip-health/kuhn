@@ -12,6 +12,9 @@ Qwen 3 1.7B is a viable browser-resident model for Kuhn's lightweight assistant 
 
 **Recommendation: Proceed with Qwen 3 1.7B via WebLLM as the primary runtime.** Use WebGPU with WASM as a degraded fallback. Consider Qwen 3.5 0.8B as a lighter alternative if the 1.7B proves too heavy for target hardware profiles. Defer to a server-side model for users on unsupported browsers or very old hardware.
 
+### Notes
+  - Let's start with Qwen 3.5B
+  
 ---
 
 ## 1. Browser LLM Runtimes
