@@ -1,65 +1,93 @@
 # Epic 002: Agent Orchestration Layer
 
-**Status:** Draft
+**Status:** in-progress
 **Created:** 2026-04-11
+**Updated:** 2026-04-13
 
 ## Goal
 
-Decide how the six AI agents (writer, analyst, advisor, research, review, PM) are orchestrated at runtime within the webapp. This means choosing — or building — the layer that manages agent lifecycle, dispatch, inter-agent communication, tool use, streaming responses, and integration with the editor's slash commands.
+Build a working agent webapp prototype — a separate web application where users interact with AI agents to seed, manage, and write scientific documents. Integrate a writer agent into the TeXlyre editor via `/write` command. Ship a prototype that test users can play with.
+
+See [use-case.md](use-case.md) for the full product workflow and design decisions.
 
 ## Context
 
-The current agent system (`agents/`) is built directly on Claude Code — each agent is a workspace with a CLAUDE.md, and orchestration happens via human-driven conversation and subagent spawning. Moving to a webapp means we need a programmatic orchestration layer that can:
+The current agent system (`agents/`) is built on Claude Code — each agent is a workspace with a CLAUDE.md, orchestrated via human conversation. Moving to a webapp requires:
 
-- Dispatch user requests (slash commands, sidebar chat) to the right agent
-- Manage agent sessions and context windows
-- Stream partial responses back to the editor UI
-- Support tool use (MCP servers, code execution, file I/O)
-- Handle inter-agent handoffs (e.g., Writer spawning RA for a citation lookup)
-- Maintain the "PI is final authority" principle with approval gates
+1. **Agent Workspace** (new webapp) — chat-first interface where the PM agent interviews users, agents research and seed projects, and users manage project files
+2. **Writer integration in TeXlyre** — `/write` command that connects to the agent backend for contextual writing assistance
+3. **Agent Backend** (Node.js) — routes requests to agents, calls Claude API with streaming, manages project files, and hosts Yjs signaling/WebSocket servers
 
-The landscape of agent frameworks is evolving rapidly. Options range from using Anthropic's own SDKs directly, to full-featured orchestration frameworks, to building a custom layer for maximum control.
+### Key Design Decisions (2026-04-13)
 
-## Key Decision Factors
+- **Separate apps** — agent workspace and TeXlyre editor are independent frontends sharing a backend. This avoids AGPL infection and allows independent evolution.
+- **Chat-first** — the agent workspace is primarily a chat interface with a file manager, not a document editor.
+- **`/write` command first** — writer agent in TeXlyre starts as a modal triggered by `/write`, not a persistent side panel.
+- **Own signaling server** — both y-webrtc signaling and y-websocket bundled in the agent backend, replacing broken external servers.
 
-- **Control** — can we implement our specific multi-agent interaction patterns (PM dispatch, Writer→RA spawning, Reviewer adversarial loops)?
-- **Streaming** — does it support streaming partial responses to the UI? This is critical for UX.
-- **Tool use / MCP** — does it integrate with Model Context Protocol servers (PubMed, bioRxiv, ClinicalTrials.gov)?
-- **Context management** — how does it handle long documents and multi-turn agent sessions?
-- **Complexity** — how much abstraction does it add? Is the abstraction helpful or does it obscure what's happening?
-- **Lock-in** — can we swap the underlying model or provider if needed?
-- **Maturity** — is it production-ready or still experimental?
-- **License** — compatible with our distribution model?
+## Prototype Scope
 
-## Candidates (initial list)
+### Must Have
 
-| Candidate | Approach | Notes |
-|-----------|----------|-------|
-| **Anthropic SDK direct** | Raw API calls with manual orchestration | Maximum control, most code to write |
-| **Claude Code SDK / Agent SDK** | Anthropic's agent-building toolkit | Purpose-built for Claude agents, may be closest to current architecture |
-| **LangGraph** | Graph-based agent orchestration (LangChain ecosystem) | Mature, flexible state machines, but heavy dependency |
-| **CrewAI** | Multi-agent framework with role-based agents | Close conceptual fit (roles map to our agents), Python-native |
-| **AutoGen** (Microsoft) | Multi-agent conversation framework | Strong multi-agent patterns, active development |
-| **Mastra** | TypeScript-native agent framework | Good if we go with a TS backend |
-| **Custom build** | Thin dispatch layer on Anthropic SDK | Maximum control, maintain current CLAUDE.md-driven architecture |
+- [ ] Agent workspace frontend (chat UI + file manager)
+- [ ] PM agent conducts interview, seeds project
+- [ ] RA and Advisor agents work during seeding (search literature, build knowledge base)
+- [ ] Writer agent generates document skeleton
+- [ ] `/write` command in TeXlyre with streaming writer agent
+- [ ] Agent backend with routing, streaming, and Claude API integration
+- [ ] Yjs signaling + WebSocket server (replaces external servers)
+- [ ] Filesystem-based project storage
 
-## Acceptance Criteria
+### Deferred
 
-- [ ] All viable orchestration approaches evaluated against decision factors
-- [ ] Current agent architecture mapped — what patterns must be preserved?
-- [ ] Proof-of-concept spike for top 2-3 approaches (Writer + RA citation flow)
-- [ ] Streaming and tool-use capabilities validated
-- [ ] Architecture recommendation written with trade-offs
-- [ ] Decision made and documented
+- Multi-user / auth (prototype is single-user local)
+- Analyst agent integration
+- Reviewer adversarial loops
+- Side panel chat in TeXlyre
+- Compilation proxy
+- Git integration for project versioning
+- Approval gates (prototype user IS the PI)
 
 ## Stories
+
+### Phase 0: Foundation
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 001 | [Map current agent patterns](stories/001-map-current-patterns.md) | ready | M |
-| 002 | [Survey orchestration frameworks](stories/002-survey-frameworks.md) | ready | M |
-| 003 | [Evaluate Anthropic SDKs](stories/003-evaluate-anthropic-sdks.md) | ready | L |
-| 004 | [Evaluate third-party frameworks](stories/004-evaluate-third-party.md) | ready | L |
-| 005 | [Evaluate custom build approach](stories/005-evaluate-custom-build.md) | ready | M |
-| 006 | [Orchestration spike](stories/006-orchestration-spike.md) | draft | XL |
-| 007 | [Recommendation & decision](stories/007-recommendation.md) | draft | M |
+| 008 | LLM provider abstraction spike — provider-agnostic interface with streaming + tool use | draft | M |
+
+### Phase 1: Agent Backend + Signaling
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 009 | Backend scaffold — Node.js server, docker-compose (Postgres+pgvector), Yjs signaling + WebSocket | draft | L |
+| 010 | Database + seeding — Postgres schema, seed agent prompts + tool definitions from AGENTS.md, conversation logging | draft | L |
+| 011 | Agent router — route requests to agents, LLM streaming, conversation history, inter-agent dispatch | draft | XL |
+| 012 | PM agent — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
+
+### Phase 2: Agent Workspace Frontend
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 013 | Agent workspace scaffold — vanilla JS app, chat UI, WebSocket connection to backend | draft | L |
+| 014 | File manager — upload, browse project tree, preview files | draft | M |
+| 015 | Project seeding flow — PM interview → agent research → skeleton generation | draft | XL |
+
+### Phase 3: TeXlyre Integration
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 016 | `/write` command in TeXlyre — modal UI, context extraction, backend API call | draft | L |
+| 017 | Writer agent — streaming responses, document edits, sub-agent spawning (RA) | draft | XL |
+
+### Preserved (may revisit)
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 002 | [Survey orchestration frameworks](stories/002-survey-frameworks.md) | deferred | M |
+| 003 | [Evaluate Anthropic SDKs](stories/003-evaluate-anthropic-sdks.md) | deferred | L |
+| 004 | [Evaluate third-party frameworks](stories/004-evaluate-third-party.md) | deferred | L |
+| 005 | [Evaluate custom build approach](stories/005-evaluate-custom-build.md) | deferred | M |
+| 006 | [Orchestration spike](stories/006-orchestration-spike.md) | deferred | XL |
+| 007 | [Recommendation & decision](stories/007-recommendation.md) | deferred | M |
