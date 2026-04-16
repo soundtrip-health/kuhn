@@ -62,7 +62,7 @@ The current agent system (`agents/`) is built on Claude Code — each agent is a
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 009 | [Backend scaffold](stories/009-backend-scaffold.md) — Node.js server, docker-compose (Postgres+pgvector), Yjs signaling + WebSocket | done | L |
-| 010 | Database + seeding — Postgres schema, seed agent prompts + tool definitions from AGENTS.md, conversation logging | draft | L |
+| 010 | [Database + seeding](stories/010-database-seeding.md) — Postgres schema, seed agent prompts + tool definitions from AGENTS.md, conversation logging | done | L |
 | 011 | Agent router — route requests to agents, LLM streaming, conversation history, inter-agent dispatch | draft | XL |
 | 012 | PM agent — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
 

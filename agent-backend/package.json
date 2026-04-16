@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "db:seed": "node src/db/seed.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -15,5 +16,11 @@
     "ws": "^8.18.0",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }

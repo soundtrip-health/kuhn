@@ -1,0 +1,12 @@
+{"type":"eeg","index":0,"timestamp":1776306824000,"electrode":0,"samples":[1450.0,967.46]}
+{"type":"eeg","index":0,"timestamp":1776306824000,"electrode":1,"samples":[1200.0,1100.0]}
+{"type":"eeg","index":0,"timestamp":1776306824000,"electrode":2,"samples":[800.0,950.0]}
+{"type":"eeg","index":1,"timestamp":1776306824004,"electrode":0,"samples":[1500.0,1000.0]}
+{"type":"eeg","index":1,"timestamp":1776306824004,"electrode":1,"samples":[1100.0,1050.0]}
+{"type":"eeg","index":1,"timestamp":1776306824004,"electrode":2,"samples":[850.0,900.0]}
+{"type":"eeg","index":2,"timestamp":1776306824008,"electrode":0,"samples":[1600.0,1100.0]}
+{"type":"eeg","index":2,"timestamp":1776306824008,"electrode":1,"samples":[1000.0,1150.0]}
+{"type":"eeg","index":2,"timestamp":1776306824008,"electrode":2,"samples":[900.0,850.0]}
+{"type":"eeg","index":3,"timestamp":1776306824012,"electrode":0,"samples":[1400.0,900.0]}
+{"type":"eeg","index":3,"timestamp":1776306824012,"electrode":1,"samples":[1300.0,1000.0]}
+{"type":"eeg","index":3,"timestamp":1776306824012,"electrode":2,"samples":[750.0,1050.0]}

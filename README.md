@@ -6,7 +6,7 @@ Kuhn provides a browser-based LaTeX/Typst editor where AI agents deliver real-ti
 
 ## Status
 
-**Early stage.** Editor-foundation research is complete enough to start implementation work on the TeXlyre path. Current execution is centered on [Epic 003](docs/epics/003-texlyre-citation-assistant/index.md), which bootstraps the vendored `texlyre/` fork and builds the first `/cite` assistant workflow.
+**Early stage.** The TeXlyre editor fork is running with a working `/cite` command (Epic 003 complete). The agent backend has a Postgres schema, seeded agent prompts, and Yjs signaling (Epic 002 in progress). Next up: agent routing and the chat workspace.
 
 ## Goals
 
@@ -52,36 +52,83 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 | Epic | Status | Description |
 |------|--------|-------------|
 | [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | In Progress | Evaluate open-source editor options (TeXlyre, BusyIDE, etc.) |
-| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | Draft | Choose or build the runtime layer for agent dispatch, streaming, and tool use |
-| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | In Progress | Bring up the TeXlyre fork and implement the first grounded `/cite` editor workflow |
+| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | In Progress | Agent backend, workspace, and writer integration |
+| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | Done | TeXlyre fork with grounded `/cite` editor workflow |
 
 ## Agents
 
 The `agents/` directory contains the AI agent framework — six specialized agents that power the writing assistance. See [agents/README.md](agents/README.md) for details.
 
-## Development
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 24.13.1+ for `texlyre/` work; see [Epic 003 bootstrap notes](docs/epics/003-texlyre-citation-assistant/bootstrap-notes.md)
+- Node.js 18+
+- Docker (for Postgres)
+
+### 1. TeXlyre Editor
+
+```bash
+cd texlyre
+npm install
+npm run dev
+```
+
+Opens at **http://localhost:5173/texlyre/**
+
+### 2. Agent Backend
+
+```bash
+cd agent-backend
+
+# Start Postgres (first time or after reboot)
+docker compose up -d
+
+# Install deps (first time)
+npm install
+
+# Start the backend
+npm run dev
+```
+
+Starts at **http://localhost:3002**. On startup it automatically creates the database schema and seeds agent prompts from `agents/*/AGENTS.md`.
+
+Health check: http://localhost:3002/health
+
+### 3. Re-seed the database
+
+If you edit AGENTS.md files and want to update prompts without restarting:
+
+```bash
+cd agent-backend
+npm run db:seed
+```
+
+### Useful Commands
+
+| Command | Where | What |
+|---------|-------|------|
+| `npm run dev` | `texlyre/` | Start editor dev server (port 5173) |
+| `npm run dev` | `agent-backend/` | Start backend dev server (port 3002) |
+| `docker compose up -d` | `agent-backend/` | Start Postgres |
+| `docker compose down` | `agent-backend/` | Stop Postgres |
+| `npm run db:seed` | `agent-backend/` | Re-seed agents and tools |
+| `npm test` | `texlyre/` | Run editor test suite |
+
+## Development
+
+### Additional Prerequisites
+
 - Python 3.11+ (for agent scripts and figure generation)
 - A LaTeX distribution (TeX Live or TinyTeX) and/or Typst
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-### Getting started
+### Agent Dependencies
 
 ```bash
-git clone <repo-url> kuhn
-cd kuhn
-
-# Agent dependencies
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r agents/requirements.txt
-
-# Webapp dependencies (TBD)
-# npm install
-# npm run dev
 ```
 
 ### Working with Claude Code

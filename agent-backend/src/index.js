@@ -4,6 +4,7 @@ import cors from 'cors';
 import { WebSocketServer } from 'ws';
 
 import { config } from './config.js';
+import { initDb } from './db/init.js';
 import healthRouter from './routes/health.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
@@ -38,9 +39,20 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
-server.listen(config.port, () => {
-  console.log(`[kuhn] Agent backend listening on http://localhost:${config.port}`);
-  console.log(`[kuhn] Yjs signaling:  ws://localhost:${config.port}/yjs-signaling`);
-  console.log(`[kuhn] Yjs websocket:  ws://localhost:${config.port}/yjs-websocket/<room>`);
-  console.log(`[kuhn] Health check:   http://localhost:${config.port}/health`);
-});
+async function main() {
+  try {
+    await initDb();
+  } catch (err) {
+    console.error('[kuhn] DB initialization failed:', err.message);
+    console.error('[kuhn] Server starting without DB — some features will be unavailable.');
+  }
+
+  server.listen(config.port, () => {
+    console.log(`[kuhn] Agent backend listening on http://localhost:${config.port}`);
+    console.log(`[kuhn] Yjs signaling:  ws://localhost:${config.port}/yjs-signaling`);
+    console.log(`[kuhn] Yjs websocket:  ws://localhost:${config.port}/yjs-websocket/<room>`);
+    console.log(`[kuhn] Health check:   http://localhost:${config.port}/health`);
+  });
+}
+
+main();
