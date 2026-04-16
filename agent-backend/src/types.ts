@@ -33,6 +33,10 @@ export interface FlowParams {
   baseRadius: number;
   noiseScale?: number;
   particleCount?: number;
+  canvasSize?: number;
+  lineWidthMin?: number;
+  lineWidthMax?: number;
+  colorPalette?: string;
 }
 
 export const DEFAULT_PARAMS: FlowParams = {
@@ -41,6 +45,10 @@ export const DEFAULT_PARAMS: FlowParams = {
   audioIntensity: 1,
   baseRadius: 100,
   noiseScale: 0.3,
+  canvasSize: 800,
+  lineWidthMin: 1,
+  lineWidthMax: 5,
+  colorPalette: 'neon',
 };
 
 export interface PathPoint {
