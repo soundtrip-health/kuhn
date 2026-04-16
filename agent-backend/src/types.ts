@@ -18,3 +18,24 @@ export interface AudioFrame {
   mid: number;
   treble: number;
 }
+
+export interface EegFlowState {
+  index: number;
+  timestamp: number;
+  activation: number;
+  direction: { x: number; y: number };
+}
+
+export interface FlowParams {
+  rotations: number;
+  flowScale: number;
+  audioIntensity: number;
+  baseRadius: number;
+}
+
+export const DEFAULT_PARAMS: FlowParams = {
+  rotations: 2,
+  flowScale: 50,
+  audioIntensity: 1,
+  baseRadius: 100,
+};
