@@ -11,3 +11,10 @@ export interface EegTimeStep {
   timestamp: number;
   electrodes: Map<number, number[]>;
 }
+
+export interface AudioFrame {
+  energy: number;
+  bass: number;
+  mid: number;
+  treble: number;
+}
