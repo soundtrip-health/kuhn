@@ -19,7 +19,8 @@ export function simulateParticles(
   params: FlowParams,
   particleCount: number
 ): NeuralFlowResult {
-  const { noiseScale, baseRadius } = { ...DEFAULT_PARAMS, ...params };
+  const noiseScale = params.noiseScale ?? (DEFAULT_PARAMS.noiseScale as number);
+  const baseRadius = params.baseRadius ?? DEFAULT_PARAMS.baseRadius;
   const paths: PathPoint[][] = [];
 
   for (let p = 0; p < particleCount; p++) {

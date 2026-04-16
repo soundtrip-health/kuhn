@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { AudioFrame } from './types';
 
 export function parseWavHeader(buffer: Buffer): { sampleRate: number; channelCount: number; dataOffset: number; bitDepth: number } {
@@ -110,4 +111,11 @@ export function computeAudioFrames(samples: Float32Array, frameSize: number): Au
   }
 
   return frames;
+}
+
+export function parseWav(filePath: string): { sampleRate: number; samples: Float32Array } {
+  const buffer = readFileSync(filePath);
+  const { sampleRate, dataOffset, bitDepth } = parseWavHeader(buffer);
+  const samples = decodePcmData(buffer, dataOffset, bitDepth);
+  return { sampleRate, samples };
 }

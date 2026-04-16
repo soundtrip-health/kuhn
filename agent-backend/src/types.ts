@@ -45,6 +45,7 @@ export const DEFAULT_PARAMS: FlowParams = {
   audioIntensity: 1,
   baseRadius: 100,
   noiseScale: 0.3,
+  particleCount: 100,
   canvasSize: 800,
   lineWidthMin: 1,
   lineWidthMax: 5,
