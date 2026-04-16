@@ -31,6 +31,8 @@ export interface FlowParams {
   flowScale: number;
   audioIntensity: number;
   baseRadius: number;
+  noiseScale?: number;
+  particleCount?: number;
 }
 
 export const DEFAULT_PARAMS: FlowParams = {
@@ -38,4 +40,23 @@ export const DEFAULT_PARAMS: FlowParams = {
   flowScale: 50,
   audioIntensity: 1,
   baseRadius: 100,
+  noiseScale: 0.3,
 };
+
+export interface PathPoint {
+  x: number;
+  y: number;
+  energy: number;
+  spectrum: { bass: number; mid: number; treble: number };
+}
+
+export interface ParticleFlowMetadata {
+  eegSteps: number;
+  audioFrames: number;
+  duration: number;
+}
+
+export interface NeuralFlowResult {
+  paths: PathPoint[][];
+  metadata: ParticleFlowMetadata;
+}
