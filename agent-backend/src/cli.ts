@@ -31,6 +31,7 @@ program
   .option('--line-width-min <number>', 'Minimum path stroke width', String(DEFAULT_PARAMS.lineWidthMin))
   .option('--line-width-max <number>', 'Maximum path stroke width', String(DEFAULT_PARAMS.lineWidthMax))
   .action(async (eegFile: string, audioFile: string, options: any) => {
+    try {
     console.log('EEG Neural Flow Art Generator');
     console.log(`   EEG: ${eegFile}`);
     console.log(`   Audio: ${audioFile}`);
@@ -74,6 +75,11 @@ program
 
     const flowField = computeFlowField(flowStates, audioFrames, params);
 
+    // Warn if EEG steps and audio frames are mismatched
+    if (flowStates.length !== audioFrames.length) {
+      console.warn(`   Warning: Mismatched lengths: ${flowStates.length} EEG steps vs ${audioFrames.length} audio frames. Truncating to ${Math.min(flowStates.length, audioFrames.length)}.`);
+    }
+
     console.log('Simulating particles...');
     const result = simulateParticles(flowField, params, params.particleCount ?? DEFAULT_PARAMS.particleCount as number);
     console.log(`   ${result.paths.length} particles, ${result.paths[0]?.length || 0} steps each`);
@@ -88,6 +94,10 @@ program
     writeFileSync(options.output, svg);
     console.log(`\nSaved to ${options.output}`);
     console.log(`   Size: ${Buffer.byteLength(svg) / 1024} KB`);
+    } catch (err) {
+      console.error('Error:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   });
 
 program.parse();

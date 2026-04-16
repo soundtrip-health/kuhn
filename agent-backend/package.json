@@ -7,7 +7,9 @@
     "dev": "node --watch src/index.js",
     "db:seed": "node src/db/seed.js",
     "build": "tsc",
-    "cli": "node dist/cli.js"
+    "cli": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "commander": "^14.0.3",

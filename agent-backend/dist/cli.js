@@ -28,54 +28,64 @@ program
     .option('--line-width-min <number>', 'Minimum path stroke width', String(DEFAULT_PARAMS.lineWidthMin))
     .option('--line-width-max <number>', 'Maximum path stroke width', String(DEFAULT_PARAMS.lineWidthMax))
     .action(async (eegFile, audioFile, options) => {
-    console.log('EEG Neural Flow Art Generator');
-    console.log(`   EEG: ${eegFile}`);
-    console.log(`   Audio: ${audioFile}`);
-    console.log(`   Palette: ${options.palette}`);
-    console.log('');
-    const params = {
-        ...DEFAULT_PARAMS,
-        flowScale: parseFloat(options.flowScale),
-        audioIntensity: parseFloat(options.audioIntensity),
-        rotations: parseInt(options.rotations),
-        particleCount: parseInt(options.particles),
-        colorPalette: options.palette,
-        canvasSize: parseInt(options.canvasSize),
-        baseRadius: parseFloat(options.baseRadius),
-        noiseScale: parseFloat(options.noise),
-        lineWidthMin: parseFloat(options.lineWidthMin),
-        lineWidthMax: parseFloat(options.lineWidthMax),
-    };
-    console.log('Reading EEG data...');
-    const eegSteps = await readEegJsonl(eegFile);
-    console.log(`   ${eegSteps.length} time steps, ${eegSteps[0]?.electrodes.size || 0} electrodes`);
-    console.log('Parsing audio...');
-    const { sampleRate, samples } = parseWav(audioFile);
-    console.log(`   ${sampleRate}Hz, ${samples.length} samples`);
-    const frameSize = Math.max(Math.floor(sampleRate / 30), 256);
-    const audioFrames = computeAudioFrames(samples, frameSize);
-    console.log(`   ${audioFrames.length} audio frames`);
-    console.log('Computing neural flow field...');
-    const electrodeCount = eegSteps[0]?.electrodes.size || 4;
-    const electrodeLayout = [];
-    for (let i = 0; i < 8; i++) {
-        const angle = (i / 8) * Math.PI * 2;
-        electrodeLayout.push([Math.cos(angle), Math.sin(angle)]);
-    }
-    const flowStates = computeFlowStates(eegSteps, { electrodeLayout });
-    const flowField = computeFlowField(flowStates, audioFrames, params);
-    console.log('Simulating particles...');
-    const result = simulateParticles(flowField, params, params.particleCount ?? DEFAULT_PARAMS.particleCount);
-    console.log(`   ${result.paths.length} particles, ${result.paths[0]?.length || 0} steps each`);
-    console.log('Rendering SVG...');
-    const svg = renderSvg(result, params);
-    const outDir = dirname(options.output);
     try {
-        mkdirSync(outDir, { recursive: true });
+        console.log('EEG Neural Flow Art Generator');
+        console.log(`   EEG: ${eegFile}`);
+        console.log(`   Audio: ${audioFile}`);
+        console.log(`   Palette: ${options.palette}`);
+        console.log('');
+        const params = {
+            ...DEFAULT_PARAMS,
+            flowScale: parseFloat(options.flowScale),
+            audioIntensity: parseFloat(options.audioIntensity),
+            rotations: parseInt(options.rotations),
+            particleCount: parseInt(options.particles),
+            colorPalette: options.palette,
+            canvasSize: parseInt(options.canvasSize),
+            baseRadius: parseFloat(options.baseRadius),
+            noiseScale: parseFloat(options.noise),
+            lineWidthMin: parseFloat(options.lineWidthMin),
+            lineWidthMax: parseFloat(options.lineWidthMax),
+        };
+        console.log('Reading EEG data...');
+        const eegSteps = await readEegJsonl(eegFile);
+        console.log(`   ${eegSteps.length} time steps, ${eegSteps[0]?.electrodes.size || 0} electrodes`);
+        console.log('Parsing audio...');
+        const { sampleRate, samples } = parseWav(audioFile);
+        console.log(`   ${sampleRate}Hz, ${samples.length} samples`);
+        const frameSize = Math.max(Math.floor(sampleRate / 30), 256);
+        const audioFrames = computeAudioFrames(samples, frameSize);
+        console.log(`   ${audioFrames.length} audio frames`);
+        console.log('Computing neural flow field...');
+        const electrodeCount = eegSteps[0]?.electrodes.size || 4;
+        const electrodeLayout = [];
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            electrodeLayout.push([Math.cos(angle), Math.sin(angle)]);
+        }
+        const flowStates = computeFlowStates(eegSteps, { electrodeLayout });
+        const flowField = computeFlowField(flowStates, audioFrames, params);
+        // Warn if EEG steps and audio frames are mismatched
+        if (flowStates.length !== audioFrames.length) {
+            console.warn(`   Warning: Mismatched lengths: ${flowStates.length} EEG steps vs ${audioFrames.length} audio frames. Truncating to ${Math.min(flowStates.length, audioFrames.length)}.`);
+        }
+        console.log('Simulating particles...');
+        const result = simulateParticles(flowField, params, params.particleCount ?? DEFAULT_PARAMS.particleCount);
+        console.log(`   ${result.paths.length} particles, ${result.paths[0]?.length || 0} steps each`);
+        console.log('Rendering SVG...');
+        const svg = renderSvg(result, params);
+        const outDir = dirname(options.output);
+        try {
+            mkdirSync(outDir, { recursive: true });
+        }
+        catch { }
+        writeFileSync(options.output, svg);
+        console.log(`\nSaved to ${options.output}`);
+        console.log(`   Size: ${Buffer.byteLength(svg) / 1024} KB`);
     }
-    catch { }
-    writeFileSync(options.output, svg);
-    console.log(`\nSaved to ${options.output}`);
-    console.log(`   Size: ${Buffer.byteLength(svg) / 1024} KB`);
+    catch (err) {
+        console.error('Error:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+    }
 });
 program.parse();
