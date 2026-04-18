@@ -1,6 +1,6 @@
 # System Architecture
 
-> **Status:** Draft — provisional editor-foundation recommendation recorded on 2026-04-11. Final decision still depends on the extensibility spike in Epic 001.
+> **Status:** Active — editor foundation decision finalized 2026-04-17. See [Epic 001](epics/001-editor-foundation-research/index.md).
 
 ## Overview
 
@@ -56,35 +56,24 @@ Kuhn is a web application with three main subsystems:
 
 ## Editor Foundation
 
-**Provisional recommendation:** build Kuhn's editor from primitives rather than adopt an existing AGPL editor wholesale. See [Epic 001](epics/001-editor-foundation-research/index.md).
+**Decision:** Adopt TeXlyre as the editor foundation under an open-core strategy. See [Epic 001](epics/001-editor-foundation-research/index.md) for the full evaluation and [strategy.md](../strategy.md) for the AGPL commercialization approach.
 
-Recommended foundation:
+Foundation:
 
-- **Editor shell:** CodeMirror 6
-- **Preview pane:** custom PDF/document preview integration
-- **Language targets:** LaTeX and Typst behind a shared editor/workspace model
-- **Compilation adapters:** swappable server-side and WASM backends
+- **Editor:** TeXlyre fork (AGPL-3.0) — React + TypeScript, CodeMirror 6, Vite
+- **Language targets:** LaTeX and Typst (both natively supported)
+- **Compilation:** Client-side WASM (SwiftLaTeX for LaTeX, typst.ts for Typst); server-side compilation available as a future option
+- **Collaboration:** Yjs + WebRTC/WebSocket for real-time collaborative editing
+- **Preview:** PDF/Canvas rendering built into TeXlyre
 
-Reference implementations we should study but not assume we will adopt directly:
+Why TeXlyre:
 
-- **TeXlyre** for UX patterns and dual LaTeX/Typst support
-- **BusyIDE/BusyTeX** for a permissive, browser-side compilation reference and spike target
-- **Overleaf CE** for workflow expectations around LaTeX collaboration and project structure
+- Proven extensibility — `/cite` slash command integrated naturally via CodeMirror 6 extensions and the service layer (Epic 003)
+- Native LaTeX + Typst support without retrofitting
+- Modern stack and collaboration model close to our product target
+- Open-core model keeps proprietary agent intelligence behind a clean API boundary
 
-Why this direction:
-
-- It gives us first-class control over slash commands and agent interactions.
-- It avoids AGPL risk in the core product shell.
-- It lets us choose compilation architecture independently from editor UX.
-
-Alternative strategy under consideration:
-
-- If Kuhn adopts an open-core model, the editor could instead be a public AGPL fork such as TeXlyre, with proprietary agent services behind a network boundary.
-- That is a product and licensing posture decision, not the default engineering recommendation.
-
-### Open-Core Checklist
-
-If Kuhn chooses the TeXlyre/AGPL path, developers should keep this checklist in mind:
+### Open-Core Boundary Rules
 
 - Keep editor UI, slash-command plumbing, and client integration code in the public AGPL layer.
 - Keep proprietary value in separate network services: agents, prompts, orchestration, retrieval, billing, and operations.
@@ -131,8 +120,8 @@ Current architectural intent:
 
 ## Open Questions
 
-- [ ] Final editor foundation sign-off after Story 005 spike
+- [x] ~~Final editor foundation sign-off~~ — TeXlyre adopted (2026-04-17)
 - [ ] Server-side vs WASM compilation defaults (or hybrid by document/runtime)
 - [ ] Authentication and multi-user support
 - [ ] File storage: local-first vs cloud-backed
-- [ ] Real-time collaboration (CRDT-based?)
+- [x] ~~Real-time collaboration~~ — Yjs + WebRTC/WebSocket via TeXlyre

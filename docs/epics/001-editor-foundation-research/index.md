@@ -1,21 +1,26 @@
 # Epic 001: Editor Foundation Research
 
-**Status:** In Progress
+**Status:** done
 **Created:** 2026-04-11
+**Completed:** 2026-04-17
 
 ## Goal
 
 Evaluate open-source LaTeX/Typst editor projects to determine the best foundation for Kuhn's webapp. The chosen foundation must support browser-based editing with live preview, be extensible enough for agent integration (slash commands, inline results), and have a license compatible with our distribution model.
 
+## Decision
+
+**TeXlyre adopted as the editor foundation under an open-core strategy.** See [Story 006](stories/006-recommendation.md) for the full recommendation and decision record.
+
 ## Context
 
-Two leading candidates have been identified:
+Two leading candidates were identified:
 
 1. **TeXlyre** (https://github.com/TeXlyre/texlyre) — a feature-rich web-based LaTeX editor. Strong UX but licensed under AGPL, which imposes copyleft obligations on the entire webapp if deployed as a network service.
 
 2. **BusyIDE / BusyTeX** (https://github.com/busytex/busyide) — MIT-licensed, uses WASM to compile TeX entirely in the browser. Less polished but far more permissive licensing.
 
-We should also survey any other viable candidates (Overleaf CE, SwiftLaTeX, etc.) and consider building from primitives (CodeMirror 6 + custom language support).
+Other candidates evaluated included Overleaf CE, SwiftLaTeX, and building from primitives (CodeMirror 6 + custom language support).
 
 ## Key Decision Factors
 
@@ -31,17 +36,17 @@ We should also survey any other viable candidates (Overleaf CE, SwiftLaTeX, etc.
 
 - [x] All candidate projects evaluated against the decision factors above
 - [x] License analysis completed with legal implications documented
-- [ ] Proof-of-concept spike for the top 1-2 candidates (can we add a slash command?)
+- [x] Proof-of-concept spike for the top 1-2 candidates (can we add a slash command?)
 - [x] Architecture recommendation written with trade-offs
-- [ ] Decision made and documented
+- [x] Decision made and documented
 
 ## Stories
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 001 | [Survey candidate projects](stories/001-survey-candidates.md) | done | M |
-| 002 | [Deep-dive: TeXlyre](stories/002-deep-dive-texlyre.md) | ready | L |
-| 003 | [Deep-dive: BusyIDE](stories/003-deep-dive-busyide.md) | ready | L |
+| 002 | [Deep-dive: TeXlyre](stories/002-deep-dive-texlyre.md) | done | L |
+| 003 | [Deep-dive: BusyIDE](stories/003-deep-dive-busyide.md) | done (superseded) | L |
 | 004 | [License analysis](stories/004-license-analysis.md) | done | M |
-| 005 | [Extensibility spike](stories/005-extensibility-spike.md) | draft | L |
-| 006 | [Recommendation & decision](stories/006-recommendation.md) | in-progress | M |
+| 005 | [Extensibility spike](stories/005-extensibility-spike.md) | done | L |
+| 006 | [Recommendation & decision](stories/006-recommendation.md) | done | M |

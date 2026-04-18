@@ -1,6 +1,6 @@
 # Story 006: Recommendation & Decision
 
-**Status:** in-progress
+**Status:** done
 **Epic:** [001 — Editor Foundation Research](../index.md)
 **Estimate:** M
 
@@ -16,9 +16,9 @@ Synthesize findings from the editor-foundation research into a recommendation do
   - Extensibility assessment based on the current evidence
   - Estimated effort to reach MVP for each approach
   - Clear recommendation with reasoning
-- [ ] Decision made and recorded
+- [x] Decision made and recorded
 - [x] Architecture doc (`docs/architecture.md`) updated to reflect the chosen foundation
-- [ ] Follow-on epics drafted based on the decision
+- [x] Follow-on epics drafted based on the decision
 
 ## Recommendation
 
@@ -164,19 +164,33 @@ That means Story 005 should focus on:
 
 TeXlyre can remain a read-only architectural reference unless we later decide licensing is negotiable.
 
-## Current Decision State
+## Final Decision (Recorded 2026-04-17)
 
-This is a **provisional engineering recommendation**, not yet a final recorded project decision.
+**Decision: Adopt TeXlyre as the editor foundation under an open-core strategy.**
 
-The remaining work to lock it in:
+The original engineering recommendation was to build from primitives. That recommendation was sound on licensing grounds, but the project chose the strategic alternative documented above: TeXlyre as the public AGPL editor layer, with proprietary agent logic behind a clean network boundary.
 
-1. Complete the extensibility spike for a custom shell and BusyIDE
-2. Perform transitive dependency/license review on the shortlisted path
-3. Decide explicitly whether Kuhn is pursuing a closed/proprietary product shell or an open-core editor strategy
-4. Draft follow-on epics for scaffold, compiler pipeline, and agent/editor UX
+### What changed
+
+Epic 003 (TeXlyre Citation Assistant) served as both an extensibility spike and a deep-dive. The hands-on experience demonstrated that:
+
+1. **TeXlyre's architecture is extensible.** The `/cite` slash command integrated naturally via CodeMirror 6 extensions and the service layer. No core internals needed invasive modification.
+2. **The product fit is strong.** TeXlyre already supports both LaTeX and Typst, has collaboration via Yjs, and provides a modern UX close to our target.
+3. **The open-core model is viable.** The AGPL commercialization strategy is documented in `strategy.md`. Editor-layer customizations are public; agent intelligence, prompts, and orchestration remain proprietary behind an API boundary.
+
+### Follow-on epics
+
+- **Epic 002 (Agent Orchestration Layer)** — already in progress, building the proprietary backend that sits behind the editor
+- **Epic 003 (Citation Assistant)** — completed, the first agent integration on the TeXlyre foundation
+
+### Risks accepted
+
+- AGPL compliance overhead for editor-layer modifications (mitigated by public fork strategy)
+- Fork maintenance burden if upstream TeXlyre diverges significantly
+- Transitive dependency license audit still outstanding (tracked but not a blocker)
 
 ## Notes
 
-- The recommendation is intentionally biased toward long-term product control rather than shortest path to a demo.
-- If the team decides the product should be open-core at the editor layer, TeXlyre deserves immediate reconsideration.
-- See [decision memo: TeXlyre open-core path](../decision-memo-texlyre.md) for the architecture constraints this choice imposes on developers.
+- The "build from primitives" path remains a valid fallback if the open-core posture proves untenable.
+- See [AGPL commercialization strategy](../../strategy.md) for the architectural boundary guidelines.
+- See `docs/architecture.md` for the updated system architecture.
