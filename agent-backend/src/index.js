@@ -8,6 +8,7 @@ import { initDb } from './db/init.js';
 import { markOrphanedJobsInterrupted } from './db/jobs.js';
 import healthRouter from './routes/health.js';
 import agentRouter from './routes/agent.js';
+import filesRouter from './routes/files.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
@@ -16,6 +17,7 @@ app.use(cors({ origin: config.cors.origin }));
 app.use(express.json());
 app.use(healthRouter);
 app.use(agentRouter);
+app.use(filesRouter);
 
 const server = createServer(app);
 

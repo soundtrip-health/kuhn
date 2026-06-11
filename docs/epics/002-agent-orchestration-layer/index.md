@@ -52,7 +52,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 - [x] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
 - [ ] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
 - [ ] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015)
-- [ ] Storage API with project-root enforcement; all agent file access through it (018)
+- [x] Storage API with project-root enforcement; all agent file access through it (018)
 - [ ] `/cite` ported to Milkdown; `/write` slash command with streaming writer agent (016, 017)
 - [ ] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
 - [ ] Durable job model for long-running agent work (part of 011)
@@ -83,7 +83,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 010 | [Database + seeding](stories/010-database-seeding.md) | done | L |
 | 011 | [Agent runtime on Claude Agent SDK](stories/011-agent-runtime-sdk.md) — agent-task boundary, streaming, durable jobs | done | L |
 | 012 | [PM agent](stories/012-pm-agent.md) — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
-| 018 | [Storage API + sandboxed execution](stories/018-storage-sandboxing.md) — project-root enforcement, containerized rendering | ready | M |
+| 018 | [Storage API + sandboxed execution](stories/018-storage-sandboxing.md) — project-root enforcement, containerized rendering | done | M |
 
 ### Phase 2: Webapp (single app)
 
@@ -99,7 +99,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | ready | L |
 | 017 | Writer agent + `/write` — streaming edits into the document with accept/reject | draft | XL |
-| 019 | Render & export — Typst PDF preview, Pandoc docx/tex export | draft | L |
+| 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | draft | L |
 
 ### Preserved (may revisit)
 

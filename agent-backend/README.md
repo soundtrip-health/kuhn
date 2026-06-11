@@ -15,8 +15,12 @@ real-time collaboration.
   input)` boundary, per-role tool allowlists from the DB, project-dir workspaces,
   durable `jobs` table, per-task token budgets, `dispatch_agent` sub-tasks, in-process
   PubMed/arXiv search tools
+- **Storage API + sandboxed execution** (story 018): every file operation —
+  HTTP routes and agent tools alike — goes through `src/storage.js`, which enforces
+  the project root (no `..` traversal, no absolute paths, no symlink escapes);
+  Typst/Pandoc render in a locked-down container via `src/sandbox.js`
 
-Next: webapp scaffold (story 013), storage API (018), PM agent (012).
+Next: webapp scaffold (story 013), PM agent (012).
 
 ## Agent API
 
@@ -33,6 +37,32 @@ is forwarded into the parent stream.
 Auth: set `ANTHROPIC_API_KEY` (or rely on Claude Code login credentials on a dev machine).
 
 Smoke test (needs Postgres + credentials): `npm run smoke`
+
+## Files API (story 018)
+
+All paths are project-relative; escapes (`..`, absolute paths, symlinks out of the
+project root) return 403.
+
+| Endpoint | What |
+|----------|------|
+| `GET /api/projects/:id/files[?path=dir]` | Project tree (symlinks omitted) |
+| `GET /api/projects/:id/file?path=...` | Raw file content |
+| `PUT /api/projects/:id/file?path=...` | Create/overwrite; body is the raw content |
+| `DELETE /api/projects/:id/file?path=...` | Delete file or directory |
+| `POST /api/projects/:id/files/move` | Body `{ from, to }` |
+| `POST /api/projects/:id/files/upload` | Multipart; `files` field(s), optional `path` dir |
+
+## Sandboxed rendering (story 018)
+
+`src/sandbox.js` runs Typst/Pandoc in Docker with `--network none`, the project
+mounted read-only, a separate output dir, and CPU/memory/time limits. This wrapper is
+the designated path for anything that executes document-derived code (future analyst
+Python included). Render endpoints land with story 019; the helpers are
+`renderTypstPdf(projectId, sourcePath)` and `pandocConvert(projectId, sourcePath, outName)`.
+
+Images: `ghcr.io/typst/typst:latest`, `pandoc/core:latest` (pull once with `docker pull`).
+On macOS, keep `PROJECTS_ROOT` somewhere Docker Desktop can bind-mount (the default,
+inside the repo, is fine; `/tmp` is not).
 
 ## Quick Start
 
@@ -74,3 +104,7 @@ Environment variables (see `src/config.js`; `.env` supported):
 | `AGENT_MAX_DISPATCH_DEPTH` | `2` |
 | `AGENT_MAX_TURNS` | `50` |
 | `AGENT_MODEL` | SDK default |
+| `STORAGE_MAX_FILE_BYTES` | `20971520` (20 MB per file) |
+| `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `ghcr.io/typst/typst:latest` / `pandoc/core:latest` |
+| `SANDBOX_TIMEOUT_MS` / `SANDBOX_CPUS` / `SANDBOX_MEMORY` | `60000` / `1` / `512m` |
+| `SANDBOX_MAX_OUTPUT_BYTES` | `33554432` (32 MB) |

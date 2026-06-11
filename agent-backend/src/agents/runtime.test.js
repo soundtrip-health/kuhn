@@ -16,8 +16,13 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: vi.fn((cfg) => ({ type: 'sdk', name: cfg.name })),
 }));
 
-vi.mock('node:fs/promises', () => ({ mkdir: vi.fn() }));
-vi.mock('../db.js', () => ({ query: vi.fn(async () => ({ rows: [] })) }));
+vi.mock('../storage.js', () => ({
+  resolveProjectDir: vi.fn(async (projectId) => `/projects/${projectId}`),
+  readProjectFile: vi.fn(async () => Buffer.from('file body')),
+  writeProjectFile: vi.fn(async () => ({ created: true })),
+  listProjectTree: vi.fn(async () => []),
+  searchProjectFiles: vi.fn(async () => []),
+}));
 vi.mock('../db/agents.js', () => ({ getAgentWithTools: vi.fn() }));
 vi.mock('../db/conversation.js', () => ({
   createConversation: vi.fn(async () => ({ id: 7 })),
@@ -28,7 +33,8 @@ vi.mock('../db/jobs.js', () => ({
   updateJob: vi.fn(async () => ({})),
 }));
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { logMessage } from '../db/conversation.js';
 import { updateJob } from '../db/jobs.js';
@@ -64,8 +70,8 @@ describe('runAgentTask', () => {
         message: {
           content: [
             { type: 'text', text: 'Drafting now.' },
-            { type: 'tool_use', id: 't1', name: 'Write', input: { file_path: 'draft.md', content: 'x' } },
-            { type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: 'notes.md' } },
+            { type: 'tool_use', id: 't1', name: 'mcp__kuhn__write_file', input: { path: 'draft.md', content: 'x' } },
+            { type: 'tool_use', id: 't2', name: 'mcp__kuhn__edit_file', input: { path: 'notes.md', old_string: 'a', new_string: 'b' } },
           ],
           usage: { input_tokens: 10, output_tokens: 5 },
         },
@@ -108,11 +114,29 @@ describe('runAgentTask', () => {
     const options = sdkQuery.mock.calls[0][0].options;
     expect(options.settingSources).toEqual([]);
     expect(options.permissionMode).toBe('bypassPermissions');
-    expect(options.tools).toEqual(['Read', 'Grep']); // file_read only — no Write/Edit/Bash
+    // No built-in file tools (story 018) — file access only via storage-backed MCP tools
+    expect(options.tools).toEqual([]);
+    expect(options.allowedTools).toContain('mcp__kuhn__read_file');
+    expect(options.allowedTools).toContain('mcp__kuhn__search_files');
     expect(options.allowedTools).toContain('mcp__kuhn__pubmed_search');
+    expect(options.allowedTools).not.toContain('mcp__kuhn__write_file');
     expect(options.allowedTools).not.toContain('mcp__kuhn__dispatch_agent');
     expect(options.systemPrompt).toContain('You are the research assistant.');
     expect(options.cwd).toContain('1');
+  });
+
+  it('routes agent file writes through the storage service', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'writer', tools: ['file_write'] });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'writer', projectId: 7, input: 'go' });
+
+    const { tools } = createSdkMcpServer.mock.calls[0][0];
+    const writeTool = tools.find((t) => t.name === 'write_file');
+    const result = await writeTool.handler({ path: 'draft/main.md', content: 'hello' });
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'draft/main.md', 'hello');
+    expect(result.isError).toBeUndefined();
   });
 
   it('stops the task with an error event when the token budget is exceeded', async () => {
@@ -161,7 +185,9 @@ describe('runAgentTask', () => {
     ];
     await collect({ role: 'writer', projectId: 1, input: 'go' });
     const options = sdkQuery.mock.calls[0][0].options;
-    expect(options.tools).toEqual(['Write', 'Edit']);
+    expect(options.tools).toEqual([]);
+    expect(options.allowedTools).toContain('mcp__kuhn__write_file');
+    expect(options.allowedTools).toContain('mcp__kuhn__edit_file');
     expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
   });
 });

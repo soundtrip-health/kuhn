@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS agent_tools (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS projects (
   id            SERIAL PRIMARY KEY,
+  -- Tenant column (story 018). Single default tenant until auth lands;
+  -- multi-tenancy then becomes auth + quotas instead of a schema rewrite.
+  owner_id      VARCHAR(64)  NOT NULL DEFAULT 'default',
   name          VARCHAR(256) NOT NULL,
   project_type  VARCHAR(32)  NOT NULL CHECK (project_type IN (
                   'rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'
@@ -50,6 +53,12 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+-- Idempotent migration for databases created before story 018
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS
+  owner_id VARCHAR(64) NOT NULL DEFAULT 'default';
+
+CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);
 
 -- ============================================================
 -- Conversations
