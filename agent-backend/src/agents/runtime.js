@@ -2,26 +2,30 @@
 // boundary. The rest of the system depends only on runAgentTask(); the SDK
 // is an implementation detail of this module.
 
-import { mkdir } from 'node:fs/promises';
-import { resolve, isAbsolute, join } from 'node:path';
 import { query as sdkQuery, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 import { config } from '../config.js';
-import { query as dbQuery } from '../db.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
+import {
+  resolveProjectDir,
+  readProjectFile,
+  writeProjectFile,
+  listProjectTree,
+  searchProjectFiles,
+} from '../storage.js';
 import { EventChannel } from './events.js';
 import { pubmedSearch, arxivSearch } from './search.js';
 
-// DB tool slug → built-in SDK tool names. Tools not granted to a role are
-// removed entirely via the SDK `tools` option (allowedTools alone does not
-// restrict anything under permissionMode: 'bypassPermissions').
+// DB tool slug → built-in SDK tool names. File access deliberately maps to
+// no built-ins (story 018): agents get storage-backed MCP tools instead, so
+// every file operation goes through the project-root-enforcing storage
+// service. Tools not granted to a role are removed entirely via the SDK
+// `tools` option (allowedTools alone does not restrict anything under
+// permissionMode: 'bypassPermissions').
 const BUILTIN_TOOL_MAP = {
-  file_read: ['Read', 'Grep'],
-  file_list: ['Glob'],
-  file_write: ['Write', 'Edit'],
   web_search: ['WebSearch', 'WebFetch'],
 };
 
@@ -236,8 +240,9 @@ function buildSystemPrompt(agent, projectDir) {
     '',
     '## Runtime environment',
     `You are running as the "${agent.slug}" agent inside the Kuhn writing tool.`,
-    `Your project workspace is ${projectDir} (your current working directory).`,
-    'All file paths are relative to the workspace. Never read or write outside it.',
+    `Your project workspace is ${projectDir}.`,
+    'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
+    'file access; they take paths relative to the workspace root and cannot reach outside it.',
   ].join('\n');
 }
 
@@ -251,33 +256,89 @@ function buildPrompt(input, context) {
 }
 
 function fileChangeEvent(agentSlug, toolCall) {
-  const path = toolCall.input?.file_path ?? toolCall.input?.path;
+  const path = toolCall.input?.path;
   if (!path) return null;
-  if (toolCall.name === 'Write') return { type: 'file_change', agent: agentSlug, path, kind: 'create' };
-  if (toolCall.name === 'Edit') return { type: 'file_change', agent: agentSlug, path, kind: 'update' };
+  if (toolCall.name === 'mcp__kuhn__write_file') return { type: 'file_change', agent: agentSlug, path, kind: 'create' };
+  if (toolCall.name === 'mcp__kuhn__edit_file') return { type: 'file_change', agent: agentSlug, path, kind: 'update' };
   return null;
-}
-
-/**
- * Resolve (and create) the workspace directory for a project. Uses
- * projects.root_path when set, else <projectsRoot>/<projectId>.
- */
-export async function resolveProjectDir(projectId) {
-  let dir = null;
-  const { rows } = await dbQuery('SELECT root_path FROM projects WHERE id = $1', [projectId]);
-  if (rows[0]?.root_path) {
-    dir = isAbsolute(rows[0].root_path)
-      ? rows[0].root_path
-      : resolve(config.agent.projectsRoot, rows[0].root_path);
-  } else {
-    dir = join(config.agent.projectsRoot, String(projectId));
-  }
-  await mkdir(dir, { recursive: true });
-  return dir;
 }
 
 function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) {
   const tools = [];
+
+  // File tools (story 018): all project file access goes through the storage
+  // service, which enforces the project root. Paths are workspace-relative.
+  if (agent.tools.includes('file_read')) {
+    tools.push(tool(
+      'read_file',
+      'Read a file from the project workspace. Path is relative to the workspace root.',
+      { path: z.string().describe('Workspace-relative file path') },
+      async ({ path }) => fileToolResult(async () => {
+        const buf = await readProjectFile(projectId, path);
+        return buf.toString('utf-8');
+      }),
+    ));
+    tools.push(tool(
+      'search_files',
+      'Search project files for a regular expression. Returns matching lines as path:line: text.',
+      {
+        pattern: z.string().describe('JavaScript regular expression to search for'),
+        path: z.string().default('.').describe('Workspace-relative directory to search in'),
+      },
+      async ({ pattern, path }) => fileToolResult(async () => {
+        const matches = await searchProjectFiles(projectId, pattern, path);
+        if (matches.length === 0) return 'No matches.';
+        return matches.map((m) => `${m.path}:${m.line}: ${m.text}`).join('\n');
+      }),
+    ));
+  }
+
+  if (agent.tools.includes('file_list')) {
+    tools.push(tool(
+      'list_files',
+      'List the project workspace file tree.',
+      { path: z.string().default('.').describe('Workspace-relative directory to list') },
+      async ({ path }) => fileToolResult(async () => {
+        const tree = await listProjectTree(projectId, path);
+        return JSON.stringify(tree, null, 2);
+      }),
+    ));
+  }
+
+  if (agent.tools.includes('file_write')) {
+    tools.push(tool(
+      'write_file',
+      'Create or overwrite a file in the project workspace. Parent directories are created as needed.',
+      {
+        path: z.string().describe('Workspace-relative file path'),
+        content: z.string().describe('Full file content'),
+      },
+      async ({ path, content }) => fileToolResult(async () => {
+        const { created } = await writeProjectFile(projectId, path, content);
+        return `${created ? 'Created' : 'Updated'} ${path}`;
+      }),
+    ));
+    tools.push(tool(
+      'edit_file',
+      'Replace an exact string in a file. old_string must match exactly and, unless replace_all is true, exactly once.',
+      {
+        path: z.string().describe('Workspace-relative file path'),
+        old_string: z.string().describe('Exact text to replace'),
+        new_string: z.string().describe('Replacement text'),
+        replace_all: z.boolean().default(false).describe('Replace every occurrence'),
+      },
+      async ({ path, old_string, new_string, replace_all }) => fileToolResult(async () => {
+        const content = (await readProjectFile(projectId, path)).toString('utf-8');
+        const occurrences = content.split(old_string).length - 1;
+        if (occurrences === 0) throw new Error(`old_string not found in ${path}`);
+        if (occurrences > 1 && !replace_all) {
+          throw new Error(`old_string occurs ${occurrences} times in ${path}; pass replace_all or a longer unique string`);
+        }
+        await writeProjectFile(projectId, path, content.replaceAll(old_string, new_string));
+        return `Updated ${path} (${replace_all ? occurrences : 1} replacement${occurrences > 1 && replace_all ? 's' : ''})`;
+      }),
+    ));
+  }
 
   if (agent.tools.includes('pubmed_search')) {
     tools.push(tool(
@@ -344,5 +405,13 @@ async function searchToolResult(fn) {
     return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
   } catch (err) {
     return { content: [{ type: 'text', text: `Search failed: ${err.message}` }], isError: true };
+  }
+}
+
+async function fileToolResult(fn) {
+  try {
+    return { content: [{ type: 'text', text: await fn() }] };
+  } catch (err) {
+    return { content: [{ type: 'text', text: err.message }], isError: true };
   }
 }

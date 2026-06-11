@@ -1,0 +1,169 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Real filesystem, mocked DB: project 1 and 2 are rows whose roots default to
+// <projectsRoot>/<id>; project 99 does not exist.
+vi.mock('./db.js', () => ({
+  query: vi.fn(async (_sql, [id]) => ({
+    rows: [1, 2].includes(Number(id)) ? [{ root_path: null }] : [],
+  })),
+}));
+
+import { config } from './config.js';
+import {
+  StorageError,
+  resolveProjectDir,
+  readProjectFile,
+  writeProjectFile,
+  deleteProjectEntry,
+  moveProjectEntry,
+  listProjectTree,
+  searchProjectFiles,
+} from './storage.js';
+
+let root;
+let savedProjectsRoot;
+
+beforeEach(async () => {
+  savedProjectsRoot = config.agent.projectsRoot;
+  root = await mkdtemp(join(tmpdir(), 'kuhn-storage-'));
+  config.agent.projectsRoot = root;
+
+  await mkdir(join(root, '1', 'draft'), { recursive: true });
+  await writeFile(join(root, '1', 'draft', 'main.md'), '# Title\n\nHello kuhn.\n');
+  await mkdir(join(root, '2'), { recursive: true });
+  await writeFile(join(root, '2', 'secret.md'), 'project two secret\n');
+  await writeFile(join(root, 'outside.txt'), 'outside any project\n');
+});
+
+afterEach(async () => {
+  config.agent.projectsRoot = savedProjectsRoot;
+  await rm(root, { recursive: true, force: true });
+});
+
+const expectStorageError = async (promise, code) => {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err, 'expected a rejection').toBeInstanceOf(StorageError);
+  expect(err.code).toBe(code);
+};
+
+describe('path containment', () => {
+  it('rejects .. traversal', async () => {
+    await expectStorageError(readProjectFile(1, '../outside.txt'), 'outside_root');
+    await expectStorageError(readProjectFile(1, 'draft/../../outside.txt'), 'outside_root');
+    await expectStorageError(writeProjectFile(1, '../evil.txt', 'x'), 'outside_root');
+    await expectStorageError(deleteProjectEntry(1, '../outside.txt'), 'outside_root');
+  });
+
+  it('rejects absolute paths', async () => {
+    await expectStorageError(readProjectFile(1, join(root, '1', 'draft', 'main.md')), 'outside_root');
+    await expectStorageError(writeProjectFile(1, '/etc/hosts', 'x'), 'outside_root');
+  });
+
+  it('rejects cross-project access', async () => {
+    await expectStorageError(readProjectFile(1, '../2/secret.md'), 'outside_root');
+    await expectStorageError(writeProjectFile(1, '../2/injected.md', 'x'), 'outside_root');
+    await expectStorageError(moveProjectEntry(1, 'draft/main.md', '../2/stolen.md'), 'outside_root');
+  });
+
+  it('rejects symlinks that resolve outside the project root', async () => {
+    await symlink(join(root, 'outside.txt'), join(root, '1', 'link-file'));
+    await symlink(join(root, '2'), join(root, '1', 'link-dir'));
+
+    await expectStorageError(readProjectFile(1, 'link-file'), 'outside_root');
+    await expectStorageError(readProjectFile(1, 'link-dir/secret.md'), 'outside_root');
+    await expectStorageError(writeProjectFile(1, 'link-dir/injected.md', 'x'), 'outside_root');
+  });
+
+  it('rejects null bytes and empty paths', async () => {
+    await expectStorageError(readProjectFile(1, 'a\0b'), 'invalid_path');
+    await expectStorageError(readProjectFile(1, ''), 'invalid_path');
+  });
+
+  it('rejects unknown projects', async () => {
+    await expectStorageError(readProjectFile(99, 'draft/main.md'), 'not_found');
+  });
+
+  it('allows symlinks that stay inside the project root', async () => {
+    await symlink(join(root, '1', 'draft', 'main.md'), join(root, '1', 'alias.md'));
+    const buf = await readProjectFile(1, 'alias.md');
+    expect(buf.toString()).toContain('Hello kuhn');
+  });
+});
+
+describe('file operations', () => {
+  it('reads and writes files, creating parent directories', async () => {
+    const { created } = await writeProjectFile(1, 'refs/bib/main.bib', '@article{x}');
+    expect(created).toBe(true);
+    expect((await readProjectFile(1, 'refs/bib/main.bib')).toString()).toBe('@article{x}');
+
+    const second = await writeProjectFile(1, 'refs/bib/main.bib', '@article{y}');
+    expect(second.created).toBe(false);
+  });
+
+  it('enforces the file size cap', async () => {
+    const saved = config.storage.maxFileBytes;
+    config.storage.maxFileBytes = 10;
+    try {
+      await expectStorageError(writeProjectFile(1, 'big.md', 'x'.repeat(11)), 'too_large');
+    } finally {
+      config.storage.maxFileBytes = saved;
+    }
+  });
+
+  it('deletes files and directories but never the root', async () => {
+    await deleteProjectEntry(1, 'draft/main.md');
+    await expectStorageError(readProjectFile(1, 'draft/main.md'), 'not_found');
+    await deleteProjectEntry(1, 'draft');
+    await expectStorageError(deleteProjectEntry(1, '.'), 'invalid_path');
+    await expectStorageError(deleteProjectEntry(1, 'never-existed.md'), 'not_found');
+  });
+
+  it('moves files within the project and refuses to clobber', async () => {
+    await moveProjectEntry(1, 'draft/main.md', 'archive/v1.md');
+    expect((await readProjectFile(1, 'archive/v1.md')).toString()).toContain('Hello kuhn');
+    await writeProjectFile(1, 'a.md', 'a');
+    await writeProjectFile(1, 'b.md', 'b');
+    await expectStorageError(moveProjectEntry(1, 'a.md', 'b.md'), 'conflict');
+  });
+
+  it('lists the tree and omits symlinks', async () => {
+    await symlink(join(root, 'outside.txt'), join(root, '1', 'sneaky'));
+    const tree = await listProjectTree(1);
+    const names = tree.map((n) => n.name);
+    expect(names).toContain('draft');
+    expect(names).not.toContain('sneaky');
+    const draft = tree.find((n) => n.name === 'draft');
+    expect(draft.type).toBe('dir');
+    expect(draft.children).toEqual([
+      expect.objectContaining({ name: 'main.md', path: join('draft', 'main.md'), type: 'file' }),
+    ]);
+  });
+
+  it('searches file contents with line numbers', async () => {
+    await writeProjectFile(1, 'notes.md', 'alpha\nbeta kuhn\ngamma');
+    const matches = await searchProjectFiles(1, 'kuhn');
+    expect(matches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'notes.md', line: 2 }),
+        expect.objectContaining({ path: join('draft', 'main.md'), line: 3 }),
+      ]),
+    );
+  });
+});
+
+describe('resolveProjectDir', () => {
+  it('creates and returns the per-project workspace', async () => {
+    const dir = await resolveProjectDir(1);
+    expect((await readFile(join(dir, 'draft', 'main.md'))).toString()).toContain('Hello kuhn');
+  });
+
+  it('throws not_found for unknown projects', async () => {
+    await expectStorageError(resolveProjectDir(99), 'not_found');
+  });
+});
