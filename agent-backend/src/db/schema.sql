@@ -68,6 +68,33 @@ CREATE INDEX IF NOT EXISTS idx_conversations_agent
   ON conversations(agent_slug);
 
 -- ============================================================
+-- Jobs (durable agent task records — story 011)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS jobs (
+  id               SERIAL PRIMARY KEY,
+  project_id       INTEGER     REFERENCES projects(id) ON DELETE CASCADE,
+  conversation_id  INTEGER     REFERENCES conversations(id) ON DELETE SET NULL,
+  parent_job_id    INTEGER     REFERENCES jobs(id) ON DELETE SET NULL,
+  role             VARCHAR(32) NOT NULL,
+  status           VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN (
+                     'pending', 'running', 'done', 'error', 'interrupted', 'cancelled'
+                   )),
+  input            TEXT        NOT NULL,
+  context          JSONB,
+  session_id       VARCHAR(128),
+  error            TEXT,
+  input_tokens     INTEGER     NOT NULL DEFAULT 0,
+  output_tokens    INTEGER     NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_project
+  ON jobs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status
+  ON jobs(status);
+
+-- ============================================================
 -- Messages (append-only — no updated_at)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS messages (

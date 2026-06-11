@@ -33,6 +33,10 @@ citation workflow) from the TeXlyre fork. This is the pattern every later comman
 - Milkdown: use `@milkdown/plugin-slash` (or current equivalent) for the menu; a small remark
   extension or node view for the `[@citekey]` chips.
 - Once this story is done, schedule removal of the `texlyre/` directory.
+- Deferred from story 011: the runtime's `citation` AgentEvent is defined but never
+  emitted. When the citation service lands here, emit `{ type: 'citation', key, bibtex }`
+  from agent-driven citation insertions (e.g. the RA adding to `references.bib`) so the
+  editor can react live.
 
 ## Out of Scope
 
