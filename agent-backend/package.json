@@ -6,13 +6,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "db:seed": "node src/db/seed.js",
-    "build": "tsc",
-    "cli": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "commander": "^14.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
@@ -23,9 +20,6 @@
     "yjs": "^13.6.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
     "vitest": "^4.1.4"
   }
 }
