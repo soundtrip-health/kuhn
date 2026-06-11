@@ -1,6 +1,6 @@
 # Story 003: Deep-Dive: BusyIDE / BusyTeX
 
-**Status:** ready
+**Status:** done
 **Epic:** [001 — Editor Foundation Research](../index.md)
 **Estimate:** L
 
@@ -19,6 +19,10 @@ Thoroughly evaluate BusyIDE and BusyTeX as a potential editor foundation. Clone 
 - [ ] Evaluate Typst support feasibility
 - [ ] Assess performance: compilation speed, memory usage, large document handling
 - [ ] Confirm MIT license and check all dependencies for license compatibility
+
+## Resolution
+
+**Superseded.** The editor foundation decision was made without completing this deep-dive. After hands-on experience with TeXlyre in Epic 003 (which proved extensibility and product fit), the project adopted TeXlyre with an open-core commercialization strategy. BusyIDE remains a potential reference for WASM compilation techniques if needed in the future, but a full deep-dive is no longer necessary for the decision.
 
 ## Notes
 

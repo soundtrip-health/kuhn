@@ -2,48 +2,59 @@
 
 A web-based scientific and technical writing tool with integrated AI assistance.
 
-Kuhn provides a browser-based LaTeX/Typst editor where AI agents deliver real-time help — slash commands for inserting references, researching ideas, generating figures with Python, and more. A built-in terminal gives CLI access for power users, but most workflows happen in the editor.
+Kuhn provides a browser-based WYSIWYG markdown editor where AI agents deliver real-time help —
+slash commands for inserting grounded references, researching ideas, generating figures with
+Python, and more. Documents render to PDF via Typst and export to Word/LaTeX via Pandoc, so
+authors work in friendly markdown while the toolchain (and the agents) handle formatting.
 
 ## Status
 
-**Early stage.** We are currently researching which open-source editor foundation to build on. See [Epic 001](docs/epics/001-editor-foundation-research/index.md).
+**Early stage — direction revised 2026-06-11.** The agent backend runs (Postgres schema, seeded
+agent prompts, Yjs servers). The architecture moved from a TeXlyre/LaTeX foundation to a
+**Milkdown markdown editor** in a single app, with the agent runtime built on the
+**Claude Agent SDK**. The TeXlyre fork (working `/cite`, Epic 003) is retired to reference
+material until the `/cite` port lands. Next up: agent runtime (story 011) and the webapp
+scaffold (story 013).
 
 ## Goals
 
-- **LaTeX-first, Typst-supported** — standardize on LaTeX with first-class Typst support
-- **Agent-integrated editing** — six specialized AI agents (writer, analyst, advisor, research, review, PM) embedded in the editing experience
-- **Slash commands** — `/cite` to insert a reference, `/research` to investigate an idea, `/figure` to generate a plot, `/review` to get a critique
-- **Real-time compilation** — live preview of the compiled document as you type
-- **Built-in terminal** — full CLI access for advanced workflows and direct agent interaction
-- **Collaboration-ready** — designed for teams working on scientific manuscripts, protocols, and grant applications
+- **Markdown-first** — canonical authoring format is markdown with BibTeX; Typst renders PDF,
+  Pandoc exports docx/LaTeX. LaTeX is an export target, not a prerequisite.
+- **Agent-integrated editing** — six specialized AI agents (writer, analyst, advisor, research,
+  review, PM) embedded in the editing experience
+- **Slash commands** — `/cite` to insert a grounded reference, `/write` for contextual drafting,
+  `/research`, `/figure`, `/review`
+- **Live preview** — rendered document preview as you write
+- **Collaboration-ready** — Yjs-based real-time editing for teams working on manuscripts,
+  protocols, and grant applications
+- **Tenant-safe by design** — project-scoped storage, sandboxed execution, per-tenant knowledge
+  bases with a shared curated guidance corpus
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              Browser (webapp)                │
-│  ┌─────────────┐  ┌──────────┐  ┌────────┐  │
-│  │ LaTeX/Typst │  │  Agent   │  │Terminal│  │
-│  │   Editor    │  │ Sidebar  │  │  Panel │  │
-│  └──────┬──────┘  └────┬─────┘  └───┬────┘  │
-│         │              │             │       │
-└─────────┼──────────────┼─────────────┼───────┘
-          │              │             │
-┌─────────▼──────────────▼─────────────▼───────┐
-│                  Backend                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ Compiler │  │  Agent   │  │  Terminal   │  │
-│  │  Service │  │  Router  │  │  Service    │  │
-│  └──────────┘  └──────────┘  └────────────┘  │
-└───────────────────────┬──────────────────────┘
-                        │
-              ┌─────────▼─────────┐
-              │   agents/         │
-              │  (Claude Code)    │
-              └───────────────────┘
+┌──────────────────────────────────────────────────┐
+│                Browser (single app)               │
+│  ┌───────────┐  ┌────────────────┐  ┌─────────┐  │
+│  │ Agent     │  │ Milkdown       │  │ File    │  │
+│  │ Chat      │  │ Editor (md)    │  │ Manager │  │
+│  └─────┬─────┘  └───────┬────────┘  └────┬────┘  │
+└────────┼────────────────┼────────────────┼───────┘
+         │        WebSocket / REST         │
+┌────────▼────────────────▼────────────────▼───────┐
+│              Agent Backend (Node.js)              │
+│  ┌─────────────┐ ┌──────────┐ ┌───────────────┐  │
+│  │ Agent       │ │ Storage  │ │ Render/Export │  │
+│  │ Runtime     │ │ API      │ │ (Typst,       │  │
+│  │ (Claude     │ │ (project │ │  Pandoc,      │  │
+│  │  Agent SDK) │ │  scoped) │ │  sandboxed)   │  │
+│  └─────────────┘ └──────────┘ └───────────────┘  │
+│        Postgres + pgvector · Yjs servers          │
+└───────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for details.
+See [docs/architecture.md](docs/architecture.md) for details and the 2026-06-11 decision
+revisions (Milkdown, Claude Agent SDK, multi-tenancy invariants).
 
 ## Project Management
 
@@ -51,53 +62,74 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 
 | Epic | Status | Description |
 |------|--------|-------------|
-| [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | In Progress | Evaluate open-source editor options (TeXlyre, BusyIDE, etc.) |
-| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | Draft | Choose or build the runtime layer for agent dispatch, streaming, and tool use |
+| [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | Done (decision revised 2026-06-11) | Editor evaluation; TeXlyre choice superseded by Milkdown |
+| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | In Progress | Agent runtime (Claude Agent SDK), single-app webapp, editor integration |
+| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | Done | Grounded `/cite` workflow — backend logic ports to Milkdown (story 016) |
 
 ## Agents
 
-The `agents/` directory contains the AI agent framework — six specialized agents that power the writing assistance. See [agents/README.md](agents/README.md) for details.
+The `agents/` directory contains the AI agent framework — six specialized agents that power the
+writing assistance. See [agents/README.md](agents/README.md) for details.
 
-## Development
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 20+ (TBD — depends on editor choice)
-- Python 3.11+ (for agent scripts and figure generation)
-- A LaTeX distribution (TeX Live or TinyTeX) and/or Typst
-- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+- Node.js 18+
+- Docker (for Postgres and sandboxed rendering)
 
-### Getting started
+### Agent Backend
 
 ```bash
-git clone <repo-url> kuhn
-cd kuhn
+cd agent-backend
 
-# Agent dependencies
+# Start Postgres (first time or after reboot)
+docker compose up -d
+
+# Install deps (first time)
+npm install
+
+# Start the backend
+npm run dev
+```
+
+Starts at **http://localhost:3002**. On startup it creates the database schema and seeds agent
+prompts from `agents/*/AGENTS.md`. Health check: http://localhost:3002/health
+
+Re-seed after editing AGENTS.md files: `npm run db:seed`
+
+### Webapp
+
+Coming with story 013 (`webapp/` — Vite + TypeScript + Milkdown).
+
+### Legacy: TeXlyre fork (reference only)
+
+The retired TeXlyre fork still runs for reference (`cd texlyre && npm install && npm run dev`,
+http://localhost:5173/texlyre/). It will be removed once `/cite` is ported (story 016). Do not
+build new features on it.
+
+## Development
+
+### Additional Prerequisites
+
+- Python 3.11+ (for agent scripts and figure generation)
+- Typst and Pandoc (document rendering/export)
+- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+
+### Agent Dependencies
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r agents/requirements.txt
-
-# Webapp dependencies (TBD)
-# npm install
-# npm run dev
 ```
 
 ### Working with Claude Code
 
-This repo is configured so Claude Code can run common read-only and build commands without asking permission. See the "Working with Claude Code" section in [CLAUDE.md](CLAUDE.md) for details on:
-
-- Configuring `.claude/settings.json` for autonomous operation
-- User-level vs project-level permission settings
-- Tips for effective usage
-
-To go fully autonomous (use with care):
-
-```
-/permissions
-→ select "full-auto"
-```
+This repo is configured so Claude Code can run common read-only and build commands without
+asking permission. See the "Working with Claude Code" section in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-TBD
+TBD — no copyleft constraints; the editor stack (Milkdown/ProseMirror/Yjs) is MIT. See
+[strategy.md](strategy.md).

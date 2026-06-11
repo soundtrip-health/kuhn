@@ -1,6 +1,6 @@
 # Story 001: Map Current Agent Patterns
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** M
 
@@ -10,13 +10,15 @@ Document the interaction patterns in the current `agents/` architecture so we kn
 
 ## Acceptance Criteria
 
-- [ ] Catalog every agent-to-agent interaction (who calls whom, when, why)
-- [ ] Document the dispatch patterns: PM fan-out, Writer→RA citation lookup, Writer→Advisor domain question, PM→Reviewer adversarial review
-- [ ] Document the approval gates: where does the PI intervene?
-- [ ] Map tool use per agent: which MCP servers, which scripts, which file I/O
-- [ ] Document context management: how do agents currently handle long documents (section splitting, etc.)
-- [ ] Identify which patterns are essential vs. nice-to-have for the webapp
-- [ ] Produce a diagram of the interaction flows
+- [x] Catalog every agent-to-agent interaction (who calls whom, when, why) → §2
+- [x] Document the dispatch patterns: PM fan-out, Writer→RA citation lookup, Writer→Advisor domain question, PM→Reviewer adversarial review → §3
+- [x] Document the approval gates: where does the PI intervene? → §4
+- [x] Map tool use per agent: which MCP servers, which scripts, which file I/O → §5
+- [x] Document context management: how do agents currently handle long documents (section splitting, etc.) → §6
+- [x] Identify which patterns are essential vs. nice-to-have for the webapp → §7
+- [x] Produce a diagram of the interaction flows → §8
+
+**Deliverable:** [`agent-patterns.md`](../agent-patterns.md)
 
 ## Notes
 

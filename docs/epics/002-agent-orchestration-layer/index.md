@@ -1,65 +1,113 @@
 # Epic 002: Agent Orchestration Layer
 
-**Status:** Draft
+**Status:** in-progress
 **Created:** 2026-04-11
+**Updated:** 2026-06-11
 
 ## Goal
 
-Decide how the six AI agents (writer, analyst, advisor, research, review, PM) are orchestrated at runtime within the webapp. This means choosing — or building — the layer that manages agent lifecycle, dispatch, inter-agent communication, tool use, streaming responses, and integration with the editor's slash commands.
+Build a testable prototype of the Kuhn webapp: a **single application** with agent chat, a
+Milkdown markdown editor, and a file manager, backed by an agent runtime built on the
+**Claude Agent SDK**. A test user can be interviewed by the PM agent, get a seeded project,
+edit the document with `/cite` and `/write`, and preview a rendered PDF.
 
-## Context
+See [use-case.md](use-case.md) for the original product workflow (still valid for agent
+behavior and seeding flow; its two-app/TeXlyre framing is superseded — see below).
 
-The current agent system (`agents/`) is built directly on Claude Code — each agent is a workspace with a CLAUDE.md, and orchestration happens via human-driven conversation and subagent spawning. Moving to a webapp means we need a programmatic orchestration layer that can:
+## Key Design Decisions
 
-- Dispatch user requests (slash commands, sidebar chat) to the right agent
-- Manage agent sessions and context windows
-- Stream partial responses back to the editor UI
-- Support tool use (MCP servers, code execution, file I/O)
-- Handle inter-agent handoffs (e.g., Writer spawning RA for a citation lookup)
-- Maintain the "PI is final authority" principle with approval gates
+### Revised 2026-06-11 (supersedes the 2026-04-13 table where they conflict)
 
-The landscape of agent frameworks is evolving rapidly. Options range from using Anthropic's own SDKs directly, to full-featured orchestration frameworks, to building a custom layer for maximum control.
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agent runtime | **Claude Agent SDK** | Don't rebuild the agent loop/tools/subagents/streaming; it's the runtime the `agents/` workspaces already prove out |
+| Provider lock-in hedge | **Agent-task boundary** (`runAgentTask(role, projectId, input) → event stream`) | Abstract at the task interface, not the LLM call — keeps callers provider-neutral without tripling surface area |
+| App topology | **Single app** (chat + editor + file manager) | The two-app split existed for AGPL isolation; moot with MIT editor stack |
+| Editor | **Milkdown** (ProseMirror + remark, MIT, Yjs binding) | WYSIWYG markdown for non-LaTeX users; slash commands native to ProseMirror; license dissolves AGPL apparatus |
+| Document format | **Markdown canonical**; Typst renders PDF; Pandoc exports docx/tex | Agent pipeline is markdown-native; deliverables are often Word |
+| TeXlyre fork | **Retired to reference** | Keep `texlyre/` until `/cite` is ported, then remove |
+| Tenancy invariants (now) | project-scoped rows/paths; single storage API enforcing project root; sandboxed execution | Cheap now, rewrite later; per-tenant KB + shared guidance corpus is a sales requirement |
 
-## Key Decision Factors
+### Still in force from 2026-04-13
 
-- **Control** — can we implement our specific multi-agent interaction patterns (PM dispatch, Writer→RA spawning, Reviewer adversarial loops)?
-- **Streaming** — does it support streaming partial responses to the UI? This is critical for UX.
-- **Tool use / MCP** — does it integrate with Model Context Protocol servers (PubMed, bioRxiv, ClinicalTrials.gov)?
-- **Context management** — how does it handle long documents and multi-turn agent sessions?
-- **Complexity** — how much abstraction does it add? Is the abstraction helpful or does it obscure what's happening?
-- **Lock-in** — can we swap the underlying model or provider if needed?
-- **Maturity** — is it production-ready or still experimental?
-- **License** — compatible with our distribution model?
+- **Chat-first** workspace; PM interview seeds projects
+- **DB-backed prompts** seeded from `agents/*/AGENTS.md`, editable at runtime
+- **Full conversation logging** to Postgres (audit/replay)
+- **Postgres + pgvector** via docker-compose
+- **Own Yjs signaling + websocket servers**
+- **Markdown handoffs / filesystem as shared agent memory**
+- **Deterministic orchestration** — pipelines are code dispatching agent tasks, not agent-driven control flow
 
-## Candidates (initial list)
+### Superseded
 
-| Candidate | Approach | Notes |
-|-----------|----------|-------|
-| **Anthropic SDK direct** | Raw API calls with manual orchestration | Maximum control, most code to write |
-| **Claude Code SDK / Agent SDK** | Anthropic's agent-building toolkit | Purpose-built for Claude agents, may be closest to current architecture |
-| **LangGraph** | Graph-based agent orchestration (LangChain ecosystem) | Mature, flexible state machines, but heavy dependency |
-| **CrewAI** | Multi-agent framework with role-based agents | Close conceptual fit (roles map to our agents), Python-native |
-| **AutoGen** (Microsoft) | Multi-agent conversation framework | Strong multi-agent patterns, active development |
-| **Mastra** | TypeScript-native agent framework | Good if we go with a TS backend |
-| **Custom build** | Thin dispatch layer on Anthropic SDK | Maximum control, maintain current CLAUDE.md-driven architecture |
+- ~~Provider-agnostic LLM interface~~ (story 008) — replaced by the agent-task boundary
+- ~~Custom agent router + tool registry~~ — the Agent SDK provides the loop and tools
+- ~~Two separate apps / `/write` inside TeXlyre~~ — single app on Milkdown
+- ~~Vanilla JS, no build step~~ — Vite + TypeScript (no UI framework); Milkdown is an npm dependency
 
-## Acceptance Criteria
+## Prototype Scope
 
-- [ ] All viable orchestration approaches evaluated against decision factors
-- [ ] Current agent architecture mapped — what patterns must be preserved?
-- [ ] Proof-of-concept spike for top 2-3 approaches (Writer + RA citation flow)
-- [ ] Streaming and tool-use capabilities validated
-- [ ] Architecture recommendation written with trade-offs
-- [ ] Decision made and documented
+### Must Have
+
+- [ ] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
+- [ ] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
+- [ ] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015)
+- [ ] Storage API with project-root enforcement; all agent file access through it (018)
+- [ ] `/cite` ported to Milkdown; `/write` slash command with streaming writer agent (016, 017)
+- [ ] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
+- [ ] Durable job model for long-running agent work (part of 011)
+
+### Deferred
+
+- Multi-user / auth (invariants only for now; see architecture.md)
+- Analyst agent integration
+- Reviewer adversarial loops
+- Yjs room auth (do not expose beyond trusted test users)
+- Git integration for project versioning
+- Approval gates (prototype user IS the PI)
 
 ## Stories
 
+### Phase 0: Foundation
+
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Map current agent patterns](stories/001-map-current-patterns.md) | ready | M |
-| 002 | [Survey orchestration frameworks](stories/002-survey-frameworks.md) | ready | M |
-| 003 | [Evaluate Anthropic SDKs](stories/003-evaluate-anthropic-sdks.md) | ready | L |
-| 004 | [Evaluate third-party frameworks](stories/004-evaluate-third-party.md) | ready | L |
-| 005 | [Evaluate custom build approach](stories/005-evaluate-custom-build.md) | ready | M |
-| 006 | [Orchestration spike](stories/006-orchestration-spike.md) | draft | XL |
-| 007 | [Recommendation & decision](stories/007-recommendation.md) | draft | M |
+| 001 | [Map current agent patterns](stories/001-map-current-patterns.md) | done | M |
+| 008 | LLM provider abstraction spike | superseded (Agent SDK + agent-task boundary) | — |
+
+### Phase 1: Agent Backend
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 009 | [Backend scaffold](stories/009-backend-scaffold.md) | done | L |
+| 010 | [Database + seeding](stories/010-database-seeding.md) | done | L |
+| 011 | [Agent runtime on Claude Agent SDK](stories/011-agent-runtime-sdk.md) — agent-task boundary, streaming, durable jobs | ready | L |
+| 012 | PM agent — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
+| 018 | [Storage API + sandboxed execution](stories/018-storage-sandboxing.md) — project-root enforcement, containerized rendering | ready | M |
+
+### Phase 2: Webapp (single app)
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 013 | [Webapp scaffold](stories/013-webapp-scaffold.md) — Vite + TS, chat UI, Milkdown editor pane, WebSocket to backend | ready | L |
+| 014 | File manager — upload, browse project tree, preview files | draft | M |
+| 015 | Project seeding flow — PM interview → agent research → skeleton generation | draft | XL |
+
+### Phase 3: Editor depth
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | ready | L |
+| 017 | Writer agent + `/write` — streaming edits into the document with accept/reject | draft | XL |
+| 019 | Render & export — Typst PDF preview, Pandoc docx/tex export | draft | L |
+
+### Preserved (may revisit)
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 002 | [Survey orchestration frameworks](stories/002-survey-frameworks.md) | deferred | M |
+| 003 | [Evaluate Anthropic SDKs](stories/003-evaluate-anthropic-sdks.md) | resolved by 2026-06-11 decision (Agent SDK adopted) | — |
+| 004 | [Evaluate third-party frameworks](stories/004-evaluate-third-party.md) | deferred | L |
+| 005 | [Evaluate custom build approach](stories/005-evaluate-custom-build.md) | deferred | M |
+| 006 | [Orchestration spike](stories/006-orchestration-spike.md) | deferred | XL |
+| 007 | [Recommendation & decision](stories/007-recommendation.md) | deferred | M |

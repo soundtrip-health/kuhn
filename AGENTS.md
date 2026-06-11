@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kuhn is a web-based scientific and technical writing tool with integrated AI agents. It provides a browser-based LaTeX/Typst editor with real-time AI assistance — slash commands for inserting references, quick research, generating figures via Python, and more. A built-in terminal provides CLI access for advanced users.
+Kuhn is a web-based scientific and technical writing tool with integrated AI agents. It provides a browser-based WYSIWYG markdown editor (Milkdown) with real-time AI assistance — slash commands for inserting references, quick research, generating figures via Python, and more. Documents render to PDF via Typst and export to docx/LaTeX via Pandoc.
 
 The AI agents (in `agents/`) provide the intelligence layer: writing, research, analysis, review, domain advising, and project management. See `agents/CLAUDE.md` for agent-specific conventions.
 
@@ -16,15 +16,17 @@ kuhn/
 ├── docs/            # Project documentation
 │   ├── epics/       # Project management — each epic has index.md + stories/
 │   └── architecture.md
-├── src/             # Webapp source (TBD — depends on editor foundation choice)
-└── CLAUDE.md        # This file
+├── agent-backend/   # Node.js backend: agent runtime, Postgres, Yjs servers
+├── texlyre/         # Retired TeXlyre fork — reference only (/cite implementation, Epic 003)
+└── CLAUDE.md        # This file (symlink to AGENTS.md)
 ```
 
 ## Document Formats
 
-- **Primary:** LaTeX (standardized)
-- **Also supported:** Typst
-- The editor must support both compilation targets.
+- **Canonical authoring format:** Markdown (Pandoc/Quarto flavor) with BibTeX bibliographies
+- **Rendering:** Typst (markdown → Typst → PDF)
+- **Exports:** docx (Pandoc), LaTeX, HTML — LaTeX is an export target, not an authoring surface
+- Decision record: [docs/architecture.md](docs/architecture.md) (revised 2026-06-11)
 
 ## Project Management
 
@@ -40,6 +42,19 @@ docs/epics/NNN-epic-slug/
 ```
 
 Epic and story statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`.
+
+### Story lifecycle rules
+
+1. **A "done" story is read-only.** Once marked `done`, its content is historical record. It must not be the canonical location for open work items.
+
+2. **Every known issue must have an owning open story.** When completing a story that has unresolved issues, each issue must be captured in an existing open story (or a new one created for it). The receiving story must be self-contained — someone should be able to act on it without reading back into the done story.
+
+3. **Done stories use forward pointers, not detailed issue descriptions.** The "Known Issues" section of a done story should contain only a one-line summary and a forward reference (e.g., "Deferred to Story 009") for each item. The open story owns the full description, context, and acceptance criteria.
+
+4. **Marking a story done requires an issue audit.** Before changing status to `done`, verify:
+   - All acceptance criteria are met, or unmet criteria are explicitly deferred with a forward reference
+   - Every known issue has a receiving open story listed in the epic's story table
+   - The receiving stories are self-contained and actionable
 
 ## Key Commands
 
