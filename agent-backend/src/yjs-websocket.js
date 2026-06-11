@@ -50,6 +50,25 @@ function getOrCreateDoc(name) {
     }
   });
 
+  // Broadcast document updates to every other connection in the room.
+  // readSyncMessage passes the sender's ws as the transaction origin, so the
+  // sender is skipped (it already has the change).
+  doc.on('update', (update, origin) => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MSG_SYNC);
+    syncProtocol.writeUpdate(encoder, update);
+    const message = encoding.toUint8Array(encoder);
+
+    const entry = docs.get(name);
+    if (entry) {
+      for (const ws of entry.conns) {
+        if (ws !== origin && ws.readyState === 1) {
+          ws.send(message);
+        }
+      }
+    }
+  });
+
   const entry = { doc, awareness, conns: new Set() };
   docs.set(name, entry);
   return entry;

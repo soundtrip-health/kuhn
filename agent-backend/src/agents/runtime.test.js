@@ -139,6 +139,24 @@ describe('runAgentTask', () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it('forwards token-level text deltas and enables partial messages', async () => {
+    sdkState.messages = [
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hel' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{' } } },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Hello' }], usage: { input_tokens: 1, output_tokens: 1 } },
+      },
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(events.filter((e) => e.type === 'text_delta').map((e) => e.content)).toEqual(['Hel', 'lo']);
+    expect(events.find((e) => e.type === 'text')).toMatchObject({ content: 'Hello' });
+    expect(sdkQuery.mock.calls[0][0].options.includePartialMessages).toBe(true);
+  });
+
   it('stops the task with an error event when the token budget is exceeded', async () => {
     sdkState.messages = [
       {

@@ -9,6 +9,7 @@ import { markOrphanedJobsInterrupted } from './db/jobs.js';
 import healthRouter from './routes/health.js';
 import agentRouter from './routes/agent.js';
 import filesRouter from './routes/files.js';
+import projectsRouter from './routes/projects.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
@@ -18,6 +19,7 @@ app.use(express.json());
 app.use(healthRouter);
 app.use(agentRouter);
 app.use(filesRouter);
+app.use(projectsRouter);
 
 const server = createServer(app);
 

@@ -42,7 +42,8 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {string} [task.sessionId] - Continue a prior SDK session
  * @param {object} [internal] - Used by dispatch_agent for sub-tasks; not part of the boundary
  * @returns {AsyncGenerator<AgentEvent>} Events:
- *   { type: 'text', agent, content }
+ *   { type: 'text_delta', agent, content }   — token-level streaming (story 013)
+ *   { type: 'text', agent, content }         — full text of the finished turn
  *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
  *   { type: 'question', agent, content }
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
@@ -123,6 +124,7 @@ async function runTask(task, internal, channel, state) {
       tools: builtinTools,           // removes every built-in tool not granted to this role
       allowedTools,
       permissionMode: 'bypassPermissions',
+      includePartialMessages: true,  // token-level text_delta events for the chat UI (story 013)
       settingSources: [],            // never load host CLAUDE.md / settings into agent context
       ...(mcpServer ? { mcpServers: { kuhn: mcpServer } } : {}),
       ...(sessionId ? { resume: sessionId } : {}),
@@ -137,6 +139,17 @@ async function runTask(task, internal, channel, state) {
     if (message.type === 'system' && message.subtype === 'init') {
       sdkSessionId = message.session_id;
       await updateJob(job.id, { sessionId: sdkSessionId });
+      continue;
+    }
+
+    if (message.type === 'stream_event') {
+      // Token-level streaming: forward text deltas as they arrive. The full
+      // turn still follows as a single 'text' event (the chat UI replaces
+      // accumulated deltas with it); logging/budgeting stay turn-based.
+      const event = message.event;
+      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+        channel.push({ type: 'text_delta', agent: agent.slug, content: event.delta.text });
+      }
       continue;
     }
 

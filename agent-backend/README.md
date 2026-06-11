@@ -20,7 +20,11 @@ real-time collaboration.
   the project root (no `..` traversal, no absolute paths, no symlink escapes);
   Typst/Pandoc render in a locked-down container via `src/sandbox.js`
 
-Next: webapp scaffold (story 013), PM agent (012).
+- **Webapp support** (story 013): token-level `text_delta` streaming
+  (`includePartialMessages`), `GET/POST /api/projects`, Yjs doc-update broadcast,
+  CORS allowlist including the webapp dev origin (`http://localhost:5174`)
+
+Next: PM agent (012), file manager (014), slash commands (016).
 
 ## Agent API
 
@@ -30,9 +34,10 @@ Next: webapp scaffold (story 013), PM agent (012).
 | `GET /api/agent/jobs?projectId=&status=` | List jobs, newest first |
 | `POST /api/agent/jobs/:id/dispatch` | Re-dispatch a stored (e.g. interrupted) job; streams SSE |
 
-AgentEvent types: `text`, `file_change`, `question` (reserved), `citation` (reserved),
-`done` (with token usage), `error`. Events carry `agent: <role-slug>`; sub-agent progress
-is forwarded into the parent stream.
+AgentEvent types: `text_delta` (token-level streaming), `text` (full turn),
+`file_change`, `question` (reserved), `citation` (reserved), `done` (with token usage),
+`error`. Events carry `agent: <role-slug>`; sub-agent progress is forwarded into the
+parent stream.
 
 Auth: set `ANTHROPIC_API_KEY` (or rely on Claude Code login credentials on a dev machine).
 
