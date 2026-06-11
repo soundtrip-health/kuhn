@@ -1,8 +1,9 @@
 # Story 011: Agent Runtime on Claude Agent SDK
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** L
+**Completed:** 2026-06-11
 
 ## Goal
 
@@ -43,21 +44,54 @@ LLM calls.
 
 ## Acceptance Criteria
 
-- [ ] `runAgentTask` implemented on the Claude Agent SDK; system prompt loaded from the DB
+- [x] `runAgentTask` implemented on the Claude Agent SDK; system prompt loaded from the DB
       (seeded prompts from story 010), per-role tool allowlist applied
-- [ ] Agent file access confined to the project directory (interim: SDK workspace = project dir;
+- [x] Agent file access confined to the project directory (interim: SDK workspace = project dir;
       full enforcement lands with the Storage API, story 018)
-- [ ] Streaming: events reach the browser over WebSocket as they occur
-- [ ] `POST /api/agent/task` (HTTP + WS upgrade or SSE) wired to `runAgentTask`
-- [ ] Conversation logging: every task's messages, tool calls, and usage written to the
+- [x] Streaming: events reach the browser as they occur (SSE; per-turn granularity — see notes)
+- [x] `POST /api/agent/task` (SSE) wired to `runAgentTask`
+- [x] Conversation logging: every task's messages, tool calls, and usage written to the
       existing conversation tables
-- [ ] **Durable job model:** a `jobs` table (id, project_id, role, status, input, created/updated,
+- [x] **Durable job model:** a `jobs` table (id, project_id, role, status, input, created/updated,
       token usage); long-running tasks survive a backend restart at least as resumable records
       with status `interrupted`; UI can list and re-dispatch
-- [ ] Per-task token budget: a task exceeding its budget is stopped with a clear error event
-- [ ] Inter-agent dispatch: an agent can request a sub-task (e.g., writer → research) via a
+- [x] Per-task token budget: a task exceeding its budget is stopped with a clear error event
+- [x] Inter-agent dispatch: an agent can request a sub-task (e.g., writer → research) via a
       `dispatch_agent` tool that internally calls `runAgentTask` and streams child progress
-- [ ] Smoke test: research agent answers a PubMed-style query end-to-end through the boundary
+- [x] Smoke test: research agent answers a PubMed-style query end-to-end through the boundary
+
+## Implementation Notes (2026-06-11)
+
+- `@anthropic-ai/claude-agent-sdk@0.3.x`. Key option choices: `settingSources: []` (host
+  CLAUDE.md/settings never leak into agent context), `permissionMode: 'bypassPermissions'`
+  paired with the `tools` option to **remove** built-ins not granted to the role (the
+  allowlist alone does not restrict anything under bypassPermissions).
+- Code: `agent-backend/src/agents/runtime.js` (boundary + SDK mapping), `events.js`
+  (async channel so dispatch_agent can forward child events mid-stream), `search.js`
+  (PubMed eutils + arXiv as in-process SDK MCP tools — no external MCP server or API key),
+  `src/db/{jobs,agents}.js`, `src/routes/agent.js`.
+- DB slug ↔ built-in tool map: `file_read → Read,Grep`; `file_list → Glob`;
+  `file_write → Write,Edit`; `web_search → WebSearch,WebFetch`. Role aliases
+  `research → ra`, `review → reviewer`.
+- Events are tagged with `agent: <slug>`; child (dispatched) events are forwarded except
+  the child `done` — the parent emits the single terminal event. Shared token budget
+  spans parent + children; budget is checked after each turn, so a task can overshoot by
+  one turn's tokens (accepted for the prototype). Input accounting includes prompt-cache
+  read/write tokens.
+- Endpoints: `POST /api/agent/task` (SSE stream), `GET /api/agent/jobs`,
+  `POST /api/agent/jobs/:id/dispatch` (re-dispatch, resumes recorded SDK session).
+  Orphaned `pending`/`running` jobs are marked `interrupted` at startup.
+- Smoke test (`npm run smoke`): research agent answered a target-trial-emulation query
+  with 3 real PMIDs via the in-process pubmed_search tool; job/session/usage and full
+  conversation logged. Works with `ANTHROPIC_API_KEY` or Claude Code login credentials.
+
+## Known Issues
+
+- Text events are per-assistant-turn, not token-level. Deferred to Story 013 (chat UI
+  decides if it needs `includePartialMessages`).
+- `question` AgentEvents are never emitted — agents cannot pause for user input.
+  Deferred to Story 012.
+- `citation` AgentEvents are never emitted. Deferred to Story 016.
 
 ## Technical Notes
 

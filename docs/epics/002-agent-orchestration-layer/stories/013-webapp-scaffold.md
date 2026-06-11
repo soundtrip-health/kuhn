@@ -37,6 +37,10 @@ Chat and Files panels are collapsible; editor is the primary surface.
       project)
 - [ ] Chat panel: send a message, stream the agent's response (story 011 events), render
       markdown in replies, tag messages with agent role
+- [ ] Decide on streaming granularity: story 011 delivers per-assistant-turn text events
+      over SSE; if the chat needs token-level streaming, enable the SDK's
+      `includePartialMessages` in the runtime and map `stream_event` deltas to a new
+      `text_delta` AgentEvent (deferred from story 011)
 - [ ] File panel shell: list project tree from backend (full manager is story 014)
 - [ ] Yjs wiring: editor binds to the existing y-websocket server room for the document
       (single-user is fine; this just proves the collab path)

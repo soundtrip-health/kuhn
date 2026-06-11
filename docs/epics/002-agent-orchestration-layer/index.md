@@ -49,7 +49,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 ### Must Have
 
-- [ ] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
+- [x] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
 - [ ] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
 - [ ] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015)
 - [ ] Storage API with project-root enforcement; all agent file access through it (018)
@@ -81,8 +81,8 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 009 | [Backend scaffold](stories/009-backend-scaffold.md) | done | L |
 | 010 | [Database + seeding](stories/010-database-seeding.md) | done | L |
-| 011 | [Agent runtime on Claude Agent SDK](stories/011-agent-runtime-sdk.md) — agent-task boundary, streaming, durable jobs | ready | L |
-| 012 | PM agent — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
+| 011 | [Agent runtime on Claude Agent SDK](stories/011-agent-runtime-sdk.md) — agent-task boundary, streaming, durable jobs | done | L |
+| 012 | [PM agent](stories/012-pm-agent.md) — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
 | 018 | [Storage API + sandboxed execution](stories/018-storage-sandboxing.md) — project-root enforcement, containerized rendering | ready | M |
 
 ### Phase 2: Webapp (single app)

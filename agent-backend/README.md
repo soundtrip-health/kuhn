@@ -11,8 +11,28 @@ real-time collaboration.
 - Agent prompts and tool definitions seeded from `agents/*/AGENTS.md`
 - Conversation logging tables
 - y-webrtc signaling (`/yjs-signaling`) and y-websocket (`/yjs-websocket/:doc`) servers
+- **Agent runtime on the Claude Agent SDK** (story 011): `runAgentTask(role, projectId,
+  input)` boundary, per-role tool allowlists from the DB, project-dir workspaces,
+  durable `jobs` table, per-task token budgets, `dispatch_agent` sub-tasks, in-process
+  PubMed/arXiv search tools
 
-Next: agent runtime built on the Claude Agent SDK (Epic 002, story 011).
+Next: webapp scaffold (story 013), storage API (018), PM agent (012).
+
+## Agent API
+
+| Endpoint | What |
+|----------|------|
+| `POST /api/agent/task` | Run an agent task; body `{ role, projectId, input, context?, sessionId? }`; streams AgentEvents as SSE |
+| `GET /api/agent/jobs?projectId=&status=` | List jobs, newest first |
+| `POST /api/agent/jobs/:id/dispatch` | Re-dispatch a stored (e.g. interrupted) job; streams SSE |
+
+AgentEvent types: `text`, `file_change`, `question` (reserved), `citation` (reserved),
+`done` (with token usage), `error`. Events carry `agent: <role-slug>`; sub-agent progress
+is forwarded into the parent stream.
+
+Auth: set `ANTHROPIC_API_KEY` (or rely on Claude Code login credentials on a dev machine).
+
+Smoke test (needs Postgres + credentials): `npm run smoke`
 
 ## Quick Start
 
@@ -49,3 +69,8 @@ Environment variables (see `src/config.js`; `.env` supported):
 | `PGHOST` / `PGPORT` | `localhost` / `5432` |
 | `PGDATABASE` / `PGUSER` / `PGPASSWORD` | `kuhn` / `kuhn` / `kuhn_dev` |
 | `CORS_ORIGIN` | `http://localhost:5173` |
+| `PROJECTS_ROOT` | `agent-backend/projects` |
+| `AGENT_TOKEN_BUDGET` | `250000` (input+output tokens per task, incl. sub-agents) |
+| `AGENT_MAX_DISPATCH_DEPTH` | `2` |
+| `AGENT_MAX_TURNS` | `50` |
+| `AGENT_MODEL` | SDK default |

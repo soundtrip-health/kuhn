@@ -5,7 +5,9 @@ import { WebSocketServer } from 'ws';
 
 import { config } from './config.js';
 import { initDb } from './db/init.js';
+import { markOrphanedJobsInterrupted } from './db/jobs.js';
 import healthRouter from './routes/health.js';
+import agentRouter from './routes/agent.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
@@ -13,6 +15,7 @@ const app = express();
 app.use(cors({ origin: config.cors.origin }));
 app.use(express.json());
 app.use(healthRouter);
+app.use(agentRouter);
 
 const server = createServer(app);
 
@@ -42,6 +45,10 @@ server.on('upgrade', (req, socket, head) => {
 async function main() {
   try {
     await initDb();
+    const interrupted = await markOrphanedJobsInterrupted();
+    if (interrupted > 0) {
+      console.log(`[kuhn] Marked ${interrupted} orphaned job(s) as interrupted.`);
+    }
   } catch (err) {
     console.error('[kuhn] DB initialization failed:', err.message);
     console.error('[kuhn] Server starting without DB — some features will be unavailable.');
