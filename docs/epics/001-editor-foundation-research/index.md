@@ -10,6 +10,11 @@ Evaluate open-source LaTeX/Typst editor projects to determine the best foundatio
 
 ## Decision
 
+> **Superseded 2026-06-11:** the editor foundation decision was revised to a Milkdown-based
+> markdown-first editor; TeXlyre is retired to reference material. See
+> [docs/architecture.md — Decision Revisions](../../architecture.md#decision-revisions-2026-06-11).
+> The record below is historical.
+
 **TeXlyre adopted as the editor foundation under an open-core strategy.** See [Story 006](stories/006-recommendation.md) for the full recommendation and decision record.
 
 ## Context

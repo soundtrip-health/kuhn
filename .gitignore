@@ -42,3 +42,6 @@ Thumbs.db
 # TODO: make this a proper module?
 texlyre/
 
+README.pdf
+TESTING.pdf
+.DS_Store

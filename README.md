@@ -2,48 +2,59 @@
 
 A web-based scientific and technical writing tool with integrated AI assistance.
 
-Kuhn provides a browser-based LaTeX/Typst editor where AI agents deliver real-time help — slash commands for inserting references, researching ideas, generating figures with Python, and more. A built-in terminal gives CLI access for power users, but most workflows happen in the editor.
+Kuhn provides a browser-based WYSIWYG markdown editor where AI agents deliver real-time help —
+slash commands for inserting grounded references, researching ideas, generating figures with
+Python, and more. Documents render to PDF via Typst and export to Word/LaTeX via Pandoc, so
+authors work in friendly markdown while the toolchain (and the agents) handle formatting.
 
 ## Status
 
-**Early stage.** The TeXlyre editor fork is running with a working `/cite` command (Epic 003 complete). The agent backend has a Postgres schema, seeded agent prompts, and Yjs signaling (Epic 002 in progress). Next up: agent routing and the chat workspace.
+**Early stage — direction revised 2026-06-11.** The agent backend runs (Postgres schema, seeded
+agent prompts, Yjs servers). The architecture moved from a TeXlyre/LaTeX foundation to a
+**Milkdown markdown editor** in a single app, with the agent runtime built on the
+**Claude Agent SDK**. The TeXlyre fork (working `/cite`, Epic 003) is retired to reference
+material until the `/cite` port lands. Next up: agent runtime (story 011) and the webapp
+scaffold (story 013).
 
 ## Goals
 
-- **LaTeX-first, Typst-supported** — standardize on LaTeX with first-class Typst support
-- **Agent-integrated editing** — six specialized AI agents (writer, analyst, advisor, research, review, PM) embedded in the editing experience
-- **Slash commands** — `/cite` to insert a reference, `/research` to investigate an idea, `/figure` to generate a plot, `/review` to get a critique
-- **Real-time compilation** — live preview of the compiled document as you type
-- **Built-in terminal** — full CLI access for advanced workflows and direct agent interaction
-- **Collaboration-ready** — designed for teams working on scientific manuscripts, protocols, and grant applications
+- **Markdown-first** — canonical authoring format is markdown with BibTeX; Typst renders PDF,
+  Pandoc exports docx/LaTeX. LaTeX is an export target, not a prerequisite.
+- **Agent-integrated editing** — six specialized AI agents (writer, analyst, advisor, research,
+  review, PM) embedded in the editing experience
+- **Slash commands** — `/cite` to insert a grounded reference, `/write` for contextual drafting,
+  `/research`, `/figure`, `/review`
+- **Live preview** — rendered document preview as you write
+- **Collaboration-ready** — Yjs-based real-time editing for teams working on manuscripts,
+  protocols, and grant applications
+- **Tenant-safe by design** — project-scoped storage, sandboxed execution, per-tenant knowledge
+  bases with a shared curated guidance corpus
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              Browser (webapp)                │
-│  ┌─────────────┐  ┌──────────┐  ┌────────┐  │
-│  │ LaTeX/Typst │  │  Agent   │  │Terminal│  │
-│  │   Editor    │  │ Sidebar  │  │  Panel │  │
-│  └──────┬──────┘  └────┬─────┘  └───┬────┘  │
-│         │              │             │       │
-└─────────┼──────────────┼─────────────┼───────┘
-          │              │             │
-┌─────────▼──────────────▼─────────────▼───────┐
-│                  Backend                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ Compiler │  │  Agent   │  │  Terminal   │  │
-│  │  Service │  │  Router  │  │  Service    │  │
-│  └──────────┘  └──────────┘  └────────────┘  │
-└───────────────────────┬──────────────────────┘
-                        │
-              ┌─────────▼─────────┐
-              │   agents/         │
-              │  (Claude Code)    │
-              └───────────────────┘
+┌──────────────────────────────────────────────────┐
+│                Browser (single app)               │
+│  ┌───────────┐  ┌────────────────┐  ┌─────────┐  │
+│  │ Agent     │  │ Milkdown       │  │ File    │  │
+│  │ Chat      │  │ Editor (md)    │  │ Manager │  │
+│  └─────┬─────┘  └───────┬────────┘  └────┬────┘  │
+└────────┼────────────────┼────────────────┼───────┘
+         │        WebSocket / REST         │
+┌────────▼────────────────▼────────────────▼───────┐
+│              Agent Backend (Node.js)              │
+│  ┌─────────────┐ ┌──────────┐ ┌───────────────┐  │
+│  │ Agent       │ │ Storage  │ │ Render/Export │  │
+│  │ Runtime     │ │ API      │ │ (Typst,       │  │
+│  │ (Claude     │ │ (project │ │  Pandoc,      │  │
+│  │  Agent SDK) │ │  scoped) │ │  sandboxed)   │  │
+│  └─────────────┘ └──────────┘ └───────────────┘  │
+│        Postgres + pgvector · Yjs servers          │
+└───────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for details.
+See [docs/architecture.md](docs/architecture.md) for details and the 2026-06-11 decision
+revisions (Milkdown, Claude Agent SDK, multi-tenancy invariants).
 
 ## Project Management
 
@@ -51,32 +62,23 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 
 | Epic | Status | Description |
 |------|--------|-------------|
-| [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | In Progress | Evaluate open-source editor options (TeXlyre, BusyIDE, etc.) |
-| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | In Progress | Agent backend, workspace, and writer integration |
-| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | Done | TeXlyre fork with grounded `/cite` editor workflow |
+| [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | Done (decision revised 2026-06-11) | Editor evaluation; TeXlyre choice superseded by Milkdown |
+| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | In Progress | Agent runtime (Claude Agent SDK), single-app webapp, editor integration |
+| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | Done | Grounded `/cite` workflow — backend logic ports to Milkdown (story 016) |
 
 ## Agents
 
-The `agents/` directory contains the AI agent framework — six specialized agents that power the writing assistance. See [agents/README.md](agents/README.md) for details.
+The `agents/` directory contains the AI agent framework — six specialized agents that power the
+writing assistance. See [agents/README.md](agents/README.md) for details.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+
-- Docker (for Postgres)
+- Docker (for Postgres and sandboxed rendering)
 
-### 1. TeXlyre Editor
-
-```bash
-cd texlyre
-npm install
-npm run dev
-```
-
-Opens at **http://localhost:5173/texlyre/**
-
-### 2. Agent Backend
+### Agent Backend
 
 ```bash
 cd agent-backend
@@ -91,36 +93,27 @@ npm install
 npm run dev
 ```
 
-Starts at **http://localhost:3002**. On startup it automatically creates the database schema and seeds agent prompts from `agents/*/AGENTS.md`.
+Starts at **http://localhost:3002**. On startup it creates the database schema and seeds agent
+prompts from `agents/*/AGENTS.md`. Health check: http://localhost:3002/health
 
-Health check: http://localhost:3002/health
+Re-seed after editing AGENTS.md files: `npm run db:seed`
 
-### 3. Re-seed the database
+### Webapp
 
-If you edit AGENTS.md files and want to update prompts without restarting:
+Coming with story 013 (`webapp/` — Vite + TypeScript + Milkdown).
 
-```bash
-cd agent-backend
-npm run db:seed
-```
+### Legacy: TeXlyre fork (reference only)
 
-### Useful Commands
-
-| Command | Where | What |
-|---------|-------|------|
-| `npm run dev` | `texlyre/` | Start editor dev server (port 5173) |
-| `npm run dev` | `agent-backend/` | Start backend dev server (port 3002) |
-| `docker compose up -d` | `agent-backend/` | Start Postgres |
-| `docker compose down` | `agent-backend/` | Stop Postgres |
-| `npm run db:seed` | `agent-backend/` | Re-seed agents and tools |
-| `npm test` | `texlyre/` | Run editor test suite |
+The retired TeXlyre fork still runs for reference (`cd texlyre && npm install && npm run dev`,
+http://localhost:5173/texlyre/). It will be removed once `/cite` is ported (story 016). Do not
+build new features on it.
 
 ## Development
 
 ### Additional Prerequisites
 
 - Python 3.11+ (for agent scripts and figure generation)
-- A LaTeX distribution (TeX Live or TinyTeX) and/or Typst
+- Typst and Pandoc (document rendering/export)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
 ### Agent Dependencies
@@ -133,19 +126,10 @@ pip install -r agents/requirements.txt
 
 ### Working with Claude Code
 
-This repo is configured so Claude Code can run common read-only and build commands without asking permission. See the "Working with Claude Code" section in [CLAUDE.md](CLAUDE.md) for details on:
-
-- Configuring `.claude/settings.json` for autonomous operation
-- User-level vs project-level permission settings
-- Tips for effective usage
-
-To go fully autonomous (use with care):
-
-```
-/permissions
-→ select "full-auto"
-```
+This repo is configured so Claude Code can run common read-only and build commands without
+asking permission. See the "Working with Claude Code" section in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-TBD
+TBD — no copyleft constraints; the editor stack (Milkdown/ProseMirror/Yjs) is MIT. See
+[strategy.md](strategy.md).
