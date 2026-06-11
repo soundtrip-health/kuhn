@@ -1,0 +1,29 @@
+{
+  "name": "webapp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke.mjs && node scripts/collab-check.mjs",
+    "smoke:chat": "node scripts/chat-check.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "@milkdown/kit": "^7.21.2",
+    "@milkdown/plugin-collab": "^7.21.2",
+    "@milkdown/plugin-math": "^7.5.9",
+    "@milkdown/theme-nord": "^7.21.2",
+    "katex": "^0.17.0",
+    "marked": "^18.0.5",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.31"
+  }
+}

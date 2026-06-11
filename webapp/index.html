@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kuhn</title>
+  </head>
+  <body>
+    <header id="topbar">
+      <span id="app-name">Kuhn</span>
+      <span id="project-name"></span>
+      <span class="spacer"></span>
+      <button id="toggle-chat" type="button" title="Toggle chat panel">Chat</button>
+      <button id="toggle-files" type="button" title="Toggle files panel">Files</button>
+    </header>
+
+    <main id="layout">
+      <aside id="chat-panel">
+        <div id="chat-log"></div>
+        <form id="chat-form">
+          <select id="chat-role" title="Agent role">
+            <option value="pm" selected>PM</option>
+            <option value="writer">Writer</option>
+            <option value="ra">Research</option>
+            <option value="advisor">Advisor</option>
+            <option value="reviewer">Reviewer</option>
+            <option value="analyst">Analyst</option>
+          </select>
+          <textarea id="chat-input" rows="3" placeholder="Ask an agent… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </aside>
+
+      <section id="editor-pane">
+        <div id="editor"></div>
+      </section>
+
+      <aside id="files-panel">
+        <div class="panel-title">Files</div>
+        <div id="file-tree"></div>
+      </aside>
+    </main>
+
+    <footer id="statusbar">
+      <span id="status-doc"></span>
+      <span id="status-save" data-state="saved">saved</span>
+      <span id="status-agent"></span>
+      <span id="status-notice"></span>
+      <span class="spacer"></span>
+      <span id="status-tokens"></span>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

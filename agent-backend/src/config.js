@@ -10,7 +10,9 @@ export const config = {
     password: process.env.PGPASSWORD || 'kuhn_dev',
   },
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    // Comma-separated allowlist; the webapp dev server is pinned to 5174
+    origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
+      .split(',').map((s) => s.trim()),
   },
   agent: {
     // Root directory under which per-project workspaces live; agent file

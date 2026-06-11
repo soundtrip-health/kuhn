@@ -63,8 +63,11 @@ async function streamTask(res, req, task) {
   res.flushHeaders?.();
 
   const events = runAgentTask(task);
-  // Stop the agent when the browser disconnects
-  req.on('close', () => events.return());
+  // Stop the agent when the browser disconnects. This must watch the
+  // *response*: in Node 13+, the request's 'close' fires once the request
+  // body has been consumed, which for a POST is immediately — listening
+  // there cancels the task as soon as it starts.
+  res.on('close', () => events.return());
 
   try {
     for await (const event of events) {
