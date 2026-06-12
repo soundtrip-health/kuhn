@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="kuhn-tokens.css">
+<style>
+@keyframes kf-spin { to { transform: rotate(360deg) } }
+@keyframes kf-caret { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+@keyframes kf-deplete { from{width:100%} to{width:0%} }
+@media (prefers-reduced-motion: reduce){ *{animation:none !important} }
+</style>
+</helmet>
+
+<section style="width:1120px; background:var(--bg,#E8EBED); font-family:var(--font-ui,'Geist',sans-serif); font-feature-settings:'ss01','cv11'; color:var(--ink,#1B1E24); padding:48px 56px 72px; display:flex; flex-direction:column; gap:28px;">
+
+  <!-- header -->
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:24px;">
+    <div>
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+        <div style="width:24px; height:24px; border-radius:7px; background:var(--ink); display:flex; align-items:center; justify-content:center;"><div style="width:9px; height:9px; border-radius:2px; background:#fff;"></div></div>
+        <span style="font-weight:600; font-size:17px;">Kuhn</span>
+        <span style="font-family:var(--font-mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3);">Foundations · Column</span>
+      </div>
+      <h1 style="font-size:28px; font-weight:600; letter-spacing:-0.02em; margin:0 0 8px;">Design tokens</h1>
+      <p style="font:var(--ui-body); color:var(--ink-2); margin:0; max-width:640px;">Every value below ships as a CSS custom property in <span style="font-family:var(--font-mono); font-size:12.5px; color:var(--ink); background:var(--soft-2); padding:1px 6px; border-radius:5px;">kuhn-tokens.css</span> — paste it in and reference via <span style="font-family:var(--font-mono); font-size:12.5px; color:var(--accent);">var(--token)</span>. No classes, no resets; dark mode is a re-declaration of the same names later.</p>
+    </div>
+  </div>
+
+  <!-- ===================== COLOR ===================== -->
+  <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px 28px 26px;">
+    <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:18px;">Color</div>
+
+    <div style="font:var(--ui-title); margin-bottom:11px;">Surfaces</div>
+    <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:24px;">
+      <div><div style="height:56px; border-radius:var(--r-sm); background:#E8EBED; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--bg</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#E8EBED</div></div>
+      <div><div style="height:56px; border-radius:var(--r-sm); background:#FFFFFF; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--chrome</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#FFFFFF</div></div>
+      <div><div style="height:56px; border-radius:var(--r-sm); background:#F5F7F8; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--soft</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#F5F7F8</div></div>
+      <div><div style="height:56px; border-radius:var(--r-sm); background:#EEF1F3; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--soft-2</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#EEF1F3</div></div>
+      <div><div style="height:56px; border-radius:var(--r-sm); background:#FFFFFF; border:1px solid var(--line); box-shadow:var(--shadow-doc);"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--paper</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#FFFFFF</div></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:28px;">
+      <div>
+        <div style="font:var(--ui-title); margin-bottom:11px;">Text / ink</div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px;">
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#1B1E24;"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--ink</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#1B1E24</div></div>
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#586069;"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--ink-2</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#586069</div></div>
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#8A909A;"></div><div style="font-family:var(--font-mono); font-size:11px; margin-top:7px;">--ink-3</div><div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">#8A909A</div></div>
+        </div>
+      </div>
+      <div>
+        <div style="font:var(--ui-title); margin-bottom:11px;">Accent <span style="font:var(--ui-small); color:var(--ink-3); font-weight:400;">— one cool, authoritative blue</span></div>
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#2F5BB7;"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:7px;">--accent</div></div>
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#234A99;"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:7px;">--accent-deep</div></div>
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#E7EDF9; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:7px;">--accent-soft</div></div>
+          <div><div style="height:48px; border-radius:var(--r-sm); background:#C7D6F0;"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:7px;">--accent-line</div></div>
+        </div>
+        <div style="font:var(--ui-title); margin:18px 0 11px;">Semantic <span style="font:var(--ui-small); color:var(--ink-3); font-weight:400;">— muted, never neon</span></div>
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
+          <div><div style="height:40px; border-radius:var(--r-sm); background:#2E7A55;"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:6px;">--good</div></div>
+          <div><div style="height:40px; border-radius:var(--r-sm); background:#DDEADC; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:6px;">--good-soft</div></div>
+          <div><div style="height:40px; border-radius:var(--r-sm); background:#A94A36;"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:6px;">--warn</div></div>
+          <div><div style="height:40px; border-radius:var(--r-sm); background:#F4E0DA; border:1px solid var(--line);"></div><div style="font-family:var(--font-mono); font-size:10.5px; margin-top:6px;">--warn-soft</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== AGENT IDENTITIES ===================== -->
+  <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+    <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:8px;">Agent identities</div>
+    <p style="font:var(--ui-body); color:var(--ink-2); margin:0 0 20px; max-width:680px;">Roles stay neutral ink until active. When an agent is <strong style="color:var(--ink); font-weight:600;">speaking or owns a pending action</strong>, its color appears in four places — the message spine, the avatar fill, the name, and any status dot. Everything else stays neutral so six agents never read as a rainbow.</p>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;">
+      <!-- PM -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#3E63A8; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">PM</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#3E63A8;">PM</div><div style="font:var(--ui-small); color:var(--ink-3);">Interviews · dispatches</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--pm<br>#3E63A8</div>
+      </div>
+      <!-- Writer -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#7A5AA6; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">Wr</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#7A5AA6;">Writer</div><div style="font:var(--ui-small); color:var(--ink-3);">Drafts · edits text</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--writer<br>#7A5AA6</div>
+      </div>
+      <!-- Research -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#2E8C84; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">Re</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#2E8C84;">Research</div><div style="font:var(--ui-small); color:var(--ink-3);">PubMed · references</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--ra<br>#2E8C84</div>
+      </div>
+      <!-- Advisor -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#B07D2E; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">Ad</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#B07D2E;">Advisor</div><div style="font:var(--ui-small); color:var(--ink-3);">Regulatory · guidance</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--advisor<br>#B07D2E</div>
+      </div>
+      <!-- Reviewer -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#B0524E; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">Rv</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#B0524E;">Reviewer</div><div style="font:var(--ui-small); color:var(--ink-3);">Critiques drafts</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--reviewer<br>#B0524E</div>
+      </div>
+      <!-- Analyst -->
+      <div style="border:1px solid var(--line); border-radius:var(--r); padding:14px; display:flex; gap:11px; align-items:center;">
+        <div style="width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:#3E8A5B; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;">An</div>
+        <div style="flex:1; min-width:0;"><div style="font:var(--ui-title); color:#3E8A5B;">Analyst</div><div style="font:var(--ui-small); color:var(--ink-3);">Python · figures</div></div>
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); text-align:right;">--analyst<br>#3E8A5B</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TYPE ===================== -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:28px;">
+    <!-- UI scale -->
+    <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+      <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:6px;">Type · UI scale</div>
+      <div style="font:var(--ui-small); color:var(--ink-3); margin-bottom:18px;">Geist — chrome, chat, controls</div>
+      <div style="display:flex; flex-direction:column; gap:15px;">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:600 20px/1.3 var(--font-ui);">Section heading</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-h1 · 20/600</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:600 16px/1.35 var(--font-ui);">Subsection</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-h2 · 16/600</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:600 14px/1.4 var(--font-ui);">Title / agent name</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-title · 14/600</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:400 13.5px/1.55 var(--font-ui);">Body — chat messages, descriptions</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-body · 13.5/400</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:400 12px/1.5 var(--font-ui); color:var(--ink-2);">Small — labels, captions</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-small · 12/400</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-2); padding-bottom:14px;"><span style="font:600 11px/1.4 var(--font-ui); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3);">Eyebrow</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-eyebrow · 11/600</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px;"><span style="font-family:var(--font-mono); font-size:11px;">10:42 · 48,210 tok</span><span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap;">--ui-mono · 11</span></div>
+      </div>
+    </div>
+    <!-- Doc scale -->
+    <div style="background:var(--paper); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+      <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:6px;">Type · Document scale</div>
+      <div style="font:var(--ui-small); color:var(--ink-3); margin-bottom:18px;">Source Serif 4 — the editor canvas · measure <span style="font-family:var(--font-mono);">660px</span></div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div><div style="font:600 34px/1.18 var(--font-doc); letter-spacing:-0.01em; color:var(--doc-ink);">Heading One</div><div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); margin-top:4px;">--doc-h1 · 34/600</div></div>
+        <div><div style="font:600 21px/1.3 var(--font-doc); color:var(--doc-ink);">Heading Two</div><div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); margin-top:4px;">--doc-h2 · 21/600</div></div>
+        <div><div style="font:600 17px/1.4 var(--font-doc); color:var(--doc-ink);">Heading Three</div><div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); margin-top:4px;">--doc-h3 · 17/600</div></div>
+        <div><div style="font:400 17px/1.65 var(--font-doc); color:var(--doc-ink);">Body text sets the reading rhythm of the document. Recent trials report durable reductions in symptoms<span style="display:inline-flex; align-items:baseline; gap:3px; font-family:var(--font-ui); font-size:13px; color:var(--accent); background:var(--accent-soft); padding:1px 7px; border-radius:5px; margin:0 2px;">Goodwin 2022</span> across cohorts.</div><div style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); margin-top:6px;">--doc-body · 17/400 · citation chip inline</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SPACING + RADII ===================== -->
+  <div style="display:grid; grid-template-columns:1.3fr 1fr; gap:28px;">
+    <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+      <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:18px;">Spacing · 4px ramp</div>
+      <div style="display:flex; flex-direction:column; gap:9px;">
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-1</span><span style="height:14px; width:4px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">4</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-2</span><span style="height:14px; width:8px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">8</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-3</span><span style="height:14px; width:12px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">12</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-4</span><span style="height:14px; width:16px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">16</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-6</span><span style="height:14px; width:24px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">24</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-8</span><span style="height:14px; width:32px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">32</span></div>
+        <div style="display:flex; align-items:center; gap:14px;"><span style="font-family:var(--font-mono); font-size:11px; width:54px; color:var(--ink-3);">--s-12</span><span style="height:14px; width:48px; background:var(--accent); border-radius:2px;"></span><span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-3);">48</span></div>
+      </div>
+    </div>
+    <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+      <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:18px;">Radii</div>
+      <div style="display:flex; flex-wrap:wrap; gap:16px;">
+        <div style="text-align:center;"><div style="width:52px; height:52px; background:var(--soft-2); border:1px solid var(--line); border-radius:6px;"></div><div style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); margin-top:6px;">--r-xs<br>6</div></div>
+        <div style="text-align:center;"><div style="width:52px; height:52px; background:var(--soft-2); border:1px solid var(--line); border-radius:8px;"></div><div style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); margin-top:6px;">--r-sm<br>8</div></div>
+        <div style="text-align:center;"><div style="width:52px; height:52px; background:var(--soft-2); border:1px solid var(--line); border-radius:11px;"></div><div style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); margin-top:6px;">--r<br>11</div></div>
+        <div style="text-align:center;"><div style="width:52px; height:52px; background:var(--soft-2); border:1px solid var(--line); border-radius:14px;"></div><div style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); margin-top:6px;">--r-lg<br>14</div></div>
+        <div style="text-align:center;"><div style="width:52px; height:52px; background:var(--soft-2); border:1px solid var(--line); border-radius:999px;"></div><div style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); margin-top:6px;">--r-pill</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ELEVATION, FOCUS & STATES ===================== -->
+  <div style="background:var(--chrome); border:1px solid var(--line); border-radius:var(--r-lg); padding:28px;">
+    <div style="font:var(--ui-eyebrow); text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin-bottom:20px;">Elevation, focus &amp; states</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:32px;">
+      <div>
+        <div style="font:var(--ui-title); margin-bottom:14px;">Buttons</div>
+        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px;">
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:var(--ink); color:#fff; font:var(--ui-body); font-weight:500; border:1px solid var(--ink);">Primary</button>
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:var(--accent); color:#fff; font:var(--ui-body); font-weight:500; border:1px solid var(--accent);">Accent</button>
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:transparent; color:var(--ink); font:var(--ui-body); border:1px solid var(--line);">Secondary</button>
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:transparent; color:var(--ink-2); font:var(--ui-body); border:1px solid transparent;">Ghost</button>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:var(--accent); color:#fff; font:var(--ui-body); font-weight:500; border:1px solid var(--accent); box-shadow:var(--focus-ring);">Focus ring</button>
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:var(--soft-2); color:var(--ink-3); font:var(--ui-body); border:1px solid var(--line-2);">Disabled</button>
+          <button style="padding:9px 15px; border-radius:var(--r-sm); background:transparent; color:var(--warn); font:var(--ui-body); border:1px solid rgba(169,74,54,.35);">Danger</button>
+        </div>
+      </div>
+      <div>
+        <div style="font:var(--ui-title); margin-bottom:14px;">Inputs &amp; elevation</div>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <input value="Default input" readonly style="padding:9px 12px; border-radius:var(--r-sm); border:1px solid var(--line); background:var(--soft); font:var(--ui-body); color:var(--ink); outline:none;">
+          <input value="Focused input" readonly style="padding:9px 12px; border-radius:var(--r-sm); border:1px solid var(--accent); background:var(--chrome); font:var(--ui-body); color:var(--ink); outline:none; box-shadow:var(--focus-ring);">
+          <div style="display:flex; gap:10px; margin-top:2px;">
+            <div style="flex:1; padding:11px; border-radius:var(--r-sm); background:var(--chrome); border:1px solid var(--line); box-shadow:var(--shadow-pop); font:var(--ui-small); color:var(--ink-2);">--shadow-pop · menus</div>
+            <div style="flex:1; padding:11px; border-radius:var(--r-sm); background:var(--chrome); border:1px solid var(--line); box-shadow:var(--shadow-card); font:var(--ui-small); color:var(--ink-2);">--shadow-card</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- motion row -->
+    <div style="border-top:1px solid var(--line-2); margin-top:24px; padding-top:20px;">
+      <div style="font:var(--ui-title); margin-bottom:6px;">Motion <span style="font:var(--ui-small); color:var(--ink-3); font-weight:400;">— restrained; base state is always the resting state, gated behind prefers-reduced-motion</span></div>
+      <div style="display:flex; gap:24px; align-items:center; margin-top:12px;">
+        <div style="display:flex; align-items:center; gap:8px; font:var(--ui-small); color:var(--ink-2);"><span style="width:14px; height:14px; border-radius:50%; border:2px solid var(--ra); border-top-color:transparent; animation:kf-spin .9s linear infinite;"></span>spinner · 0.9s</div>
+        <div style="display:flex; align-items:center; gap:8px; font:var(--ui-small); color:var(--ink-2);"><span>caret</span><span style="display:inline-block; width:7px; height:15px; background:var(--writer); animation:kf-caret 1s step-end infinite;"></span>1s step</div>
+        <div style="display:flex; align-items:center; gap:8px; font:var(--ui-small); color:var(--ink-2); flex:1; max-width:240px;"><span style="white-space:nowrap;">countdown</span><span style="flex:1; height:4px; border-radius:999px; background:var(--advisor-soft); overflow:hidden;"><span style="display:block; height:100%; background:var(--advisor); animation:kf-deplete 8s linear infinite;"></span></span></div>
+      </div>
+    </div>
+  </div>
+
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1120}}"></script>
+</body>
+</html>

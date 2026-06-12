@@ -25,8 +25,9 @@ agent runtime built on the **Claude Agent SDK**. Running today:
   sandboxed) and one-click docx/LaTeX export (story 019)
 
 The TeXlyre fork (Epic 003's `/cite` reference) was removed after the port landed
-(stories 016, 023; git history preserves it). Next up: live seeding verification (022),
-file manager (014), `/write` (017).
+(stories 016, 023; git history preserves it). Next up: `/write` (017), file manager (014),
+UI design implementation (025). Live seeding verification (022) is deferred while the
+prototype is tested hands-on.
 
 ## Goals
 

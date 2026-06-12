@@ -1,6 +1,7 @@
 # Story 022: Live Seeding & Reload-Resume Verification
 
-**Status:** ready
+**Status:** deferred (2026-06-12 — bobd is testing the app hands-on; the scripted live
+runs stay parked until he triggers them, since they burn his subscription quota)
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** S
 
