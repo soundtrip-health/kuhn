@@ -20,6 +20,19 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: vi.fn((cfg) => ({ type: 'sdk', name: cfg.name })),
 }));
 
+// Pin the agent config so tests don't depend on .env / defaults drifting
+vi.mock('../config.js', () => ({
+  config: {
+    agent: {
+      tokenBudget: 250000,
+      maxDispatchDepth: 2,
+      questionTimeoutMs: 15 * 60 * 1000,
+      model: undefined,
+      modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
+    },
+  },
+}));
+
 vi.mock('../storage.js', () => ({
   resolveProjectDir: vi.fn(async (projectId) => `/projects/${projectId}`),
   readProjectFile: vi.fn(async () => Buffer.from('file body')),
@@ -238,6 +251,49 @@ describe('runAgentTask', () => {
   });
 });
 
+// --- Story 020: model-cost-weighted budget accounting ------------------------
+
+describe('weighted token budget (story 020)', () => {
+  const turn = (inputTokens, outputTokens) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'turn' }], usage: { input_tokens: inputTokens, output_tokens: outputTokens } },
+  });
+  const success = { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+
+  async function collectWithBudget(model, budget) {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model });
+    sdkState.messages = [turn(3000, 1000), success];
+    const events = [];
+    for await (const ev of runAgentTask({ role: 'ra', projectId: 1, input: 'go' }, { budget })) {
+      events.push(ev);
+    }
+    return events;
+  }
+
+  it('burns the budget slower for cheap models than for the root tier', async () => {
+    // Opus-rooted budget (baseWeight 5): 4000 Haiku tokens count as 800
+    const budget = { used: 0, limit: 1000, baseWeight: 5 };
+    const events = await collectWithBudget('claude-haiku-4-5', budget);
+    expect(events.find((e) => e.type === 'error')).toBeUndefined();
+    expect(budget.used).toBeCloseTo(800);
+  });
+
+  it('counts root-tier tokens at full weight', async () => {
+    const budget = { used: 0, limit: 1000, baseWeight: 5 };
+    const events = await collectWithBudget('claude-opus-4-8', budget);
+    expect(events.find((e) => e.type === 'error')?.message).toMatch(/token budget exceeded/i);
+    expect(budget.used).toBeCloseTo(4000);
+  });
+
+  it('pins the base weight to the root agent model', async () => {
+    // Haiku root: its own tokens count 1:1 even though haiku weighs 1
+    const budget = { used: 0, limit: 5000 };
+    await collectWithBudget('claude-haiku-4-5', budget);
+    expect(budget.baseWeight).toBe(1);
+    expect(budget.used).toBeCloseTo(4000);
+  });
+});
+
 // --- Story 012: PM agent interview tools ------------------------------------
 
 const PM_AGENT = {
@@ -296,6 +352,42 @@ describe('PM agent tools (story 012)', () => {
     });
     expect(events.find((e) => e.type === 'text')).toMatchObject({ content: 'Answer: An NIH R01 grant' });
     expect(events.at(-1)).toMatchObject({ type: 'done', jobId: 42 });
+  });
+
+  it('emits question_expired and a defaults nudge when the question times out (story 020)', async () => {
+    vi.useFakeTimers();
+    try {
+      sdkState.generator = async function* () {
+        const { tools } = createSdkMcpServer.mock.calls[0][0];
+        const askUser = tools.find((t) => t.name === 'ask_user');
+        const result = await askUser.handler({ question: 'Anyone home?' });
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: result.content[0].text }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+      };
+
+      const events = [];
+      for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start' })) {
+        events.push(ev);
+        // Nobody answers: run the clock past the question timeout
+        if (ev.type === 'question') await vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 1);
+      }
+
+      expect(events.find((e) => e.type === 'question_expired')).toEqual({
+        type: 'question_expired',
+        agent: 'pm',
+        jobId: 42,
+      });
+      expect(events.find((e) => e.type === 'text')?.content).toMatch(/No reply received/);
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('cancels a pending question when the consumer stops early', async () => {

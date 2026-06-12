@@ -161,7 +161,9 @@ const TOOL_DEFS = [
 // ---------------------------------------------------------------------------
 const AGENT_TOOL_MAP = {
   file_read:      ['pm', 'writer', 'ra', 'advisor', 'reviewer', 'analyst'],
-  file_write:     ['writer', 'analyst'],
+  // ra/advisor write their seeding artifacts (story 015): references.bib +
+  // literature summary, guidance/ knowledge base
+  file_write:     ['writer', 'analyst', 'ra', 'advisor'],
   file_list:      ['pm', 'writer', 'ra', 'advisor', 'reviewer', 'analyst'],
   pubmed_search:  ['ra'],
   arxiv_search:   ['ra'],

@@ -1,5 +1,14 @@
 import 'dotenv/config';
 
+function parseModelWeights(env) {
+  const weights = { haiku: 1, sonnet: 3, opus: 5, default: 5 };
+  for (const pair of (env ?? '').split(',')) {
+    const [key, value] = pair.split(':').map((s) => s.trim());
+    if (key && Number.isFinite(parseFloat(value))) weights[key.toLowerCase()] = parseFloat(value);
+  }
+  return weights;
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3002'),
   db: {
@@ -18,8 +27,15 @@ export const config = {
     // Root directory under which per-project workspaces live; agent file
     // access is confined to <projectsRoot>/<projectId> (or projects.root_path)
     projectsRoot: process.env.PROJECTS_ROOT || new URL('../projects', import.meta.url).pathname,
-    // Per-task token budget (input + output across all turns)
-    tokenBudget: parseInt(process.env.AGENT_TOKEN_BUDGET || '250000'),
+    // Per-task token budget (input + output across all turns, shared by the
+    // whole dispatch tree). Denominated in root-agent-tier tokens: sub-agent
+    // usage is weighted by relative model cost (story 020) — see modelWeights.
+    // 500k default so the PM seeding tree (interview + RA + Advisor) fits.
+    tokenBudget: parseInt(process.env.AGENT_TOKEN_BUDGET || '500000'),
+    // Approximate model price ratios for budget weighting, matched by
+    // substring of the model id. Override with AGENT_MODEL_WEIGHTS, e.g.
+    // "haiku:1,sonnet:3,opus:5,default:5". Rough is fine (story 020).
+    modelWeights: parseModelWeights(process.env.AGENT_MODEL_WEIGHTS),
     // Max nested dispatch depth (writer -> research is depth 1)
     maxDispatchDepth: parseInt(process.env.AGENT_MAX_DISPATCH_DEPTH || '2'),
     // How long ask_user waits for a reply before telling the agent to proceed

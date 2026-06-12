@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { deliverReply } from '../agents/questions.js';
 import { runAgentTask } from '../agents/runtime.js';
 import { getJob, listJobs } from '../db/jobs.js';
+import { streamEvents } from './sse.js';
 
 const router = Router();
 
@@ -16,7 +17,7 @@ router.post('/api/agent/task', async (req, res) => {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
   }
-  await streamTask(res, req, { role, projectId, input, context, sessionId });
+  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId }));
 });
 
 /**
@@ -45,13 +46,13 @@ router.post('/api/agent/jobs/:id/dispatch', async (req, res) => {
     res.status(404).json({ error: 'job not found' });
     return;
   }
-  await streamTask(res, req, {
+  await streamEvents(res, runAgentTask({
     role: job.role,
     projectId: job.project_id,
     input: job.input,
     context: job.context,
     sessionId: job.session_id ?? undefined,
-  });
+  }));
 });
 
 /**
@@ -72,32 +73,5 @@ router.post('/api/agent/jobs/:id/reply', (req, res) => {
   }
   res.json({ ok: true });
 });
-
-async function streamTask(res, req, task) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.flushHeaders?.();
-
-  const events = runAgentTask(task);
-  // Stop the agent when the browser disconnects. This must watch the
-  // *response*: in Node 13+, the request's 'close' fires once the request
-  // body has been consumed, which for a POST is immediately — listening
-  // there cancels the task as soon as it starts.
-  res.on('close', () => events.return());
-
-  try {
-    for await (const event of events) {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-    }
-  } catch (err) {
-    res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-  } finally {
-    res.end();
-  }
-}
 
 export default router;

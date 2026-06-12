@@ -1,0 +1,241 @@
+// Story 015: deterministic project seeding pipeline. The flow from
+// use-case.md Phase 1 — interview → research → skeleton — is code dispatching
+// agent tasks (epic key decision), not agent-driven control flow. Each stage
+// is a separate top-level runAgentTask, so each gets its own weighted token
+// budget (story 020) instead of sharing one dispatch-tree budget.
+
+import { getProject } from '../db/projects.js';
+import { writeProjectFile } from '../storage.js';
+import { EventChannel } from './events.js';
+import { runAgentTask } from './runtime.js';
+
+/**
+ * Run the seeding pipeline for a project. Yields the stages' agent events
+ * interleaved with stage markers:
+ *   { type: 'stage', stage: 'interview'|'research'|'skeleton'|'seeding',
+ *     status: 'start'|'done'|'error', detail? }
+ *
+ * Failure policy: no project config after the interview aborts the pipeline;
+ * a failed research branch is reported but does not block the skeleton; a
+ * skeleton failure ends the pipeline as an error. pm/status.md records the
+ * per-stage outcomes either way.
+ *
+ * @param {number|string} projectId
+ * @param {object} [opts]
+ * @param {Function} [opts.runTask] - runAgentTask, injectable for tests
+ */
+export async function* runSeedPipeline(projectId, { runTask = runAgentTask } = {}) {
+  const outcomes = {}; // stage/agent → 'ok' | error message
+
+  // --- Stage 1: PM intake interview -----------------------------------------
+  // Stage jobs carry a seedStage context marker so transcript restore
+  // (story 020) can exclude their instruction prompts from the chat history.
+  yield { type: 'stage', stage: 'interview', status: 'start' };
+  const interviewError = yield* forwardTask(
+    runTask({ role: 'pm', projectId, input: INTERVIEW_INPUT, context: { seedStage: 'interview' } }),
+  );
+  const project = await getProject(projectId);
+  const config = project?.config ?? {};
+  if (interviewError || !config.title || !config.research_question) {
+    const detail = interviewError ?? 'interview ended without saving a project configuration';
+    outcomes.interview = detail;
+    yield { type: 'stage', stage: 'interview', status: 'error', detail };
+    yield { type: 'stage', stage: 'seeding', status: 'error', detail: 'seeding aborted' };
+    await writeStatusFile(projectId, config, outcomes);
+    return;
+  }
+  outcomes.interview = 'ok';
+  yield { type: 'stage', stage: 'interview', status: 'done' };
+
+  // --- Stage 2: RA + Advisor research in parallel ----------------------------
+  yield { type: 'stage', stage: 'research', status: 'start' };
+  const branchErrors = yield* forwardParallel([
+    runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' } }),
+    runTask({ role: 'advisor', projectId, input: advisorInput(config), context: { seedStage: 'research' } }),
+  ]);
+  outcomes.ra = branchErrors[0] ?? 'ok';
+  outcomes.advisor = branchErrors[1] ?? 'ok';
+  const failed = branchErrors.filter(Boolean);
+  yield {
+    type: 'stage',
+    stage: 'research',
+    status: 'done',
+    ...(failed.length > 0 ? { detail: `${failed.length} of 2 research tasks failed` } : {}),
+  };
+
+  // --- Stage 3: Writer skeleton ----------------------------------------------
+  yield { type: 'stage', stage: 'skeleton', status: 'start' };
+  const skeletonError = yield* forwardTask(
+    runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' } }),
+  );
+  outcomes.skeleton = skeletonError ?? 'ok';
+  yield { type: 'stage', stage: 'skeleton', status: skeletonError ? 'error' : 'done', ...(skeletonError ? { detail: skeletonError } : {}) };
+
+  // --- Status file (deterministic, written by the pipeline) ------------------
+  await writeStatusFile(projectId, config, outcomes);
+  yield { type: 'file_change', agent: 'pm', path: 'pm/status.md', kind: 'create' };
+  yield {
+    type: 'stage',
+    stage: 'seeding',
+    status: skeletonError ? 'error' : 'done',
+    ...(skeletonError ? { detail: 'skeleton generation failed' } : {}),
+  };
+}
+
+/**
+ * Forward one task's events to the consumer; returns the first error message
+ * (or null). `yield*` propagates early consumer termination into the task
+ * generator, which cancels the underlying SDK loop.
+ */
+async function* forwardTask(events) {
+  let error = null;
+  for await (const event of events) {
+    error ??= event.type === 'error' ? (event.message ?? 'agent task failed') : null;
+    yield event;
+  }
+  return error;
+}
+
+/**
+ * Run tasks concurrently, forwarding their interleaved events; returns the
+ * per-task first error messages (null where the task succeeded).
+ */
+async function* forwardParallel(tasks) {
+  const channel = new EventChannel();
+  const errors = tasks.map(() => null);
+  let active = tasks.length;
+
+  const pumps = tasks.map(async (task, i) => {
+    try {
+      for await (const event of task) {
+        if (event.type === 'error') errors[i] ??= event.message ?? 'agent task failed';
+        channel.push(event);
+      }
+    } catch (err) {
+      errors[i] ??= err.message;
+    } finally {
+      if (--active === 0) channel.end();
+    }
+  });
+
+  try {
+    for await (const event of channel) yield event;
+  } finally {
+    // Consumer stopped early — stop the in-flight tasks and drain the pumps
+    channel.end();
+    await Promise.all(tasks.map((t) => t.return?.().catch(() => {})));
+    await Promise.all(pumps);
+  }
+  return errors;
+}
+
+async function writeStatusFile(projectId, config, outcomes) {
+  const line = (label, value) => (value ? `- ${label}: ${value}` : null);
+  const content = [
+    `# Project status — ${config.title ?? 'unconfigured project'}`,
+    '',
+    `Seeded ${new Date().toISOString().slice(0, 10)} by the Kuhn seeding pipeline.`,
+    '',
+    '## Configuration',
+    '',
+    line('Type', config.project_type),
+    line('Research question', config.research_question),
+    line('Timeline', config.timeline),
+    line('Deliverables', config.deliverables?.join('; ')),
+    '',
+    '## Seeding stages',
+    '',
+    ...Object.entries(outcomes).map(([stage, outcome]) =>
+      `- ${stage}: ${outcome === 'ok' ? 'ok' : `FAILED — ${outcome}`}`),
+    '',
+    '## Where things live',
+    '',
+    '- `project.json` — structured project configuration',
+    '- `draft/main.md` — skeleton draft (Writer owns this file)',
+    '- `draft/references.bib` — bibliography (RA owns this file)',
+    '- `research/literature-summary.md` — annotated literature overview',
+    '- `guidance/` — domain guidance summaries and `index.md`',
+    '',
+  ].filter((l) => l !== null).join('\n');
+
+  try {
+    await writeProjectFile(projectId, 'pm/status.md', content);
+  } catch (err) {
+    console.error('[seeding] Failed to write pm/status.md:', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stage instructions — self-contained: everything the agent needs is in the
+// prompt or readable from the workspace; none of them may ask the user.
+// ---------------------------------------------------------------------------
+
+const INTERVIEW_INPUT = [
+  'Conduct the project intake interview now.',
+  'Ask your intake questions one at a time with ask_user and adapt to the answers,',
+  'then call save_project_config exactly once.',
+  'Do NOT dispatch any sub-agents: this interview is the first stage of the seeding',
+  'pipeline, which itself runs the research and skeleton stages after you finish.',
+  'End with a one-paragraph summary of the configured project.',
+].join(' ');
+
+const describeProject = (config) => [
+  `Project: ${config.title} (${config.project_type})`,
+  `Research question: ${config.research_question}`,
+  config.deliverables?.length ? `Deliverables: ${config.deliverables.join('; ')}` : null,
+  config.source_materials?.length ? `Source materials on hand: ${config.source_materials.join('; ')}` : null,
+  config.notes ? `Interview notes: ${config.notes}` : null,
+].filter(Boolean).join('\n');
+
+function raInput(config) {
+  return [
+    'A new project was just configured; produce its initial bibliography. This task is',
+    'self-contained — work from the description below and do not ask the user anything.',
+    '',
+    describeProject(config),
+    '',
+    'Steps:',
+    '1. Search the literature (pubmed_search, arxiv_search, web_search) for the most',
+    '   relevant and load-bearing work for this project — aim for the 10–20 best papers,',
+    '   not an exhaustive sweep.',
+    '2. Write BibTeX entries for them to draft/references.bib (write_file). Flag any',
+    '   preprints in a comment. Never fabricate entries: only papers your searches returned.',
+    '3. Write research/literature-summary.md: a short annotated overview grouping the',
+    '   papers by theme, with one or two sentences on why each matters to this project.',
+  ].join('\n');
+}
+
+function advisorInput(config) {
+  return [
+    'A new project was just configured; lay the domain-guidance groundwork. This task is',
+    'self-contained — work from the description below and do not ask the user anything.',
+    '',
+    describeProject(config),
+    '',
+    'Steps:',
+    '1. List guidance/ in the workspace. If the user uploaded guidance documents there,',
+    '   read each and write a structured summary next to it (guidance/<name>-summary.md).',
+    '2. Write guidance/index.md: the key regulatory and domain considerations for this',
+    '   project type, the frameworks that apply, and — using web_search where helpful —',
+    '   the authoritative guidance documents worth obtaining, each with a one-line "why".',
+  ].join('\n');
+}
+
+function writerInput(config) {
+  return [
+    'A new project was just seeded; generate the skeleton draft. This task is',
+    'self-contained — work from the description below and do not ask the user anything,',
+    'and do not dispatch sub-agents.',
+    '',
+    describeProject(config),
+    '',
+    'Steps:',
+    '1. Read project.json, draft/references.bib (if present), research/literature-summary.md',
+    '   (if present), and guidance/index.md (if present).',
+    '2. Write draft/main.md: a complete section skeleton appropriate for the project type,',
+    '   with a title, one or two sentences per section stating its intent, TODO markers',
+    '   for the substantive work to come, and initial citations where the seeded',
+    '   bibliography supports them. Cite as [@key] using only keys that actually appear',
+    '   in draft/references.bib — never invent citation keys.',
+  ].join('\n');
+}

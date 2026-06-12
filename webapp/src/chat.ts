@@ -3,18 +3,27 @@
 // events), render markdown in replies, tag messages with the agent role.
 // Agents can ask questions mid-task (story 012): a question event switches
 // the input box into answer mode and the reply is POSTed back into the
-// running job while its event stream stays open.
+// running job while its event stream stays open. On load the panel restores
+// the recent transcript from the conversation log (story 020), and the Seed
+// button runs the seeding pipeline through the same event handling (015).
 
 import { marked } from 'marked';
 
-import { listJobs, replyToAgent, runAgentTask, type AgentEvent } from './api';
+import {
+  getConversations,
+  listJobs,
+  replyToAgent,
+  runAgentTask,
+  seedProject,
+  type AgentEvent,
+} from './api';
 import { addTokenUsage, notify, setAgentActivity } from './status';
 
 marked.setOptions({ gfm: true, breaks: false });
 
 const DEFAULT_PLACEHOLDER = 'Ask an agent… (Enter to send, Shift+Enter for newline)';
 
-// SDK session per role, so follow-up messages continue the conversation
+// SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
 
 let activeProjectId = 0;
@@ -27,7 +36,7 @@ let onFileChange: (path: string) => void = () => {};
 export function initChat(projectId: number, fileChangeHandler: (path: string) => void): void {
   activeProjectId = projectId;
   onFileChange = fileChangeHandler;
-  void restoreSessions();
+  void restore();
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
@@ -44,10 +53,12 @@ export function initChat(projectId: number, fileChangeHandler: (path: string) =>
   });
 }
 
-// Seed the per-role session map from recorded jobs so a page reload
-// continues each agent's prior SDK session instead of starting fresh.
-async function restoreSessions(): Promise<void> {
+// Restore prior state on page load (story 020): render the recent transcript
+// from the conversation log, and seed the per-agent session map from recorded
+// jobs so each agent continues its prior SDK session instead of starting fresh.
+async function restore(): Promise<void> {
   try {
+    await restoreTranscript();
     const jobs = await listJobs(activeProjectId);
     for (const job of jobs) {
       // Jobs are newest first; keep the most recent session per role
@@ -61,38 +72,30 @@ async function restoreSessions(): Promise<void> {
   }
 }
 
-async function send(): Promise<void> {
-  const input = document.getElementById('chat-input') as HTMLTextAreaElement;
-  const role = (document.getElementById('chat-role') as HTMLSelectElement).value;
-  const text = input.value.trim();
-  if (!text) return;
+async function restoreTranscript(): Promise<void> {
+  const conversations = await getConversations(activeProjectId);
+  // Newest conversation first from the API; render oldest → newest
+  const messages = conversations
+    .reverse()
+    .flatMap((c) => c.messages.map((m) => ({ ...m, agent: c.agent_slug })));
+  if (messages.length === 0) return;
 
-  // Answer mode: route the input to the job waiting on ask_user. The reply
-  // unblocks the agent; its events keep arriving on the original stream.
-  if (pendingQuestionJobId != null) {
-    const jobId = pendingQuestionJobId;
-    pendingQuestionJobId = null;
-    input.value = '';
-    input.placeholder = DEFAULT_PLACEHOLDER;
-    appendMessage('user', 'you').append(textFragment(text));
-    setAgentActivity(`${role} is working…`);
-    try {
-      await replyToAgent(jobId, text);
-    } catch (err) {
-      appendSystemLine(`⚠ ${(err as Error).message}`, 'error');
+  for (const message of messages) {
+    if (message.role === 'user') {
+      appendMessage('user', 'you').append(textFragment(message.content));
+    } else {
+      appendMessage('agent', message.agent).innerHTML = marked.parse(message.content, { async: false });
     }
-    return;
   }
+  appendSystemLine('— restored transcript —');
+}
 
-  if (running) return;
-  input.value = '';
-
-  appendMessage('user', 'you').append(textFragment(text));
-  running = true;
-  setAgentActivity(`${role} is working…`);
-
-  // One streaming bubble per assistant turn; a new delta after a finalized
-  // turn (or from a different agent) starts a new bubble.
+/**
+ * Handle a streamed AgentEvent, shared by chat sends and the seeding
+ * pipeline. Keeps one streaming bubble per assistant turn; a new delta after
+ * a finalized turn (or from a different agent) starts a new bubble.
+ */
+function createEventHandler(): (event: AgentEvent) => void {
   let bubble: HTMLElement | null = null;
   let bubbleAgent = '';
   let streamed = '';
@@ -106,7 +109,7 @@ async function send(): Promise<void> {
     return bubble;
   };
 
-  const handleEvent = (event: AgentEvent): void => {
+  return (event: AgentEvent): void => {
     switch (event.type) {
       case 'text_delta': {
         const node = ensureBubble(event.agent);
@@ -143,8 +146,29 @@ async function send(): Promise<void> {
         scrollLog();
         break;
       }
+      case 'question_expired': {
+        // The unanswered question timed out (story 020): leave answer mode
+        // visibly instead of swallowing the stale reply box.
+        if (pendingQuestionJobId === event.jobId) exitAnswerMode();
+        appendSystemLine(`⏱ question timed out — ${event.agent} continues with defaults`);
+        setAgentActivity(`${event.agent} is working…`);
+        break;
+      }
+      case 'stage': {
+        // Seeding pipeline progress (story 015)
+        const label = STAGE_LABELS[event.stage ?? ''] ?? event.stage;
+        if (event.status === 'start') {
+          appendSystemLine(`▶ ${label}…`);
+          setAgentActivity(`seeding: ${label}…`);
+        } else if (event.status === 'error') {
+          appendSystemLine(`✗ ${label} failed${event.detail ? `: ${event.detail}` : ''}`, 'error');
+        } else {
+          appendSystemLine(`✓ ${label} done${event.detail ? ` (${event.detail})` : ''}`);
+        }
+        break;
+      }
       case 'done': {
-        if (event.sessionId) sessions.set(role, event.sessionId);
+        if (event.sessionId) sessions.set(event.agent, event.sessionId);
         if (event.usage) addTokenUsage(event.usage);
         break;
       }
@@ -154,24 +178,93 @@ async function send(): Promise<void> {
       }
     }
   };
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  interview: 'PM interview',
+  research: 'background research',
+  skeleton: 'skeleton draft',
+  seeding: 'project seeding',
+};
+
+async function send(): Promise<void> {
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement;
+  const role = (document.getElementById('chat-role') as HTMLSelectElement).value;
+  const text = input.value.trim();
+  if (!text) return;
+
+  // Answer mode: route the input to the job waiting on ask_user. The reply
+  // unblocks the agent; its events keep arriving on the original stream.
+  if (pendingQuestionJobId != null) {
+    const jobId = pendingQuestionJobId;
+    exitAnswerMode();
+    input.value = '';
+    appendMessage('user', 'you').append(textFragment(text));
+    setAgentActivity(`${role} is working…`);
+    try {
+      await replyToAgent(jobId, text);
+    } catch (err) {
+      // 409: the question is gone (timed out or its task ended) — story 020
+      const message = (err as Error).message;
+      if (/no pending question/i.test(message)) {
+        appendSystemLine('⚠ that question is no longer waiting for an answer (it may have timed out) — your reply was not delivered', 'error');
+        setAgentActivity('');
+      } else {
+        appendSystemLine(`⚠ ${message}`, 'error');
+      }
+    }
+    return;
+  }
+
+  if (running) return;
+  input.value = '';
+
+  appendMessage('user', 'you').append(textFragment(text));
+  running = true;
+  setAgentActivity(`${role} is working…`);
 
   try {
     await runAgentTask(
       { role, projectId: activeProjectId, input: text, sessionId: sessions.get(role) },
-      handleEvent,
+      createEventHandler(),
     );
   } catch (err) {
     appendSystemLine(`⚠ ${(err as Error).message}`, 'error');
   } finally {
-    running = false;
-    // The task is over — an unanswered question can no longer be replied to
-    if (pendingQuestionJobId != null) {
-      pendingQuestionJobId = null;
-      input.placeholder = DEFAULT_PLACEHOLDER;
-    }
-    setAgentActivity('');
-    notify('');
+    finishRun();
   }
+}
+
+/** Run the seeding pipeline (story 015), narrating progress into the chat. */
+export async function startSeeding(): Promise<void> {
+  if (running) return;
+  running = true;
+  appendSystemLine('🌱 seeding project — the PM will interview you first');
+  setAgentActivity('seeding…');
+
+  try {
+    await seedProject(activeProjectId, createEventHandler());
+  } catch (err) {
+    appendSystemLine(`⚠ ${(err as Error).message}`, 'error');
+  } finally {
+    finishRun();
+  }
+}
+
+function finishRun(): void {
+  running = false;
+  // The task is over — an unanswered question can no longer be replied to
+  if (pendingQuestionJobId != null) {
+    exitAnswerMode();
+    appendSystemLine('⏱ the task ended before you answered — the question expired');
+  }
+  setAgentActivity('');
+  notify('');
+}
+
+function exitAnswerMode(): void {
+  pendingQuestionJobId = null;
+  (document.getElementById('chat-input') as HTMLTextAreaElement).placeholder = DEFAULT_PLACEHOLDER;
 }
 
 function appendMessage(kind: 'user' | 'agent', tag: string): HTMLElement {

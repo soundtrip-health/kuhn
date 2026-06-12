@@ -5,7 +5,7 @@
 import './style.css';
 
 import { createProject, listProjects, writeTextFile, type Project } from './api';
-import { initChat } from './chat';
+import { initChat, startSeeding } from './chat';
 import { closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
 import { onOpenMarkdownFile, refreshTree } from './files';
 import { notify } from './status';
@@ -63,6 +63,9 @@ async function main(): Promise<void> {
   });
 
   onOpenMarkdownFile((path) => void openDocument(project.id, path));
+
+  // Seeding pipeline (story 015): PM interview → research → skeleton draft
+  document.getElementById('seed-project')!.addEventListener('click', () => void startSeeding());
 
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {

@@ -22,7 +22,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'question' | 'done' | 'error';
+  type: 'text_delta' | 'text' | 'file_change' | 'question' | 'question_expired' | 'done' | 'error' | 'stage';
   agent: string;
   content?: string;
   path?: string;
@@ -31,6 +31,23 @@ export interface AgentEvent {
   sessionId?: string;
   usage?: { inputTokens: number; outputTokens: number };
   message?: string;
+  // Seeding pipeline stage markers (story 015)
+  stage?: string;
+  status?: 'start' | 'done' | 'error';
+  detail?: string;
+}
+
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface Conversation {
+  id: number;
+  agent_slug: string;
+  created_at: string;
+  messages: ConversationMessage[];
 }
 
 export interface Job {
@@ -91,6 +108,14 @@ export async function writeTextFile(projectId: number, path: string, content: st
   );
 }
 
+/** Recent top-level conversations with messages, newest first (story 020). */
+export async function getConversations(projectId: number, limit = 20): Promise<Conversation[]> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/conversations?limit=${limit}`),
+  );
+  return ((await res.json()) as { conversations: Conversation[] }).conversations;
+}
+
 /** List agent jobs for a project, newest first. */
 export async function listJobs(projectId: number): Promise<Job[]> {
   const res = await expectOk(await fetch(`${BACKEND_URL}/api/agent/jobs?projectId=${projectId}`));
@@ -133,7 +158,25 @@ export async function runAgentTask(
       signal,
     }),
   );
+  await readEventStream(res, onEvent);
+}
 
+/**
+ * Run the project seeding pipeline (story 015), invoking onEvent for each
+ * stage marker and agent event. Resolves when the pipeline ends.
+ */
+export async function seedProject(
+  projectId: number,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/seed`, { method: 'POST', signal }),
+  );
+  await readEventStream(res, onEvent);
+}
+
+async function readEventStream(res: Response, onEvent: (event: AgentEvent) => void): Promise<void> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
