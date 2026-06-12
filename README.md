@@ -9,12 +9,21 @@ authors work in friendly markdown while the toolchain (and the agents) handle fo
 
 ## Status
 
-**Early stage — direction revised 2026-06-11.** The agent backend runs (Postgres schema, seeded
-agent prompts, Yjs servers). The architecture moved from a TeXlyre/LaTeX foundation to a
-**Milkdown markdown editor** in a single app, with the agent runtime built on the
-**Claude Agent SDK**. The TeXlyre fork (working `/cite`, Epic 003) is retired to reference
-material until the `/cite` port lands. Next up: agent runtime (story 011) and the webapp
-scaffold (story 013).
+**Working prototype — core loop in place (2026-06-12).** The architecture moved (2026-06-11)
+from a TeXlyre/LaTeX foundation to a **Milkdown markdown editor** in a single app, with the
+agent runtime built on the **Claude Agent SDK**. Running today:
+
+- **Agent backend** — agent runtime behind the `runAgentTask` boundary, per-agent models,
+  durable jobs, full conversation logging, project-root-enforcing storage API, sandboxed
+  Typst/Pandoc execution, Yjs servers (stories 009–012, 018, 021)
+- **Webapp** — agent chat (token streaming, mid-task questions, transcript restore on
+  reload), Milkdown editor with real-time collab, file tree (stories 013, 020)
+- **Project seeding** — one click runs PM interview → RA + Advisor research in parallel →
+  Writer skeleton draft, as a deterministic pipeline (story 015)
+
+The TeXlyre fork (working `/cite`, Epic 003) is retired to reference material until the
+`/cite` port lands. Next up: live seeding verification (022), file manager (014), editor
+slash commands (016/017), render/export endpoints (019).
 
 ## Goals
 
@@ -100,7 +109,20 @@ Re-seed after editing AGENTS.md files: `npm run db:seed`
 
 ### Webapp
 
-Coming with story 013 (`webapp/` — Vite + TypeScript + Milkdown).
+```bash
+cd webapp
+
+# Install deps (first time)
+npm install
+
+# Start the dev server (backend must be running)
+npm run dev
+```
+
+Opens at **http://localhost:5174** (pinned; the backend CORS allowlist includes it). On first
+run with an empty database it creates a "Demo Manuscript" project. Use the **Seed project**
+button to run the full seeding pipeline (PM interview → research → skeleton draft) — note that
+agent runs use real model quota. See [webapp/README.md](webapp/README.md).
 
 ### Legacy: TeXlyre fork (reference only)
 

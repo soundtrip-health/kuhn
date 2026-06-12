@@ -23,8 +23,23 @@ real-time collaboration.
 - **Webapp support** (story 013): token-level `text_delta` streaming
   (`includePartialMessages`), `GET/POST /api/projects`, Yjs doc-update broadcast,
   CORS allowlist including the webapp dev origin (`http://localhost:5174`)
+- **PM agent** (story 012): `ask_user` question round trip (the agent blocks until
+  `POST /api/agent/jobs/:id/reply` or a timeout), `save_project_config` →
+  `projects.config` + `project.json`
+- **Per-agent models** (story 021): each role runs on its DB-configured model
+  (`agents.model`, seeded premium for pm/writer, mid for advisor/reviewer/analyst,
+  cheap for ra; override at seed time with `AGENT_MODEL_<SLUG>`)
+- **Conversation restore + weighted budgets** (story 020): conversation read API for
+  transcript restore, `question_expired` events, and token budgets weighted by model
+  cost relative to the root agent's tier (a Haiku sub-agent burns the budget slower
+  than the Opus PM)
+- **Seeding pipeline** (story 015): `POST /api/projects/:id/seed` runs PM interview →
+  RA + Advisor in parallel → Writer skeleton → `pm/status.md` as a deterministic
+  code pipeline (`src/agents/seeding.js`), each stage a top-level task with its own
+  budget
 
-Next: PM agent (012), file manager (014), slash commands (016).
+Next: live seeding verification (022), file manager (014), slash commands (016),
+render/export endpoints (019).
 
 ## Agent API
 
@@ -33,11 +48,16 @@ Next: PM agent (012), file manager (014), slash commands (016).
 | `POST /api/agent/task` | Run an agent task; body `{ role, projectId, input, context?, sessionId? }`; streams AgentEvents as SSE |
 | `GET /api/agent/jobs?projectId=&status=` | List jobs, newest first |
 | `POST /api/agent/jobs/:id/dispatch` | Re-dispatch a stored (e.g. interrupted) job; streams SSE |
+| `POST /api/agent/jobs/:id/reply` | Answer a running job's pending `ask_user` question; 409 when none is pending |
+| `POST /api/projects/:id/seed` | Run the seeding pipeline (interview → research → skeleton); streams stage markers + AgentEvents as SSE |
+| `GET /api/projects/:id/conversations?limit=` | Recent top-level conversations with user/assistant messages (transcript restore) |
 
 AgentEvent types: `text_delta` (token-level streaming), `text` (full turn),
-`file_change`, `question` (reserved), `citation` (reserved), `done` (with token usage),
-`error`. Events carry `agent: <role-slug>`; sub-agent progress is forwarded into the
-parent stream.
+`file_change`, `question` (ask_user is waiting; reply via the reply route),
+`question_expired` (the question timed out; the agent proceeds with defaults),
+`stage` (seeding pipeline progress), `citation` (reserved), `done` (with token
+usage), `error`. Events carry `agent: <role-slug>`; sub-agent progress is forwarded
+into the parent stream.
 
 Auth: set `ANTHROPIC_API_KEY` (or rely on Claude Code login credentials on a dev machine).
 
@@ -103,12 +123,14 @@ Environment variables (see `src/config.js`; `.env` supported):
 | `PORT` | `3002` |
 | `PGHOST` / `PGPORT` | `localhost` / `5432` |
 | `PGDATABASE` / `PGUSER` / `PGPASSWORD` | `kuhn` / `kuhn` / `kuhn_dev` |
-| `CORS_ORIGIN` | `http://localhost:5173` |
+| `CORS_ORIGIN` | `http://localhost:5173,http://localhost:5174` |
 | `PROJECTS_ROOT` | `agent-backend/projects` |
-| `AGENT_TOKEN_BUDGET` | `250000` (input+output tokens per task, incl. sub-agents) |
+| `AGENT_TOKEN_BUDGET` | `500000` (per task incl. sub-agents, weighted by model cost relative to the root agent's tier) |
+| `AGENT_MODEL_WEIGHTS` | `haiku:1,sonnet:3,opus:5,default:5` (approximate price ratios for budget weighting) |
+| `AGENT_QUESTION_TIMEOUT_MS` | `900000` (15 min for an `ask_user` reply, then the agent proceeds with defaults) |
 | `AGENT_MAX_DISPATCH_DEPTH` | `2` |
 | `AGENT_MAX_TURNS` | `50` |
-| `AGENT_MODEL` | SDK default |
+| `AGENT_MODEL` | SDK default (global fallback; `agents.model` per role wins, `AGENT_MODEL_<SLUG>` overrides at seed time) |
 | `STORAGE_MAX_FILE_BYTES` | `20971520` (20 MB per file) |
 | `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `ghcr.io/typst/typst:latest` / `pandoc/core:latest` |
 | `SANDBOX_TIMEOUT_MS` / `SANDBOX_CPUS` / `SANDBOX_MEMORY` | `60000` / `1` / `512m` |

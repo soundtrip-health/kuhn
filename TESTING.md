@@ -5,6 +5,60 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Project Seeding Pipeline (Story 002-015, 2026-06-12)
+
+**Setup:** backend (`cd agent-backend && npm run dev`) + webapp (`cd webapp && npm run dev`),
+open http://localhost:5174. **Note:** the pipeline runs real agent tasks (Opus PM/Writer) —
+each full run costs real quota. Scripted version: `node webapp/scripts/seed-check.mjs`.
+
+- [ ] Click **Seed project** — chat shows "🌱 seeding project…" then "▶ PM interview…"
+- [ ] PM asks intake questions one at a time; input box switches to answer mode; answers unblock it
+- [ ] PM does not dispatch sub-agents itself; after the interview, "✓ PM interview done"
+- [ ] `project.json` written (file tree refreshes); `projects.config` populated in DB
+- [ ] "▶ background research…": RA and Advisor stream interleaved; `draft/references.bib`,
+      `research/literature-summary.md`, `guidance/index.md` appear
+- [ ] "▶ skeleton draft…": Writer produces `draft/main.md` with sections + TODOs; citations
+      use only keys that exist in `references.bib`
+- [ ] `pm/status.md` written with per-stage outcomes; "✓ project seeding done"
+- [ ] Failure path: a failed research branch is reported ("1 of 2 research tasks failed") but the
+      skeleton still runs; an interview that saves no config aborts the pipeline
+- [ ] Seeding stage prompts do NOT replay as "you" messages in the restored transcript after reload
+
+## Chat Restore & Question UX (Story 002-020, 2026-06-12)
+
+**Setup:** backend + webapp as above. Scripted reload check:
+`node webapp/scripts/reload-resume-check.mjs`.
+
+- [ ] Have a short exchange with an agent, reload — transcript re-renders (markdown intact),
+      followed by "— restored transcript —" and "↺ resumed session(s)"
+- [ ] `GET http://localhost:3002/api/projects/1/conversations` returns conversations with
+      user/assistant messages; sub-agent dispatch conversations are absent
+- [ ] Mid-interview reload: answer one PM question, reload, send "continue" — the PM remembers
+      earlier answers (SDK session resume)
+- [ ] Question timeout (set `AGENT_QUESTION_TIMEOUT_MS=15000` for testing): leave a question
+      unanswered — chat shows "⏱ question timed out…", input box returns to normal mode, and the
+      agent continues with defaults
+- [ ] Reply to a dead question (answer after the task ended): clear "no longer waiting" message,
+      input box back to normal
+- [ ] Weighted budget: in the backend logs / job rows, a Haiku RA task burns the shared budget at
+      1/5 the rate of the Opus PM (`AGENT_MODEL_WEIGHTS`, default `haiku:1,sonnet:3,opus:5`)
+
+## Agent Runtime, PM Interview & Webapp (Stories 002-011/012/013/018/021, 2026-06-11)
+
+**Setup:** backend + webapp as above. (Backfilled summary — see the story files for detail.)
+
+- [ ] Chat: pick a role, send a message — reply streams token-by-token, then renders as markdown;
+      token usage appears in the status bar; follow-ups continue the same conversation
+- [ ] PM `ask_user`: ask the PM to interview you — question bubble appears, input switches to
+      answer mode, reply unblocks the agent on the same stream
+- [ ] Per-agent models (021): `SELECT slug, model FROM agents` shows opus for pm/writer,
+      sonnet for advisor/reviewer/analyst, haiku for ra
+- [ ] Storage API (018): `GET /api/projects/1/file?path=../etc/passwd` → 403; agent file tools
+      stay inside the project root
+- [ ] Editor: edits to `draft/main.md` save (debounced/Cmd-S) and sync across two tabs (Yjs)
+- [ ] Jobs are durable: restart the backend mid-task — the job row ends up `interrupted`,
+      `POST /api/agent/jobs/:id/dispatch` re-runs it with the recorded session
+
 ## Agent Backend: Database + Seeding (Story 002-010, 2026-04-14)
 
 **Setup:** `cd agent-backend && docker compose up -d && npm run dev`

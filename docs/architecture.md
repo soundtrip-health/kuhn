@@ -109,7 +109,8 @@ runAgentTask({
   projectId,   // project root the task may touch
   input,       // user message or dispatch instruction
   context,     // selection, cursor, file refs
-}) → stream of events: { text | file_change | citation | question | done | error }
+}) → stream of events: { text_delta | text | file_change | citation | question |
+                          question_expired | done | error }   (+ stage markers from pipelines)
 ```
 
 Everything above this interface (routes, UI, job model, logging) is provider-neutral. The Claude

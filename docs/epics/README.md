@@ -6,9 +6,9 @@ Each epic is a directory containing an `index.md` (overview) and a `stories/` su
 
 | # | Epic | Status |
 |---|------|--------|
-| 001 | [Editor Foundation Research](001-editor-foundation-research/index.md) | In Progress |
-| 002 | [Agent Orchestration Layer](002-agent-orchestration-layer/index.md) | Draft |
-| 003 | [TeXlyre Citation Assistant](003-texlyre-citation-assistant/index.md) | In Progress |
+| 001 | [Editor Foundation Research](001-editor-foundation-research/index.md) | Done (decision revised 2026-06-11: Milkdown) |
+| 002 | [Agent Orchestration Layer](002-agent-orchestration-layer/index.md) | In Progress |
+| 003 | [TeXlyre Citation Assistant](003-texlyre-citation-assistant/index.md) | Done (ports to Milkdown in story 016) |
 
 ## Epic Lifecycle
 
