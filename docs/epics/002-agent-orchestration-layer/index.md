@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12 (PM: 023/024/019 done; 022 deferred during hands-on testing; 025 added — Claude Design "Column" handoff in `docs/design/handoff/`)
+**Updated:** 2026-06-12 (PM: stories 014 and 017 written and `ready` — all remaining work is now specced; recommended build order: 025 → 017, with 014 in parallel; 022 stays parked for bobd)
 
 ## Goal
 
@@ -92,7 +92,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 013 | [Webapp scaffold](stories/013-webapp-scaffold.md) — Vite + TS, chat UI, Milkdown editor pane, WebSocket to backend | done | L |
-| 014 | File manager — upload, browse project tree, preview files | draft | M |
+| 014 | [File manager](stories/014-file-manager.md) — upload, preview, delete/rename on the story-018 storage API; webapp-only | ready | M |
 | 015 | [Project seeding flow](stories/015-project-seeding.md) — PM interview → parallel agent research → skeleton generation, deterministic pipeline | done | XL |
 | 020 | [Chat conversation restore & interview polish](stories/020-chat-conversation-restore.md) — transcript on reload, question-timeout UX, weighted token budget | done | M |
 | 022 | [Live seeding & reload-resume verification](stories/022-live-seeding-verification.md) — run the scripted live-SDK checks deferred from 015/020 | deferred | S |
@@ -102,7 +102,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | done | L |
-| 017 | Writer agent + `/write` — streaming edits into the document with accept/reject (suggestion UI per the story 025 design spec) | draft | XL |
+| 017 | [Writer agent + `/write`](stories/017-write-command.md) — streamed suggestion block with accept/reject (UI per the story 025 design spec; closes the 013 live-update issue) | ready | XL |
 | 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | done | L |
 
 ### Phase 4: UI design
