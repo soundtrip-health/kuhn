@@ -17,7 +17,7 @@ kuhn/
 │   ├── epics/       # Project management — each epic has index.md + stories/
 │   └── architecture.md
 ├── agent-backend/   # Node.js backend: agent runtime, Postgres, Yjs servers
-├── texlyre/         # Retired TeXlyre fork — reference only (/cite implementation, Epic 003)
+├── webapp/          # Browser app: agent chat, Milkdown editor, file manager
 └── CLAUDE.md        # This file (symlink to AGENTS.md)
 ```
 

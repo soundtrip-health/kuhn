@@ -40,13 +40,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 const errors = [];
 const fail = (msg) => errors.push(msg);
-page.on('pageerror', (err) => {
-  // Known pre-existing failure (also on main, reload-only): the collab
-  // plugin races editor init/teardown when reloading against a warm Yjs
-  // room. Tracked in story 023; not a /cite regression.
-  if (err.message.includes('Context "editorState" not found')) return;
-  fail(`pageerror: ${err.message}`);
-});
+page.on('pageerror', (err) => fail(`pageerror: ${err.message}`));
 
 // Intercept the citation service and the bibliography read with canned data
 await page.route('**/citations/search**', (route) =>
