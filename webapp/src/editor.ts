@@ -24,12 +24,16 @@ import '@milkdown/theme-nord/style.css';
 import 'katex/dist/katex.min.css';
 
 import { BACKEND_WS_URL, readTextFile, writeTextFile } from './api';
+import { agentIdentity } from './agents';
 import { refreshBib } from './bib';
 import { citationPlugins, installCitationTooltips } from './citation';
 import { openCitePicker } from './cite-picker';
 import { refreshTree } from './files';
 import { slash, slashMenuSpec, type SlashCommand } from './slash';
 import { setDocument, setSaveState } from './status';
+import { toast } from './toast';
+
+// On open, reflect the persisted state in the top-bar "Saved" affordance.
 
 const SAVE_DEBOUNCE_MS = 1500;
 
@@ -51,13 +55,31 @@ export function currentDocumentPath(): string {
   return currentPath;
 }
 
-// Slash-command registry (story 016): /cite is the first command; later
-// commands (/write, /review, …) append here.
+// Slash-command registry (story 016, expanded for story 025). /cite is fully
+// wired (PubMed search → chip). The remaining commands match the design's
+// command palette; per the handoff they route to the owning agent (a stub
+// toast here — real dispatch lands with story 017+). /write's streamed
+// suggestion UI is explicitly story 017.
 function slashCommands(): SlashCommand[] {
+  const routed = (
+    name: string,
+    agent: string,
+    arg: string,
+    description: string,
+  ): SlashCommand => ({
+    name,
+    agent,
+    arg,
+    description,
+    run: () => toast(`Routed to ${agentIdentity(agent).label}`),
+  });
+
   return [
     {
       name: 'cite',
-      hint: 'Insert a citation (searches PubMed)',
+      agent: 'ra',
+      arg: '<reference>',
+      description: 'Search PubMed & insert a citation',
       run: (view) => {
         const coords = view.coordsAtPos(view.state.selection.from);
         openCitePicker({
@@ -68,12 +90,34 @@ function slashCommands(): SlashCommand[] {
             // The backend already updated references.bib — refresh dependents
             void refreshBib(currentProjectId);
             void refreshTree(currentProjectId);
+            toast('Citation inserted · references.bib updated');
           },
           onClose: () => view.focus(),
         });
       },
     },
+    {
+      name: 'write',
+      agent: 'writer',
+      arg: '<request>',
+      description: 'Writer drafts text right here',
+      run: () => toast('/write arrives with story 017'),
+    },
+    routed('research', 'ra', '<topic>', 'Ask Research a question'),
+    routed('figure', 'analyst', '<spec>', 'Analyst makes a figure or table'),
+    routed('review', 'reviewer', '<section>', 'Reviewer critiques this section'),
+    routed('ask', 'pm', '<question>', 'Ask any agent inline'),
+    { name: 'status', agent: 'pm', arg: '', description: 'What is the team doing?', run: () => toast('Routed to PM') },
   ];
+}
+
+/** Update the sub-header word count and toggle the empty-state hero. */
+function updateDocMeta(markdown: string): void {
+  const words = (markdown.trim().match(/\S+/g) ?? []).length;
+  const wc = document.getElementById('editor-wordcount');
+  if (wc) wc.textContent = `${words.toLocaleString()} word${words === 1 ? '' : 's'}`;
+  const hero = document.getElementById('editor-hero');
+  if (hero) hero.hidden = markdown.trim().length > 0;
 }
 
 /** Insert a citation chip atom at the current selection. */
@@ -89,6 +133,8 @@ export async function openDocument(projectId: number, path: string): Promise<voi
   currentProjectId = projectId;
   currentPath = path;
   setDocument(path);
+  const pathEl = document.getElementById('editor-path');
+  if (pathEl) pathEl.textContent = path.replace(/\//g, ' / ');
   void refreshBib(projectId);
   if (!tooltipsInstalled) {
     installCitationTooltips(document.getElementById('editor')!);
@@ -105,6 +151,7 @@ export async function openDocument(projectId: number, path: string): Promise<voi
       ctx.set(rootCtx, '#editor');
       ctx.set(slash.key, slashMenuSpec(slashCommands()));
       ctx.get(listenerCtx).markdownUpdated((_ctx, markdown, prev) => {
+        updateDocMeta(markdown);
         if (prev != null && markdown !== prev) scheduleSave(markdown);
       });
     })
@@ -118,6 +165,9 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     .use(citationPlugins)
     .use(slash)
     .create();
+
+  updateDocMeta(template);
+  setSaveState('saved');
 
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);

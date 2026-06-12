@@ -13,10 +13,17 @@ import { slashFactory } from '@milkdown/kit/plugin/slash';
 import type { PluginSpec } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 
+import { agentIdentity } from './agents';
+
 export interface SlashCommand {
   /** Name typed after the slash, e.g. 'cite' */
   name: string;
-  hint: string;
+  /** Owning agent slug — drives the command avatar tint + initials */
+  agent: string;
+  /** Argument placeholder shown after the name, e.g. '<reference>' */
+  arg?: string;
+  /** One-line description */
+  description: string;
   /** Invoked after the typed `/...` text has been removed from the document */
   run: (view: EditorView) => void;
 }
@@ -71,18 +78,43 @@ export function slashMenuSpec(commands: SlashCommand[]): PluginSpec<unknown> {
   };
 
   const render = (): void => {
+    const header = document.createElement('div');
+    header.className = 'slash-menu-header';
+    header.textContent = 'Commands';
+
     menu.replaceChildren(
+      header,
       ...items.map((cmd, i) => {
+        const id = agentIdentity(cmd.agent);
         const button = document.createElement('button');
         button.type = 'button';
         button.className = `slash-item${i === active ? ' active' : ''}`;
+        button.style.setProperty('--role', `var(${id.colorVar})`);
+
+        const avatar = document.createElement('div');
+        avatar.className = 'slash-avatar';
+        avatar.textContent = id.initials;
+
+        const text = document.createElement('div');
+        text.className = 'slash-text';
+        const line = document.createElement('div');
+        line.className = 'slash-line';
         const name = document.createElement('span');
         name.className = 'slash-name';
         name.textContent = `/${cmd.name}`;
-        const hint = document.createElement('span');
-        hint.className = 'slash-hint';
-        hint.textContent = cmd.hint;
-        button.append(name, hint);
+        line.append(name);
+        if (cmd.arg) {
+          const arg = document.createElement('span');
+          arg.className = 'slash-arg';
+          arg.textContent = cmd.arg;
+          line.append(arg);
+        }
+        const desc = document.createElement('div');
+        desc.className = 'slash-desc';
+        desc.textContent = cmd.description;
+        text.append(line, desc);
+
+        button.append(avatar, text);
         // mousedown would blur the editor and dismiss the menu before click
         button.addEventListener('mousedown', (e) => e.preventDefault());
         button.addEventListener('click', () => select(cmd));

@@ -109,7 +109,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 025 | [UI design implementation ("Column")](stories/025-ui-design-implementation.md) — tokens, shell, chat/seeding/question/editor/files restyle per `docs/design/handoff/` | ready | L |
+| 025 | [UI design implementation ("Column")](stories/025-ui-design-implementation.md) — tokens, shell, chat/seeding/question/editor/files restyle per `docs/design/handoff/` | done | L |
 
 ### Cleanup & fixes
 
