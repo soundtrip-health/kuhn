@@ -17,6 +17,7 @@ import {
   listProjectTree,
   searchProjectFiles,
 } from '../storage.js';
+import { DEFAULT_BIB_PATH, upsertCitation } from '../citations.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion } from './questions.js';
 import { pubmedSearch, arxivSearch } from './search.js';
@@ -47,6 +48,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'text_delta', agent, content }   — token-level streaming (story 013)
  *   { type: 'text', agent, content }         — full text of the finished turn
  *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
+ *   { type: 'citation', agent, key, bibtex, path } — add_citation upserted the bibliography (story 016)
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question timed out; the agent proceeds with defaults (story 020)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
@@ -388,6 +390,38 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
       async ({ query, max_results }) => searchToolResult(() => pubmedSearch(query, max_results)),
+    ));
+  }
+
+  if (agent.tools.includes('add_citation')) {
+    tools.push(tool(
+      'add_citation',
+      'Add a citation to the project bibliography by PubMed ID. Verifies the metadata against PubMed, dedupes against existing entries, appends to the .bib file, and returns the BibTeX key to cite as [@key]. Find the PMID with pubmed_search first — never invent identifiers.',
+      {
+        pmid: z.string().describe('PubMed ID of the work to cite'),
+        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
+      },
+      async ({ pmid, path }) => {
+        try {
+          const { key, created, bibtex } = await upsertCitation(projectId, pmid, path);
+          // Live citation event (deferred from story 011) so the editor can
+          // refresh chips/bibliography without polling.
+          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
+          if (created) {
+            channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: created
+                ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
+                : `Already in ${path} as "${key}". Cite it as [@${key}].`,
+            }],
+          };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `add_citation failed: ${err.message}` }], isError: true };
+        }
+      },
     ));
   }
 

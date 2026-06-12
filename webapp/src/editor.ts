@@ -13,6 +13,7 @@ import { history } from '@milkdown/kit/plugin/history';
 import { clipboard } from '@milkdown/kit/plugin/clipboard';
 import { listener, listenerCtx } from '@milkdown/kit/plugin/listener';
 import { getMarkdown } from '@milkdown/kit/utils';
+import type { EditorView } from '@milkdown/kit/prose/view';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import { math } from '@milkdown/plugin-math';
 import { nord } from '@milkdown/theme-nord';
@@ -23,6 +24,11 @@ import '@milkdown/theme-nord/style.css';
 import 'katex/dist/katex.min.css';
 
 import { BACKEND_WS_URL, readTextFile, writeTextFile } from './api';
+import { refreshBib } from './bib';
+import { citationPlugins, installCitationTooltips } from './citation';
+import { openCitePicker } from './cite-picker';
+import { refreshTree } from './files';
+import { slash, slashMenuSpec, type SlashCommand } from './slash';
 import { setDocument, setSaveState } from './status';
 
 const SAVE_DEBOUNCE_MS = 1500;
@@ -45,11 +51,49 @@ export function currentDocumentPath(): string {
   return currentPath;
 }
 
+// Slash-command registry (story 016): /cite is the first command; later
+// commands (/write, /review, …) append here.
+function slashCommands(): SlashCommand[] {
+  return [
+    {
+      name: 'cite',
+      hint: 'Insert a citation (searches PubMed)',
+      run: (view) => {
+        const coords = view.coordsAtPos(view.state.selection.from);
+        openCitePicker({
+          projectId: currentProjectId,
+          anchor: { x: coords.left, y: coords.bottom },
+          onPick: (key) => {
+            insertCitation(view, key);
+            // The backend already updated references.bib — refresh dependents
+            void refreshBib(currentProjectId);
+            void refreshTree(currentProjectId);
+          },
+          onClose: () => view.focus(),
+        });
+      },
+    },
+  ];
+}
+
+/** Insert a citation chip atom at the current selection. */
+function insertCitation(view: EditorView, key: string): void {
+  const node = view.state.schema.nodes.citation.create({ key });
+  view.dispatch(view.state.tr.replaceSelectionWith(node, false).scrollIntoView());
+}
+
+let tooltipsInstalled = false;
+
 export async function openDocument(projectId: number, path: string): Promise<void> {
   await closeDocument();
   currentProjectId = projectId;
   currentPath = path;
   setDocument(path);
+  void refreshBib(projectId);
+  if (!tooltipsInstalled) {
+    installCitationTooltips(document.getElementById('editor')!);
+    tooltipsInstalled = true;
+  }
 
   const stored = await readTextFile(projectId, path);
   const template = stored ?? DEFAULT_TEMPLATE;
@@ -59,6 +103,7 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     .config(nord)
     .config((ctx) => {
       ctx.set(rootCtx, '#editor');
+      ctx.set(slash.key, slashMenuSpec(slashCommands()));
       ctx.get(listenerCtx).markdownUpdated((_ctx, markdown, prev) => {
         if (prev != null && markdown !== prev) scheduleSave(markdown);
       });
@@ -70,6 +115,8 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     .use(clipboard)
     .use(listener)
     .use(collab)
+    .use(citationPlugins)
+    .use(slash)
     .create();
 
   editor.action((ctx) => {
