@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12 (PM: stories 023/024 done — TeXlyre fork removed, collab reload race fixed)
+**Updated:** 2026-06-12 (PM: stories 023/024 done — TeXlyre removed, reload race fixed; story 019 done — PDF preview + docx/tex export)
 
 ## Goal
 
@@ -55,7 +55,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 - [x] Storage API with project-root enforcement; all agent file access through it (018)
 - [x] `/cite` ported to Milkdown: slash-command plugin, citation picker, chips, bib upsert (016)
 - [ ] `/write` slash command with streaming writer agent (017)
-- [ ] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
+- [x] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
 - [ ] Durable job model for long-running agent work (part of 011)
 
 ### Deferred
@@ -103,7 +103,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | done | L |
 | 017 | Writer agent + `/write` — streaming edits into the document with accept/reject | draft | XL |
-| 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | draft | L |
+| 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | done | L |
 
 ### Cleanup & fixes
 

@@ -12,6 +12,7 @@
       <span class="spacer"></span>
       <button id="seed-project" type="button" title="Run the seeding pipeline: PM interview, background research, skeleton draft">Seed project</button>
       <button id="toggle-chat" type="button" title="Toggle chat panel">Chat</button>
+      <button id="toggle-preview" type="button" title="Toggle PDF preview">Preview</button>
       <button id="toggle-files" type="button" title="Toggle files panel">Files</button>
     </header>
 
@@ -35,6 +36,17 @@
       <section id="editor-pane">
         <div id="editor"></div>
       </section>
+
+      <aside id="preview-panel" class="collapsed">
+        <div id="preview-toolbar">
+          <span class="panel-title">Preview</span>
+          <button id="preview-refresh" type="button" title="Re-render the PDF">Render</button>
+          <button id="export-docx" type="button" title="Export as Word document">.docx</button>
+          <button id="export-tex" type="button" title="Export as LaTeX">.tex</button>
+        </div>
+        <div id="preview-status"></div>
+        <iframe id="preview-frame" title="PDF preview"></iframe>
+      </aside>
 
       <aside id="files-panel">
         <div class="panel-title">Files</div>

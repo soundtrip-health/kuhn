@@ -71,6 +71,53 @@ body {
   min-width: 0;
 }
 
+/* ---- PDF preview pane (story 019) ---- */
+#preview-panel {
+  width: 480px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+}
+#preview-panel.collapsed { display: none; }
+
+#preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+#preview-toolbar .panel-title { flex: 1; padding: 0; }
+#preview-toolbar button {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  cursor: pointer;
+}
+#preview-toolbar button:hover { border-color: var(--accent); }
+
+#preview-status {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 10px;
+  white-space: pre-wrap;
+  max-height: 30%;
+  overflow-y: auto;
+}
+#preview-status.error { color: #b3261e; }
+#preview-status:empty { display: none; }
+
+#preview-frame {
+  flex: 1;
+  border: none;
+  background: #525659; /* matches the embedded PDF viewer chrome */
+}
+
 #editor { max-width: 820px; margin: 0 auto; padding: 24px 32px; }
 #editor .milkdown { outline: none; }
 

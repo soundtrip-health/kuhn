@@ -38,8 +38,11 @@ real-time collaboration.
   code pipeline (`src/agents/seeding.js`), each stage a top-level task with its own
   budget
 
-Next: live seeding verification (022), file manager (014), slash commands (016),
-render/export endpoints (019).
+- **Render & export** (story 019): `POST /api/projects/:id/render` (markdown → Typst →
+  PDF, content-hash cached) and `GET /api/projects/:id/export?format=docx|tex`, both
+  through the sandbox (`src/render.js`)
+
+Next: live seeding verification (022), file manager (014), `/write` (017).
 
 ## Agent API
 
@@ -77,13 +80,23 @@ project root) return 403.
 | `POST /api/projects/:id/files/move` | Body `{ from, to }` |
 | `POST /api/projects/:id/files/upload` | Multipart; `files` field(s), optional `path` dir |
 
-## Sandboxed rendering (story 018)
+## Render & export (stories 018/019)
 
 `src/sandbox.js` runs Typst/Pandoc in Docker with `--network none`, the project
 mounted read-only, a separate output dir, and CPU/memory/time limits. This wrapper is
 the designated path for anything that executes document-derived code (future analyst
-Python included). Render endpoints land with story 019; the helpers are
-`renderTypstPdf(projectId, sourcePath)` and `pandocConvert(projectId, sourcePath, outName)`.
+Python included). The helpers are `renderTypstPdf(projectId, sourcePath)` and
+`pandocConvert(projectId, sourcePath, outName, extraArgs?)`.
+
+On top of them, `src/render.js` (story 019) serves:
+
+| Endpoint | What |
+|----------|------|
+| `POST /api/projects/:id/render` | Body `{ path }`; markdown → Typst (Pandoc, citeproc when `references.bib` sits next to the source) → PDF bytes; content-hash cached (`X-Render-Cache: hit\|miss`) |
+| `GET /api/projects/:id/export?path=...&format=docx\|tex` | Pandoc export, attachment download |
+
+Errors are readable, not 500s: compile failure → 422 with the stderr excerpt,
+timeout → 504, oversized output → 413, missing source → 404.
 
 Images: `ghcr.io/typst/typst:latest`, `pandoc/core:latest` (pull once with `docker pull`).
 On macOS, keep `PROJECTS_ROOT` somewhere Docker Desktop can bind-mount (the default,

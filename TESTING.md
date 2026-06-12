@@ -5,6 +5,25 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Render & Export (Story 002-019, 2026-06-12)
+
+**Setup:** backend + webapp dev servers, Docker running with the sandbox images pulled
+(one-time: `docker pull ghcr.io/typst/typst:latest && docker pull pandoc/core:latest` —
+the backend does not pull on startup). Scripted version:
+`node webapp/scripts/render-check.mjs` (no LLM tokens).
+
+- [ ] Click **Preview** in the topbar — panel opens and the rendered PDF of the open
+      document appears (first render takes a few seconds; container startup)
+- [ ] Edit the document, click **Render** — the preview updates with the new content
+      (unchanged content responds instantly: `X-Render-Cache: hit`)
+- [ ] Citations resolve: a doc with `[@key]` + `references.bib` next to it renders
+      "(Author et al. YEAR)" plus a formatted bibliography
+- [ ] **.docx** / **.tex** buttons download `main.docx` / `main.tex`; the docx opens in
+      Word/Pages, the tex contains `\documentclass`
+- [ ] Error surface: a doc with a failing raw-typst block (e.g. `#assert(false, ...)`)
+      shows the Typst compile error in the preview status line — red text, not a crash
+- [ ] No `.preview-*.typ` files linger in the project tree after rendering
+
 ## Collab Reload Race Fix (Story 002-024, 2026-06-12)
 
 **Setup:** backend + webapp dev servers. Scripted version: `node webapp/scripts/reload-check.mjs`

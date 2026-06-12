@@ -149,14 +149,24 @@ export function renderTypstPdf(projectId, sourcePath, spawnImpl) {
   }, spawnImpl);
 }
 
-/** Convert a project file with Pandoc (e.g. markdown → docx/tex). Returns { output, stdout, stderr }. */
-export function pandocConvert(projectId, sourcePath, outputName, spawnImpl) {
+/**
+ * Convert a project file with Pandoc (e.g. markdown → docx/tex). Returns
+ * { output, stdout, stderr }. extraArgs are long-form pandoc options composed
+ * by the render service (never user input); values may only reference /work
+ * paths since that is the only readable mount.
+ */
+export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [], spawnImpl) {
   if (!/^[\w.-]+$/.test(outputName)) {
     throw new SandboxError('failed', `Invalid output name: ${outputName}`);
   }
+  for (const arg of extraArgs) {
+    if (!/^--[\w-]+(=[\w./ @-]+)?$/.test(arg)) {
+      throw new SandboxError('failed', `Invalid pandoc argument: ${arg}`);
+    }
+  }
   return renderViaSandbox(projectId, sourcePath, {
     image: config.sandbox.pandocImage,
-    makeCmd: (src, out) => [src, '-o', out],
+    makeCmd: (src, out) => [src, ...extraArgs, '-o', out],
     outputName,
   }, spawnImpl);
 }
