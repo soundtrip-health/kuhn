@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+@keyframes kuhn-caret { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+@keyframes kuhn-spin { to { transform: rotate(360deg) } }
+@keyframes kuhn-pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
+@keyframes kuhn-deplete { from { width: 100% } to { width: 0% } }
+@keyframes kuhn-shimmer { 0%{background-position:-280px 0} 100%{background-position:280px 0} }
+@media (prefers-reduced-motion: reduce){ *{animation:none !important} }
+</style>
+</helmet>
+
+<section data-screen-label="Direction A — Column" style="--bg:#E8EBED; --chrome:#FFFFFF; --soft:#F5F7F8; --soft-2:#EEF1F3; --line:rgba(20,22,28,.11); --line-2:rgba(20,22,28,.06); --ink:#1B1E24; --ink-2:#586069; --ink-3:#8A909A; --accent:#2F5BB7; --accent-soft:#E7EDF9; --pm:#3E63A8; --ra:#2E8C84; --advisor:#B07D2E; --writer:#7A5AA6; --reviewer:#B0524E; --analyst:#3E8A5B; width:1440px; height:940px; display:flex; flex-direction:column; background:var(--bg); color:var(--ink); font-family:'Geist',system-ui,sans-serif; font-feature-settings:'ss01','cv11'; overflow:hidden; position:relative;">
+
+  <!-- ================= TOP BAR ================= -->
+  <div style="height:52px; flex:0 0 52px; display:flex; align-items:center; justify-content:space-between; padding:0 18px; background:var(--chrome); border-bottom:1px solid var(--line);">
+    <div style="display:flex; align-items:center; gap:14px;">
+      <div style="display:flex; align-items:center; gap:9px;">
+        <div style="width:22px; height:22px; border-radius:6px; background:var(--ink); display:flex; align-items:center; justify-content:center;">
+          <div style="width:9px; height:9px; border-radius:2px; background:#fff;"></div>
+        </div>
+        <span style="font-weight:600; font-size:15px; letter-spacing:.01em;">Kuhn</span>
+      </div>
+      <div style="width:1px; height:18px; background:var(--line);"></div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:13.5px; color:var(--ink-2);">Okafor Lab</span>
+        <span style="color:var(--ink-3); font-size:13px;">/</span>
+        <span style="font-size:13.5px; font-weight:500;">TRD&nbsp;Protocol</span>
+        <span style="font:500 11px/1 'Geist'; color:var(--accent); background:var(--accent-soft); padding:4px 8px; border-radius:999px; letter-spacing:.02em;">Phase&nbsp;2</span>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px; background:var(--soft); border:1px solid var(--line-2); font-size:12.5px; color:var(--ink-2);">
+        <span style="width:13px; height:13px; border-radius:50%; border:2px solid var(--accent-soft); border-top-color:var(--accent); display:inline-block; animation:kuhn-spin 0.9s linear infinite;"></span>
+        Seeding · <span style="font-family:'Geist Mono',monospace; color:var(--ink);">2/4</span>
+      </div>
+      <button style="display:flex; align-items:center; gap:7px; padding:8px 13px; border-radius:8px; background:transparent; border:1px solid var(--line); font-size:13px; color:var(--ink);">Preview PDF</button>
+      <button style="display:flex; align-items:center; gap:7px; padding:8px 14px; border-radius:8px; background:var(--ink); border:1px solid var(--ink); font-size:13px; color:#fff; font-weight:500;">Export</button>
+    </div>
+  </div>
+
+  <!-- ================= MIDDLE ================= -->
+  <div style="flex:1; min-height:0; display:flex;">
+
+    <!-- ---------- LEFT: CHAT ---------- -->
+    <div style="width:380px; flex:0 0 380px; background:var(--chrome); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0;">
+
+      <!-- seeding progress -->
+      <div style="padding:16px 18px 14px; border-bottom:1px solid var(--line-2); background:var(--soft);">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+          <span style="font-size:11px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);">Seeding project</span>
+          <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--ink-3);">2 of 4 · ~3 min</span>
+        </div>
+        <div style="height:4px; border-radius:999px; background:var(--soft-2); overflow:hidden; margin-bottom:14px;">
+          <div style="width:46%; height:100%; background:var(--accent); border-radius:999px;"></div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <!-- stage done -->
+          <div style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="width:16px; height:16px; flex:0 0 16px; margin-top:1px; border-radius:50%; background:var(--accent); display:flex; align-items:center; justify-content:center;">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            </span>
+            <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500;">Interview</div><div style="font-size:12px; color:var(--ink-3); margin-top:1px;">Brief captured · PM</div></div>
+          </div>
+          <!-- stage running advisor -->
+          <div style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="width:16px; height:16px; flex:0 0 16px; margin-top:1px; border-radius:50%; border:2px solid var(--advisor); border-top-color:transparent; animation:kuhn-spin 0.9s linear infinite;"></span>
+            <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500; display:flex; align-items:center; gap:7px;">Ingest guidance <span style="font-size:11px; font-weight:500; color:var(--advisor);">Advisor</span></div><div style="font-size:12px; color:var(--ink-2); margin-top:1px;">Reading FDA-PTSD-guidance.pdf · p.&nbsp;12/40</div></div>
+          </div>
+          <!-- stage running research -->
+          <div style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="width:16px; height:16px; flex:0 0 16px; margin-top:1px; border-radius:50%; border:2px solid var(--ra); border-top-color:transparent; animation:kuhn-spin 0.9s linear infinite;"></span>
+            <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500; display:flex; align-items:center; gap:7px;">Build bibliography <span style="font-size:11px; font-weight:500; color:var(--ra);">Research</span></div><div style="font-size:12px; color:var(--ink-2); margin-top:1px;">24 candidates · screening for Phase 2</div></div>
+          </div>
+          <!-- stage queued -->
+          <div style="display:flex; gap:10px; align-items:flex-start; opacity:.55;">
+            <span style="width:16px; height:16px; flex:0 0 16px; margin-top:1px; border-radius:50%; border:1.5px dashed var(--ink-3);"></span>
+            <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500;">Generate skeleton</div><div style="font-size:12px; color:var(--ink-3); margin-top:1px;">Queued · Writer</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- transcript -->
+      <div class="scroll" style="flex:1; min-height:0; overflow-y:auto; padding:18px 18px 10px; display:flex; flex-direction:column; gap:18px;">
+
+        <div style="text-align:center; font-size:11.5px; color:var(--ink-3);"><span style="font-family:'Geist Mono',monospace;">10:42</span> · session restored</div>
+
+        <!-- PM message -->
+        <div style="display:flex; gap:11px;">
+          <div style="width:27px; height:27px; flex:0 0 27px; border-radius:7px; background:var(--soft-2); color:var(--ink-2); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600;">PM</div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:5px;"><span style="font-size:13px; font-weight:600;">PM</span><span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--ink-3);">10:42</span></div>
+            <div style="font-size:13.5px; line-height:1.55; color:var(--ink); margin-bottom:9px;">Thanks, Dr. Okafor — I have what I need. I've briefed the team and started seeding. You can keep working while this runs.</div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px;">
+              <span style="font-size:11.5px; color:var(--ink-2); background:var(--soft); border:1px solid var(--line-2); padding:3px 8px; border-radius:6px;">Clinical protocol</span>
+              <span style="font-size:11.5px; color:var(--ink-2); background:var(--soft); border:1px solid var(--line-2); padding:3px 8px; border-radius:6px;">Phase 2 · RCT</span>
+              <span style="font-size:11.5px; color:var(--ink-2); background:var(--soft); border:1px solid var(--line-2); padding:3px 8px; border-radius:6px;">Due Jun 30</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Research streaming (ACTIVE) -->
+        <div style="display:flex; gap:11px; padding-left:11px; margin-left:-11px; border-left:2.5px solid var(--ra);">
+          <div style="width:27px; height:27px; flex:0 0 27px; border-radius:7px; background:var(--ra); color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600;">Re</div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:5px;"><span style="font-size:13px; font-weight:600; color:var(--ra);">Research</span><span style="font-size:11px; color:var(--ra); display:flex; align-items:center; gap:4px;"><span style="width:5px; height:5px; border-radius:50%; background:var(--ra); animation:kuhn-pulse 1s ease-in-out infinite;"></span>working</span></div>
+            <div style="font-size:13.5px; line-height:1.55; color:var(--ink);">Searching PubMed and bioRxiv for primary endpoints in recent treatment-resistant depression trials. Found 24 candidate references; screening for Phase&nbsp;2 relevance<span style="display:inline-block; width:7px; height:15px; background:var(--ra); margin-left:2px; transform:translateY(2px); animation:kuhn-caret 1s step-end infinite;"></span></div>
+          </div>
+        </div>
+
+        <!-- Advisor question card — pending / answered / expired -->
+        <sc-if value="{{ isPending }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1px solid var(--advisor); border-radius:12px; overflow:hidden; background:#FBF6EC;">
+          <div style="padding:13px 14px 12px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:9px;">
+              <div style="display:flex; align-items:center; gap:8px;"><span style="width:7px; height:7px; border-radius:50%; background:var(--advisor);"></span><span style="font-size:12.5px; font-weight:600; color:var(--advisor);">Advisor needs a decision</span></div>
+              <div style="display:flex; align-items:center; gap:6px; font-family:'Geist Mono',monospace; font-size:12px; font-weight:500; color:var(--advisor); background:#F4E6CB; padding:3px 8px; border-radius:999px;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                {{ remaining }}
+              </div>
+            </div>
+            <div style="font-size:13.5px; line-height:1.55; color:var(--ink); margin-bottom:12px;">Include open-label extension studies in the evidence base, or restrict to randomized controlled trials only?</div>
+            <div style="display:flex; gap:8px;">
+              <button onClick="{{ onRCT }}" style="flex:1; padding:8px 10px; border-radius:8px; background:var(--advisor); color:#fff; border:1px solid var(--advisor); font-size:12.5px; font-weight:500;">RCTs only</button>
+              <button onClick="{{ onOLE }}" style="flex:1; padding:8px 10px; border-radius:8px; background:#fff; color:var(--ink); border:1px solid var(--line); font-size:12.5px; font-weight:500;">Include OLE</button>
+            </div>
+            <div style="font-size:11px; color:var(--ink-3); margin-top:9px;">Defaults to <span style="font-weight:500; color:var(--ink-2);">RCTs only</span> if it expires.</div>
+          </div>
+          <div style="height:3px; background:#F4E6CB;"><div style="height:100%; background:var(--advisor); animation:kuhn-deplete 60s linear forwards;"></div></div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ isAnswered }}" hint-placeholder-val="{{ false }}">
+        <div style="border:1px solid #B6D2B4; border-radius:12px; background:#fff; padding:13px 14px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;"><span style="width:18px; height:18px; border-radius:50%; background:#2E7A55; display:flex; align-items:center; justify-content:center;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span style="font-size:12.5px; font-weight:600; color:#2E7A55;">Decision recorded · Advisor</span></div>
+          <div style="font-size:13px; line-height:1.5; color:var(--ink-2); margin-bottom:10px;">Include open-label extension studies, or restrict to RCTs only?</div>
+          <div style="display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:500; color:#2E7A55; background:#DDEADC; border:1px solid #B6D2B4; padding:4px 11px; border-radius:999px;">You chose: {{ choiceLabel }}</div>
+          <div style="font-size:12px; color:var(--ink-3); margin-top:10px; line-height:1.5;">Research will build the bibliography accordingly.</div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ isExpired }}" hint-placeholder-val="{{ false }}">
+        <div style="border:1px solid var(--line); border-radius:12px; background:var(--soft); padding:13px 14px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span style="font-size:12.5px; font-weight:600; color:var(--ink-2);">Auto-resolved · Advisor</span></div>
+          <div style="font-size:13px; line-height:1.5; color:var(--ink-2);">No response in time — defaulted to <span style="font-weight:500; color:var(--ink);">RCTs only</span>. You can revisit this in references.</div>
+        </div>
+        </sc-if>
+
+      </div>
+
+      <!-- input -->
+      <div style="padding:12px 16px 14px; border-top:1px solid var(--line-2);">
+        <div style="border:1px solid var(--line); border-radius:11px; background:var(--soft); padding:10px 12px; display:flex; flex-direction:column; gap:9px;">
+          <div style="font-size:13px; color:var(--ink-3);">Ask an agent, or describe an edit…</div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <button style="display:flex; align-items:center; gap:6px; padding:5px 9px; border-radius:7px; background:var(--chrome); border:1px solid var(--line); font-size:12px; color:var(--ink-2);">
+              <span style="width:6px; height:6px; border-radius:50%; background:var(--pm);"></span> PM
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <button style="width:30px; height:30px; border-radius:8px; background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- CENTER: EDITOR ---------- -->
+    <div style="flex:1; min-width:0; background:var(--chrome); display:flex; flex-direction:column; min-height:0;">
+      <div style="height:38px; flex:0 0 38px; display:flex; align-items:center; justify-content:space-between; padding:0 22px; border-bottom:1px solid var(--line-2);">
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--ink-3); letter-spacing:.02em;">protocol / main.md</span>
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--ink-3);">1,240 words · v0.1</span>
+      </div>
+      <div class="scroll" style="flex:1; min-height:0; overflow-y:auto;">
+        <div style="max-width:660px; margin:0 auto; padding:52px 32px 80px;">
+          <div style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); margin-bottom:18px;">Clinical Trial Protocol · Draft</div>
+          <h1 style="font-family:'Source Serif 4',serif; font-weight:600; font-size:34px; line-height:1.18; letter-spacing:-0.01em; margin:0 0 14px; color:var(--ink);">Psilocybin-Assisted Therapy for Treatment-Resistant Depression</h1>
+          <div style="font-family:'Source Serif 4',serif; font-size:16px; color:var(--ink-2); margin-bottom:38px;">A Phase 2, randomized, double-blind, placebo-controlled trial</div>
+
+          <h2 style="font-family:'Source Serif 4',serif; font-weight:600; font-size:21px; margin:0 0 14px; color:var(--ink);">1&nbsp;&nbsp;Background and Rationale</h2>
+          <p style="font-family:'Source Serif 4',serif; font-size:17px; line-height:1.65; color:#26292F; margin:0 0 16px;">Treatment-resistant depression affects roughly a third of patients with major depressive disorder and is associated with substantial morbidity and cost. Recent randomized trials of psilocybin therapy have reported rapid and durable reductions in depressive symptoms<span style="display:inline-flex; align-items:baseline; gap:3px; font-family:'Geist',sans-serif; font-size:13px; color:var(--accent); background:var(--accent-soft); padding:1px 7px; border-radius:5px; margin:0 2px; transform:translateY(-1px);">Goodwin&nbsp;2022</span>, motivating a confirmatory Phase&nbsp;2 evaluation in this population.</p>
+          <p style="font-family:'Source Serif 4',serif; font-size:17px; line-height:1.65; color:#26292F; margin:0 0 8px; position:relative; padding-left:14px; border-left:2px solid var(--writer);">
+            <span style="position:absolute; left:14px; top:-22px; font-family:'Geist',sans-serif; font-size:11px; font-weight:500; color:var(--writer); display:flex; align-items:center; gap:5px;"><span style="width:5px; height:5px; border-radius:50%; background:var(--writer); animation:kuhn-pulse 1s ease-in-out infinite;"></span>Writer is drafting</span>
+            The present study builds on this evidence by evaluating a single 25&nbsp;mg dose administered with structured psychological support<span style="display:inline-block; width:8px; height:18px; background:var(--writer); margin-left:2px; transform:translateY(3px); animation:kuhn-caret 1s step-end infinite;"></span>
+          </p>
+
+          <div style="margin-top:34px; opacity:.5;">
+            <h2 style="font-family:'Source Serif 4',serif; font-weight:600; font-size:21px; margin:0 0 12px; color:var(--ink-2);">2&nbsp;&nbsp;Objectives and Endpoints</h2>
+            <div style="height:13px; border-radius:5px; margin-bottom:9px; width:92%; background:linear-gradient(90deg, var(--soft-2), var(--soft), var(--soft-2)); background-size:280px 100%; animation:kuhn-shimmer 1.6s linear infinite;"></div>
+            <div style="height:13px; border-radius:5px; margin-bottom:9px; width:78%; background:linear-gradient(90deg, var(--soft-2), var(--soft), var(--soft-2)); background-size:280px 100%; animation:kuhn-shimmer 1.6s linear infinite;"></div>
+          </div>
+          <div style="margin-top:30px; opacity:.4;">
+            <h2 style="font-family:'Source Serif 4',serif; font-weight:600; font-size:21px; margin:0 0 4px; color:var(--ink-3);">3&nbsp;&nbsp;Trial Design</h2>
+          </div>
+          <div style="margin-top:22px; opacity:.4;">
+            <h2 style="font-family:'Source Serif 4',serif; font-weight:600; font-size:21px; margin:0; color:var(--ink-3);">4&nbsp;&nbsp;Study Population</h2>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- RIGHT: FILES ---------- -->
+    <div style="width:288px; flex:0 0 288px; background:var(--chrome); border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0;">
+      <div style="height:38px; flex:0 0 38px; display:flex; align-items:center; justify-content:space-between; padding:0 16px; border-bottom:1px solid var(--line-2);">
+        <span style="font-size:11px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);">Files</span>
+        <button style="width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--ink-3); border:1px solid var(--line-2);">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="scroll" style="flex:1; min-height:0; overflow-y:auto; padding:10px 8px;">
+        <!-- protocol folder -->
+        <div style="display:flex; align-items:center; gap:7px; padding:6px 8px; font-size:13px; color:var(--ink-2); font-weight:500;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          <span>protocol</span>
+        </div>
+        <div style="padding-left:10px; display:flex; flex-direction:column;">
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; background:var(--soft);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3"/></svg>
+            <span style="flex:1;">main.md</span>
+            <span style="width:6px; height:6px; border-radius:50%; background:var(--accent);" title="modified"></span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; color:var(--ink); background:rgba(47,91,183,.06);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3"/></svg>
+            <span style="flex:1;">01-background.md</span>
+            <span style="font-size:9.5px; font-weight:600; letter-spacing:.04em; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px;">NEW</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; color:var(--ink-3);">
+            <span style="width:14px; height:14px; flex:0 0 14px; border-radius:50%; border:2px solid var(--ra); border-top-color:transparent; animation:kuhn-spin 0.9s linear infinite;"></span>
+            <span style="flex:1;">references.bib</span>
+            <span style="font-size:11px; color:var(--ra);">building</span>
+          </div>
+        </div>
+        <!-- sources folder -->
+        <div style="display:flex; align-items:center; gap:7px; padding:6px 8px; margin-top:6px; font-size:13px; color:var(--ink-2); font-weight:500;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          <span>sources</span>
+          <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:var(--ink-3); font-weight:400;">3</span>
+        </div>
+        <div style="padding-left:10px; display:flex; flex-direction:column;">
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; color:var(--ink-2);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--reviewer)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3"/></svg>
+            <span style="flex:1;">FDA-PTSD-guidance.pdf</span>
+            <span style="width:14px; height:14px; flex:0 0 14px; border-radius:50%; border:2px solid var(--advisor); border-top-color:transparent; animation:kuhn-spin 0.9s linear infinite;" title="ingesting"></span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; color:var(--ink-2);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--reviewer)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3"/></svg>
+            <span style="flex:1;">Goodwin-2022-NEJM.pdf</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; font-size:13px; color:var(--ink-2);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--pm)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3"/></svg>
+            <span style="flex:1;">sponsor-brief.docx</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= STATUS BAR ================= -->
+  <div style="height:30px; flex:0 0 30px; display:flex; align-items:center; justify-content:space-between; padding:0 16px; background:var(--soft); border-top:1px solid var(--line); font-family:'Geist Mono',monospace; font-size:11px; color:var(--ink-3);">
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span>protocol/main.md</span>
+      <span style="display:flex; align-items:center; gap:5px; color:var(--ink-2);"><span style="width:5px; height:5px; border-radius:50%; background:var(--accent); animation:kuhn-pulse 1.4s ease-in-out infinite;"></span>saving…</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <span style="display:flex; align-items:center; gap:6px;"><span style="display:flex;"><span style="width:6px; height:6px; border-radius:50%; background:var(--advisor); margin-right:-2px;"></span><span style="width:6px; height:6px; border-radius:50%; background:var(--ra); margin-right:-2px;"></span><span style="width:6px; height:6px; border-radius:50%; background:var(--pm);"></span></span>3 agents working</span>
+      <sc-if value="{{ isPending }}" hint-placeholder-val="{{ true }}"><span style="color:var(--advisor);">1 question pending</span></sc-if><sc-if value="{{ questionsResolved }}" hint-placeholder-val="{{ false }}"><span>questions answered</span></sc-if>
+      <span>48,210 tokens</span>
+    </div>
+  </div>
+
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940}}">
+class Component extends DCLogic {
+  state = { secs: 48, status: 'pending', choice: null };
+  componentDidMount() {
+    this._t = setInterval(() => {
+      this.setState(s => {
+        if (s.status !== 'pending') return {};
+        if (s.secs <= 1) return { secs: 0, status: 'expired', choice: 'RCTs only' };
+        return { secs: s.secs - 1 };
+      });
+    }, 1000);
+  }
+  componentWillUnmount() { clearInterval(this._t); }
+  answer(choice) { this.setState({ status: 'answered', choice: choice }); }
+  renderVals() {
+    const s = this.state.secs;
+    const remaining = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    return {
+      remaining: remaining,
+      isPending: this.state.status === 'pending',
+      isAnswered: this.state.status === 'answered',
+      isExpired: this.state.status === 'expired',
+      questionsResolved: this.state.status !== 'pending',
+      choiceLabel: this.state.choice,
+      onRCT: () => this.answer('RCTs only'),
+      onOLE: () => this.answer('Include OLE')
+    };
+  }
+}
+</script>
+</body>
+</html>

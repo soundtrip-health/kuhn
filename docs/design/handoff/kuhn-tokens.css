@@ -1,0 +1,102 @@
+/* ============================================================================
+   Kuhn — Design Tokens
+   Direction: "Column" (light, document-first)
+
+   Drop this into the app and reference everything via var(--token).
+   Pure custom properties — no classes, no resets — so it's safe to lift
+   into the vanilla TypeScript + CSS codebase. Dark mode is a follow-on:
+   re-declare these same names under a [data-theme="dark"] block later.
+
+   Pair with the webfonts:
+     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet">
+   ========================================================================== */
+
+:root {
+  /* ---- Surfaces -------------------------------------------------------- */
+  --bg:        #E8EBED;  /* app backdrop behind the panels                  */
+  --chrome:    #FFFFFF;  /* panels: chat, files, top bar, editor            */
+  --soft:      #F5F7F8;  /* recessed fill: seeding panel, inputs, status bar*/
+  --soft-2:    #EEF1F3;  /* deeper recess: chips, progress tracks           */
+  --paper:     #FFFFFF;  /* document canvas                                 */
+
+  /* ---- Text / ink ----------------------------------------------------- */
+  --ink:       #1B1E24;  /* primary text                                    */
+  --ink-2:     #586069;  /* secondary text                                  */
+  --ink-3:     #8A909A;  /* tertiary / metadata / eyebrows                  */
+  --ink-inv:   #FFFFFF;  /* text on accent / ink fills                      */
+  --doc-ink:   #26292F;  /* document body text (warmer than UI ink)         */
+
+  /* ---- Brand accent (one cool, authoritative blue) -------------------- */
+  --accent:        #2F5BB7;
+  --accent-deep:   #234A99;  /* hover / press                              */
+  --accent-soft:   #E7EDF9;  /* tint wash: citation chips, active rows     */
+  --accent-line:   #C7D6F0;  /* border on tinted surfaces                  */
+
+  /* ---- Lines / borders ------------------------------------------------- */
+  --line:        rgba(20, 22, 28, 0.11);
+  --line-2:      rgba(20, 22, 28, 0.06);
+  --line-strong: rgba(20, 22, 28, 0.20);
+
+  /* ---- Agent role identities ------------------------------------------ */
+  /* Used ONLY on the active / speaking agent (spine, avatar, name, dot).
+     Every other agent renders neutral ink. Keeps six agents legible
+     without turning chat into a rainbow.                                  */
+  --pm:       #3E63A8;  --pm-soft:       #E6ECF6;
+  --writer:   #7A5AA6;  --writer-soft:   #EFEAF5;
+  --ra:       #2E8C84;  --ra-soft:       #DDEEEA;
+  --advisor:  #B07D2E;  --advisor-soft:  #F4E9D2;
+  --reviewer: #B0524E;  --reviewer-soft: #F4E0DD;
+  --analyst:  #3E8A5B;  --analyst-soft:  #DEEEE3;
+
+  /* ---- Semantic ------------------------------------------------------- */
+  --good: #2E7A55;  --good-soft: #DDEADC;
+  --warn: #A94A36;  --warn-soft: #F4E0DA;
+
+  /* ---- Radii ---------------------------------------------------------- */
+  --r-xs:   6px;
+  --r-sm:   8px;
+  --r:      11px;
+  --r-lg:   14px;
+  --r-xl:   18px;
+  --r-pill: 999px;
+
+  /* ---- Spacing ramp (4px base) ---------------------------------------- */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px; --s-12: 48px;
+
+  /* ---- Elevation ------------------------------------------------------ */
+  --shadow-card: 0 1px 0 rgba(20, 22, 28, 0.03);
+  --shadow-pop:  0 8px 28px -10px rgba(20, 22, 28, 0.28);  /* menus, popovers */
+  --shadow-doc:  0 18px 50px -24px rgba(20, 22, 28, 0.45);
+
+  /* ---- Focus ---------------------------------------------------------- */
+  --focus-ring: 0 0 0 3px rgba(47, 91, 183, 0.35);
+
+  /* ---- Type families -------------------------------------------------- */
+  --font-ui:   "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-doc:  "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+
+  /* ---- UI type scale (chrome: chat, panels, controls) ----------------- */
+  --ui-h1:      600 20px/1.30 var(--font-ui);
+  --ui-h2:      600 16px/1.35 var(--font-ui);
+  --ui-title:   600 14px/1.40 var(--font-ui);
+  --ui-body:    400 13.5px/1.55 var(--font-ui);
+  --ui-small:   400 12px/1.50 var(--font-ui);
+  --ui-eyebrow: 600 11px/1.40 var(--font-ui);   /* + text-transform: uppercase; letter-spacing: .08em */
+  --ui-mono:    400 11px/1.50 var(--font-mono);
+
+  /* ---- Document type scale (the editor canvas) ------------------------ */
+  --doc-h1:    600 34px/1.18 var(--font-doc);
+  --doc-h2:    600 21px/1.30 var(--font-doc);
+  --doc-h3:    600 17px/1.40 var(--font-doc);
+  --doc-body:  400 17px/1.65 var(--font-doc);
+  --doc-small: 400 14px/1.50 var(--font-doc);
+  --doc-meta:  500 11px/1.40 var(--font-mono);  /* + uppercase .06em — eyebrows in the doc */
+  --doc-measure: 660px;                          /* max line length of the text column */
+
+  /* ---- Motion --------------------------------------------------------- */
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --dur-fast: 0.12s;
+  --dur:      0.22s;
+}

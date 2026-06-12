@@ -42,7 +42,8 @@ real-time collaboration.
   PDF, content-hash cached) and `GET /api/projects/:id/export?format=docx|tex`, both
   through the sandbox (`src/render.js`)
 
-Next: live seeding verification (022), file manager (014), `/write` (017).
+Next: `/write` (017), file manager (014), UI design implementation (025); live
+seeding verification (022) deferred during hands-on testing.
 
 ## Agent API
 
