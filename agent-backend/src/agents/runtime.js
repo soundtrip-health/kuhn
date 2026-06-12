@@ -48,6 +48,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'text', agent, content }         — full text of the finished turn
  *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
+ *   { type: 'question_expired', agent, jobId } — the pending question timed out; the agent proceeds with defaults (story 020)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
  *   { type: 'error', agent, jobId, message }
  */
@@ -96,6 +97,13 @@ async function runTask(task, internal, channel, state) {
 
   const agent = await getAgentWithTools(role);
   if (!agent) throw new Error(`Unknown agent role: ${role}`);
+
+  // Weighted budget accounting (story 020): the budget is denominated in
+  // root-agent-tier tokens, so a cheap sub-agent (Haiku RA) burns it slower
+  // than the premium root (Opus PM). The root task pins the base weight.
+  const modelWeight = modelCostWeight(agent.model ?? config.agent.model);
+  budget.baseWeight ??= modelWeight;
+  const costRatio = modelWeight / budget.baseWeight;
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId });
   state.job = job;
@@ -182,7 +190,7 @@ async function runTask(task, internal, channel, state) {
       const msgUsage = message.message?.usage;
       if (msgUsage) {
         const inputTokens = effectiveInputTokens(msgUsage);
-        budget.used += inputTokens + (msgUsage.output_tokens ?? 0);
+        budget.used += (inputTokens + (msgUsage.output_tokens ?? 0)) * costRatio;
         usage.inputTokens += inputTokens;
         usage.outputTokens += msgUsage.output_tokens ?? 0;
       }
@@ -198,7 +206,7 @@ async function runTask(task, internal, channel, state) {
           type: 'error',
           agent: agent.slug,
           jobId: job.id,
-          message: `Token budget exceeded (${budget.used} > ${budget.limit}). Task stopped.`,
+          message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
         });
         return;
       }
@@ -244,6 +252,17 @@ async function runTask(task, internal, channel, state) {
       }
     }
   }
+}
+
+// Approximate model price ratio for budget weighting (story 020), matched by
+// substring of the model id ("claude-haiku-4-5" → weights.haiku).
+function modelCostWeight(model) {
+  const weights = config.agent.modelWeights;
+  const id = (model ?? '').toLowerCase();
+  for (const [key, weight] of Object.entries(weights)) {
+    if (key !== 'default' && id.includes(key)) return weight;
+  }
+  return weights.default;
 }
 
 // Prompt-cache reads/writes are reported separately from input_tokens; count
@@ -396,6 +415,9 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         channel.push({ type: 'question', agent: agent.slug, jobId: parentJob.id, content: question });
         const reply = await waitForReply(parentJob.id, config.agent.questionTimeoutMs);
         if (reply == null) {
+          // Tell the webapp the question is no longer answerable (story 020);
+          // on task teardown the channel is already closed and this is a no-op.
+          channel.push({ type: 'question_expired', agent: agent.slug, jobId: parentJob.id });
           return {
             content: [{
               type: 'text',

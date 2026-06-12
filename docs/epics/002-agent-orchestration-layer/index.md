@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-11
+**Updated:** 2026-06-12
 
 ## Goal
 
@@ -51,7 +51,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 - [x] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
 - [x] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
-- [ ] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015)
+- [x] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015 — live verification in 022)
 - [x] Storage API with project-root enforcement; all agent file access through it (018)
 - [ ] `/cite` ported to Milkdown; `/write` slash command with streaming writer agent (016, 017)
 - [ ] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
@@ -92,8 +92,9 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 013 | [Webapp scaffold](stories/013-webapp-scaffold.md) — Vite + TS, chat UI, Milkdown editor pane, WebSocket to backend | done | L |
 | 014 | File manager — upload, browse project tree, preview files | draft | M |
-| 015 | Project seeding flow — PM interview → agent research → skeleton generation | draft | XL |
-| 020 | [Chat conversation restore & interview polish](stories/020-chat-conversation-restore.md) — transcript on reload, question-timeout UX, live interview run | ready | M |
+| 015 | [Project seeding flow](stories/015-project-seeding.md) — PM interview → parallel agent research → skeleton generation, deterministic pipeline | done | XL |
+| 020 | [Chat conversation restore & interview polish](stories/020-chat-conversation-restore.md) — transcript on reload, question-timeout UX, weighted token budget | done | M |
+| 022 | [Live seeding & reload-resume verification](stories/022-live-seeding-verification.md) — run the scripted live-SDK checks deferred from 015/020 | ready | S |
 
 ### Phase 3: Editor depth
 

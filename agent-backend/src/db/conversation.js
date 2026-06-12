@@ -45,6 +45,49 @@ export async function logMessage({ conversationId, role, content = null, toolCal
 }
 
 /**
+ * Recent top-level conversations for a project with their user/assistant
+ * messages, for chat transcript restore (story 020). Sub-agent conversations
+ * (jobs with a parent) and seeding-pipeline stage conversations (story 015,
+ * context.seedStage) are excluded — their dispatch/stage instructions would
+ * replay as fake user messages. Conversations come back newest first;
+ * messages within each are chronological.
+ * @param {number} projectId
+ * @param {object} [opts]
+ * @param {number} [opts.limit=20] - Max conversations
+ * @returns {Promise<object[]>} [{ id, agent_slug, created_at, messages: [{ role, content, created_at }] }]
+ */
+export async function listProjectConversations(projectId, { limit = 20 } = {}) {
+  const { rows: conversations } = await query(
+    `SELECT c.id, c.agent_slug, c.created_at
+     FROM conversations c
+     JOIN jobs j ON j.conversation_id = c.id
+     WHERE c.project_id = $1
+       AND j.parent_job_id IS NULL
+       AND (j.context IS NULL OR NOT j.context ? 'seedStage')
+     ORDER BY c.created_at DESC, c.id DESC
+     LIMIT $2`,
+    [projectId, limit],
+  );
+  if (conversations.length === 0) return [];
+
+  const { rows: messages } = await query(
+    `SELECT conversation_id, role, content, created_at
+     FROM messages
+     WHERE conversation_id = ANY($1)
+       AND role IN ('user', 'assistant')
+       AND content IS NOT NULL AND content <> ''
+     ORDER BY created_at ASC, id ASC`,
+    [conversations.map((c) => c.id)],
+  );
+
+  const byConversation = new Map(conversations.map((c) => [c.id, { ...c, messages: [] }]));
+  for (const { conversation_id, ...message } of messages) {
+    byConversation.get(conversation_id)?.messages.push(message);
+  }
+  return [...byConversation.values()];
+}
+
+/**
  * Retrieve message history for a conversation, ordered chronologically.
  * @param {number} conversationId
  * @param {object} [opts]

@@ -2,7 +2,11 @@
 // the active project. Full project lifecycle belongs to the PM agent (012).
 
 import { Router } from 'express';
+import { runSeedPipeline } from '../agents/seeding.js';
 import { query } from '../db.js';
+import { listProjectConversations } from '../db/conversation.js';
+import { getProject } from '../db/projects.js';
+import { streamEvents } from './sse.js';
 
 const router = Router();
 
@@ -32,6 +36,31 @@ router.post('/api/projects', async (req, res) => {
     [name, projectType],
   );
   res.status(201).json({ project: rows[0] });
+});
+
+/**
+ * POST /api/projects/:id/seed
+ * Run the seeding pipeline (story 015): PM interview → RA + Advisor research
+ * → Writer skeleton. Streams stage markers and agent events as SSE.
+ */
+router.post('/api/projects/:id/seed', async (req, res) => {
+  const project = await getProject(parseInt(req.params.id));
+  if (!project) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  await streamEvents(res, runSeedPipeline(project.id));
+});
+
+/**
+ * GET /api/projects/:id/conversations?limit=
+ * Recent top-level conversations with their user/assistant messages, newest
+ * conversation first, for chat transcript restore (story 020).
+ */
+router.get('/api/projects/:id/conversations', async (req, res) => {
+  const limit = req.query.limit != null ? parseInt(req.query.limit) : 20;
+  const conversations = await listProjectConversations(parseInt(req.params.id), { limit });
+  res.json({ conversations });
 });
 
 export default router;

@@ -1,8 +1,9 @@
 # Story 020: Chat Conversation Restore & Interview Polish
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** M
+**Completed:** 2026-06-12
 
 ## Goal
 
@@ -33,37 +34,56 @@ question round-trip.
   budget (`AGENT_TOKEN_BUDGET`, 250k, shared across the dispatch tree and
   counting cache reads) is too small for interview + RA + Advisor — the RA's
   literature search consumed ~150k and the tree died on "Token budget exceeded"
-  before the Advisor did any work. Raise the default and/or budget the seeding
-  flow explicitly (coordinate with story 015). Reload-resume mid-interview
-  remains unverified.
+  before the Advisor did any work. Reload-resume mid-interview remained
+  unverified.
 
 ## Acceptance Criteria
 
-- [ ] Backend endpoint to read conversation history for a project (e.g.
-      `GET /api/projects/:id/conversations?limit=` returning recent
+- [x] Backend endpoint to read conversation history for a project
+      (`GET /api/projects/:id/conversations?limit=` returning recent top-level
       conversations with their user/assistant messages)
-- [ ] On load, the chat panel renders the recent transcript (at minimum the
-      most recent conversation per role, rendered with the same markdown
-      pipeline as live messages) before new input is sent
-- [ ] When an ask_user question times out or its task ends unanswered, the
-      webapp gets a signal (event or terminal state) and exits answer mode with
-      a visible notice, instead of silently swallowing the stale reply box
-- [ ] A reply to a no-longer-pending question (409 from the reply route) shows
+- [x] On load, the chat panel renders the recent transcript (the last 20
+      top-level conversations, merged chronologically, rendered with the same
+      markdown pipeline as live messages) before new input is sent
+- [x] When an ask_user question times out, the backend emits a
+      `question_expired` event and the webapp exits answer mode with a visible
+      notice; when the task's stream ends with a question still pending, the
+      webapp shows "the task ended before you answered"
+- [x] A reply to a no-longer-pending question (409 from the reply route) shows
       a clear message and restores normal input mode
-- [ ] One full PM interview exercised end-to-end against the live SDK + DB
-      (manual or scripted via `webapp/scripts/`), confirming: question round
-      trip, `project.json` + `projects.config` written, RA/Advisor dispatch,
-      and reload-resume mid-interview (all but reload-resume confirmed in the
-      2026-06-11 live run — see Background)
-- [ ] Token budget sized so the PM seeding tree (interview + RA + Advisor)
-      completes: raise `AGENT_TOKEN_BUDGET` default and/or per-dispatch
-      sub-budgets (see Background finding; coordinate with story 015)
-- [ ] Budget accounting weights tokens by approximate model cost (decision
-      2026-06-12, after story 021 gave each role its own model): a Haiku RA
-      token should not count the same as an Opus PM token against the shared
-      tree budget. Weight `budget.used` increments by the running agent's
-      model price ratio (approx. Haiku 1×, Sonnet 3×, Opus 5×, normalized to
-      the PM's tier — exact weights configurable, rough is fine)
+- [x] One full PM interview exercised end-to-end against the live SDK + DB —
+      question round trip, `project.json` + `projects.config`, RA/Advisor
+      dispatch all confirmed in the 2026-06-11 live run; **reload-resume
+      mid-interview deferred to [Story 022](022-live-seeding-verification.md)**
+      (scripted as `webapp/scripts/reload-resume-check.mjs`; live runs burn
+      subscription quota)
+- [x] Token budget sized so the PM seeding tree completes:
+      `AGENT_TOKEN_BUDGET` default raised 250k → 500k, and story 015's pipeline
+      runs each stage as its own top-level task with its own budget
+- [x] Budget accounting weights tokens by approximate model cost (decision
+      2026-06-12): increments are scaled by the running agent's price weight
+      relative to the root agent's tier (Haiku 1×, Sonnet 3×, Opus 5×;
+      configurable via `AGENT_MODEL_WEIGHTS`, e.g. `haiku:1,sonnet:3,opus:5`)
+
+## Implementation
+
+- `db/conversation.js#listProjectConversations` + `GET /api/projects/:id/conversations`
+  (routes/projects.js). Sub-agent conversations (jobs with a `parent_job_id`) are
+  excluded so dispatch instructions don't replay as fake user messages.
+- `runtime.js`: `question_expired` event pushed when `waitForReply` times out
+  (no-op on task teardown — the channel is already closed); weighted budget via
+  `modelCostWeight()` and `budget.baseWeight` pinned by the root task's model.
+- `webapp/src/chat.ts`: `restore()` renders the transcript then seeds the session
+  map; event handling extracted to `createEventHandler()` (shared with the story
+  015 seed stream); answer-mode exits visibly on `question_expired`, stream end,
+  and 409 replies.
+- Tests: `runtime.test.js` (weighted budget × 3, question_expired via fake
+  timers), `conversation.test.js`, `projects.test.js`.
+
+## Known Issues
+
+- Reload-resume mid-interview not yet exercised against the live SDK.
+  **Deferred to [Story 022](022-live-seeding-verification.md).**
 
 ## Out of Scope
 
