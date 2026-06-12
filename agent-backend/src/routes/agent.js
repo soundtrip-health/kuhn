@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { deliverReply } from '../agents/questions.js';
 import { runAgentTask } from '../agents/runtime.js';
 import { getJob, listJobs } from '../db/jobs.js';
 
@@ -51,6 +52,25 @@ router.post('/api/agent/jobs/:id/dispatch', async (req, res) => {
     context: job.context,
     sessionId: job.session_id ?? undefined,
   });
+});
+
+/**
+ * POST /api/agent/jobs/:id/reply
+ * Body: { reply } — answer the pending ask_user question of a running job
+ * (story 012). The reply unblocks the agent's tool call; events keep flowing
+ * on the job's original SSE stream.
+ */
+router.post('/api/agent/jobs/:id/reply', (req, res) => {
+  const { reply } = req.body ?? {};
+  if (!reply || typeof reply !== 'string') {
+    res.status(400).json({ error: 'reply is required' });
+    return;
+  }
+  if (!deliverReply(parseInt(req.params.id), reply)) {
+    res.status(409).json({ error: 'no pending question for this job' });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 async function streamTask(res, req, task) {

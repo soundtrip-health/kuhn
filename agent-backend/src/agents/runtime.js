@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
+import { updateProjectConfig } from '../db/projects.js';
 import {
   resolveProjectDir,
   readProjectFile,
@@ -17,6 +18,7 @@ import {
   searchProjectFiles,
 } from '../storage.js';
 import { EventChannel } from './events.js';
+import { waitForReply, cancelQuestion } from './questions.js';
 import { pubmedSearch, arxivSearch } from './search.js';
 
 // DB tool slug → built-in SDK tool names. File access deliberately maps to
@@ -45,7 +47,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'text_delta', agent, content }   — token-level streaming (story 013)
  *   { type: 'text', agent, content }         — full text of the finished turn
  *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
- *   { type: 'question', agent, content }
+ *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
  *   { type: 'error', agent, jobId, message }
  */
@@ -72,7 +74,9 @@ export async function* runAgentTask(task, internal = {}) {
     }
   } finally {
     if (!state.finished) {
-      // Consumer stopped early (e.g. browser disconnected) — stop the SDK loop
+      // Consumer stopped early (e.g. browser disconnected) — stop the SDK loop.
+      // Unblock ask_user first: the SDK loop may be parked inside its handler.
+      if (state.job) cancelQuestion(state.job.id);
       try {
         await state.sdkQuery?.interrupt();
       } catch { /* already stopped */ }
@@ -119,7 +123,10 @@ async function runTask(task, internal, channel, state) {
     options: {
       systemPrompt: buildSystemPrompt(agent, projectDir),
       cwd: projectDir,
-      model: config.agent.model,
+      // Per-agent model (story 021): each role runs on its DB-configured model
+      // (sub-agents dispatched via dispatch_agent load their own row, so a
+      // Haiku RA can serve an Opus PM); AGENT_MODEL is the global fallback.
+      model: agent.model ?? config.agent.model,
       maxTurns: MAX_TURNS,
       tools: builtinTools,           // removes every built-in tool not granted to this role
       allowedTools,
@@ -374,6 +381,80 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
       async ({ query, max_results }) => searchToolResult(() => arxivSearch(query, max_results)),
+    ));
+  }
+
+  if (agent.tools.includes('ask_user')) {
+    tools.push(tool(
+      'ask_user',
+      'Ask the user a question and wait for their reply. Use this for interview questions and any decision that needs user input. Ask one question at a time and adapt to earlier answers.',
+      { question: z.string().describe('The question to show the user') },
+      async ({ question }) => {
+        // The reply round-trip (story 012): emit a question event carrying the
+        // job id, then park until POST /api/agent/jobs/:id/reply delivers the
+        // answer (or the timeout / task teardown unblocks us without one).
+        channel.push({ type: 'question', agent: agent.slug, jobId: parentJob.id, content: question });
+        const reply = await waitForReply(parentJob.id, config.agent.questionTimeoutMs);
+        if (reply == null) {
+          return {
+            content: [{
+              type: 'text',
+              text: '[No reply received. Do not wait further: continue with sensible defaults and clearly note any assumptions you make.]',
+            }],
+          };
+        }
+        return { content: [{ type: 'text', text: reply }] };
+      },
+    ));
+  }
+
+  if (agent.tools.includes('project_config')) {
+    tools.push(tool(
+      'save_project_config',
+      'Save the structured project configuration gathered in the intake interview. Updates the project record (name, type, config) and writes project.json to the workspace root. Call it once, after the interview is complete and before dispatching sub-agents.',
+      {
+        title: z.string().describe('Project title'),
+        project_type: z.enum(['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'])
+          .describe('Document type; pick the closest match for "other" projects'),
+        research_question: z.string().describe('The central research question or document purpose'),
+        deliverables: z.array(z.string()).min(1).describe('Key deliverables'),
+        timeline: z.string().describe('Key milestones and dates (use absolute dates)'),
+        source_materials: z.array(z.string()).default([])
+          .describe('Source materials the user already has (guidance docs, prior protocols, key papers, data)'),
+        notes: z.string().optional().describe('Anything else from the interview worth preserving'),
+      },
+      async (input) => {
+        try {
+          const projectConfig = {
+            title: input.title,
+            project_type: input.project_type,
+            research_question: input.research_question,
+            deliverables: input.deliverables,
+            timeline: input.timeline,
+            source_materials: input.source_materials ?? [],
+            ...(input.notes ? { notes: input.notes } : {}),
+          };
+          await updateProjectConfig(projectId, {
+            name: input.title,
+            projectType: input.project_type,
+            config: projectConfig,
+          });
+          const { created } = await writeProjectFile(
+            projectId,
+            'project.json',
+            JSON.stringify(projectConfig, null, 2) + '\n',
+          );
+          channel.push({
+            type: 'file_change',
+            agent: agent.slug,
+            path: 'project.json',
+            kind: created ? 'create' : 'update',
+          });
+          return { content: [{ type: 'text', text: 'Project configuration saved to the project record and project.json.' }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `Failed to save project config: ${err.message}` }], isError: true };
+        }
+      },
     ));
   }
 

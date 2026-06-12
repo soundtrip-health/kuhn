@@ -7,15 +7,23 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
 // ---------------------------------------------------------------------------
-// Agent definitions — slug → AGENTS.md path (relative to repo root)
+// Agent definitions — slug → AGENTS.md path (relative to repo root) + model.
+//
+// Per-agent model tiers (story 021): premium models for planning and complex
+// writing (pm, writer), mid-tier for analysis/review/domain work, cheap for
+// high-volume literature search (ra). Override per role with
+// AGENT_MODEL_<SLUG> (e.g. AGENT_MODEL_RA=claude-sonnet-4-6); a NULL model
+// falls back to AGENT_MODEL, then the SDK default, at runtime.
 // ---------------------------------------------------------------------------
+const model = (slug, fallback) => process.env[`AGENT_MODEL_${slug.toUpperCase()}`] || fallback;
+
 const AGENT_DEFS = [
-  { slug: 'pm',       name: 'Project Manager',        path: 'agents/pm/AGENTS.md' },
-  { slug: 'writer',   name: 'Writer',                 path: 'agents/writer/AGENTS.md' },
-  { slug: 'ra',       name: 'Research Assistant',      path: 'agents/research/AGENTS.md' },
-  { slug: 'advisor',  name: 'Domain Expert (Advisor)', path: 'agents/advisor/AGENTS.md' },
-  { slug: 'reviewer', name: 'Critical Reviewer',       path: 'agents/review/AGENTS.md' },
-  { slug: 'analyst',  name: 'Analyst',                 path: 'agents/analyst/AGENTS.md' },
+  { slug: 'pm',       name: 'Project Manager',        path: 'agents/pm/AGENTS.md',       model: model('pm', 'claude-opus-4-8') },
+  { slug: 'writer',   name: 'Writer',                 path: 'agents/writer/AGENTS.md',   model: model('writer', 'claude-opus-4-8') },
+  { slug: 'ra',       name: 'Research Assistant',      path: 'agents/research/AGENTS.md', model: model('ra', 'claude-haiku-4-5') },
+  { slug: 'advisor',  name: 'Domain Expert (Advisor)', path: 'agents/advisor/AGENTS.md',  model: model('advisor', 'claude-sonnet-4-6') },
+  { slug: 'reviewer', name: 'Critical Reviewer',       path: 'agents/review/AGENTS.md',   model: model('reviewer', 'claude-sonnet-4-6') },
+  { slug: 'analyst',  name: 'Analyst',                 path: 'agents/analyst/AGENTS.md',  model: model('analyst', 'claude-sonnet-4-6') },
 ];
 
 // ---------------------------------------------------------------------------
@@ -99,6 +107,40 @@ const TOOL_DEFS = [
     },
   },
   {
+    slug: 'ask_user',
+    name: 'Ask User',
+    description: 'Ask the user a question mid-task and wait for their reply',
+    parameter_schema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question to show the user' },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    slug: 'project_config',
+    name: 'Save Project Config',
+    description: 'Persist the structured project configuration gathered in the intake interview',
+    parameter_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Project title' },
+        project_type: {
+          type: 'string',
+          enum: ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'],
+          description: 'Document type',
+        },
+        research_question: { type: 'string', description: 'Central research question or document purpose' },
+        deliverables: { type: 'array', items: { type: 'string' }, description: 'Key deliverables' },
+        timeline: { type: 'string', description: 'Key milestones and dates' },
+        source_materials: { type: 'array', items: { type: 'string' }, description: 'Existing source materials' },
+        notes: { type: 'string', description: 'Other interview findings worth preserving' },
+      },
+      required: ['title', 'project_type', 'research_question', 'deliverables', 'timeline'],
+    },
+  },
+  {
     slug: 'spawn_agent',
     name: 'Spawn Agent',
     description: 'Dispatch a sub-agent to perform a focused task',
@@ -125,6 +167,8 @@ const AGENT_TOOL_MAP = {
   arxiv_search:   ['ra'],
   web_search:     ['ra', 'advisor'],
   spawn_agent:    ['pm', 'writer'],
+  ask_user:       ['pm'],
+  project_config: ['pm'],
 };
 
 // ---------------------------------------------------------------------------
@@ -148,14 +192,15 @@ async function seedAgents() {
     const description = roleMatch ? roleMatch[1].trim() : def.name;
 
     await query(
-      `INSERT INTO agents (slug, name, description, system_prompt)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO agents (slug, name, description, system_prompt, model)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (slug) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          system_prompt = EXCLUDED.system_prompt,
+         model = EXCLUDED.model,
          updated_at = now()`,
-      [def.slug, def.name, description, content],
+      [def.slug, def.name, description, content, def.model ?? null],
     );
     count++;
   }

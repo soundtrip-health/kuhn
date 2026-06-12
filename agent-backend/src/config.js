@@ -22,6 +22,11 @@ export const config = {
     tokenBudget: parseInt(process.env.AGENT_TOKEN_BUDGET || '250000'),
     // Max nested dispatch depth (writer -> research is depth 1)
     maxDispatchDepth: parseInt(process.env.AGENT_MAX_DISPATCH_DEPTH || '2'),
+    // How long ask_user waits for a reply before telling the agent to proceed
+    // with defaults (story 012)
+    questionTimeoutMs: parseInt(process.env.AGENT_QUESTION_TIMEOUT_MS || String(15 * 60 * 1000)),
+    // Global fallback model; per-agent models (agents.model, story 021) win.
+    // Per-role override at seed time: AGENT_MODEL_<SLUG> (see db/seed.js).
     model: process.env.AGENT_MODEL || undefined,
   },
   storage: {

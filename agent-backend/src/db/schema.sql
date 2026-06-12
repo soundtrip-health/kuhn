@@ -10,9 +10,14 @@ CREATE TABLE IF NOT EXISTS agents (
   name          VARCHAR(128) NOT NULL,
   description   TEXT,
   system_prompt TEXT         NOT NULL,
+  -- Per-agent model id (story 021); NULL falls back to AGENT_MODEL / SDK default
+  model         VARCHAR(64),
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+-- Story 021: column addition for databases created before per-agent models
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS model VARCHAR(64);
 
 -- ============================================================
 -- Tools

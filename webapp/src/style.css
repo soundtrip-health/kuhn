@@ -107,6 +107,8 @@ body {
 .chat-body p:first-child { margin-top: 0; }
 .chat-body p:last-child { margin-bottom: 0; }
 .chat-body pre { overflow-x: auto; background: #f2f1ef; padding: 6px; border-radius: 4px; }
+/* ask_user questions (story 012): visibly waiting for the user's answer */
+.chat-agent .chat-body.chat-question { border-left: 3px solid var(--accent); }
 
 .chat-system {
   font-size: 12px;

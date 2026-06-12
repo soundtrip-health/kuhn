@@ -2,13 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // --- Mocks -----------------------------------------------------------------
 
-const sdkState = { messages: [], interrupt: vi.fn(async () => {}) };
+// sdkState.generator (when set) replaces the canned message playback — used
+// to simulate the SDK executing a blocking tool call mid-stream.
+const sdkState = { messages: [], generator: null, interrupt: vi.fn(async () => {}) };
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(() => {
-    const iterator = (async function* () {
-      for (const m of sdkState.messages) yield m;
-    })();
+    const iterator = sdkState.generator
+      ? sdkState.generator()
+      : (async function* () {
+          for (const m of sdkState.messages) yield m;
+        })();
     iterator.interrupt = sdkState.interrupt;
     return iterator;
   }),
@@ -32,12 +36,17 @@ vi.mock('../db/jobs.js', () => ({
   createJob: vi.fn(async () => ({ id: 42 })),
   updateJob: vi.fn(async () => ({})),
 }));
+vi.mock('../db/projects.js', () => ({
+  updateProjectConfig: vi.fn(async () => ({})),
+}));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { logMessage } from '../db/conversation.js';
 import { updateJob } from '../db/jobs.js';
+import { updateProjectConfig } from '../db/projects.js';
+import { deliverReply, hasPendingQuestion } from './questions.js';
 import { runAgentTask } from './runtime.js';
 
 const RA_AGENT = {
@@ -56,6 +65,7 @@ async function collect(task) {
 beforeEach(() => {
   vi.clearAllMocks();
   sdkState.messages = [];
+  sdkState.generator = null;
   getAgentWithTools.mockResolvedValue(RA_AGENT);
 });
 
@@ -196,6 +206,24 @@ describe('runAgentTask', () => {
     ]);
   });
 
+  it('runs each agent on its DB-configured model, falling back to the global default', async () => {
+    // Per-agent model wins (story 021)
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku-4-5' });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(sdkQuery.mock.calls[0][0].options.model).toBe('claude-haiku-4-5');
+
+    // No per-agent model → global config fallback (undefined here → SDK default)
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: null });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(sdkQuery.mock.calls[1][0].options.model).toBeUndefined();
+  });
+
   it('exposes dispatch_agent only to roles with spawn_agent', async () => {
     getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'writer', tools: ['file_write', 'spawn_agent'] });
     sdkState.messages = [
@@ -207,5 +235,136 @@ describe('runAgentTask', () => {
     expect(options.allowedTools).toContain('mcp__kuhn__write_file');
     expect(options.allowedTools).toContain('mcp__kuhn__edit_file');
     expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
+  });
+});
+
+// --- Story 012: PM agent interview tools ------------------------------------
+
+const PM_AGENT = {
+  slug: 'pm',
+  name: 'Project Manager',
+  system_prompt: 'You are the PM.',
+  tools: ['file_read', 'file_list', 'spawn_agent', 'ask_user', 'project_config'],
+};
+
+describe('PM agent tools (story 012)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+  });
+
+  it('exposes ask_user and save_project_config to the pm role', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 1, input: 'go' });
+    const options = sdkQuery.mock.calls[0][0].options;
+    expect(options.allowedTools).toContain('mcp__kuhn__ask_user');
+    expect(options.allowedTools).toContain('mcp__kuhn__save_project_config');
+    expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
+  });
+
+  it('ask_user emits a question event and blocks until the reply is delivered', async () => {
+    // Simulate the SDK executing the blocking ask_user tool mid-stream
+    sdkState.generator = async function* () {
+      const { tools } = createSdkMcpServer.mock.calls[0][0];
+      const askUser = tools.find((t) => t.name === 'ask_user');
+      const result = await askUser.handler({ question: 'What type of document?' });
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: `Answer: ${result.content[0].text}` }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+
+    const events = [];
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start' })) {
+      events.push(ev);
+      if (ev.type === 'question') {
+        // The reply route resolves the registry entry keyed by the job id
+        expect(deliverReply(42, 'An NIH R01 grant')).toBe(true);
+      }
+    }
+
+    expect(events.find((e) => e.type === 'question')).toEqual({
+      type: 'question',
+      agent: 'pm',
+      jobId: 42,
+      content: 'What type of document?',
+    });
+    expect(events.find((e) => e.type === 'text')).toMatchObject({ content: 'Answer: An NIH R01 grant' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', jobId: 42 });
+  });
+
+  it('cancels a pending question when the consumer stops early', async () => {
+    sdkState.generator = async function* () {
+      const { tools } = createSdkMcpServer.mock.calls[0][0];
+      const askUser = tools.find((t) => t.name === 'ask_user');
+      await askUser.handler({ question: 'Still there?' });
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start' })) {
+      if (ev.type === 'question') break; // browser disconnected
+    }
+
+    expect(hasPendingQuestion(42)).toBe(false);
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+  });
+
+  it('save_project_config updates the project record and writes project.json', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 5, input: 'go' });
+
+    const { tools } = createSdkMcpServer.mock.calls[0][0];
+    const save = tools.find((t) => t.name === 'save_project_config');
+    const result = await save.handler({
+      title: 'GLP-1 RWE Study',
+      project_type: 'rwe-protocol',
+      research_question: 'Does GLP-1 use reduce MACE in T2D?',
+      deliverables: ['FDA RWE protocol'],
+      timeline: 'Draft by 2026-08-01',
+      source_materials: ['FDA RWE guidance 2023'],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(updateProjectConfig).toHaveBeenCalledWith(5, {
+      name: 'GLP-1 RWE Study',
+      projectType: 'rwe-protocol',
+      config: expect.objectContaining({
+        title: 'GLP-1 RWE Study',
+        project_type: 'rwe-protocol',
+        research_question: 'Does GLP-1 use reduce MACE in T2D?',
+        deliverables: ['FDA RWE protocol'],
+        timeline: 'Draft by 2026-08-01',
+        source_materials: ['FDA RWE guidance 2023'],
+      }),
+    });
+    expect(writeProjectFile).toHaveBeenCalledWith(5, 'project.json', expect.stringContaining('GLP-1 RWE Study'));
+  });
+
+  it('save_project_config surfaces failures as tool errors', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 5, input: 'go' });
+    updateProjectConfig.mockRejectedValueOnce(new Error('db down'));
+
+    const { tools } = createSdkMcpServer.mock.calls[0][0];
+    const save = tools.find((t) => t.name === 'save_project_config');
+    const result = await save.handler({
+      title: 't',
+      project_type: 'manuscript',
+      research_question: 'q',
+      deliverables: ['d'],
+      timeline: 'now',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/db down/);
   });
 });

@@ -12,14 +12,14 @@ export function resolveRoleSlug(role) {
 }
 
 /**
- * Load an agent's system prompt and assigned tool slugs.
+ * Load an agent's system prompt, model, and assigned tool slugs.
  * @param {string} role - Role name or DB slug
- * @returns {Promise<{slug: string, name: string, system_prompt: string, tools: string[]}|null>}
+ * @returns {Promise<{slug: string, name: string, system_prompt: string, model: string|null, tools: string[]}|null>}
  */
 export async function getAgentWithTools(role) {
   const slug = resolveRoleSlug(role);
   const { rows } = await query(
-    `SELECT a.slug, a.name, a.system_prompt,
+    `SELECT a.slug, a.name, a.system_prompt, a.model,
             COALESCE(array_agg(t.slug) FILTER (WHERE t.slug IS NOT NULL), '{}') AS tools
      FROM agents a
      LEFT JOIN agent_tools at ON at.agent_id = a.id
