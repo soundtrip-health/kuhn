@@ -45,3 +45,6 @@ texlyre/
 README.pdf
 TESTING.pdf
 .DS_Store
+
+# Vite dep cache
+.vite/

@@ -82,8 +82,9 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 009 | [Backend scaffold](stories/009-backend-scaffold.md) | done | L |
 | 010 | [Database + seeding](stories/010-database-seeding.md) | done | L |
 | 011 | [Agent runtime on Claude Agent SDK](stories/011-agent-runtime-sdk.md) — agent-task boundary, streaming, durable jobs | done | L |
-| 012 | [PM agent](stories/012-pm-agent.md) — interview flow, project configuration, dispatch RA/Advisor | draft | XL |
+| 012 | [PM agent](stories/012-pm-agent.md) — interview flow, project configuration, dispatch RA/Advisor | done | XL |
 | 018 | [Storage API + sandboxed execution](stories/018-storage-sandboxing.md) — project-root enforcement, containerized rendering | done | M |
+| 021 | [Per-agent model selection](stories/021-per-agent-models.md) — model tier per role on `agents.model`, env-overridable seed defaults | done | S |
 
 ### Phase 2: Webapp (single app)
 
@@ -92,6 +93,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 013 | [Webapp scaffold](stories/013-webapp-scaffold.md) — Vite + TS, chat UI, Milkdown editor pane, WebSocket to backend | done | L |
 | 014 | File manager — upload, browse project tree, preview files | draft | M |
 | 015 | Project seeding flow — PM interview → agent research → skeleton generation | draft | XL |
+| 020 | [Chat conversation restore & interview polish](stories/020-chat-conversation-restore.md) — transcript on reload, question-timeout UX, live interview run | ready | M |
 
 ### Phase 3: Editor depth
 

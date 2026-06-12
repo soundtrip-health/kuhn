@@ -33,6 +33,14 @@ export interface AgentEvent {
   message?: string;
 }
 
+export interface Job {
+  id: number;
+  role: string;
+  status: string;
+  session_id: string | null;
+  created_at: string;
+}
+
 async function expectOk(res: Response): Promise<Response> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -79,6 +87,23 @@ export async function writeTextFile(projectId: number, path: string, content: st
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: content,
+    }),
+  );
+}
+
+/** List agent jobs for a project, newest first. */
+export async function listJobs(projectId: number): Promise<Job[]> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/agent/jobs?projectId=${projectId}`));
+  return ((await res.json()) as { jobs: Job[] }).jobs;
+}
+
+/** Answer a running job's pending ask_user question (story 012). */
+export async function replyToAgent(jobId: number, reply: string): Promise<void> {
+  await expectOk(
+    await fetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply }),
     }),
   );
 }
