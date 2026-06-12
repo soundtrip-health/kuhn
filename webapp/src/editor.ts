@@ -124,8 +124,10 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     ydoc = new YDoc();
     provider = new WebsocketProvider(`${BACKEND_WS_URL}/yjs-websocket`, roomName(projectId, path), ydoc);
     collabService.bindDoc(ydoc).setAwareness(provider.awareness);
+    const boundProvider = provider;
     provider.once('sync', (isSynced: boolean) => {
-      if (!isSynced) return;
+      // Bail if the document was switched before sync arrived (story 024).
+      if (!isSynced || provider !== boundProvider) return;
       // Seed the shared doc from storage only when the room is empty;
       // otherwise the live collaborative state wins.
       collabService.applyTemplate(template).connect();
@@ -134,6 +136,10 @@ export async function openDocument(projectId: number, path: string): Promise<voi
 }
 
 export async function closeDocument(): Promise<void> {
+  // Detach the collab plugins before any teardown: late provider/awareness
+  // events otherwise dispatch into the view after editor.destroy() has
+  // removed the editorState ctx slice (story 024).
+  editor?.action((ctx) => ctx.get(collabServiceCtx).disconnect());
   if (saveTimer) await flushSave();
   provider?.destroy();
   provider = null;

@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12 (PM: story 016 done; stories 023/024 added)
+**Updated:** 2026-06-12 (PM: stories 023/024 done — TeXlyre fork removed, collab reload race fixed)
 
 ## Goal
 
@@ -25,7 +25,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | App topology | **Single app** (chat + editor + file manager) | The two-app split existed for AGPL isolation; moot with MIT editor stack |
 | Editor | **Milkdown** (ProseMirror + remark, MIT, Yjs binding) | WYSIWYG markdown for non-LaTeX users; slash commands native to ProseMirror; license dissolves AGPL apparatus |
 | Document format | **Markdown canonical**; Typst renders PDF; Pandoc exports docx/tex | Agent pipeline is markdown-native; deliverables are often Word |
-| TeXlyre fork | **Retired to reference** | Keep `texlyre/` until `/cite` is ported, then remove |
+| TeXlyre fork | **Removed** (story 023, 2026-06-12) | Kept only until the `/cite` port (016); preserved on its own remote (`soundtrip-health/texlyre@cite1`) |
 | Tenancy invariants (now) | project-scoped rows/paths; single storage API enforcing project root; sandboxed execution | Cheap now, rewrite later; per-tenant KB + shared guidance corpus is a sales requirement |
 
 ### Still in force from 2026-04-13
@@ -109,8 +109,8 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 023 | [Remove the TeXlyre fork](stories/023-remove-texlyre.md) — unblocked by 016 | ready | S |
-| 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | ready | S |
+| 023 | [Remove the TeXlyre fork](stories/023-remove-texlyre.md) — unblocked by 016 | done | S |
+| 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | done | S |
 
 ### Preserved (may revisit)
 

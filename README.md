@@ -17,13 +17,14 @@ agent runtime built on the **Claude Agent SDK**. Running today:
   durable jobs, full conversation logging, project-root-enforcing storage API, sandboxed
   Typst/Pandoc execution, Yjs servers (stories 009–012, 018, 021)
 - **Webapp** — agent chat (token streaming, mid-task questions, transcript restore on
-  reload), Milkdown editor with real-time collab, file tree (stories 013, 020)
+  reload), Milkdown editor with real-time collab and `/cite` slash command, file tree
+  (stories 013, 016, 020)
 - **Project seeding** — one click runs PM interview → RA + Advisor research in parallel →
   Writer skeleton draft, as a deterministic pipeline (story 015)
 
-The TeXlyre fork (working `/cite`, Epic 003) is retired to reference material until the
-`/cite` port lands. Next up: live seeding verification (022), file manager (014), editor
-slash commands (016/017), render/export endpoints (019).
+The TeXlyre fork (Epic 003's `/cite` reference) was removed after the port landed
+(stories 016, 023; git history preserves it). Next up: live seeding verification (022),
+file manager (014), `/write` (017), render/export endpoints (019).
 
 ## Goals
 
@@ -123,12 +124,6 @@ Opens at **http://localhost:5174** (pinned; the backend CORS allowlist includes 
 run with an empty database it creates a "Demo Manuscript" project. Use the **Seed project**
 button to run the full seeding pipeline (PM interview → research → skeleton draft) — note that
 agent runs use real model quota. See [webapp/README.md](webapp/README.md).
-
-### Legacy: TeXlyre fork (reference only)
-
-The retired TeXlyre fork still runs for reference (`cd texlyre && npm install && npm run dev`,
-http://localhost:5173/texlyre/). It will be removed once `/cite` is ported (story 016). Do not
-build new features on it.
 
 ## Development
 

@@ -5,6 +5,17 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Collab Reload Race Fix (Story 002-024, 2026-06-12)
+
+**Setup:** backend + webapp dev servers. Scripted version: `node webapp/scripts/reload-check.mjs`
+(no LLM tokens).
+
+- [ ] Open http://localhost:5174, wait for sync, reload — no `Context "editorState" not found`
+      (or any other) error in the browser console, even when reloading repeatedly against a
+      warm Yjs room
+- [ ] Type text and reload before the save debounce (~1.5 s) — the text survives the reload
+- [ ] Two tabs still sync edits (`node webapp/scripts/collab-check.mjs`)
+
 ## Slash Commands & `/cite` (Story 002-016, 2026-06-12)
 
 **Setup:** backend + webapp dev servers, open http://localhost:5174. Scripted version:
@@ -99,46 +110,13 @@ each full run costs real quota. Scripted version: `node webapp/scripts/seed-chec
 **Setup:** `cd agent-backend && docker compose up -d && npm run dev`
 
 - [ ] Health check: `GET http://localhost:3002/health` returns JSON with DB status and uptime
-- [ ] Yjs signaling: open TeXlyre in two browser tabs with the same project — edits sync via WebRTC through `ws://localhost:3002/yjs-signaling`
-- [ ] Yjs WebSocket: collaboration still works if WebRTC peer connection fails (falls back to `ws://localhost:3002/yjs-websocket/<room>`)
+- [ ] Yjs signaling: `ws://localhost:3002/yjs-signaling` accepts connections (historical — its
+      only client was the removed TeXlyre fork's y-webrtc collab; the webapp uses y-websocket)
+- [ ] Yjs WebSocket: two webapp tabs sync edits via `ws://localhost:3002/yjs-websocket/<room>`
+      (`node webapp/scripts/collab-check.mjs`)
 
-## TeXlyre `/cite` Command (Epic 003, 2026-04-13)
+## TeXlyre `/cite` Command (Epic 003, 2026-04-13) — historical
 
-**Setup:** `cd texlyre && npm run dev`, open http://localhost:5173/texlyre/
-
-### Basic Flow
-
-- [ ] Create or open a LaTeX project
-- [ ] Type a claim sentence, then on a new line type `/cite` and press Enter — citation modal opens
-- [ ] Type `/cite smith diabetes` and press Enter — modal opens with "smith diabetes" as hints
-- [ ] Search results appear from multiple providers (PubMed, OpenAlex, etc.) with source attribution
-- [ ] Select a citation — `\cite{key}` is inserted in the document
-- [ ] A `.bib` file is created or updated with the full reference entry
-- [ ] The inserted key appears in TeXlyre's bibliography autocomplete immediately
-
-### Typst Support
-
-- [ ] In a Typst document, `/cite` inserts `#cite(<key>)` syntax instead of `\cite{key}`
-
-### Provider Coverage
-
-- [ ] PubMed results appear for biomedical queries
-- [ ] OpenAlex results appear for broad academic queries
-- [ ] arXiv results appear (via Semantic Scholar API)
-- [ ] bioRxiv/medRxiv results appear
-- [ ] PsyArXiv results appear (via Semantic Scholar API)
-- [ ] IEEE Xplore results appear for engineering queries
-- [ ] If a provider fails, others still return results (no full-modal crash)
-
-### Search Quality (Story 003-010)
-
-- [ ] Multiple query variants are generated (visible in browser console)
-- [ ] Results are deduplicated across providers
-- [ ] Author/year hints improve result ranking when provided
-- [ ] Document-level keywords influence search (longer documents produce better context)
-
-### Edge Cases
-
-- [ ] `/cite` inside a LaTeX command (e.g., `\citeauthor{`) does NOT trigger the modal
-- [ ] Empty search (no context, no hints) still works without crashing
-- [ ] Rapidly opening/closing the modal does not leave stale state
+The TeXlyre fork was removed in story 002-023 (2026-06-12) after the `/cite` port to
+Milkdown (story 002-016, checklist above). The original TeXlyre checklist is in git
+history (`git show ca90441:TESTING.md`).
