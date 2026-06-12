@@ -11,6 +11,7 @@ import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
 import filesRouter from './routes/files.js';
 import projectsRouter from './routes/projects.js';
+import renderRouter from './routes/render.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
@@ -22,6 +23,7 @@ app.use(agentRouter);
 app.use(citationsRouter);
 app.use(filesRouter);
 app.use(projectsRouter);
+app.use(renderRouter);
 
 const server = createServer(app);
 

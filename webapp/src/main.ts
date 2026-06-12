@@ -9,6 +9,7 @@ import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
 import { closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
 import { onOpenMarkdownFile, refreshTree } from './files';
+import { initPreview } from './preview';
 import { notify } from './status';
 
 const MAIN_DOCUMENT = 'draft/main.md';
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
   });
 
   onOpenMarkdownFile((path) => void openDocument(project.id, path));
+  initPreview(project.id);
 
   // Seeding pipeline (story 015): PM interview → research → skeleton draft
   document.getElementById('seed-project')!.addEventListener('click', () => void startSeeding());

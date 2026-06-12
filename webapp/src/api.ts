@@ -111,6 +111,25 @@ export async function writeTextFile(projectId: number, path: string, content: st
   );
 }
 
+// ---- Render & export (story 019) ----
+
+/** Render a markdown document to PDF; rejects with the backend's readable error. */
+export async function renderPdf(projectId: number, path: string): Promise<Blob> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  );
+  return res.blob();
+}
+
+/** URL of the Pandoc export endpoint (served with Content-Disposition: attachment). */
+export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex'): string {
+  return `${BACKEND_URL}/api/projects/${projectId}/export?path=${encodeURIComponent(path)}&format=${format}`;
+}
+
 // ---- Citations (story 016) ----
 
 export interface CitationCandidate {

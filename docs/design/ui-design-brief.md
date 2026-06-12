@@ -1,6 +1,9 @@
 # Kuhn — UI Design Brief
 
-**Status:** draft
+**Status:** delivered — the "Column" direction handoff arrived 2026-06-12 and lives in
+[handoff/](handoff/) (tokens, three hi-fi screens, component specs, screenshots).
+Implementation is story
+[002-025](../epics/002-agent-orchestration-layer/stories/025-ui-design-implementation.md).
 **Created:** 2026-06-12
 **Audience:** Claude Design (or any designer starting the Kuhn UI)
 **Companion:** [claude-design-prompt.md](claude-design-prompt.md) — the kickoff prompt that references this brief

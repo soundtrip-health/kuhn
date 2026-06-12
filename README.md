@@ -21,10 +21,13 @@ agent runtime built on the **Claude Agent SDK**. Running today:
   (stories 013, 016, 020)
 - **Project seeding** — one click runs PM interview → RA + Advisor research in parallel →
   Writer skeleton draft, as a deterministic pipeline (story 015)
+- **Render & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations,
+  sandboxed) and one-click docx/LaTeX export (story 019)
 
 The TeXlyre fork (Epic 003's `/cite` reference) was removed after the port landed
-(stories 016, 023; git history preserves it). Next up: live seeding verification (022),
-file manager (014), `/write` (017), render/export endpoints (019).
+(stories 016, 023; git history preserves it). Next up: `/write` (017), file manager (014),
+UI design implementation (025). Live seeding verification (022) is deferred while the
+prototype is tested hands-on.
 
 ## Goals
 
@@ -130,7 +133,8 @@ agent runs use real model quota. See [webapp/README.md](webapp/README.md).
 ### Additional Prerequisites
 
 - Python 3.11+ (for agent scripts and figure generation)
-- Typst and Pandoc (document rendering/export)
+- Typst + Pandoc sandbox images for rendering/export (one-time:
+  `docker pull ghcr.io/typst/typst:latest && docker pull pandoc/core:latest`)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
 ### Agent Dependencies

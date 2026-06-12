@@ -23,6 +23,11 @@ npm run dev        # http://localhost:5174 (pinned; backend CORS allows it)
   skeleton draft. Stage progress is narrated as system lines.
 - **Files** — project tree from the storage API; `.md` files open in the editor.
   Upload/preview lands with story 014.
+- **Preview & export** (topbar Preview button, story 019) — PDF preview pane of
+  the open document (rendered on the backend: markdown → Typst → PDF, citations
+  resolved against `references.bib`), plus `.docx`/`.tex` download buttons.
+  Compile errors show in the pane's status line. Needs the Typst/Pandoc Docker
+  images (see ../agent-backend/README.md).
 - On first run with an empty database the app creates a "Demo Manuscript"
   project through the API.
 
@@ -32,6 +37,10 @@ agent tokens):
 ```bash
 npm run smoke        # load, edit, debounced save persists, two-page collab sync
 npm run smoke:chat   # live agent round-trip through the chat UI
+node scripts/cite-check.mjs    # slash menu → /cite picker → chip → bib round-trip (no tokens)
+node scripts/render-check.mjs  # PDF render, docx/tex export, error surface (no tokens)
+node scripts/reload-check.mjs  # reload against a warm Yjs room: no errors, no lost edits (no tokens)
+node scripts/collab-check.mjs  # two-page collab sync (no tokens)
 ```
 
 Live verification scripts for story 022 (expensive — they drive real Opus/Haiku
