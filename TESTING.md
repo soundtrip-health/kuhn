@@ -5,6 +5,28 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Slash Commands & `/cite` (Story 002-016, 2026-06-12)
+
+**Setup:** backend + webapp dev servers, open http://localhost:5174. Scripted version:
+`node webapp/scripts/cite-check.mjs` (citation endpoints intercepted — no PubMed network
+or LLM tokens needed). Backend unit tests: `cd agent-backend && npm test` (citations.test.js).
+
+- [ ] Type `/` at the start of a line or after a space — command menu opens at the caret;
+      typing filters it; ↑↓ navigate, Esc closes, Enter/Tab or click selects
+- [ ] `/` mid-word or right after a citation chip does NOT open the menu
+- [ ] Select **/cite** — the typed `/cite` text is consumed and the picker opens; search
+      "semaglutide cardiovascular" → PubMed candidates with title/authors/journal/year
+- [ ] Pick a candidate — a styled `[@key]` chip is inserted; `draft/references.bib` gains a
+      full BibTeX entry (file tree refreshes); the saved markdown contains plain `[@key]`
+- [ ] Cite the same paper again — the existing key is reused, no duplicate bib entry
+- [ ] Hover a chip — tooltip shows authors (year), title, journal from the bib
+- [ ] Reload — `[@key]` in the markdown source renders as a chip again
+- [ ] Error paths: nonsense query → "No results"; backend stopped → error in the picker
+      status line, editor keeps working
+- [ ] Agent path: ask the RA to "find and add a citation about X to the bibliography" —
+      it uses `add_citation`, chat shows "📚 ra added citation [@key]", bib + tree refresh
+      (costs real quota)
+
 ## Project Seeding Pipeline (Story 002-015, 2026-06-12)
 
 **Setup:** backend (`cd agent-backend && npm run dev`) + webapp (`cd webapp && npm run dev`),

@@ -94,6 +94,19 @@ const TOOL_DEFS = [
     },
   },
   {
+    slug: 'add_citation',
+    name: 'Add Citation',
+    description: 'Add a PubMed-verified citation to the project bibliography and return its BibTeX key',
+    parameter_schema: {
+      type: 'object',
+      properties: {
+        pmid: { type: 'string', description: 'PubMed ID of the work to cite' },
+        path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' },
+      },
+      required: ['pmid'],
+    },
+  },
+  {
     slug: 'web_search',
     name: 'Web Search',
     description: 'General web search for documents, guidelines, and references',
@@ -167,6 +180,9 @@ const AGENT_TOOL_MAP = {
   file_list:      ['pm', 'writer', 'ra', 'advisor', 'reviewer', 'analyst'],
   pubmed_search:  ['ra'],
   arxiv_search:   ['ra'],
+  // PubMed-verified bibliography upsert (story 016): ra during seeding and
+  // research tasks, writer when drafting needs an inline citation
+  add_citation:   ['ra', 'writer'],
   web_search:     ['ra', 'advisor'],
   spawn_agent:    ['pm', 'writer'],
   ask_user:       ['pm'],

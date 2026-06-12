@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12
+**Updated:** 2026-06-12 (PM: story 016 done; stories 023/024 added)
 
 ## Goal
 
@@ -53,7 +53,8 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 - [x] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
 - [x] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015 — live verification in 022)
 - [x] Storage API with project-root enforcement; all agent file access through it (018)
-- [ ] `/cite` ported to Milkdown; `/write` slash command with streaming writer agent (016, 017)
+- [x] `/cite` ported to Milkdown: slash-command plugin, citation picker, chips, bib upsert (016)
+- [ ] `/write` slash command with streaming writer agent (017)
 - [ ] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
 - [ ] Durable job model for long-running agent work (part of 011)
 
@@ -100,9 +101,16 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | ready | L |
+| 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | done | L |
 | 017 | Writer agent + `/write` — streaming edits into the document with accept/reject | draft | XL |
 | 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | draft | L |
+
+### Cleanup & fixes
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 023 | [Remove the TeXlyre fork](stories/023-remove-texlyre.md) — unblocked by 016 | ready | S |
+| 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | ready | S |
 
 ### Preserved (may revisit)
 

@@ -91,7 +91,8 @@ Consequences:
   isolation. With an MIT editor stack, chat, editor, and file manager are one application.
 - **TeXlyre fork retired** to reference material. The `/cite` backend logic (PubMed grounding,
   bib management, Epic 003) ports; only the editor-side UI is rebuilt as a Milkdown/ProseMirror
-  plugin. Keep `texlyre/` in-tree until the `/cite` port is done, then remove.
+  plugin. The port completed with story 002-016 (2026-06-12); `texlyre/` removal is owned by
+  story 002-023.
 
 ## Agent Runtime
 

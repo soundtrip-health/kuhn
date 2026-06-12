@@ -131,6 +131,12 @@ function createEventHandler(): (event: AgentEvent) => void {
         if (event.path) onFileChange(event.path);
         break;
       }
+      case 'citation': {
+        // An agent upserted the bibliography (story 016)
+        appendSystemLine(`📚 ${event.agent} added citation [@${event.key}]`);
+        if (event.path) onFileChange(event.path);
+        break;
+      }
       case 'question': {
         // The agent is blocked waiting for an answer: render the question and
         // switch the input box into answer mode.

@@ -22,11 +22,14 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'question' | 'question_expired' | 'done' | 'error' | 'stage';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'done' | 'error' | 'stage';
   agent: string;
   content?: string;
   path?: string;
   kind?: 'create' | 'update' | 'delete';
+  // Citation upsert by an agent (story 016)
+  key?: string;
+  bibtex?: string | null;
   jobId?: number;
   sessionId?: string;
   usage?: { inputTokens: number; outputTokens: number };
@@ -106,6 +109,48 @@ export async function writeTextFile(projectId: number, path: string, content: st
       body: content,
     }),
   );
+}
+
+// ---- Citations (story 016) ----
+
+export interface CitationCandidate {
+  pmid: string;
+  title: string;
+  authors: string[];
+  journal: string;
+  year: string | null;
+  doi: string | null;
+}
+
+/** Search PubMed for citation candidates (story 016). */
+export async function searchCitations(
+  projectId: number,
+  query: string,
+  max = 8,
+  signal?: AbortSignal,
+): Promise<CitationCandidate[]> {
+  const res = await expectOk(
+    await fetch(
+      `${BACKEND_URL}/api/projects/${projectId}/citations/search?q=${encodeURIComponent(query)}&max=${max}`,
+      { signal },
+    ),
+  );
+  return ((await res.json()) as { candidates: CitationCandidate[] }).candidates;
+}
+
+/** Upsert a PubMed work into the project bibliography; returns its BibTeX key. */
+export async function addCitation(
+  projectId: number,
+  pmid: string,
+): Promise<{ key: string; created: boolean; path: string }> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/citations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pmid }),
+    }),
+  );
+  return (await res.json()) as { key: string; created: boolean; path: string };
 }
 
 /** Recent top-level conversations with messages, newest first (story 020). */

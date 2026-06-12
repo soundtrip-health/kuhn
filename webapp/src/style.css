@@ -189,3 +189,90 @@ body {
 #status-save[data-state='dirty'], #status-save[data-state='saving'] { color: #b48e2f; }
 #status-agent:not(:empty)::before { content: '⏳ '; }
 #status-notice { color: #b48e2f; }
+
+/* ---- Slash command menu (story 016) ---- */
+.slash-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 240px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  display: none; /* SlashProvider toggles data-show */
+  flex-direction: column;
+}
+.slash-menu[data-show='true'] { display: flex; }
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.slash-item:hover, .slash-item.active { background: #eef2f7; }
+.slash-name { font-weight: 600; color: var(--accent); }
+.slash-hint { color: var(--muted); font-size: 12px; }
+
+/* ---- /cite picker (story 016) ---- */
+.cite-picker {
+  position: fixed;
+  z-index: 60;
+  width: 440px;
+  max-width: calc(100vw - 24px);
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cite-input {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 14px;
+}
+.cite-input:focus { outline: none; border-color: var(--accent); }
+.cite-status { font-size: 12px; color: var(--muted); padding: 0 2px; }
+.cite-status-error { color: var(--error); }
+.cite-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.cite-candidate {
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cite-candidate:hover, .cite-candidate.active { background: #eef2f7; }
+.cite-title { font-size: 13px; }
+.cite-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ---- Citation chips (story 016) ---- */
+.citation-chip {
+  display: inline-block;
+  background: #e8eef5;
+  color: #3b5b82;
+  border: 1px solid #cfdcea;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: default;
+  white-space: nowrap;
+}
+.ProseMirror-selectednode.citation-chip { outline: 2px solid var(--accent); }
