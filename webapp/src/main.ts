@@ -1,14 +1,17 @@
-// Kuhn webapp entry point (story 013): bootstrap the active project, then
-// wire the three panes — agent chat, Milkdown editor, file tree — and the
-// status bar.
+// Kuhn webapp entry point (story 013; restyled for story 025): bootstrap the
+// active project, then wire the three panes — agent chat, Milkdown editor, file
+// tree — the top bar, and the status bar against the "Column" design.
 
+import './kuhn-tokens.css';
 import './style.css';
 
+import { initAgentSelector } from './agent-selector';
 import { createProject, listProjects, writeTextFile, type Project } from './api';
 import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
 import { closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
-import { onOpenMarkdownFile, refreshTree } from './files';
+import { onOpenMarkdownFile, refreshTree, setActiveFile } from './files';
+import { icon } from './icons';
 import { initPreview } from './preview';
 import { notify } from './status';
 
@@ -42,8 +45,59 @@ function wirePanelToggles(): void {
   wire('toggle-files', 'files-panel');
 }
 
+// Top-bar Export dropdown — the real #export-docx / #export-tex buttons live
+// inside; preview.ts binds their click handlers (story 019).
+function wireExportMenu(): void {
+  const btn = document.getElementById('export-menu-btn');
+  const menu = document.getElementById('export-menu');
+  if (!btn || !menu) return;
+  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    btn.setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !menu.contains(e.target as Node)) close();
+  });
+  menu.addEventListener('click', () => close()); // pick a format → close
+}
+
+// Empty-state editor hero (story 025 screen 3): shown by the editor when the
+// document is blank. Seed project → seeding pipeline; Start blank → dismiss.
+function buildEditorHero(): void {
+  const pane = document.getElementById('editor-pane');
+  if (!pane || document.getElementById('editor-hero')) return;
+  const hero = document.createElement('div');
+  hero.id = 'editor-hero';
+  hero.hidden = true;
+  hero.innerHTML =
+    `<div class="hero-inner">` +
+      `<div class="hero-icon">${icon('file-text', { size: 24, stroke: 1.6 })}</div>` +
+      `<h1 class="hero-title">Start your document</h1>` +
+      `<p class="hero-sub">Seed the project to get a researched skeleton — background, ` +
+        `objectives, design, endpoints — drafted from your materials. Or begin with a blank page.</p>` +
+      `<div class="hero-actions">` +
+        `<button id="hero-seed" class="btn btn-accent">${icon('sparkle', { size: 15, stroke: 2 })} Seed project</button>` +
+        `<button id="hero-blank" class="btn btn-ghost">Start blank</button>` +
+      `</div>` +
+      `<div class="hero-privacy">${icon('lock', { size: 13, stroke: 1.8 })} Your materials stay private to this project.</div>` +
+    `</div>`;
+  pane.append(hero);
+  hero.querySelector('#hero-seed')!.addEventListener('click', () => void startSeeding());
+  hero.querySelector('#hero-blank')!.addEventListener('click', () => {
+    hero.hidden = true;
+    (document.querySelector('#editor .milkdown [contenteditable]') as HTMLElement | null)?.focus();
+  });
+}
+
 async function main(): Promise<void> {
   wirePanelToggles();
+  wireExportMenu();
+  initAgentSelector();
+  buildEditorHero();
+  const sendBtn = document.querySelector('.send-btn');
+  if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });
 
   let project: Project;
   try {
@@ -65,7 +119,10 @@ async function main(): Promise<void> {
     }
   });
 
-  onOpenMarkdownFile((path) => void openDocument(project.id, path));
+  onOpenMarkdownFile((path) => {
+    setActiveFile(path);
+    void openDocument(project.id, path);
+  });
   initPreview(project.id);
 
   // Seeding pipeline (story 015): PM interview → research → skeleton draft
@@ -80,6 +137,7 @@ async function main(): Promise<void> {
   window.addEventListener('beforeunload', () => void closeDocument());
 
   await refreshTree(project.id);
+  setActiveFile(MAIN_DOCUMENT);
   await openDocument(project.id, MAIN_DOCUMENT);
 }
 

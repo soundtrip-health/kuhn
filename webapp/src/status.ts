@@ -1,10 +1,19 @@
-// Status bar: render/save state, agent activity, token usage.
+// Status bar + top-bar activity (story 025). The status bar (bottom) carries
+// the document path, save state, agent activity, and token usage. The top bar
+// shows a single live indicator: a "Saving…"/"Saved" affordance, or — while the
+// seeding pipeline runs — a "Seeding · N/M" chip (set by seeding.ts).
+
+import { icon } from './icons';
 
 const el = (id: string) => document.getElementById(id)!;
 
 export type SaveState = 'saved' | 'saving' | 'dirty' | 'error';
 
+let lastSaveState: SaveState = 'saved';
+let seedingChip: { done: number; total: number } | null = null;
+
 export function setSaveState(state: SaveState, detail = ''): void {
+  lastSaveState = state;
   const labels: Record<SaveState, string> = {
     saved: 'saved',
     saving: 'saving…',
@@ -14,6 +23,44 @@ export function setSaveState(state: SaveState, detail = ''): void {
   const node = el('status-save');
   node.textContent = labels[state];
   node.dataset.state = state;
+  renderTopbar();
+}
+
+/** Show the seeding chip in the top bar (called by the seeding panel). */
+export function setSeedingChip(done: number, total: number): void {
+  seedingChip = { done, total };
+  renderTopbar();
+}
+
+export function clearSeedingChip(): void {
+  seedingChip = null;
+  renderTopbar();
+}
+
+function renderTopbar(): void {
+  const node = document.getElementById('topbar-activity');
+  if (!node) return;
+
+  if (seedingChip) {
+    node.hidden = false;
+    node.className = 'topbar-activity';
+    node.innerHTML =
+      `<span class="ring"></span>Seeding · <span class="mono">${seedingChip.done}/${seedingChip.total}</span>`;
+    return;
+  }
+  if (lastSaveState === 'saving' || lastSaveState === 'dirty') {
+    node.hidden = false;
+    node.className = 'topbar-activity';
+    node.innerHTML = `<span class="ring"></span>Saving…`;
+  } else if (lastSaveState === 'error') {
+    node.hidden = false;
+    node.className = 'topbar-activity is-error';
+    node.textContent = 'Save failed';
+  } else {
+    node.hidden = false;
+    node.className = 'topbar-activity is-saved';
+    node.innerHTML = `${icon('check', { size: 14, stroke: 2.2 })}Saved`;
+  }
 }
 
 export function setAgentActivity(text: string): void {
@@ -27,7 +74,7 @@ export function addTokenUsage(usage: { inputTokens: number; outputTokens: number
   totalInput += usage.inputTokens;
   totalOutput += usage.outputTokens;
   el('status-tokens').textContent =
-    `tokens: ${totalInput.toLocaleString()} in / ${totalOutput.toLocaleString()} out`;
+    `${(totalInput + totalOutput).toLocaleString()} tokens`;
 }
 
 export function setDocument(path: string): void {

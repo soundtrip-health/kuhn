@@ -4,63 +4,125 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kuhn</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
+    <!-- ================= TOP BAR ================= -->
     <header id="topbar">
-      <span id="app-name">Kuhn</span>
-      <span id="project-name"></span>
-      <span class="spacer"></span>
-      <button id="seed-project" type="button" title="Run the seeding pipeline: PM interview, background research, skeleton draft">Seed project</button>
-      <button id="toggle-chat" type="button" title="Toggle chat panel">Chat</button>
-      <button id="toggle-preview" type="button" title="Toggle PDF preview">Preview</button>
-      <button id="toggle-files" type="button" title="Toggle files panel">Files</button>
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><span class="brand-mark-inner"></span></span>
+          <span id="app-name">Kuhn</span>
+        </div>
+        <span class="topbar-divider" aria-hidden="true"></span>
+        <nav class="breadcrumb" aria-label="Project">
+          <span class="breadcrumb-org">Okafor Lab</span>
+          <span class="breadcrumb-sep">/</span>
+          <span id="project-name" class="breadcrumb-project"></span>
+          <span class="phase-pill">Phase&nbsp;2</span>
+        </nav>
+      </div>
+      <div class="topbar-right">
+        <span id="topbar-activity" class="topbar-activity" hidden></span>
+        <button id="seed-project" type="button" class="btn btn-ghost btn-icon-text"
+          title="Run the seeding pipeline: PM interview, background research, skeleton draft">
+          Seed project
+        </button>
+        <button id="toggle-chat" type="button" class="btn btn-quiet" title="Toggle chat panel">Chat</button>
+        <button id="toggle-files" type="button" class="btn btn-quiet" title="Toggle files panel">Files</button>
+        <button id="toggle-preview" type="button" class="btn btn-ghost" title="Toggle PDF preview">Preview&nbsp;PDF</button>
+        <div class="export-wrap">
+          <button id="export-menu-btn" type="button" class="btn btn-solid" title="Export the document"
+            aria-haspopup="true" aria-expanded="false">Export</button>
+          <div id="export-menu" class="export-menu" hidden role="menu">
+            <button id="export-docx" type="button" class="export-item" role="menuitem" title="Export as Word document">Word&nbsp;(.docx)</button>
+            <button id="export-tex" type="button" class="export-item" role="menuitem" title="Export as LaTeX">LaTeX&nbsp;(.tex)</button>
+          </div>
+        </div>
+      </div>
     </header>
 
+    <!-- ================= MIDDLE ================= -->
     <main id="layout">
+      <!-- ---------- LEFT: CHAT ---------- -->
       <aside id="chat-panel">
+        <div id="seeding-panel" hidden></div>
         <div id="chat-log"></div>
         <form id="chat-form">
-          <select id="chat-role" title="Agent role">
-            <option value="pm" selected>PM</option>
-            <option value="writer">Writer</option>
-            <option value="ra">Research</option>
-            <option value="advisor">Advisor</option>
-            <option value="reviewer">Reviewer</option>
-            <option value="analyst">Analyst</option>
-          </select>
-          <textarea id="chat-input" rows="3" placeholder="Ask an agent… (Enter to send, Shift+Enter for newline)"></textarea>
-          <button type="submit">Send</button>
+          <div class="chat-field">
+            <textarea id="chat-input" rows="1"
+              placeholder="Ask an agent, or describe an edit…"></textarea>
+            <div class="chat-field-row">
+              <div class="agent-selector">
+                <button id="agent-selector-btn" type="button" class="agent-pill"
+                  aria-haspopup="listbox" aria-expanded="false" title="Choose which agent to address"></button>
+                <div id="agent-selector-menu" class="agent-menu" hidden role="listbox"></div>
+                <!-- Hidden native control: chat.ts reads its .value (story 025 keeps the contract) -->
+                <select id="chat-role" tabindex="-1" aria-hidden="true">
+                  <option value="pm" selected>PM</option>
+                  <option value="writer">Writer</option>
+                  <option value="ra">Research</option>
+                  <option value="advisor">Advisor</option>
+                  <option value="reviewer">Reviewer</option>
+                  <option value="analyst">Analyst</option>
+                </select>
+              </div>
+              <button type="submit" class="send-btn" title="Send (Enter)" aria-label="Send"></button>
+            </div>
+          </div>
         </form>
       </aside>
 
+      <!-- ---------- CENTER: EDITOR ---------- -->
       <section id="editor-pane">
-        <div id="editor"></div>
+        <div id="editor-subheader">
+          <span id="editor-path" class="editor-path">untitled.md</span>
+          <div class="editor-meta">
+            <span id="editor-wordcount">0 words</span>
+            <span class="slash-hint-chip"><kbd>/</kbd> commands</span>
+          </div>
+        </div>
+        <div id="editor-scroll">
+          <div id="editor"></div>
+        </div>
       </section>
 
+      <!-- ---------- PDF PREVIEW (story 019) ---------- -->
       <aside id="preview-panel" class="collapsed">
         <div id="preview-toolbar">
-          <span class="panel-title">Preview</span>
-          <button id="preview-refresh" type="button" title="Re-render the PDF">Render</button>
-          <button id="export-docx" type="button" title="Export as Word document">.docx</button>
-          <button id="export-tex" type="button" title="Export as LaTeX">.tex</button>
+          <span class="panel-eyebrow">Preview</span>
+          <span class="spacer"></span>
+          <button id="preview-refresh" type="button" class="btn btn-quiet btn-sm" title="Re-render the PDF">Render</button>
         </div>
         <div id="preview-status"></div>
         <iframe id="preview-frame" title="PDF preview"></iframe>
       </aside>
 
+      <!-- ---------- RIGHT: FILES ---------- -->
       <aside id="files-panel">
-        <div class="panel-title">Files</div>
+        <div id="files-header">
+          <span class="panel-eyebrow">Files</span>
+        </div>
         <div id="file-tree"></div>
       </aside>
     </main>
 
+    <!-- ================= STATUS BAR ================= -->
     <footer id="statusbar">
-      <span id="status-doc"></span>
-      <span id="status-save" data-state="saved">saved</span>
-      <span id="status-agent"></span>
-      <span id="status-notice"></span>
-      <span class="spacer"></span>
-      <span id="status-tokens"></span>
+      <div class="status-left">
+        <span id="status-doc"></span>
+        <span id="status-save" data-state="saved">saved</span>
+        <span id="status-notice"></span>
+      </div>
+      <div class="status-right">
+        <span id="status-agent"></span>
+        <span id="status-tokens"></span>
+      </div>
     </footer>
 
     <script type="module" src="/src/main.ts"></script>

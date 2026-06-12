@@ -97,6 +97,8 @@ const statusText = await page.textContent('#preview-status');
 check(statusText?.includes('draft/main.md') ?? false, `preview status shows the document (got "${statusText}")`);
 
 const downloadPromise = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
+// Export buttons live in the top-bar Export dropdown (story 025) — open it first.
+await page.click('#export-menu-btn');
 await page.click('#export-docx');
 const download = await downloadPromise;
 check(download?.suggestedFilename() === 'main.docx', 'export button downloads main.docx');

@@ -1,11 +1,15 @@
-// Agent chat panel: send a message to the selected agent role, stream the
-// response (token-level text_delta events, finalized by per-turn text
-// events), render markdown in replies, tag messages with the agent role.
-// Agents can ask questions mid-task (story 012): a question event switches
-// the input box into answer mode and the reply is POSTed back into the
-// running job while its event stream stays open. On load the panel restores
-// the recent transcript from the conversation log (story 020), and the Seed
-// button runs the seeding pipeline through the same event handling (015).
+// Agent chat panel (story 013, restyled for story 025): send a message to the
+// selected agent role, stream the response (token-level text_delta events,
+// finalized by per-turn text events), render markdown in replies, and tag
+// messages with the agent identity. The design's color discipline applies: an
+// agent gets role color (spine, avatar, name, working dot, caret) ONLY while it
+// is the one streaming; every settled/idle agent renders neutral ink.
+//
+// Agents can ask questions mid-task (story 012): a question event renders an
+// agent question card (story 025) and switches the input box into answer mode;
+// the reply is POSTed back into the running job while its event stream stays
+// open. On load the panel restores the recent transcript (story 020), and the
+// Seed button runs the seeding pipeline (015), narrated by the seeding panel.
 
 import { marked } from 'marked';
 
@@ -17,11 +21,15 @@ import {
   seedProject,
   type AgentEvent,
 } from './api';
+import { agentIdentity } from './agents';
+import { icon } from './icons';
+import { QuestionCard } from './question-card';
+import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity } from './status';
 
 marked.setOptions({ gfm: true, breaks: false });
 
-const DEFAULT_PLACEHOLDER = 'Ask an agent… (Enter to send, Shift+Enter for newline)';
+const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 
 // SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
@@ -31,6 +39,7 @@ let running = false;
 // Job waiting on an ask_user reply; the input box answers it instead of
 // starting a new task
 let pendingQuestionJobId: number | null = null;
+let activeQuestionCard: QuestionCard | null = null;
 let onFileChange: (path: string) => void = () => {};
 
 export function initChat(projectId: number, fileChangeHandler: (path: string) => void): void {
@@ -51,6 +60,13 @@ export function initChat(projectId: number, fileChangeHandler: (path: string) =>
       void send();
     }
   });
+  // Auto-grow the single-line field as the user types
+  input.addEventListener('input', () => autoGrow(input));
+}
+
+function autoGrow(input: HTMLTextAreaElement): void {
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 }
 
 // Restore prior state on page load (story 020): render the recent transcript
@@ -64,9 +80,6 @@ async function restore(): Promise<void> {
       // Jobs are newest first; keep the most recent session per role
       if (job.session_id && !sessions.has(job.role)) sessions.set(job.role, job.session_id);
     }
-    if (sessions.size > 0) {
-      appendSystemLine(`↺ resumed session${sessions.size > 1 ? 's' : ''}: ${[...sessions.keys()].join(', ')}`);
-    }
   } catch {
     // No backend or no history yet — start fresh
   }
@@ -78,16 +91,20 @@ async function restoreTranscript(): Promise<void> {
   const messages = conversations
     .reverse()
     .flatMap((c) => c.messages.map((m) => ({ ...m, agent: c.agent_slug })));
-  if (messages.length === 0) return;
+  if (messages.length === 0) {
+    appendGreeting();
+    return;
+  }
 
+  appendDivider('session restored', messages[0].created_at);
   for (const message of messages) {
     if (message.role === 'user') {
-      appendMessage('user', 'you').append(textFragment(message.content));
+      appendUserMessage(message.content);
     } else {
-      appendMessage('agent', message.agent).innerHTML = marked.parse(message.content, { async: false });
+      const { body } = appendAgentMessage(message.agent, message.created_at);
+      renderAgentBody(body, message.agent, message.content);
     }
   }
-  appendSystemLine('— restored transcript —');
 }
 
 /**
@@ -96,17 +113,27 @@ async function restoreTranscript(): Promise<void> {
  * a finalized turn (or from a different agent) starts a new bubble.
  */
 function createEventHandler(): (event: AgentEvent) => void {
-  let bubble: HTMLElement | null = null;
+  let wrapper: HTMLElement | null = null;
+  let body: HTMLElement | null = null;
   let bubbleAgent = '';
   let streamed = '';
 
   const ensureBubble = (agent: string): HTMLElement => {
-    if (!bubble || bubbleAgent !== agent) {
-      bubble = appendMessage('agent', agent);
+    if (!body || bubbleAgent !== agent) {
+      const created = appendAgentMessage(agent, new Date().toISOString());
+      wrapper = created.wrapper;
+      body = created.body;
       bubbleAgent = agent;
       streamed = '';
+      setActive(wrapper, agent, true); // it's streaming → role color
     }
-    return bubble;
+    return body;
+  };
+
+  const finalize = (): void => {
+    if (wrapper) setActive(wrapper, bubbleAgent, false);
+    wrapper = null;
+    body = null;
   };
 
   return (event: AgentEvent): void => {
@@ -121,31 +148,29 @@ function createEventHandler(): (event: AgentEvent) => void {
       case 'text': {
         // Final turn text: replace accumulated deltas with rendered markdown
         const node = ensureBubble(event.agent);
-        node.innerHTML = marked.parse(event.content ?? '', { async: false });
-        bubble = null;
+        renderAgentBody(node, event.agent, event.content ?? '');
+        finalize();
         scrollLog();
         break;
       }
       case 'file_change': {
-        appendSystemLine(`✎ ${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
+        appendSystemLine(`${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
         if (event.path) onFileChange(event.path);
         break;
       }
       case 'citation': {
-        // An agent upserted the bibliography (story 016)
-        appendSystemLine(`📚 ${event.agent} added citation [@${event.key}]`);
+        appendSystemLine(`${event.agent} added citation [@${event.key}]`);
         if (event.path) onFileChange(event.path);
         break;
       }
       case 'question': {
-        // The agent is blocked waiting for an answer: render the question and
-        // switch the input box into answer mode.
-        const node = appendMessage('agent', event.agent);
-        node.classList.add('chat-question');
-        node.innerHTML = marked.parse(event.content ?? '', { async: false });
-        bubble = null;
+        // The agent is blocked waiting for an answer: render the question card
+        // and switch the input box into answer mode.
+        finalize();
+        activeQuestionCard = new QuestionCard(event.agent, event.content ?? '');
+        document.getElementById('chat-log')!.append(activeQuestionCard.element);
         pendingQuestionJobId = event.jobId ?? null;
-        setAgentActivity(`${event.agent} is waiting for your answer…`);
+        setAgentActivity(`${agentLabel(event.agent)} is waiting for your answer…`);
         const input = document.getElementById('chat-input') as HTMLTextAreaElement;
         input.placeholder = 'Type your answer…';
         input.focus();
@@ -153,24 +178,21 @@ function createEventHandler(): (event: AgentEvent) => void {
         break;
       }
       case 'question_expired': {
-        // The unanswered question timed out (story 020): leave answer mode
-        // visibly instead of swallowing the stale reply box.
-        if (pendingQuestionJobId === event.jobId) exitAnswerMode();
-        appendSystemLine(`⏱ question timed out — ${event.agent} continues with defaults`);
-        setAgentActivity(`${event.agent} is working…`);
+        if (pendingQuestionJobId === event.jobId) {
+          activeQuestionCard?.markExpired();
+          activeQuestionCard = null;
+          exitAnswerMode();
+        }
+        setAgentActivity(`${agentLabel(event.agent)} is working…`);
         break;
       }
       case 'stage': {
-        // Seeding pipeline progress (story 015)
-        const label = STAGE_LABELS[event.stage ?? ''] ?? event.stage;
-        if (event.status === 'start') {
-          appendSystemLine(`▶ ${label}…`);
-          setAgentActivity(`seeding: ${label}…`);
-        } else if (event.status === 'error') {
-          appendSystemLine(`✗ ${label} failed${event.detail ? `: ${event.detail}` : ''}`, 'error');
-        } else {
-          appendSystemLine(`✓ ${label} done${event.detail ? ` (${event.detail})` : ''}`);
+        // Seeding pipeline progress (story 015) → the seeding panel.
+        if (!applyStage(event)) {
+          const label = STAGE_LABELS[event.stage ?? ''] ?? event.stage;
+          if (event.status === 'error') appendSystemLine(`${label} failed${event.detail ? `: ${event.detail}` : ''}`, 'error');
         }
+        if (event.status === 'start') setAgentActivity(`seeding: ${STAGE_LABELS[event.stage ?? ''] ?? event.stage}…`);
         break;
       }
       case 'done': {
@@ -179,7 +201,8 @@ function createEventHandler(): (event: AgentEvent) => void {
         break;
       }
       case 'error': {
-        appendSystemLine(`⚠ ${event.message ?? 'agent error'}`, 'error');
+        finalize();
+        appendSystemLine(event.message ?? 'agent error', 'error');
         break;
       }
     }
@@ -205,18 +228,21 @@ async function send(): Promise<void> {
     const jobId = pendingQuestionJobId;
     exitAnswerMode();
     input.value = '';
-    appendMessage('user', 'you').append(textFragment(text));
-    setAgentActivity(`${role} is working…`);
+    autoGrow(input);
+    appendUserMessage(text);
+    activeQuestionCard?.markAnswered(text);
+    activeQuestionCard = null;
+    setAgentActivity(`${agentLabel(role)} is working…`);
     try {
       await replyToAgent(jobId, text);
     } catch (err) {
       // 409: the question is gone (timed out or its task ended) — story 020
       const message = (err as Error).message;
       if (/no pending question/i.test(message)) {
-        appendSystemLine('⚠ that question is no longer waiting for an answer (it may have timed out) — your reply was not delivered', 'error');
+        appendSystemLine('that question is no longer waiting for an answer (it may have timed out) — your reply was not delivered', 'error');
         setAgentActivity('');
       } else {
-        appendSystemLine(`⚠ ${message}`, 'error');
+        appendSystemLine(message, 'error');
       }
     }
     return;
@@ -224,10 +250,11 @@ async function send(): Promise<void> {
 
   if (running) return;
   input.value = '';
+  autoGrow(input);
 
-  appendMessage('user', 'you').append(textFragment(text));
+  appendUserMessage(text);
   running = true;
-  setAgentActivity(`${role} is working…`);
+  setAgentActivity(`${agentLabel(role)} is working…`);
 
   try {
     await runAgentTask(
@@ -235,24 +262,25 @@ async function send(): Promise<void> {
       createEventHandler(),
     );
   } catch (err) {
-    appendSystemLine(`⚠ ${(err as Error).message}`, 'error');
+    appendSystemLine((err as Error).message, 'error');
   } finally {
     finishRun();
   }
 }
 
-/** Run the seeding pipeline (story 015), narrating progress into the chat. */
+/** Run the seeding pipeline (story 015), narrated by the seeding panel. */
 export async function startSeeding(): Promise<void> {
   if (running) return;
   running = true;
-  appendSystemLine('🌱 seeding project — the PM will interview you first');
+  showSeedingPanel();
   setAgentActivity('seeding…');
 
   try {
     await seedProject(activeProjectId, createEventHandler());
   } catch (err) {
-    appendSystemLine(`⚠ ${(err as Error).message}`, 'error');
+    appendSystemLine((err as Error).message, 'error');
   } finally {
+    completeSeeding();
     finishRun();
   }
 }
@@ -261,8 +289,9 @@ function finishRun(): void {
   running = false;
   // The task is over — an unanswered question can no longer be replied to
   if (pendingQuestionJobId != null) {
+    activeQuestionCard?.markExpired();
+    activeQuestionCard = null;
     exitAnswerMode();
-    appendSystemLine('⏱ the task ended before you answered — the question expired');
   }
   setAgentActivity('');
   notify('');
@@ -273,19 +302,171 @@ function exitAnswerMode(): void {
   (document.getElementById('chat-input') as HTMLTextAreaElement).placeholder = DEFAULT_PLACEHOLDER;
 }
 
-function appendMessage(kind: 'user' | 'agent', tag: string): HTMLElement {
+// ---- Rendering ------------------------------------------------------------
+
+function agentLabel(slug: string): string {
+  return agentIdentity(slug).label || slug;
+}
+
+interface AgentBubble {
+  wrapper: HTMLElement;
+  head: HTMLElement;
+  body: HTMLElement;
+}
+
+function appendAgentMessage(slug: string, isoTime: string): AgentBubble {
   const log = document.getElementById('chat-log')!;
+  const id = agentIdentity(slug);
+
   const wrapper = document.createElement('div');
-  wrapper.className = `chat-message chat-${kind}`;
-  const label = document.createElement('span');
-  label.className = 'chat-tag';
-  label.textContent = tag;
+  wrapper.className = 'chat-msg chat-agent';
+  wrapper.style.setProperty('--role', `var(${id.colorVar})`);
+
+  const avatar = document.createElement('div');
+  avatar.className = 'chat-avatar';
+  avatar.textContent = id.initials;
+
+  const main = document.createElement('div');
+  main.className = 'chat-main';
+
+  const head = document.createElement('div');
+  head.className = 'chat-head';
+  const name = document.createElement('span');
+  name.className = 'chat-name';
+  name.textContent = id.label;
+  const time = document.createElement('span');
+  time.className = 'chat-time';
+  time.textContent = clockOf(isoTime);
+  head.append(name, time);
+
   const body = document.createElement('div');
   body.className = 'chat-body';
-  wrapper.append(label, body);
+
+  main.append(head, body);
+  wrapper.append(avatar, main);
   log.append(wrapper);
   scrollLog();
-  return body;
+  return { wrapper, head, body };
+}
+
+function appendUserMessage(text: string): void {
+  const log = document.getElementById('chat-log')!;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-msg chat-user';
+  const avatar = document.createElement('div');
+  avatar.className = 'chat-avatar';
+  avatar.textContent = 'You';
+  const main = document.createElement('div');
+  main.className = 'chat-main';
+  const body = document.createElement('div');
+  body.className = 'chat-body';
+  body.append(textFragment(text));
+  main.append(body);
+  wrapper.append(avatar, main);
+  log.append(wrapper);
+  scrollLog();
+}
+
+/** Toggle the single-active-agent color treatment on a message. */
+function setActive(wrapper: HTMLElement, slug: string, on: boolean): void {
+  const head = wrapper.querySelector('.chat-head');
+  if (on) {
+    wrapper.classList.add('is-active');
+    if (head && !head.querySelector('.chat-working')) {
+      const working = document.createElement('span');
+      working.className = 'chat-working';
+      working.innerHTML = `<span class="dot"></span>working`;
+      head.append(working);
+    }
+  } else {
+    wrapper.classList.remove('is-active');
+    head?.querySelector('.chat-working')?.remove();
+  }
+  void slug;
+}
+
+/**
+ * Render an agent message body. Reviewer messages that carry a bulleted
+ * critique render as a bordered "report" card (the design's report variant);
+ * everything else renders as inline markdown.
+ */
+function renderAgentBody(body: HTMLElement, slug: string, markdown: string): void {
+  if (slug === 'reviewer' && /^[*\-+] |\n[*\-+] /.test(markdown)) {
+    renderReportCard(body, markdown);
+    return;
+  }
+  body.innerHTML = marked.parse(markdown, { async: false });
+}
+
+function renderReportCard(body: HTMLElement, markdown: string): void {
+  const lines = markdown.split('\n').map((l) => l.trim()).filter(Boolean);
+  const bullets = lines.filter((l) => /^[*\-+] /.test(l)).map((l) => l.replace(/^[*\-+] /, ''));
+  const headerLines = lines.filter((l) => !/^[*\-+] /.test(l));
+  const title = headerLines[0] ?? 'Review';
+
+  body.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'report-card';
+  const head = document.createElement('div');
+  head.className = 'report-head';
+  head.innerHTML = `${icon('file-text', { size: 13, stroke: 1.8 })}<span></span>`;
+  (head.querySelector('span') as HTMLElement).textContent = `${title} · ${bullets.length} note${bullets.length === 1 ? '' : 's'}`;
+  const list = document.createElement('div');
+  list.className = 'report-body';
+  for (const b of bullets) {
+    const item = document.createElement('div');
+    item.className = 'report-item';
+    item.innerHTML = `<span class="bullet">•</span><span></span>`;
+    (item.querySelector('span:last-child') as HTMLElement).innerHTML = marked.parseInline(b, { async: false });
+    list.append(item);
+  }
+  card.append(head, list);
+  body.append(card);
+}
+
+/** Empty-state PM welcome (story 025 screen 3): invites the user to seed. */
+function appendGreeting(): void {
+  const log = document.getElementById('chat-log')!;
+  const id = agentIdentity('pm');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-msg chat-agent is-greeting';
+  wrapper.style.setProperty('--role', `var(${id.colorVar})`);
+
+  const avatar = document.createElement('div');
+  avatar.className = 'chat-avatar';
+  avatar.textContent = id.initials;
+  const main = document.createElement('div');
+  main.className = 'chat-main';
+  const head = document.createElement('div');
+  head.className = 'chat-head';
+  head.innerHTML = `<span class="chat-name">PM</span>`;
+  const body = document.createElement('div');
+  body.className = 'chat-body';
+  body.innerHTML =
+    `<p>Hi — I'm your project manager. Tell me what you're writing and I'll assemble the ` +
+    `team, pull the literature, and draft a working skeleton.</p>` +
+    `<p>A short interview gets the best result, but you can also just start typing.</p>`;
+  const cta = document.createElement('button');
+  cta.type = 'button';
+  cta.className = 'btn btn-accent';
+  cta.style.marginTop = '4px';
+  cta.innerHTML = `Start project interview ${icon('arrow-right', { size: 13, stroke: 2 })}`;
+  cta.addEventListener('click', () => void startSeeding());
+  body.append(cta);
+
+  main.append(head, body);
+  wrapper.append(avatar, main);
+  log.append(wrapper);
+}
+
+function appendDivider(label: string, isoTime?: string): void {
+  const log = document.getElementById('chat-log')!;
+  const div = document.createElement('div');
+  div.className = 'chat-divider';
+  const time = isoTime ? `<span class="mono">${clockOf(isoTime)}</span> · ` : '';
+  div.innerHTML = `${time}${label}`;
+  log.append(div);
+  scrollLog();
 }
 
 function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): void {
@@ -295,6 +476,12 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
   line.textContent = text;
   log.append(line);
   scrollLog();
+}
+
+function clockOf(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function textFragment(text: string): DocumentFragment {
