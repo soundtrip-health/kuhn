@@ -203,6 +203,8 @@ export interface AgentTaskParams {
   input: string;
   sessionId?: string;
   context?: { selection?: string; cursor?: { line: number }; files?: string[] };
+  /** Compose mode (story 017): writer returns text only, no file writes. */
+  compose?: boolean;
 }
 
 /**

@@ -43,6 +43,8 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {string} task.input - User message or dispatch instruction
  * @param {object} [task.context] - Optional editor context: { selection, cursor: {line}, files }
  * @param {string} [task.sessionId] - Continue a prior SDK session
+ * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
+ *   tools so the agent returns text only and emits no file_change (the /write contract)
  * @param {object} [internal] - Used by dispatch_agent for sub-tasks; not part of the boundary
  * @returns {AsyncGenerator<AgentEvent>} Events:
  *   { type: 'text_delta', agent, content }   — token-level streaming (story 013)
@@ -91,14 +93,23 @@ export async function* runAgentTask(task, internal = {}) {
   }
 }
 
+// Tools withheld in compose mode (story 017): `/write` asks the writer to
+// return text only, so file mutation and bibliography upserts are removed from
+// the allowlist. This is the runtime guarantee behind the "no file_change
+// during /write" contract — the prompt asks, the tool filter enforces.
+const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'project_config']);
+
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
 
-  const agent = await getAgentWithTools(role);
+  let agent = await getAgentWithTools(role);
   if (!agent) throw new Error(`Unknown agent role: ${role}`);
+  if (compose) {
+    agent = { ...agent, tools: agent.tools.filter((t) => !COMPOSE_DENIED_TOOLS.has(t)) };
+  }
 
   // Weighted budget accounting (story 020): the budget is denominated in
   // root-agent-tier tokens, so a cheap sub-agent (Haiku RA) burns it slower

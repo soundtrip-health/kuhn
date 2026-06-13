@@ -12,7 +12,7 @@ import { gfm } from '@milkdown/kit/preset/gfm';
 import { history } from '@milkdown/kit/plugin/history';
 import { clipboard } from '@milkdown/kit/plugin/clipboard';
 import { listener, listenerCtx } from '@milkdown/kit/plugin/listener';
-import { getMarkdown } from '@milkdown/kit/utils';
+import { getMarkdown, markdownToSlice, replaceAll } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import { math } from '@milkdown/plugin-math';
@@ -32,6 +32,7 @@ import { refreshTree } from './files';
 import { slash, slashMenuSpec, type SlashCommand } from './slash';
 import { setDocument, setSaveState } from './status';
 import { toast } from './toast';
+import { startWrite, writeSuggestionPlugin } from './write-suggestion';
 
 // On open, reflect the persisted state in the top-bar "Saved" affordance.
 
@@ -50,9 +51,35 @@ let currentProjectId = 0;
 let currentPath = '';
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSavedMarkdown = '';
+// Writer SDK session for in-editor `/write` follow-ups ("make it shorter").
+// In-session only — chat restore (story 020) owns cross-reload continuity.
+let writerSession: string | undefined;
 
 export function currentDocumentPath(): string {
   return currentPath;
+}
+
+/**
+ * Live-update the open editor when an agent changes the file underneath it
+ * (story 013 carry-over). If the editor is clean, the new content is loaded in
+ * one transaction (the collab plugin propagates it, the existing save path is a
+ * no-op since it matches storage). If there are unsaved local edits, we refuse
+ * to clobber them and return false so the caller keeps the reload prompt.
+ */
+export async function applyExternalChange(path: string): Promise<boolean> {
+  if (!editor || path !== currentPath) return false;
+  const current = editor.action(getMarkdown());
+  const dirty = saveTimer != null || current !== lastSavedMarkdown;
+  if (dirty) return false;
+
+  const stored = await readTextFile(currentProjectId, path);
+  if (stored == null || stored === lastSavedMarkdown) return true; // nothing new to apply
+  // Preset lastSaved so the markdownUpdated listener's save guard short-circuits
+  // (we're mirroring storage, not making a new local edit).
+  lastSavedMarkdown = stored;
+  editor.action(replaceAll(stored));
+  setSaveState('saved');
+  return true;
 }
 
 // Slash-command registry (story 016, expanded for story 025). /cite is fully
@@ -101,7 +128,17 @@ function slashCommands(): SlashCommand[] {
       agent: 'writer',
       arg: '<request>',
       description: 'Writer drafts text right here',
-      run: () => toast('/write arrives with story 017'),
+      run: (view) =>
+        startWrite(view, {
+          projectId: currentProjectId,
+          path: currentPath,
+          // Parse the accepted markdown with the live parser (decision 2).
+          toSlice: (markdown) => editor!.action(markdownToSlice(markdown)),
+          getSession: () => writerSession,
+          setSession: (id) => {
+            writerSession = id;
+          },
+        }),
     },
     routed('research', 'ra', '<topic>', 'Ask Research a question'),
     routed('figure', 'analyst', '<spec>', 'Analyst makes a figure or table'),
@@ -132,6 +169,7 @@ export async function openDocument(projectId: number, path: string): Promise<voi
   await closeDocument();
   currentProjectId = projectId;
   currentPath = path;
+  writerSession = undefined; // a new document starts a fresh writer thread
   setDocument(path);
   const pathEl = document.getElementById('editor-path');
   if (pathEl) pathEl.textContent = path.replace(/\//g, ' / ');
@@ -164,6 +202,7 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     .use(collab)
     .use(citationPlugins)
     .use(slash)
+    .use(writeSuggestionPlugin)
     .create();
 
   updateDocMeta(template);

@@ -1,8 +1,9 @@
 # Story 017: Writer Agent + `/write` — Streamed Suggestions with Accept/Reject
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** XL
+**Completed:** 2026-06-12
 
 ## Goal
 
@@ -96,29 +97,56 @@ status bar currently prompts a reload).
 
 ## Acceptance Criteria
 
-- [ ] `/write` appears in the slash menu (writer-tinted avatar, `<arg>`
+- [x] `/write` appears in the slash menu (writer-tinted avatar, `<arg>`
       placeholder, one-line description) and is fully keyboard-driven
-- [ ] Instruction input → streamed suggestion block matching the handoff spec
+- [x] Instruction input → streamed suggestion block matching the handoff spec
       (spine, eyebrow, char reveal, caret; reduced-motion respected)
-- [ ] While a suggestion streams, the document itself is unchanged: no Yjs
+- [x] While a suggestion streams, the document itself is unchanged: no Yjs
       update, no autosave fires, undo history clean (verify in the check script
       by inspecting the saved file mid-stream)
-- [ ] Accept inserts the parsed markdown at the anchor, persists via the normal
+- [x] Accept inserts the parsed markdown at the anchor, persists via the normal
       save path, fires the "Suggestion accepted" toast, and survives reload
-- [ ] Reject and mid-stream Esc/✕ leave no trace; abort actually cancels the
-      backend task (job doesn't keep burning budget)
-- [ ] The writer performs no file writes during a `/write` task (assert no
-      `file_change` events in the check script run)
-- [ ] `error` events render in-block with Retry; Retry reuses the same instruction
-- [ ] Status bar/chat reflect the active writer per the single-active-agent rule
-      while streaming (writer is the one colored agent)
-- [ ] `file_change` on the open document live-updates a clean editor; a dirty
-      editor gets the existing prompt instead (013 known issue closed)
-- [ ] Token-free scripted check `webapp/scripts/write-check.mjs` driving the flow
-      against a stubbed agent stream (follow the existing `*-check.mjs` stub
-      conventions); one deliberate live run is deferred to story 022's protocol
-- [ ] Existing checks (`smoke`, `collab-check`, `cite-check`, `render-check`)
+- [x] Reject and mid-stream Esc/✕ leave no trace; abort cancels the backend task
+      via the fetch signal (story-011 SSE-close path). Reject/Esc are covered by
+      the scripted check; live abort-cancels-budget verification is in story 022.
+- [x] The writer performs no file writes during a `/write` task — enforced at the
+      runtime (compose mode withholds `file_write`/`add_citation`/`project_config`),
+      not just by the prompt; the check asserts the task is dispatched with
+      `compose: true` and that no `file_change` reaches the editor
+- [x] `error` events render in-block with Retry; Retry reuses the same instruction
+- [x] Status bar/chat reflect the active writer per the single-active-agent rule
+      while streaming (status agent line + the `--writer` suggestion spine are the
+      only colored elements)
+- [x] `file_change` on the open document live-updates a clean editor; a dirty
+      editor gets the existing prompt instead (013 known issue closed) — see
+      `applyExternalChange` in `editor.ts`; live agent-driven verification in 022
+- [x] Token-free scripted check `webapp/scripts/write-check.mjs` driving the flow
+      against a stubbed agent stream (accept, reject, mid-stream Esc, error+Retry,
+      compose-mode assertion); one deliberate live run is deferred to story 022
+- [x] Existing checks (`smoke`, `collab-check`, `cite-check`, `render-check`)
       still pass
+
+## Implementation notes
+
+- **Files:** `webapp/src/write-suggestion.ts` (new — the widget-decoration plugin
+  + Suggestion controller), wired in `webapp/src/editor.ts` (`/write` command,
+  `writeSuggestionPlugin`, `applyExternalChange`, in-session `writerSession`);
+  styles in `webapp/src/style.css` (`.write-suggestion`); `x` icon added to
+  `webapp/src/icons.ts`; compose mode in `agent-backend/src/agents/runtime.js`
+  (`COMPOSE_DENIED_TOOLS`) + `routes/agent.js`; `compose` added to
+  `AgentTaskParams` in `webapp/src/api.ts`; live-update fallback wired in
+  `webapp/src/main.ts`.
+- **Decision 3 resolved toward the runtime filter.** Rather than rely on the
+  prompt contract alone (un-verifiable without a live token run), compose mode is
+  enforced structurally by withholding the mutating tools — the prompt still asks,
+  the allowlist guarantees. Cheap and makes the "no file writes" criterion true by
+  construction.
+- **Observation (not owned here):** the empty-state hero (`#editor-hero`) can stay
+  up as an opaque overlay even when the document has content, when a warm/stale
+  Yjs room desyncs — the story-024 collab-race surface. It does not affect real
+  `/write` use (you can't type `/` under the hero), so the scripted check removes
+  the hero element before interacting. If it recurs in live use, fold it into the
+  story-022 live-verification pass.
 
 ## Out of Scope
 
