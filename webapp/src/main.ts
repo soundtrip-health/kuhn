@@ -9,10 +9,17 @@ import { initAgentSelector } from './agent-selector';
 import { createProject, listProjects, writeTextFile, type Project } from './api';
 import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
-import { applyExternalChange, closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
-import { onOpenMarkdownFile, refreshTree, setActiveFile } from './files';
+import {
+  applyExternalChange,
+  closeDocument,
+  currentDocumentPath,
+  discardDocument,
+  flushSave,
+  openDocument,
+} from './editor';
+import { initFiles, recordFileChange, refreshTree, setActiveFile } from './files';
 import { icon } from './icons';
-import { initPreview } from './preview';
+import { initPreview, previewStoredFile } from './preview';
 import { notify } from './status';
 
 const MAIN_DOCUMENT = 'draft/main.md';
@@ -111,7 +118,9 @@ async function main(): Promise<void> {
 
   document.getElementById('project-name')!.textContent = project.name;
 
-  initChat(project.id, (changedPath) => {
+  initChat(project.id, (change) => {
+    recordFileChange(change); // feed the files-panel status map (story 014)
+    const changedPath = change.path;
     void refreshTree(project.id);
     if (changedPath.endsWith('.bib')) void refreshBib(project.id);
     if (changedPath === currentDocumentPath()) {
@@ -125,9 +134,27 @@ async function main(): Promise<void> {
     }
   });
 
-  onOpenMarkdownFile((path) => {
-    setActiveFile(path);
-    void openDocument(project.id, path);
+  initFiles(project.id, {
+    onOpenMarkdown: (path) => {
+      setActiveFile(path);
+      void openDocument(project.id, path);
+    },
+    onPreviewFile: (path) => void previewStoredFile(path),
+    flushOpenDoc: () => flushSave(),
+    reopenOpenDoc: (to) => {
+      setActiveFile(to);
+      void openDocument(project.id, to);
+    },
+    dropOpenDoc: (deletedPath) => {
+      // Drop the deleted doc without re-saving, then fall back to the main draft
+      // (unless that's what was deleted) so the editor isn't left stranded.
+      void discardDocument().then(() => {
+        if (deletedPath !== MAIN_DOCUMENT) {
+          setActiveFile(MAIN_DOCUMENT);
+          void openDocument(project.id, MAIN_DOCUMENT);
+        }
+      });
+    },
   });
   initPreview(project.id);
 

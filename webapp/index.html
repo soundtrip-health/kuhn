@@ -101,12 +101,17 @@
         </div>
         <div id="preview-status"></div>
         <iframe id="preview-frame" title="PDF preview"></iframe>
+        <!-- Non-PDF file previews (images, text, download links) — story 014 -->
+        <div id="preview-alt" hidden></div>
       </aside>
 
       <!-- ---------- RIGHT: FILES ---------- -->
       <aside id="files-panel">
         <div id="files-header">
           <span class="panel-eyebrow">Files</span>
+          <span class="spacer"></span>
+          <button id="files-upload-btn" type="button" class="btn btn-quiet btn-sm" title="Upload files">Upload</button>
+          <input id="files-upload-input" type="file" multiple hidden />
         </div>
         <div id="file-tree"></div>
       </aside>

@@ -111,6 +111,92 @@ export async function writeTextFile(projectId: number, path: string, content: st
   );
 }
 
+// ---- File manager (story 014) ----
+
+/**
+ * Max upload size, mirroring the backend's STORAGE_MAX_FILE_BYTES default
+ * (20 MB). We pre-check client-side so an oversize file shows a readable error
+ * and is excluded from the batch — the upload endpoint's multer `fileSize`
+ * limit would otherwise abort the *whole* multipart request (and surfaces as a
+ * generic 500, since the backend has no error middleware). Keep in sync with
+ * agent-backend `config.storage.maxFileBytes` if that env var is overridden.
+ */
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+export interface UploadOutcome {
+  uploaded: { path: string; size: number; created: boolean }[];
+  /** Files rejected (oversize, or a batch error) with a readable reason. */
+  failed: { name: string; error: string }[];
+}
+
+/**
+ * Upload files into a project directory in one multipart request (the endpoint
+ * accepts up to 20). Oversize files are reported in `failed` and excluded from
+ * the request so the rest still land; a batch-level error marks every sent file
+ * failed with the backend's readable message. The endpoint overwrites existing
+ * files, so uploads do not conflict (409 is a rename concern — see moveFile).
+ */
+export async function uploadFiles(
+  projectId: number,
+  files: File[],
+  dir?: string,
+): Promise<UploadOutcome> {
+  const failed: { name: string; error: string }[] = [];
+  const sendable: File[] = [];
+  const limitMb = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+  for (const file of files) {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      failed.push({ name: file.name, error: `File exceeds the ${limitMb} MB limit` });
+    } else {
+      sendable.push(file);
+    }
+  }
+  if (sendable.length === 0) return { uploaded: [], failed };
+
+  const form = new FormData();
+  if (dir) form.append('path', dir);
+  for (const file of sendable) form.append('files', file, file.name);
+
+  const res = await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const error = body.error ?? `${res.status} ${res.statusText}`;
+    for (const file of sendable) failed.push({ name: file.name, error });
+    return { uploaded: [], failed };
+  }
+  const { files: written } = (await res.json()) as { files: UploadOutcome['uploaded'] };
+  return { uploaded: written, failed };
+}
+
+/** Delete a project file or directory. */
+export async function deleteFile(projectId: number, path: string): Promise<void> {
+  await expectOk(await fetch(fileUrl(projectId, path), { method: 'DELETE' }));
+}
+
+/** Move/rename an entry; rejects with the backend's readable error (409 on a
+ * destination that already exists). */
+export async function moveFile(projectId: number, from: string, to: string): Promise<void> {
+  await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    }),
+  );
+}
+
+/** Fetch raw file bytes (correct Content-Type) for previewing. */
+export async function fetchFileBlob(projectId: number, path: string): Promise<Blob> {
+  const res = await expectOk(await fetch(fileUrl(projectId, path)));
+  return res.blob();
+}
+
+/** Direct URL of a stored file (e.g. an `<a download>` target for unknown types). */
+export const fileBlobUrl = (projectId: number, path: string): string => fileUrl(projectId, path);
+
 // ---- Render & export (story 019) ----
 
 /** Render a markdown document to PDF; rejects with the backend's readable error. */

@@ -569,6 +569,28 @@ body {
 .drop-zone .dz-title { font-size: 13px; font-weight: 500; color: var(--ink); }
 .drop-zone .dz-sub { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
 .drop-zone .dz-types { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); margin-top: 2px; }
+.drop-zone { cursor: pointer; }
+.drop-zone:hover { border-color: var(--line-strong); background: var(--chrome); }
+
+/* files: row actions, inline rename, drop targeting (story 014) */
+.file-row { display: flex; align-items: center; }
+.file-row .file-entry { flex: 1 1 auto; min-width: 0; }
+.file-entry .file-icon.origin-analyst { color: var(--analyst); }
+.file-actions { display: none; align-items: center; gap: 1px; padding-right: 4px; flex: none; }
+.file-row:hover .file-actions { display: flex; }
+.file-action {
+  border: none; background: none; cursor: pointer; color: var(--ink-3);
+  padding: 4px; border-radius: var(--r-xs); display: flex; align-items: center;
+}
+.file-action:hover { background: var(--line-2); color: var(--ink); }
+.file-name-input {
+  flex: 1 1 auto; min-width: 0; margin: 2px 8px;
+  font: inherit; font-size: 13px; color: var(--ink);
+  border: 1px solid var(--accent); border-radius: var(--r-xs);
+  padding: 4px 6px; background: var(--chrome); outline: none;
+}
+#file-tree.drag-over { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-sm); }
+.file-list details.drag-over > summary { background: var(--accent-soft); border-radius: 7px; color: var(--ink); }
 
 /* ---- Preview panel (story 019) -------------------------------------- */
 #preview-panel {
@@ -585,6 +607,17 @@ body {
 #preview-status.error { color: var(--warn); }
 #preview-status:empty { display: none; }
 #preview-frame { flex: 1; border: none; background: var(--ink); }
+#preview-frame[hidden] { display: none; }
+
+/* Non-PDF file previews share the pane (story 014) */
+#preview-alt { flex: 1; min-height: 0; overflow: auto; background: var(--chrome); }
+#preview-alt[hidden] { display: none; }
+.preview-image { display: block; max-width: 100%; height: auto; margin: 0 auto; padding: 14px; }
+.preview-text {
+  margin: 0; padding: 14px 16px; font: var(--ui-mono); color: var(--ink);
+  white-space: pre-wrap; word-break: break-word;
+}
+.preview-download { display: inline-block; margin: 18px; color: var(--accent); font-size: 13px; }
 
 /* ---- Status bar ----------------------------------------------------- */
 #statusbar {

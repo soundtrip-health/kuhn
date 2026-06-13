@@ -1,9 +1,13 @@
-// PDF preview pane + export buttons (story 019). Rendering happens on the
-// backend (markdown → Typst → PDF in the story-018 sandbox); this module
-// saves the current document, fetches the PDF, and shows it in an iframe.
-// Compile failures arrive as readable JSON errors and are shown verbatim.
+// PDF preview pane + export buttons (story 019), extended into a general file
+// preview pane (story 014). Rendering happens on the backend (markdown → Typst
+// → PDF in the story-018 sandbox); this module saves the current document,
+// fetches the PDF, and shows it in an iframe. It also previews *stored* files
+// on demand — PDFs in the same iframe, images/text in a sibling pane, unknown
+// types as a download link. The pane has one owner: opening a file preview
+// replaces the render preview and a re-render replaces the file preview (last
+// action wins; they don't fight over the surface).
 
-import { exportUrl, renderPdf } from './api';
+import { exportUrl, fetchFileBlob, fileBlobUrl, renderPdf } from './api';
 import { currentDocumentPath, flushSave } from './editor';
 
 let projectId = 0;
@@ -12,11 +16,31 @@ let rendering = false;
 
 const panel = () => document.getElementById('preview-panel')!;
 const frame = () => document.getElementById('preview-frame') as HTMLIFrameElement;
+const alt = () => document.getElementById('preview-alt')!;
 const status = () => document.getElementById('preview-status')!;
 
 function setStatus(text: string, isError = false): void {
   status().textContent = text;
   status().classList.toggle('error', isError);
+}
+
+/** Drop any live object URL (preview swap or close). */
+function revokeBlob(): void {
+  if (blobUrl) {
+    URL.revokeObjectURL(blobUrl);
+    blobUrl = null;
+  }
+}
+
+/** Show the iframe (PDF) and hide the alternate pane, or vice versa. */
+function showFrame(useFrame: boolean): void {
+  frame().hidden = !useFrame;
+  alt().hidden = useFrame;
+  if (useFrame) alt().replaceChildren();
+}
+
+function openPanel(): void {
+  panel().classList.remove('collapsed');
 }
 
 async function render(): Promise<void> {
@@ -31,14 +55,75 @@ async function render(): Promise<void> {
   try {
     await flushSave(); // render what the user sees, not the last debounce
     const pdf = await renderPdf(projectId, path);
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    revokeBlob();
     blobUrl = URL.createObjectURL(pdf);
     frame().src = blobUrl;
+    showFrame(true);
     setStatus(path);
   } catch (err) {
     setStatus((err as Error).message, true);
   } finally {
     rendering = false;
+  }
+}
+
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+const TEXT_EXTS = ['txt', 'bib', 'csv', 'json', 'typ', 'tex', 'md', 'yaml', 'yml', 'log'];
+
+function extOf(path: string): string {
+  const dot = path.lastIndexOf('.');
+  return dot === -1 ? '' : path.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * Preview a stored file in the pane (story 014). PDFs reuse the render iframe;
+ * images and text render in the alternate pane; anything else offers a download
+ * link. Opens the panel if collapsed. Blob URLs are revoked on the next swap.
+ */
+export async function previewStoredFile(path: string): Promise<void> {
+  openPanel();
+  setStatus(`Loading ${path}…`);
+  const ext = extOf(path);
+  try {
+    if (ext === 'pdf') {
+      const blob = await fetchFileBlob(projectId, path);
+      revokeBlob();
+      blobUrl = URL.createObjectURL(blob);
+      frame().src = blobUrl;
+      showFrame(true);
+    } else if (IMAGE_EXTS.includes(ext)) {
+      const blob = await fetchFileBlob(projectId, path);
+      revokeBlob();
+      blobUrl = URL.createObjectURL(blob);
+      const img = document.createElement('img');
+      img.className = 'preview-image';
+      img.src = blobUrl;
+      img.alt = path;
+      alt().replaceChildren(img);
+      showFrame(false);
+    } else if (TEXT_EXTS.includes(ext)) {
+      const blob = await fetchFileBlob(projectId, path);
+      revokeBlob();
+      const pre = document.createElement('pre');
+      pre.className = 'preview-text';
+      pre.textContent = await blob.text();
+      alt().replaceChildren(pre);
+      showFrame(false);
+    } else {
+      revokeBlob();
+      const link = document.createElement('a');
+      link.className = 'preview-download';
+      link.href = fileBlobUrl(projectId, path);
+      link.download = path.split('/').pop() ?? path;
+      link.textContent = `Download ${link.download}`;
+      alt().replaceChildren(link);
+      showFrame(false);
+    }
+    setStatus(path);
+  } catch (err) {
+    showFrame(false);
+    alt().replaceChildren();
+    setStatus((err as Error).message, true);
   }
 }
 
