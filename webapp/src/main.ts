@@ -9,7 +9,7 @@ import { initAgentSelector } from './agent-selector';
 import { createProject, listProjects, writeTextFile, type Project } from './api';
 import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
-import { closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
+import { applyExternalChange, closeDocument, currentDocumentPath, flushSave, openDocument } from './editor';
 import { onOpenMarkdownFile, refreshTree, setActiveFile } from './files';
 import { icon } from './icons';
 import { initPreview } from './preview';
@@ -115,7 +115,13 @@ async function main(): Promise<void> {
     void refreshTree(project.id);
     if (changedPath.endsWith('.bib')) void refreshBib(project.id);
     if (changedPath === currentDocumentPath()) {
-      notify(`${changedPath} was changed by an agent — reload to pick up the new version`);
+      // Live-update a clean editor in place (story 017); a dirty editor keeps
+      // the reload prompt so unsaved local edits aren't clobbered.
+      void applyExternalChange(changedPath).then((applied) => {
+        if (!applied) {
+          notify(`${changedPath} was changed by an agent — reload to pick up the new version`);
+        }
+      });
     }
   });
 

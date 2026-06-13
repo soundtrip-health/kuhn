@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12 (PM: stories 014 and 017 written and `ready` — all remaining work is now specced; recommended build order: 025 → 017, with 014 in parallel; 022 stays parked for bobd)
+**Updated:** 2026-06-12 (017 `/write` shipped — streamed suggestion block, compose-mode writer, 013 live-update closed; only remaining open work is 014 file manager + 022 live verification, parked for bobd)
 
 ## Goal
 
@@ -54,7 +54,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 - [x] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015 — live verification in 022)
 - [x] Storage API with project-root enforcement; all agent file access through it (018)
 - [x] `/cite` ported to Milkdown: slash-command plugin, citation picker, chips, bib upsert (016)
-- [ ] `/write` slash command with streaming writer agent (017)
+- [x] `/write` slash command with streaming writer agent (017)
 - [x] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
 - [ ] Durable job model for long-running agent work (part of 011)
 
@@ -102,7 +102,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | done | L |
-| 017 | [Writer agent + `/write`](stories/017-write-command.md) — streamed suggestion block with accept/reject (UI per the story 025 design spec; closes the 013 live-update issue) | ready | XL |
+| 017 | [Writer agent + `/write`](stories/017-write-command.md) — streamed suggestion block with accept/reject (UI per the story 025 design spec; closes the 013 live-update issue) | done | XL |
 | 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | done | L |
 
 ### Phase 4: UI design

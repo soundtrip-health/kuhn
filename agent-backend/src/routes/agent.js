@@ -8,16 +8,18 @@ const router = Router();
 
 /**
  * POST /api/agent/task
- * Body: { role, projectId, input, context?, sessionId? }
+ * Body: { role, projectId, input, context?, sessionId?, compose? }
+ * `compose: true` runs the task in compose mode — file-mutating tools are
+ * withheld so the agent returns text only (the /write contract, story 017).
  * Streams AgentEvents to the browser as Server-Sent Events.
  */
 router.post('/api/agent/task', async (req, res) => {
-  const { role, projectId, input, context, sessionId } = req.body ?? {};
+  const { role, projectId, input, context, sessionId, compose } = req.body ?? {};
   if (!role || projectId == null || !input) {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
   }
-  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId }));
+  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId, compose }));
 });
 
 /**

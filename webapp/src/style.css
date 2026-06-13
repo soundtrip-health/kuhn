@@ -632,6 +632,90 @@ body {
 }
 .toast .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
 
+/* ---- /write suggestion block (story 017) ---------------------------- */
+/* Rendered as a ProseMirror widget decoration in-flow; --writer is the one
+   active-agent color here (single-active-agent rule). Lives outside the doc
+   until accepted, so it never touches Yjs/autosave/undo. */
+.write-suggestion {
+  --role: var(--writer);
+  border-left: 2.5px solid var(--writer);
+  background: var(--writer-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 12px 16px;
+  margin: 8px 0 18px;
+  animation: kuhn-rise var(--dur) var(--ease) both;
+  font-family: var(--font-ui);
+  user-select: none;
+}
+.ws-eyebrow {
+  display: flex; align-items: center; gap: 7px;
+  font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--writer); font-weight: 600;
+}
+.ws-eyebrow .ws-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--writer);
+  animation: kuhn-pulse 1.1s ease-in-out infinite;
+}
+.ws-eyebrow-text { flex: 1; }
+.ws-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: var(--r-xs);
+  background: transparent; color: var(--ink-3); cursor: pointer;
+}
+.ws-close:hover { background: var(--soft-2); color: var(--ink-2); }
+
+/* Prompt phase: inline instruction input */
+.ws-prompt { margin-top: 10px; }
+.ws-input {
+  width: 100%; border: 1px solid var(--line); background: var(--chrome);
+  border-radius: var(--r-sm); padding: 8px 11px;
+  font: var(--ui-body); color: var(--ink); font-family: var(--font-ui);
+}
+.ws-input:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--focus-ring); }
+
+/* Streaming / done: the drafted text in the document serif voice */
+.ws-text {
+  margin-top: 8px; font-family: var(--font-doc); font: var(--doc-body);
+  color: var(--doc-ink); white-space: pre-wrap; word-break: break-word;
+}
+.ws-text:empty { margin-top: 0; }
+.ws-caret {
+  display: none; width: 7px; height: 16px; margin-left: 1px;
+  background: var(--writer); transform: translateY(3px);
+  animation: kuhn-caret 1s step-end infinite;
+}
+
+/* Action row (done) */
+.ws-actions { display: none; align-items: center; gap: 10px; margin-top: 12px; }
+.ws-actions .btn { padding: 6px 13px; font-size: 13px; }
+.ws-note { font: var(--ui-small); color: var(--ink-3); margin-left: 2px; }
+
+/* Error row */
+.ws-error { display: none; align-items: center; gap: 10px; margin-top: 10px; }
+.ws-error-msg { flex: 1; font: var(--ui-small); color: var(--warn); }
+.ws-error .btn { padding: 5px 11px; font-size: 12px; }
+
+/* Phase visibility */
+.write-suggestion[data-phase='prompt'] .ws-text,
+.write-suggestion[data-phase='prompt'] .ws-actions,
+.write-suggestion[data-phase='prompt'] .ws-error { display: none; }
+.write-suggestion[data-phase='streaming'] .ws-prompt,
+.write-suggestion[data-phase='streaming'] .ws-actions,
+.write-suggestion[data-phase='streaming'] .ws-error { display: none; }
+.write-suggestion[data-phase='streaming'] .ws-caret { display: inline-block; }
+.write-suggestion[data-phase='done'] .ws-prompt,
+.write-suggestion[data-phase='done'] .ws-error { display: none; }
+.write-suggestion[data-phase='done'] .ws-actions { display: flex; }
+.write-suggestion[data-phase='error'] .ws-prompt,
+.write-suggestion[data-phase='error'] .ws-actions,
+.write-suggestion[data-phase='error'] .ws-text { display: none; }
+.write-suggestion[data-phase='error'] .ws-error { display: flex; }
+.write-suggestion[data-phase='error'] .ws-eyebrow .ws-dot { animation: none; background: var(--warn); }
+.write-suggestion[data-phase='error'] .ws-eyebrow { color: var(--warn); }
+
+/* Accept entrance on the inserted block */
+.ws-inserted { animation: kuhn-rise var(--dur) var(--ease) both; }
+
 /* ---- Responsive collapse (graceful to ~1100px) --------------------- */
 @media (max-width: 1240px) {
   #files-panel { flex-basis: 248px; }

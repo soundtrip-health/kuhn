@@ -13,7 +13,8 @@ export type IconName =
   | 'sparkle'
   | 'upload'
   | 'lock'
-  | 'send';
+  | 'send'
+  | 'x';
 
 // Inner path markup for each icon (viewBox 0 0 24 24).
 const PATHS: Record<IconName, string> = {
@@ -29,6 +30,7 @@ const PATHS: Record<IconName, string> = {
   upload: '<path d="M12 13V3M8 7l4-4 4 4"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>',
   lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   send: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
 };
 
 export interface IconOptions {
