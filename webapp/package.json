@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs && node scripts/collab-check.mjs",
     "editor-check": "node scripts/editor-check.mjs",
+    "parity-check": "node scripts/parity-sweep.mjs",
     "smoke:chat": "node scripts/chat-check.mjs",
     "write-check": "node scripts/write-check.mjs"
   },

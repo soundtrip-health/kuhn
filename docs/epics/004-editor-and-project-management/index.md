@@ -67,7 +67,7 @@ storage API, and sandboxed execution.
 | 001 | [Crepe editor shell](stories/001-crepe-editor-shell.md) — swap `Editor.make()` for `CrepeBuilder`, theme to Column, preserve save/word-count/hero | done | L |
 | 002 | [Collaboration on Crepe](stories/002-collab-on-crepe.md) — port `@milkdown/plugin-collab` onto `crepe.editor`; carry the 024 reload fix | done | M |
 | 003 | [Custom plugins on Crepe](stories/003-custom-plugins-on-crepe.md) — citation chips, `/cite`, `/write`, unified slash menu; retire `slash.ts` | done | L |
-| 004 | [Editor parity & glitch sweep](stories/004-editor-parity-glitch-sweep.md) — QA against the sparse/glitchy baseline; file follow-ups | ready | S |
+| 004 | [Editor parity & glitch sweep](stories/004-editor-parity-glitch-sweep.md) — QA against the sparse/glitchy baseline; file follow-ups | done | S |
 
 ### Phase 2: Org & project management
 
