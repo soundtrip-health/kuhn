@@ -11,6 +11,16 @@ export interface Project {
   name: string;
   project_type: string;
   owner_id: string;
+  org_id: number;
+  /** Project config blob; `activeDocument` records the last-open file (story 006). */
+  config?: { activeDocument?: string; [key: string]: unknown };
+}
+
+export interface Org {
+  id: number;
+  name: string;
+  slug: string;
+  role: 'owner' | 'member';
 }
 
 export interface TreeNode {
@@ -69,20 +79,64 @@ async function expectOk(res: Response): Promise<Response> {
   return res;
 }
 
+// ---- Organizations (story 005) ----
+
+/** The current user's organizations. */
+export async function listOrgs(): Promise<Org[]> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs`));
+  return ((await res.json()) as { orgs: Org[] }).orgs;
+}
+
+/** Create an organization (the current user becomes its owner). */
+export async function createOrg(name: string): Promise<Org> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/orgs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+  );
+  return ((await res.json()) as { org: Org }).org;
+}
+
+// ---- Projects (story 013; org-scoped in story 005) ----
+
+/** All projects across the current user's orgs. */
 export async function listProjects(): Promise<Project[]> {
   const res = await expectOk(await fetch(`${BACKEND_URL}/api/projects`));
   return ((await res.json()) as { projects: Project[] }).projects;
 }
 
-export async function createProject(name: string, projectType = 'manuscript'): Promise<Project> {
+/** Projects belonging to a single organization. */
+export async function listOrgProjects(orgId: number): Promise<Project[]> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/projects`));
+  return ((await res.json()) as { projects: Project[] }).projects;
+}
+
+export async function createProject(
+  name: string,
+  projectType = 'manuscript',
+  orgId?: number,
+): Promise<Project> {
   const res = await expectOk(
     await fetch(`${BACKEND_URL}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, projectType }),
+      body: JSON.stringify({ name, projectType, orgId }),
     }),
   );
   return ((await res.json()) as { project: Project }).project;
+}
+
+/** Persist which document is open in a project, so reopening restores it. */
+export async function setActiveDocument(projectId: number, path: string): Promise<void> {
+  await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/active-document`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  );
 }
 
 export async function getTree(projectId: number): Promise<TreeNode[]> {

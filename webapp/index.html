@@ -20,12 +20,9 @@
           <span id="app-name">Kuhn</span>
         </div>
         <span class="topbar-divider" aria-hidden="true"></span>
-        <nav class="breadcrumb" aria-label="Project">
-          <span class="breadcrumb-org">Okafor Lab</span>
-          <span class="breadcrumb-sep">/</span>
-          <span id="project-name" class="breadcrumb-project"></span>
-          <span class="phase-pill">Phase&nbsp;2</span>
-        </nav>
+        <!-- Live org / project / document segments — rendered by breadcrumb.ts
+             (story 007), wired to the workspace store. -->
+        <nav id="breadcrumb" class="breadcrumb" aria-label="Workspace location"></nav>
       </div>
       <div class="topbar-right">
         <span id="topbar-activity" class="topbar-activity" hidden></span>

@@ -36,6 +36,7 @@ const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 const sessions = new Map<string, string>();
 
 let activeProjectId = 0;
+let listenersWired = false;
 let running = false;
 // Job waiting on an ask_user reply; the input box answers it instead of
 // starting a new task
@@ -46,7 +47,20 @@ let onFileChange: (change: FileChange) => void = () => {};
 export function initChat(projectId: number, fileChangeHandler: (change: FileChange) => void): void {
   activeProjectId = projectId;
   onFileChange = fileChangeHandler;
+
+  // Reset per-project conversation state so switching projects (story 006)
+  // doesn't carry a previous project's transcript or agent sessions over.
+  sessions.clear();
+  running = false;
+  pendingQuestionJobId = null;
+  activeQuestionCard = null;
+  document.getElementById('chat-log')!.replaceChildren();
+  const seedingPanel = document.getElementById('seeding-panel');
+  if (seedingPanel) seedingPanel.hidden = true;
   void restore();
+
+  if (listenersWired) return; // the form/input listeners bind once for the page
+  listenersWired = true;
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;

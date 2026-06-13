@@ -39,6 +39,7 @@ interface FileStatus {
 
 let projectId = 0;
 let handlers: FilesHandlers | null = null;
+let listenersWired = false;
 let activePath = '';
 let lastTree: TreeNode[] = [];
 const statusMap = new Map<string, FileStatus>();
@@ -57,6 +58,13 @@ const ORIGIN_CLASS: Record<string, string> = {
 export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   projectId = activeProjectId;
   handlers = h;
+  // Per-project reset (story 006): drop the previous project's status tints and
+  // active-row highlight when switching projects.
+  statusMap.clear();
+  activePath = '';
+
+  if (listenersWired) return; // tree/upload listeners bind once for the page
+  listenersWired = true;
 
   const tree = document.getElementById('file-tree')!;
   let dragTarget: HTMLElement | null = null;
@@ -117,6 +125,49 @@ export async function refreshTree(activeProjectId: number): Promise<void> {
   } catch (err) {
     container.replaceChildren(emptyNotice(`Could not load files: ${(err as Error).message}`));
   }
+}
+
+/**
+ * Resolve which document to open for the current project (story 006). Returns
+ * `preferred` if it's an existing `.md` in the tree, else the first `.md` found
+ * (depth-first), else null. Call after `refreshTree` so `lastTree` is current.
+ */
+export function findMarkdownPath(preferred?: string): string | null {
+  let first: string | null = null;
+  let preferredExists = false;
+  const walk = (nodes: TreeNode[]): void => {
+    for (const node of nodes) {
+      if (node.type === 'dir') walk(node.children ?? []);
+      else if (node.path.endsWith('.md')) {
+        if (first == null) first = node.path;
+        if (node.path === preferred) preferredExists = true;
+      }
+    }
+  };
+  walk(lastTree);
+  if (preferred && preferredExists) return preferred;
+  return first;
+}
+
+/**
+ * Reveal the open document in the tree (story 007 breadcrumb): make sure the
+ * files panel is visible, expand the row's ancestor folders, highlight it, and
+ * scroll it into view.
+ */
+export function revealFile(path: string): void {
+  document.getElementById('files-panel')?.classList.remove('collapsed');
+  const entry = document
+    .getElementById('file-tree')
+    ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+  if (!entry) return;
+  let parent = entry.closest('details') as HTMLDetailsElement | null;
+  while (parent) {
+    parent.open = true;
+    parent = parent.parentElement?.closest('details') as HTMLDetailsElement | null;
+  }
+  entry.scrollIntoView({ block: 'center' });
+  entry.classList.add('reveal-flash');
+  setTimeout(() => entry.classList.remove('reveal-flash'), 900);
 }
 
 // ---- Status map (story 025 badge data) --------------------------------------
