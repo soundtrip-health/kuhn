@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-12 (017 `/write` shipped — streamed suggestion block, compose-mode writer, 013 live-update closed; only remaining open work is 014 file manager + 022 live verification, parked for bobd)
+**Updated:** 2026-06-13 (014 file manager shipped — upload/preview/manage + status map; backend oversize-error mapping split out to 026; remaining open work is 022 live verification, parked for bobd, plus 026)
 
 ## Goal
 
@@ -92,7 +92,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 013 | [Webapp scaffold](stories/013-webapp-scaffold.md) — Vite + TS, chat UI, Milkdown editor pane, WebSocket to backend | done | L |
-| 014 | [File manager](stories/014-file-manager.md) — upload, preview, delete/rename on the story-018 storage API; webapp-only | ready | M |
+| 014 | [File manager](stories/014-file-manager.md) — upload, preview, delete/rename on the story-018 storage API; webapp-only | done | M |
 | 015 | [Project seeding flow](stories/015-project-seeding.md) — PM interview → parallel agent research → skeleton generation, deterministic pipeline | done | XL |
 | 020 | [Chat conversation restore & interview polish](stories/020-chat-conversation-restore.md) — transcript on reload, question-timeout UX, weighted token budget | done | M |
 | 022 | [Live seeding & reload-resume verification](stories/022-live-seeding-verification.md) — run the scripted live-SDK checks deferred from 015/020 | deferred | S |
@@ -117,6 +117,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 023 | [Remove the TeXlyre fork](stories/023-remove-texlyre.md) — unblocked by 016 | done | S |
 | 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | done | S |
+| 026 | [Upload oversize error mapping](stories/026-upload-oversize-error-mapping.md) — backend `MulterError`→413 mapping; de-duplicate the size limit (surfaced by 014) | ready | S |
 
 ### Preserved (may revisit)
 

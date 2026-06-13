@@ -1,6 +1,6 @@
 # Story 014: File Manager — Upload, Preview, Manage
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** M
 
@@ -74,21 +74,48 @@ expected.**
 
 ## Acceptance Criteria
 
-- [ ] Multi-file upload works via both drag-drop and the picker; files land at the
+- [x] Multi-file upload works via both drag-drop and the picker; files land at the
       intended directory; the tree refreshes and shows them
-- [ ] Oversize (413) and conflict (409) uploads show the backend's readable error,
-      not a generic failure; other files in the same batch still succeed
-- [ ] PDF, image, and text files preview in-app; unknown types offer a download;
+- [x] Oversize (413) and conflict (409) uploads show the backend's readable error,
+      not a generic failure; other files in the same batch still succeed —
+      *conflict (409) is the rename flow (upload overwrites, never 409); oversize
+      is pre-checked client-side so valid files still land. The backend's own
+      oversize→413 mapping is deferred to [Story 026](026-upload-oversize-error-mapping.md).*
+- [x] PDF, image, and text files preview in-app; unknown types offer a download;
       `.md` still opens in the editor exactly as before
-- [ ] Delete (with confirmation) and rename work and refresh the tree; deleting or
+- [x] Delete (with confirmation) and rename work and refresh the tree; deleting or
       renaming the open document doesn't strand the editor
-- [ ] File status map (status + originAgent) is maintained from `file_change`
+- [x] File status map (status + originAgent) is maintained from `file_change`
       events and consumable by the tree renderer (025 hook)
-- [ ] Token-free scripted check `webapp/scripts/files-check.mjs` (follow the
+- [x] Token-free scripted check `webapp/scripts/files-check.mjs` (follow the
       existing `*-check.mjs` conventions): upload via the API path the UI uses,
       see it in the tree, preview its content, rename, delete — no live agent calls
-- [ ] Existing checks (`smoke`, `cite-check`, `collab-check`, `render-check`)
+- [x] Existing checks (`smoke`, `cite-check`, `collab-check`, `render-check`)
       still pass
+
+## Known Issues
+
+- **Backend upload returns a generic 500 for a direct oversize upload** (multer's
+  `fileSize` limit aborts before the handler; no error middleware). Mitigated
+  client-side by a size pre-check in `uploadFiles`. Full backend fix +
+  de-duplicated limit deferred to [Story 026](026-upload-oversize-error-mapping.md).
+
+## Implementation Notes
+
+- `webapp/src/api.ts`: `uploadFiles` (one multipart batch, client-side oversize
+  pre-check), `deleteFile`, `moveFile`, `fetchFileBlob`, `fileBlobUrl`,
+  `MAX_UPLOAD_BYTES`.
+- `webapp/src/files.ts`: `initFiles` wiring, drag-drop (panel → `sources/` or
+  root; directory rows are scoped drop targets) + picker upload, clickable
+  non-`.md` preview, delete (confirm) + inline rename via move, and the client
+  status map (`recordFileChange`/upload) feeding the 025 badge classes.
+- `webapp/src/preview.ts`: `previewStoredFile` shares the preview pane with the
+  Typst render (PDFs reuse the iframe; images/text/download use `#preview-alt`;
+  last action wins).
+- `webapp/src/editor.ts`: `cancelPendingSave`/`discardDocument` so deleting or
+  renaming the open document neither strands the editor nor resurrects the file.
+- `webapp/src/chat.ts` + `main.ts`: `file_change`/citation events now carry
+  `{ path, kind, agent }` into the status map.
 
 ## Out of Scope
 

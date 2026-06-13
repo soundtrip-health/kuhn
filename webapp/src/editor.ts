@@ -249,6 +249,24 @@ function scheduleSave(markdown: string): void {
   saveTimer = setTimeout(() => void doSave(markdown), SAVE_DEBOUNCE_MS);
 }
 
+/** Cancel a pending debounced save without writing (the file is about to be
+ * deleted — flushing would resurrect it). */
+export function cancelPendingSave(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+/** Tear down the open document without persisting it (e.g. it was just deleted
+ * out from under the editor). Leaves no current path. */
+export async function discardDocument(): Promise<void> {
+  cancelPendingSave();
+  await closeDocument(); // saveTimer is null now, so this won't write back
+  currentPath = '';
+  setDocument('');
+}
+
 /** Explicit save (Cmd/Ctrl+S) — serializes the current doc and writes through. */
 export async function flushSave(): Promise<void> {
   if (saveTimer) {

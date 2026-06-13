@@ -22,6 +22,7 @@ import {
   type AgentEvent,
 } from './api';
 import { agentIdentity } from './agents';
+import type { FileChange } from './files';
 import { icon } from './icons';
 import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
@@ -40,9 +41,9 @@ let running = false;
 // starting a new task
 let pendingQuestionJobId: number | null = null;
 let activeQuestionCard: QuestionCard | null = null;
-let onFileChange: (path: string) => void = () => {};
+let onFileChange: (change: FileChange) => void = () => {};
 
-export function initChat(projectId: number, fileChangeHandler: (path: string) => void): void {
+export function initChat(projectId: number, fileChangeHandler: (change: FileChange) => void): void {
   activeProjectId = projectId;
   onFileChange = fileChangeHandler;
   void restore();
@@ -155,12 +156,12 @@ function createEventHandler(): (event: AgentEvent) => void {
       }
       case 'file_change': {
         appendSystemLine(`${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
-        if (event.path) onFileChange(event.path);
+        if (event.path) onFileChange({ path: event.path, kind: event.kind, agent: event.agent });
         break;
       }
       case 'citation': {
         appendSystemLine(`${event.agent} added citation [@${event.key}]`);
-        if (event.path) onFileChange(event.path);
+        if (event.path) onFileChange({ path: event.path, kind: 'update', agent: event.agent });
         break;
       }
       case 'question': {
