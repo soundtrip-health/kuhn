@@ -1,8 +1,20 @@
 # Story 007: Breadcrumb wired to the file system
 
-**Status:** ready
+**Status:** done
 **Epic:** [004 — Editor Upgrade + Project Management](../index.md)
 **Estimate:** M
+
+## Outcome
+
+All acceptance criteria met. `webapp/src/breadcrumb.ts` renders live org /
+project / document segments bound to the shared `workspace.ts` store (story
+006) and re-renders on every workspace change. The hardcoded `Okafor Lab` org
+and `Phase 2` pill are gone — the pill is **repurposed to the project type**
+(real metadata). Each segment is navigable: org → org menu (switch/create
+org), project → projects dashboard, document → reveal-in-tree (`revealFile`).
+No hardcoded org/project/document strings remain in `index.html` or `main.ts`
+(the old `#project-name` span is replaced by `#breadcrumb`). Verified by
+`scripts/workspace-check.mjs`.
 
 ## Goal
 
