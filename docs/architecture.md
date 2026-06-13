@@ -129,7 +129,7 @@ determine agent quality.
 
 **Kept from the original design:**
 
-- **DB-backed prompts** — agent system prompts in Postgres, seeded from `agents/*/AGENTS.md`,
+- **DB-backed prompts** — agent system prompts in Postgres, seeded from `agent-backend/src/db/seed.sql`,
   editable at runtime
 - **Conversation logging** — every message, tool call, and response persisted (audit, replay,
   future semantic search via pgvector)

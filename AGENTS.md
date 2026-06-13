@@ -1,145 +1,118 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (and human contributors) **working on the Kuhn codebase**.
+For what the product *is* and how to use it, see [README.md](README.md) and
+[docs/architecture.md](docs/architecture.md) — don't duplicate that here.
 
-## Project Overview
+> `CLAUDE.md` is a symlink to `AGENTS.md`. Edit `AGENTS.md`.
 
-Kuhn is a web-based scientific and technical writing tool with integrated AI agents. It provides a browser-based WYSIWYG markdown editor (Milkdown) with real-time AI assistance — slash commands for inserting references, quick research, generating figures via Python, and more. Documents render to PDF via Typst and export to docx/LaTeX via Pandoc.
+## Repository layout
 
-The AI agents (in `agents/`) provide the intelligence layer: writing, research, analysis, review, domain advising, and project management. See `agents/CLAUDE.md` for agent-specific conventions.
-
-## Repository Layout
+This is a monorepo of two independently-installed Node packages plus supporting
+content. There is **no root `package.json`** — run `npm` inside each package.
 
 ```
 kuhn/
-├── agents/          # AI agent workspaces (writer, analyst, advisor, research, review, pm)
-├── docs/            # Project documentation
-│   ├── epics/       # Project management — each epic has index.md + stories/
-│   └── architecture.md
-├── agent-backend/   # Node.js backend: agent runtime, Postgres, Yjs servers
-├── webapp/          # Browser app: agent chat, Milkdown editor, file manager
-└── CLAUDE.md        # This file (symlink to AGENTS.md)
+├── agent-backend/   # Node.js service: agent runtime, REST + WebSocket, Postgres, Yjs, render/export
+├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
+├── docs/            # architecture.md + epics/ (project management — see "Stories")
+└── guidance-docs/   # Curated reference corpus (regulatory guidance, etc.), by project type — content, not wired into the app
 ```
 
-## Document Formats
+Agent definitions (system prompts, models, tools) are **DB-seeded** from
+`agent-backend/src/db/seed.sql` — see "Agent prompts" below.
 
-- **Canonical authoring format:** Markdown (Pandoc/Quarto flavor) with BibTeX bibliographies
-- **Rendering:** Typst (markdown → Typst → PDF)
-- **Exports:** docx (Pandoc), LaTeX, HTML — LaTeX is an export target, not an authoring surface
-- Decision record: [docs/architecture.md](docs/architecture.md) (revised 2026-06-11)
+## Running the apps
 
-## Project Management
+Both run locally; the webapp talks to the backend over REST + WebSocket.
 
-Epics and stories live in `docs/epics/`. Each epic is a directory:
-
-```
-docs/epics/NNN-epic-slug/
-├── index.md          # Epic overview, goals, acceptance criteria, status
-└── stories/
-    ├── 001-story-slug.md
-    ├── 002-story-slug.md
-    └── ...
-```
-
-Epic and story statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`.
-
-### Story lifecycle rules
-
-1. **A "done" story is read-only.** Once marked `done`, its content is historical record. It must not be the canonical location for open work items.
-
-2. **Every known issue must have an owning open story.** When completing a story that has unresolved issues, each issue must be captured in an existing open story (or a new one created for it). The receiving story must be self-contained — someone should be able to act on it without reading back into the done story.
-
-3. **Done stories use forward pointers, not detailed issue descriptions.** The "Known Issues" section of a done story should contain only a one-line summary and a forward reference (e.g., "Deferred to Story 009") for each item. The open story owns the full description, context, and acceptance criteria.
-
-4. **Marking a story done requires an issue audit.** Before changing status to `done`, verify:
-   - All acceptance criteria are met, or unmet criteria are explicitly deferred with a forward reference
-   - Every known issue has a receiving open story listed in the epic's story table
-   - The receiving stories are self-contained and actionable
-
-## Key Commands
+### Backend (`agent-backend/`) — port 3002
 
 ```bash
-# Run tests (once src/ exists)
-npm test              # or yarn test, depending on chosen stack
-
-# Dev server (once src/ exists)
-npm run dev
+cd agent-backend
+docker compose up -d   # Postgres (first run / after reboot)
+npm install            # first run
+npm run dev            # node --watch src/index.js
 ```
 
-## Working with Claude Code — Developer Guidance
+On startup it ensures the DB schema and seeds agents/tools. Health: http://localhost:3002/health
 
-### Allowing autonomous operation
+- `npm test` / `npm run test:watch` — vitest
+- `npm run db:seed` — re-seed agents & tools (run after editing `src/db/seed.sql`)
+- `npm run smoke` — research smoke test (uses real model quota)
 
-Claude Code asks permission before running shell commands. For faster iteration, you
-can pre-allow low-risk commands so Claude doesn't have to pause and ask. There are
-two layers of configuration:
+Needs `ANTHROPIC_API_KEY` and Postgres config in `agent-backend/.env`. Render/export
+shell out to **sandboxed** Typst/Pandoc Docker images
+(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest`).
 
-#### 1. Project-level settings (`.claude/settings.json`)
+### Webapp (`webapp/`) — port 5174 (pinned)
 
-This file is checked into the repo. It applies to everyone who clones it. The
-`allowedTools` array uses glob patterns to whitelist specific commands:
-
-```jsonc
-// .claude/settings.json
-{
-  "permissions": {
-    "allowedTools": [
-      "Bash(git status)",
-      "Bash(git diff*)",
-      "Bash(git log*)",
-      "Bash(git branch*)",
-      "Bash(git show*)",
-      "Bash(ls*)",
-      "Bash(cat*)",
-      "Bash(head*)",
-      "Bash(tail*)",
-      "Bash(wc*)",
-      "Bash(find*)",
-      "Bash(which*)",
-      "Bash(echo*)",
-      "Bash(pwd)",
-      "Bash(npm test*)",
-      "Bash(npm run lint*)",
-      "Bash(npm run build*)",
-      "Bash(npx tsc*)",
-      "Bash(node*)",
-      "Bash(python3*)",
-      "Bash(pip list*)",
-      "Bash(grep*)",
-      "Bash(rg*)",
-      "Bash(cargo check*)",
-      "Bash(cargo test*)",
-      "Bash(cargo clippy*)",
-      "Bash(make*)",
-      "Edit",
-      "Write",
-      "Read",
-      "Glob",
-      "Grep"
-    ]
-  }
-}
+```bash
+cd webapp
+npm install            # first run
+npm run dev            # vite (backend must be running)
 ```
 
-The patterns use prefix matching — `Bash(git diff*)` allows `git diff`,
-`git diff --staged`, `git diff HEAD~3`, etc. This lets Claude run read-only
-git commands, build tools, tests, and linters without prompting.
+The port is pinned because the backend CORS allowlist hard-codes it. Build with
+`npm run build` (`tsc && vite build` — type errors fail the build).
 
-#### 2. User-level settings (`~/.claude/settings.json`)
+Token-free check scripts (drive the app without spending model quota):
+`npm run smoke`, `editor-check`, `parity-check`, `smoke:chat`, `write-check`.
 
-Same format, but applies to all your projects. Good for personal preferences
-that shouldn't be committed (e.g., allowing `docker` commands if you always
-use Docker). This file is never committed.
+## Where things live
 
-#### 3. Slash-command permission mode
+**`agent-backend/src/`**
+- `index.js` — server entry (Express + ws); `config.js` — env/config
+- `routes/` — REST handlers; `session.js` — agent chat sessions
+- `agents/` — agent **runtime** (the `runAgentTask` boundary, Claude Agent SDK, tool dispatch, project seeding pipeline)
+- `db/` + `db.js` — Postgres access: `schema.sql` (DDL), `seed.sql` (agent/tool seed data), `seed.js` (applies seed.sql), `init.js` (startup: schema → seed)
+- `storage.js` — project-scoped file API (**enforces the project root — all file access goes through here**)
+- `sandbox.js` — sandboxed subprocess execution; `render.js` — markdown → Typst → PDF, Pandoc export
+- `yjs-websocket.js` / `yjs-signaling.js` — real-time collab servers
+- `*.test.js` — colocated vitest tests
 
-Type `/permissions` in Claude Code to interactively toggle permission mode
-between `default` (ask for everything), `allowlisted` (use the settings
-above), and `full-auto` (allow everything — use with caution).
+**`webapp/src/`** — flat TS modules, one concern each: `main.ts` (entry), `chat.ts`,
+`editor.ts` (Milkdown/Crepe), `files.ts`, `project-browser.ts`, `preview.ts`,
+`api.ts` (backend client), `citation.ts`/`cite-picker.ts`/`bib.ts` (`/cite`),
+`seeding.ts`, plus `style.css` / `kuhn-tokens.css` for the design system.
 
-### Tips for effective Claude Code usage
+## Agent prompts (`db/seed.sql`)
 
-- **Let Claude read before you ask it to write.** "Read src/editor/ and then refactor the toolbar" works better than "refactor the toolbar."
-- **Use `/init`** in a new repo to generate a starter CLAUDE.md.
-- **CLAUDE.md files are hierarchical.** A CLAUDE.md in a subdirectory adds context for work in that subtree. The agents each have their own.
-- **Use subagents for parallel work.** Claude Code can spawn background agents for independent tasks (research, testing) while continuing foreground work.
+The six agents (pm, writer, ra, advisor, reviewer, analyst), their tools, and the
+agent→tool matrix all live in **`agent-backend/src/db/seed.sql`** — the single
+canonical source. `init.js` runs it at startup (after `schema.sql`) and
+`npm run db:seed` re-applies it; every statement is an idempotent upsert. The
+runtime then loads prompts from the Postgres `agents` table.
+
+- **To change a prompt, model, or tool assignment: edit `seed.sql`, then `npm run db:seed`.**
+- System prompts are dollar-quoted (`$kuhn$ … $kuhn$`) so markdown apostrophes/quotes need no escaping.
+- Per-agent `model` values are columns in the `agents` INSERT — change them there.
+
+(Historical note: prompts used to be markdown files under a top-level `agents/`
+directory read by `seed.js`. That tree — including orphaned CLI-era analyst
+scripts and a `guidance/` corpus — was removed; prompts now live only in `seed.sql`.)
+
+## Stories — project-management rules
+
+Epics and stories live in `docs/epics/NNN-epic-slug/` (`index.md` + `stories/`).
+Statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`. These rules are about
+keeping that record honest:
+
+1. **A `done` story is read-only** — historical record, never the home for open work.
+2. **Every known issue has an owning open story** — self-contained enough to act on without reading back into the done story.
+3. **Done stories use forward pointers**, not issue detail (e.g. "Deferred to Story 009"); the open story owns the full description.
+4. **Marking a story `done` requires an issue audit** — acceptance criteria met or explicitly deferred with a forward reference; every known issue has a receiving open story listed in the epic table.
+
+## Conventions
+
+- **Match the surrounding code** — both apps are plain ESM; the webapp is dependency-light TS with no framework. Keep modules small and single-purpose.
+- **All project file access goes through `storage.js`** — never read/write a project path directly; the project-root enforcement is a tenancy-safety invariant.
+- **Sandboxed execution only** for render/export — go through `sandbox.js`.
+- **Tests are colocated** (`*.test.js`) and run with vitest.
+
+## Claude Code permissions
+
+`.claude/settings.json` (committed) pre-allows low-risk read-only and build commands
+(git read ops, `npm test`/`build`/`lint`, `node`, `python3`, `grep`/`rg`, file tools)
+so Claude Code can iterate without prompting. Add personal allowances in
+`~/.claude/settings.json` (never committed). Toggle modes with `/permissions`.

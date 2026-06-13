@@ -8,7 +8,7 @@ real-time collaboration.
 
 - Express server with health endpoint (`/health`)
 - Postgres (pgvector) via docker-compose; schema auto-created on startup
-- Agent prompts and tool definitions seeded from `agents/*/AGENTS.md`
+- Agent prompts and tool definitions seeded from `src/db/seed.sql`
 - Conversation logging tables
 - y-webrtc signaling (`/yjs-signaling`) and y-websocket (`/yjs-websocket/:doc`) servers
 - **Agent runtime on the Claude Agent SDK** (story 011): `runAgentTask(role, projectId,
@@ -124,7 +124,7 @@ Health check: http://localhost:3002/health
 |---------|------|
 | `npm run dev` | Start dev server with watch mode (port 3002) |
 | `npm start` | Start server |
-| `npm run db:seed` | Re-seed agent prompts and tools from `agents/*/AGENTS.md` |
+| `npm run db:seed` | Re-seed agent prompts and tools from `src/db/seed.sql` |
 | `npm test` | Run tests |
 | `docker compose up -d` / `down` | Start/stop Postgres |
 

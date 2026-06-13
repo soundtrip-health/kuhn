@@ -41,8 +41,8 @@ export const config = {
     // How long ask_user waits for a reply before telling the agent to proceed
     // with defaults (story 012)
     questionTimeoutMs: parseInt(process.env.AGENT_QUESTION_TIMEOUT_MS || String(15 * 60 * 1000)),
-    // Global fallback model; per-agent models (agents.model, story 021) win.
-    // Per-role override at seed time: AGENT_MODEL_<SLUG> (see db/seed.js).
+    // Global fallback model, used only when an agent's model is NULL. Per-agent
+    // models (agents.model, story 021) win and are set in db/seed.sql.
     model: process.env.AGENT_MODEL || undefined,
   },
   storage: {
