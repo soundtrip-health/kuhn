@@ -42,6 +42,42 @@ CREATE TABLE IF NOT EXISTS agent_tools (
 );
 
 -- ============================================================
+-- Organizations / Users / Memberships (story 005)
+--
+-- A real tenant model: projects are owned by an organization; a user reaches
+-- an org through a membership. Identity here is deliberately minimal — enough
+-- to resolve a current user → org memberships — not a full auth provider. The
+-- session middleware (src/session.js) maps a request to a users row; swapping
+-- in SSO later means changing that resolver, not this schema.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS organizations (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(256) NOT NULL,
+  slug        VARCHAR(128) NOT NULL UNIQUE,
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  email         VARCHAR(256) NOT NULL UNIQUE,
+  display_name  VARCHAR(256),
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS memberships (
+  user_id    INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id     INTEGER     NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  role       VARCHAR(16) NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, org_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_org  ON memberships(org_id);
+
+-- ============================================================
 -- Projects
 -- ============================================================
 CREATE TABLE IF NOT EXISTS projects (
@@ -64,6 +100,49 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS
   owner_id VARCHAR(64) NOT NULL DEFAULT 'default';
 
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);
+
+-- Story 005: org ownership. Added idempotently; the FK is created only once.
+-- `owner_id` is retained as the legacy tenant column (a stable string handle);
+-- `org_id` is the live tenant scope every query now filters on.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS org_id INTEGER;
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'projects_org_id_fkey' AND table_name = 'projects'
+  ) THEN
+    ALTER TABLE projects
+      ADD CONSTRAINT projects_org_id_fkey
+      FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id);
+
+-- ============================================================
+-- Seed the default tenant + backfill (story 005)
+--
+-- Guarantees a non-orphaned baseline on both a fresh DB and an Epic-002-era DB:
+-- a default organization, a dev user that owns it, and every pre-existing
+-- project adopted into that org. All statements are idempotent.
+-- ============================================================
+INSERT INTO organizations (name, slug)
+  VALUES ('Default Organization', 'default')
+  ON CONFLICT (slug) DO NOTHING;
+
+INSERT INTO users (email, display_name)
+  VALUES ('dev@kuhn.local', 'Dev User')
+  ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO memberships (user_id, org_id, role)
+  SELECT u.id, o.id, 'owner'
+  FROM users u, organizations o
+  WHERE u.email = 'dev@kuhn.local' AND o.slug = 'default'
+  ON CONFLICT (user_id, org_id) DO NOTHING;
+
+UPDATE projects
+  SET org_id = (SELECT id FROM organizations WHERE slug = 'default')
+  WHERE org_id IS NULL;
 
 -- ============================================================
 -- Conversations

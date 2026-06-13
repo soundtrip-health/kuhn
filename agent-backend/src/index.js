@@ -6,10 +6,12 @@ import { WebSocketServer } from 'ws';
 import { config } from './config.js';
 import { initDb } from './db/init.js';
 import { markOrphanedJobsInterrupted } from './db/jobs.js';
+import { session } from './session.js';
 import healthRouter from './routes/health.js';
 import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
 import filesRouter from './routes/files.js';
+import orgsRouter from './routes/orgs.js';
 import projectsRouter from './routes/projects.js';
 import renderRouter from './routes/render.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
@@ -18,10 +20,13 @@ import { handleYjsConnection } from './yjs-websocket.js';
 const app = express();
 app.use(cors({ origin: config.cors.origin }));
 app.use(express.json());
-app.use(healthRouter);
+app.use(healthRouter); // health needs no identity
+// Story 005: resolve req.user before any tenant-scoped route runs.
+app.use(session);
 app.use(agentRouter);
 app.use(citationsRouter);
 app.use(filesRouter);
+app.use(orgsRouter);
 app.use(projectsRouter);
 app.use(renderRouter);
 

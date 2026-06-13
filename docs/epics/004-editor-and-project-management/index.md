@@ -1,6 +1,6 @@
 # Epic 004: Editor Upgrade (Crepe) + Project Management
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-13
 **Updated:** 2026-06-13
 
@@ -45,9 +45,9 @@ storage API, and sandboxed execution.
 - [x] Collaboration (Yjs) working on Crepe, including the story-024 reload fix
 - [x] Custom surface re-mounted on Crepe: citation chips, `/cite`, `/write`,
       agent-routed slash commands in one menu
-- [ ] `organizations` / `users` / `memberships` data model; org-scoped projects
-- [ ] Org → project → document browser with new-project flow
-- [ ] Breadcrumb wired to live org / project / document; segments navigable
+- [x] `organizations` / `users` / `memberships` data model; org-scoped projects
+- [x] Org → project → document browser with new-project flow
+- [x] Breadcrumb wired to live org / project / document; segments navigable
 
 ### Deferred
 
@@ -73,9 +73,9 @@ storage API, and sandboxed execution.
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 005 | [Org/tenant data model & API](stories/005-org-tenant-model.md) — `organizations`/`users`/`memberships`, `projects.org_id`, scoped queries, minimal session | ready | L |
-| 006 | [Project & document browser](stories/006-project-document-browser.md) — org/project switcher, projects dashboard, new-project flow, active-document persistence | ready | L |
-| 007 | [Breadcrumb wired to the file system](stories/007-breadcrumb-wired-to-filesystem.md) — live org/project/document segments, navigable; drop hardcoded text | ready | M |
+| 005 | [Org/tenant data model & API](stories/005-org-tenant-model.md) — `organizations`/`users`/`memberships`, `projects.org_id`, scoped queries, minimal session | done | L |
+| 006 | [Project & document browser](stories/006-project-document-browser.md) — org/project switcher, projects dashboard, new-project flow, active-document persistence | done | L |
+| 007 | [Breadcrumb wired to the file system](stories/007-breadcrumb-wired-to-filesystem.md) — live org/project/document segments, navigable; drop hardcoded text | done | M |
 
 ## Sequencing
 

@@ -11,6 +11,7 @@ import { exportUrl, fetchFileBlob, fileBlobUrl, renderPdf } from './api';
 import { currentDocumentPath, flushSave } from './editor';
 
 let projectId = 0;
+let listenersWired = false;
 let blobUrl: string | null = null;
 let rendering = false;
 
@@ -144,6 +145,17 @@ async function download(format: 'docx' | 'tex'): Promise<void> {
 
 export function initPreview(activeProjectId: number): void {
   projectId = activeProjectId;
+  // Per-project reset (story 006): drop a previous project's rendered PDF and
+  // collapse the pane so it doesn't show stale content after a switch.
+  revokeBlob();
+  frame().removeAttribute('src');
+  showFrame(true);
+  setStatus('');
+  panel().classList.add('collapsed');
+
+  if (listenersWired) return; // toggle/refresh/export listeners bind once
+  listenersWired = true;
+
   document.getElementById('toggle-preview')!.addEventListener('click', () => {
     const opened = !panel().classList.toggle('collapsed');
     if (opened && !blobUrl) void render();

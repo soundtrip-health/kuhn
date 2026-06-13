@@ -1,8 +1,29 @@
 # Story 005: Org/tenant data model & API
 
-**Status:** ready
+**Status:** done
 **Epic:** [004 — Editor Upgrade + Project Management](../index.md)
 **Estimate:** L
+
+## Outcome
+
+All acceptance criteria met and verified against a live (Epic-002-era) and a
+fresh DB. Added `organizations`/`users`/`memberships` + `projects.org_id` (FK,
+idempotent migration in `schema.sql`), seeded a default org and backfilled
+existing projects into it, a swappable session middleware
+(`src/session.js`, `x-kuhn-user` header → dev-user fallback), org-scoped project
+list/create, and `GET/POST /api/orgs` + `GET /api/orgs/:id/projects`.
+`seed`/`conversations`/`active-document` routes also membership-guarded.
+Verified: migration idempotent re-run, default-org backfill, and all endpoints
+via curl + 17 route tests.
+
+## Known Issues (forward pointers)
+
+- **Deeper route scoping / RLS** — `files`, `render`, `agent`, and `citations`
+  routes still take a `projectId` without a membership check; only the project/
+  org/seed/conversations/active-document routes are guarded. Query-level scoping
+  is the accepted interim per the architecture; row-level security (RLS) and
+  extending the membership guard to the remaining project-scoped routes are
+  deferred to a future tenancy/auth epic (tracked in the epic's Deferred list).
 
 ## Goal
 

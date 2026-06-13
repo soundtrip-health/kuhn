@@ -1,12 +1,15 @@
-// Kuhn webapp entry point (story 013; restyled for story 025): bootstrap the
-// active project, then wire the three panes — agent chat, Milkdown editor, file
-// tree — the top bar, and the status bar against the "Column" design.
+// Kuhn webapp entry point (story 013; restyled for story 025; org/project
+// browser wired in stories 005–007). Bootstraps the workspace (org → project →
+// document) from the backend, wires the three panes — agent chat, Milkdown
+// editor, file tree — the top bar, breadcrumb, and status bar, and reacts to
+// workspace changes by switching the open project/document in place (no reload).
 
 import './kuhn-tokens.css';
 import './style.css';
 
 import { initAgentSelector } from './agent-selector';
-import { createProject, listProjects, writeTextFile, type Project } from './api';
+import { writeTextFile } from './api';
+import { initBreadcrumb } from './breadcrumb';
 import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
 import {
@@ -17,30 +20,14 @@ import {
   flushSave,
   openDocument,
 } from './editor';
-import { initFiles, recordFileChange, refreshTree, setActiveFile } from './files';
+import { findMarkdownPath, initFiles, recordFileChange, refreshTree, setActiveFile } from './files';
 import { icon } from './icons';
 import { initPreview, previewStoredFile } from './preview';
+import { openProjectBrowser } from './project-browser';
 import { notify } from './status';
+import * as workspace from './workspace';
 
 const MAIN_DOCUMENT = 'draft/main.md';
-
-const BOOTSTRAP_DOCUMENT = `# Demo Manuscript
-
-## Introduction
-
-Welcome to Kuhn. This document lives at \`${MAIN_DOCUMENT}\` in your project.
-Edit it here, or ask the agents in the chat panel to work on it.
-
-Inline math works too: $e^{i\\pi} + 1 = 0$.
-`;
-
-async function activeProject(): Promise<Project> {
-  const projects = await listProjects();
-  if (projects.length > 0) return projects[0];
-  const project = await createProject('Demo Manuscript');
-  await writeTextFile(project.id, MAIN_DOCUMENT, BOOTSTRAP_DOCUMENT);
-  return project;
-}
 
 function wirePanelToggles(): void {
   const wire = (buttonId: string, panelId: string) => {
@@ -98,31 +85,35 @@ function buildEditorHero(): void {
   });
 }
 
-async function main(): Promise<void> {
-  wirePanelToggles();
-  wireExportMenu();
-  initAgentSelector();
-  buildEditorHero();
-  const sendBtn = document.querySelector('.send-btn');
-  if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });
+// Each project switch bumps this; async steps bail if a newer switch started,
+// so racing switches can't cross-wire one project's document into another.
+let switchSeq = 0;
 
-  let project: Project;
-  try {
-    project = await activeProject();
-  } catch (err) {
-    document.getElementById('editor')!.textContent =
-      `Cannot reach the agent backend: ${(err as Error).message}. ` +
-      'Start it with `npm run dev` in agent-backend/ and reload.';
+/**
+ * Open the workspace's active project in place: re-wire the per-project panes
+ * (chat, files, preview), then open its recorded document (or a sensible
+ * fallback). Called on bootstrap and on every project/org switch.
+ */
+async function switchToActiveProject(): Promise<void> {
+  const project = workspace.activeProject();
+  const seq = ++switchSeq;
+
+  if (!project) {
+    // No project in this org — close the editor and invite the user to create one.
+    await closeDocument();
+    setActiveFile('');
+    document.getElementById('editor-path')!.textContent = '';
+    openProjectBrowser();
     return;
   }
 
-  document.getElementById('project-name')!.textContent = project.name;
+  const projectId = project.id;
 
-  initChat(project.id, (change) => {
+  initChat(projectId, (change) => {
     recordFileChange(change); // feed the files-panel status map (story 014)
     const changedPath = change.path;
-    void refreshTree(project.id);
-    if (changedPath.endsWith('.bib')) void refreshBib(project.id);
+    void refreshTree(projectId);
+    if (changedPath.endsWith('.bib')) void refreshBib(projectId);
     if (changedPath === currentDocumentPath()) {
       // Live-update a clean editor in place (story 017); a dirty editor keeps
       // the reload prompt so unsaved local edits aren't clobbered.
@@ -134,29 +125,60 @@ async function main(): Promise<void> {
     }
   });
 
-  initFiles(project.id, {
-    onOpenMarkdown: (path) => {
-      setActiveFile(path);
-      void openDocument(project.id, path);
-    },
+  initFiles(projectId, {
+    onOpenMarkdown: (path) => openInEditor(projectId, path),
     onPreviewFile: (path) => void previewStoredFile(path),
     flushOpenDoc: () => flushSave(),
-    reopenOpenDoc: (to) => {
-      setActiveFile(to);
-      void openDocument(project.id, to);
-    },
+    reopenOpenDoc: (to) => openInEditor(projectId, to),
     dropOpenDoc: (deletedPath) => {
       // Drop the deleted doc without re-saving, then fall back to the main draft
       // (unless that's what was deleted) so the editor isn't left stranded.
       void discardDocument().then(() => {
         if (deletedPath !== MAIN_DOCUMENT) {
-          setActiveFile(MAIN_DOCUMENT);
-          void openDocument(project.id, MAIN_DOCUMENT);
+          openInEditor(projectId, MAIN_DOCUMENT);
+        } else {
+          workspace.setActiveDocument('');
         }
       });
     },
   });
-  initPreview(project.id);
+  initPreview(projectId);
+
+  await refreshTree(projectId);
+  if (seq !== switchSeq) return; // a newer switch superseded this one
+
+  // Pick the document: the recorded active doc if it still exists, else the
+  // first markdown file, else bootstrap an empty main draft (which shows the
+  // seeding hero) for a brand-new project.
+  let doc = findMarkdownPath(project.config?.activeDocument);
+  if (!doc) {
+    await writeTextFile(projectId, MAIN_DOCUMENT, '');
+    await refreshTree(projectId);
+    if (seq !== switchSeq) return;
+    doc = MAIN_DOCUMENT;
+  }
+
+  setActiveFile(doc);
+  await openDocument(projectId, doc);
+  if (seq !== switchSeq) return;
+  workspace.setActiveDocument(doc);
+}
+
+/** Open a markdown file in the editor and record it as the active document. */
+function openInEditor(projectId: number, path: string): void {
+  setActiveFile(path);
+  workspace.setActiveDocument(path);
+  void openDocument(projectId, path);
+}
+
+async function main(): Promise<void> {
+  wirePanelToggles();
+  wireExportMenu();
+  initAgentSelector();
+  buildEditorHero();
+  initBreadcrumb();
+  const sendBtn = document.querySelector('.send-btn');
+  if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });
 
   // Seeding pipeline (story 015): PM interview → research → skeleton draft
   document.getElementById('seed-project')!.addEventListener('click', () => void startSeeding());
@@ -169,9 +191,22 @@ async function main(): Promise<void> {
   });
   window.addEventListener('beforeunload', () => void closeDocument());
 
-  await refreshTree(project.id);
-  setActiveFile(MAIN_DOCUMENT);
-  await openDocument(project.id, MAIN_DOCUMENT);
+  // React to workspace changes: a project switch re-opens the project in place;
+  // a document segment click in the breadcrumb reveals the file in the tree.
+  workspace.subscribe((change) => {
+    if (change === 'project') void switchToActiveProject();
+  });
+
+  try {
+    await workspace.initWorkspace();
+  } catch (err) {
+    document.getElementById('editor')!.textContent =
+      `Cannot reach the agent backend: ${(err as Error).message}. ` +
+      'Start it with `npm run dev` in agent-backend/ and reload.';
+    return;
+  }
+
+  await switchToActiveProject();
 }
 
 void main();

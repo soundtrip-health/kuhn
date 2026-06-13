@@ -1,8 +1,20 @@
 # Story 006: Project & document browser
 
-**Status:** ready
+**Status:** done
 **Epic:** [004 — Editor Upgrade + Project Management](../index.md)
 **Estimate:** L
+
+## Outcome
+
+All acceptance criteria met. `webapp/src/workspace.ts` is the single source of
+truth for active org/project/document (with a `subscribe()` bus shared with the
+breadcrumb, story 007). `project-browser.ts` is the projects dashboard (cards +
+new-project form → seeding hero); the breadcrumb's org menu is the org switcher.
+`main.ts` was rewired to switch projects in place (no reload): it tears down the
+open document via `closeDocument`, restores `projects.config.activeDocument`
+(with first-`.md` fallback via `findMarkdownPath`), and re-inits chat/files/
+preview safely (one-time listener binding guarded). `cd webapp && npm run build`
+is clean; verified end-to-end by `scripts/workspace-check.mjs`.
 
 ## Goal
 

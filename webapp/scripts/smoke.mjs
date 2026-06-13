@@ -19,7 +19,7 @@ await page.goto(WEBAPP);
 await page.waitForSelector('#editor .milkdown', { timeout: 15000 });
 await page.waitForTimeout(1500);
 
-const projectName = await page.textContent('#project-name');
+const projectName = await page.textContent('#breadcrumb .breadcrumb-project');
 console.log('project:', projectName);
 console.log('status-doc:', await page.textContent('#status-doc'));
 console.log('editor heading:', await page.textContent('#editor h1').catch(() => '(none)'));
