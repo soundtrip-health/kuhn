@@ -81,8 +81,10 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 
 ## Agents
 
-The `agents/` directory contains the AI agent framework — six specialized agents that power the
-writing assistance. See [agents/README.md](agents/README.md) for details.
+Six specialized agents (PM, Writer, Research Assistant, Advisor, Reviewer, Analyst) power the
+writing assistance. Their system prompts, models, and tool assignments are defined in
+[`agent-backend/src/db/seed.sql`](agent-backend/src/db/seed.sql) and seeded into Postgres at
+startup; the runtime loads them from the database.
 
 ## Quick Start
 
@@ -106,10 +108,10 @@ npm install
 npm run dev
 ```
 
-Starts at **http://localhost:3002**. On startup it creates the database schema and seeds agent
-prompts from `agents/*/AGENTS.md`. Health check: http://localhost:3002/health
+Starts at **http://localhost:3002**. On startup it creates the database schema and seeds agents,
+tools, and assignments from `src/db/seed.sql`. Health check: http://localhost:3002/health
 
-Re-seed after editing AGENTS.md files: `npm run db:seed`
+Re-seed after editing `src/db/seed.sql`: `npm run db:seed`
 
 ### Webapp
 
@@ -132,18 +134,12 @@ agent runs use real model quota. See [webapp/README.md](webapp/README.md).
 
 ### Additional Prerequisites
 
-- Python 3.11+ (for agent scripts and figure generation)
 - Typst + Pandoc sandbox images for rendering/export (one-time:
   `docker pull ghcr.io/typst/typst:latest && docker pull pandoc/core:latest`)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-### Agent Dependencies
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r agents/requirements.txt
-```
+Render/export and any future analyst code execution run inside sandboxed Docker images
+(no host Python environment required).
 
 ### Working with Claude Code
 

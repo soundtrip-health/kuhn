@@ -115,11 +115,11 @@ each full run costs real quota. Scripted version: `node webapp/scripts/seed-chec
 
 **Setup:** `cd agent-backend && docker compose up -d && npm run dev`
 
-- [ ] Server starts and prints "Schema applied", "Seeded 6 agents", "Seeded 7 tools", "Seeded 20 agent-tool assignments"
+- [ ] Server starts and prints "Schema applied" and "Applied db/seed.sql (agents, tools, assignments)"
 - [ ] `curl http://localhost:3002/health` returns `{ "status": "ok", "db": { "ok": true, ... } }`
 - [ ] Verify agents in DB: `docker compose exec postgres psql -U kuhn -c "SELECT slug, name FROM agents ORDER BY slug;"` shows 6 rows (advisor, analyst, pm, ra, reviewer, writer)
-- [ ] Verify tools in DB: `docker compose exec postgres psql -U kuhn -c "SELECT slug, name FROM tools ORDER BY slug;"` shows 7 rows
-- [ ] Verify assignments: `docker compose exec postgres psql -U kuhn -c "SELECT count(*) FROM agent_tools;"` returns 20
+- [ ] Verify tools in DB: `docker compose exec postgres psql -U kuhn -c "SELECT slug, name FROM tools ORDER BY slug;"` shows 10 rows
+- [ ] Verify assignments: `docker compose exec postgres psql -U kuhn -c "SELECT count(*) FROM agent_tools;"` returns 26
 - [ ] Idempotency: restart server (`npm run dev` again) — no errors, no duplicate rows
 - [ ] Standalone seed: `npm run db:seed` completes without errors
 - [ ] Graceful degradation: stop Postgres (`docker compose down`), start server — logs error but still listens on port 3002
