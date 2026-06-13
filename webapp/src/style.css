@@ -190,7 +190,11 @@ body {
   color: var(--doc-ink);
   padding: 0;
 }
-#editor .milkdown .ProseMirror:focus { outline: none; }
+/* The document canvas is the whole writing surface — no focus ring. Crepe tags
+   its ProseMirror with `.editor`, which would otherwise pick up the global
+   :focus-visible ring. */
+#editor .milkdown .ProseMirror:focus,
+#editor .milkdown .ProseMirror:focus-visible { outline: none; box-shadow: none; }
 #editor .milkdown .ProseMirror > * { margin-left: 0; margin-right: 0; }
 #editor .milkdown .ProseMirror p { font: var(--doc-body); color: var(--doc-ink); margin: 0 0 16px; }
 #editor .milkdown .ProseMirror h1 {
@@ -449,33 +453,40 @@ body {
   padding: 4px 11px; border-radius: var(--r-pill);
 }
 
-/* ---- Slash command menu (story 016, restyled) ----------------------- */
-.slash-menu {
-  position: fixed; z-index: 50; width: 400px; max-width: calc(100vw - 24px);
-  background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop); padding: 6px;
-  display: none; flex-direction: column;
-  animation: kuhn-rise var(--dur-fast) var(--ease) both;
+/* ---- Crepe theme → Column tokens (story 001) ------------------------ */
+/* Crepe's feature CSS (toolbar, block-edit slash menu, link tooltip, table,
+   code-mirror, image block, latex) reads these `--crepe-*` variables. We map
+   them onto the Column palette instead of importing a Crepe color theme, so
+   there are no Nord/classic remnants. Editor *content* typography stays under
+   the higher-specificity `#editor .milkdown .ProseMirror` rules below. */
+.milkdown {
+  --crepe-color-background:         var(--paper);
+  --crepe-color-on-background:      var(--doc-ink);
+  --crepe-color-surface:            var(--chrome);
+  --crepe-color-surface-low:        var(--soft);
+  --crepe-color-on-surface:         var(--ink);
+  --crepe-color-on-surface-variant: var(--ink-2);
+  --crepe-color-outline:            var(--line-strong);
+  --crepe-color-primary:            var(--accent);
+  --crepe-color-secondary:          var(--accent-soft);
+  --crepe-color-on-secondary:       var(--accent-deep);
+  --crepe-color-inverse:            var(--ink);
+  --crepe-color-on-inverse:         var(--ink-inv);
+  --crepe-color-inline-code:        var(--warn);
+  --crepe-color-error:              var(--warn);
+  --crepe-color-hover:              var(--soft-2);
+  --crepe-color-selected:           var(--accent-soft);
+  --crepe-color-inline-area:        var(--soft-2);
+
+  --crepe-font-title:   var(--font-doc);
+  --crepe-font-default: var(--font-ui);
+  --crepe-font-code:    var(--font-mono);
+
+  /* Crepe uses shadow-1 for every floating popover (slash menu, toolbar, link
+     tooltip, table/image controls); give those the Column pop elevation. */
+  --crepe-shadow-1: var(--shadow-pop);
+  --crepe-shadow-2: var(--shadow-pop);
 }
-.slash-menu[data-show='true'] { display: flex; }
-.slash-menu-header { font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); padding: 7px 9px; }
-.slash-item {
-  display: flex; align-items: center; gap: 11px;
-  border: none; background: none; cursor: pointer;
-  padding: 9px; border-radius: var(--r-sm); text-align: left; width: 100%;
-}
-.slash-item:hover, .slash-item.active { background: var(--soft-2); }
-.slash-avatar {
-  width: 28px; height: 28px; flex: 0 0 28px; border-radius: var(--r-sm);
-  background: var(--role); color: var(--ink-inv);
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
-}
-.slash-text { flex: 1; min-width: 0; }
-.slash-line { display: flex; align-items: baseline; gap: 7px; }
-.slash-name { font-family: var(--font-mono); font-size: 13px; font-weight: 500; color: var(--ink); }
-.slash-arg { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-.slash-desc { font: var(--ui-small); color: var(--ink-2); margin-top: 1px; }
 
 /* ---- /cite picker (story 016, restyled) ----------------------------- */
 .cite-picker {

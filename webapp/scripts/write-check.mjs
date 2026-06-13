@@ -71,16 +71,22 @@ const restoreDoc = async () =>
 
 // Open a /write block and dispatch an instruction; returns once it has streamed.
 async function openWrite(instruction) {
+  // Crepe's slash menu (story 003, Notion-style) only opens when the block text
+  // starts with "/", so position on a guaranteed-empty block: clear the doc to a
+  // single empty paragraph first. (The old slash.ts matched "/" after any
+  // whitespace mid-block; Crepe does not.)
   await page.click('#editor .milkdown .ProseMirror');
   await page.keyboard.press('ControlOrMeta+a');
-  await page.keyboard.press('ArrowRight');
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Delete');
+  await page.waitForTimeout(150);
   await page.keyboard.type('/write');
-  await page.waitForSelector('.slash-menu[data-show="true"]', { timeout: 5000 })
+  // Crepe's unified block-edit menu (story 003) filters down to the Write agent
+  // command; the highlighted item runs on Enter.
+  await page.waitForSelector('.milkdown-slash-menu[data-show="true"]', { timeout: 5000 })
     .catch(() => fail('slash menu did not open on "/write"'));
   await page.waitForTimeout(300);
-  const active = await page.textContent('.slash-item.active .slash-name').catch(() => null);
-  if (active !== '/write') fail(`expected /write to be the active item, got ${active}`);
+  const menuText = await page.textContent('.milkdown-slash-menu').catch(() => null);
+  if (!/Write/.test(menuText ?? '')) fail(`expected Write in the filtered menu, got ${menuText}`);
   await page.keyboard.press('Enter');
   await page.waitForSelector('.write-suggestion .ws-input', { timeout: 5000 })
     .catch(() => fail('suggestion block did not open with an instruction input'));

@@ -73,6 +73,13 @@ captioned figures/tables, math (LaTeX syntax inside `$...$`).
 **Decision (2026-06-11):** Build the editor on **Milkdown** (MIT) — a plugin-driven WYSIWYG
 markdown editor framework on ProseMirror + remark, with a first-class Yjs binding.
 
+**Refinement (Epic 004, 2026-06-13):** The hand-rolled Milkdown build was replaced with
+**Milkdown Crepe** (the Notion-style distribution, on `CrepeBuilder`) — toolbar, block-edit
+slash menu, block handle, image/table/code-mirror/latex features out of the box. Yjs collab and
+Kuhn's custom surface (citation chips, `/cite`, `/write`, agent slash commands folded into one
+menu) re-attach to `crepe.editor`. Crepe's slash menu is Notion-style: it opens only when a
+block's text starts with `/` (the retired `slash.ts` matched mid-block) — an accepted change.
+
 Why Milkdown:
 
 - **Audience fit** — target users (protocol, grant, SOP authors) are Word/Docs people, not

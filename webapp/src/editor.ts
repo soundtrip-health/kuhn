@@ -1,26 +1,35 @@
-// Milkdown editor pane: WYSIWYG markdown (commonmark + GFM + math), loading
-// from and saving to the backend storage API, bound to the backend
-// y-websocket room for the document (proves the collab path; single-user is
-// fine for the prototype).
+// Editor pane: a Milkdown Crepe build (story 001) — a Notion-style WYSIWYG
+// markdown editor (toolbar, block-edit slash menu, block handle, image block,
+// table, CodeMirror code blocks, link tooltip, list items, placeholder, LaTeX,
+// cursor) themed to the "Column" design. Collaboration (Yjs) and the custom
+// agent/citation surface are layered onto Crepe's underlying editor (stories
+// 002/003): citation chips, `/cite`, and `/write` re-attach as plugins, and the
+// agent-routed slash commands fold into Crepe's block-edit menu as one group.
 //
-// Persistence model (story 013): Yjs is the collab/transport layer; the
-// storage API is persistence. Saves happen on debounce and on Cmd/Ctrl+S.
+// Persistence model (story 013): Yjs is the collab/transport layer; the storage
+// API is persistence. Saves happen on debounce and on Cmd/Ctrl+S.
 
-import { Editor, rootCtx } from '@milkdown/kit/core';
-import { commonmark } from '@milkdown/kit/preset/commonmark';
-import { gfm } from '@milkdown/kit/preset/gfm';
-import { history } from '@milkdown/kit/plugin/history';
-import { clipboard } from '@milkdown/kit/plugin/clipboard';
-import { listener, listenerCtx } from '@milkdown/kit/plugin/listener';
+import { CrepeBuilder } from '@milkdown/crepe/builder';
+import { blockEdit } from '@milkdown/crepe/feature/block-edit';
+import { codeMirror } from '@milkdown/crepe/feature/code-mirror';
+import { cursor } from '@milkdown/crepe/feature/cursor';
+import { imageBlock } from '@milkdown/crepe/feature/image-block';
+import { latex } from '@milkdown/crepe/feature/latex';
+import { linkTooltip } from '@milkdown/crepe/feature/link-tooltip';
+import { listItem } from '@milkdown/crepe/feature/list-item';
+import { placeholder } from '@milkdown/crepe/feature/placeholder';
+import { table } from '@milkdown/crepe/feature/table';
+import { toolbar } from '@milkdown/crepe/feature/toolbar';
+
+import { type Editor, editorViewCtx } from '@milkdown/kit/core';
+import type { Ctx } from '@milkdown/kit/ctx';
 import { getMarkdown, markdownToSlice, replaceAll } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
-import { math } from '@milkdown/plugin-math';
-import { nord } from '@milkdown/theme-nord';
 import { Doc as YDoc } from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 
-import '@milkdown/theme-nord/style.css';
+import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 
 import { BACKEND_WS_URL, readTextFile, writeTextFile } from './api';
@@ -29,7 +38,7 @@ import { refreshBib } from './bib';
 import { citationPlugins, installCitationTooltips } from './citation';
 import { openCitePicker } from './cite-picker';
 import { refreshTree } from './files';
-import { slash, slashMenuSpec, type SlashCommand } from './slash';
+import { icon } from './icons';
 import { setDocument, setSaveState } from './status';
 import { toast } from './toast';
 import { startWrite, writeSuggestionPlugin } from './write-suggestion';
@@ -43,7 +52,7 @@ const DEFAULT_TEMPLATE = `# Untitled draft
 Start writing, or ask an agent in the chat panel.
 `;
 
-let editor: Editor | null = null;
+let crepe: CrepeBuilder | null = null;
 let provider: WebsocketProvider | null = null;
 let ydoc: YDoc | null = null;
 
@@ -67,8 +76,8 @@ export function currentDocumentPath(): string {
  * to clobber them and return false so the caller keeps the reload prompt.
  */
 export async function applyExternalChange(path: string): Promise<boolean> {
-  if (!editor || path !== currentPath) return false;
-  const current = editor.action(getMarkdown());
+  if (!crepe || path !== currentPath) return false;
+  const current = crepe.editor.action(getMarkdown());
   const dirty = saveTimer != null || current !== lastSavedMarkdown;
   if (dirty) return false;
 
@@ -77,35 +86,40 @@ export async function applyExternalChange(path: string): Promise<boolean> {
   // Preset lastSaved so the markdownUpdated listener's save guard short-circuits
   // (we're mirroring storage, not making a new local edit).
   lastSavedMarkdown = stored;
-  editor.action(replaceAll(stored));
+  crepe.editor.action(replaceAll(stored));
   setSaveState('saved');
   return true;
 }
 
-// Slash-command registry (story 016, expanded for story 025). /cite is fully
-// wired (PubMed search → chip). The remaining commands match the design's
-// command palette; per the handoff they route to the owning agent (a stub
-// toast here — real dispatch lands with story 017+). /write's streamed
-// suggestion UI is explicitly story 017.
-function slashCommands(): SlashCommand[] {
-  const routed = (
-    name: string,
-    agent: string,
-    arg: string,
-    description: string,
-  ): SlashCommand => ({
-    name,
+// Slash-command registry (story 016, expanded for stories 017/025). These fold
+// into Crepe's block-edit menu as one "AI commands" group (story 003) — typing
+// `/` at the start of a block opens the unified menu; the block types come from
+// Crepe, the agent commands from here. /cite is fully wired (PubMed search →
+// chip) and /write streams a suggestion; the rest route to the owning agent (a
+// stub toast for now — real dispatch lands with later stories).
+interface AgentCommand {
+  /** Filterable label shown in the menu, e.g. 'Cite'. */
+  label: string;
+  /** Owning agent slug — drives the routed-toast label. */
+  agent: string;
+  /** One-line description (currently menu-internal; kept for parity). */
+  description: string;
+  /** Invoked after the typed `/...` run has been removed from the document. */
+  run: (view: EditorView) => void;
+}
+
+function agentCommands(): AgentCommand[] {
+  const routed = (label: string, agent: string, description: string): AgentCommand => ({
+    label,
     agent,
-    arg,
     description,
     run: () => toast(`Routed to ${agentIdentity(agent).label}`),
   });
 
   return [
     {
-      name: 'cite',
+      label: 'Cite',
       agent: 'ra',
-      arg: '<reference>',
       description: 'Search PubMed & insert a citation',
       run: (view) => {
         const coords = view.coordsAtPos(view.state.selection.from);
@@ -124,28 +138,50 @@ function slashCommands(): SlashCommand[] {
       },
     },
     {
-      name: 'write',
+      label: 'Write',
       agent: 'writer',
-      arg: '<request>',
       description: 'Writer drafts text right here',
       run: (view) =>
         startWrite(view, {
           projectId: currentProjectId,
           path: currentPath,
           // Parse the accepted markdown with the live parser (decision 2).
-          toSlice: (markdown) => editor!.action(markdownToSlice(markdown)),
+          toSlice: (markdown) => crepe!.editor.action(markdownToSlice(markdown)),
           getSession: () => writerSession,
           setSession: (id) => {
             writerSession = id;
           },
         }),
     },
-    routed('research', 'ra', '<topic>', 'Ask Research a question'),
-    routed('figure', 'analyst', '<spec>', 'Analyst makes a figure or table'),
-    routed('review', 'reviewer', '<section>', 'Reviewer critiques this section'),
-    routed('ask', 'pm', '<question>', 'Ask any agent inline'),
-    { name: 'status', agent: 'pm', arg: '', description: 'What is the team doing?', run: () => toast('Routed to PM') },
+    routed('Research', 'ra', 'Ask Research a question'),
+    routed('Figure', 'analyst', 'Analyst makes a figure or table'),
+    routed('Review', 'reviewer', 'Reviewer critiques this section'),
+    routed('Ask', 'pm', 'Ask any agent inline'),
+    routed('Status', 'pm', 'What is the team doing?'),
   ];
+}
+
+/**
+ * The `/filter` run immediately before the caret, if any. Crepe's block-edit
+ * menu leaves the typed `/...` text in the document and delegates removal to the
+ * selected item's handler; agent commands remove just that run (not the whole
+ * block) before acting.
+ */
+function matchSlashRun(view: EditorView): { from: number; to: number } | null {
+  const { $from, empty } = view.state.selection;
+  if (!empty || !$from.parent.isTextblock || $from.parent.type.spec.code) return null;
+  const textBefore = $from.parent.textBetween(0, $from.parentOffset, undefined, '￼');
+  const match = textBefore.match(/(?:^|\s)\/([a-zA-Z]*)$/);
+  if (!match) return null;
+  return { from: $from.pos - match[1].length - 1, to: $from.pos };
+}
+
+/** Remove the typed `/...` run, then run an agent command at the caret. */
+function runAgentCommand(ctx: Ctx, command: AgentCommand): void {
+  const view = ctx.get(editorViewCtx);
+  const run = matchSlashRun(view);
+  if (run) view.dispatch(view.state.tr.delete(run.from, run.to));
+  command.run(view);
 }
 
 /** Update the sub-header word count and toggle the empty-state hero. */
@@ -183,32 +219,49 @@ export async function openDocument(projectId: number, path: string): Promise<voi
   const template = stored ?? DEFAULT_TEMPLATE;
   lastSavedMarkdown = stored ?? '';
 
-  editor = await Editor.make()
-    .config(nord)
-    .config((ctx) => {
-      ctx.set(rootCtx, '#editor');
-      ctx.set(slash.key, slashMenuSpec(slashCommands()));
-      ctx.get(listenerCtx).markdownUpdated((_ctx, markdown, prev) => {
-        updateDocMeta(markdown);
-        if (prev != null && markdown !== prev) scheduleSave(markdown);
-      });
+  const commands = agentCommands();
+  crepe = new CrepeBuilder({ root: '#editor' });
+  crepe
+    .addFeature(toolbar)
+    .addFeature(blockEdit, {
+      buildMenu: (builder) => {
+        const group = builder.addGroup('kuhn-agents', 'AI commands');
+        for (const command of commands) {
+          group.addItem(command.label.toLowerCase(), {
+            label: command.label,
+            icon: icon('sparkle'),
+            onRun: (ctx) => runAgentCommand(ctx, command),
+          });
+        }
+      },
     })
-    .use(commonmark)
-    .use(gfm)
-    .use(math)
-    .use(history)
-    .use(clipboard)
-    .use(listener)
-    .use(collab)
-    .use(citationPlugins)
-    .use(slash)
-    .use(writeSuggestionPlugin)
-    .create();
+    .addFeature(imageBlock)
+    .addFeature(table)
+    .addFeature(codeMirror)
+    .addFeature(listItem)
+    .addFeature(linkTooltip)
+    .addFeature(placeholder, { text: 'Type "/" for commands', mode: 'block' })
+    .addFeature(latex)
+    .addFeature(cursor)
+    // Custom Kuhn surface (story 003): citation chips, the `/write` suggestion
+    // decoration, and the Yjs collab plugin all attach to the underlying editor.
+    .addFeature((editor: Editor) => {
+      editor.use(citationPlugins).use(writeSuggestionPlugin).use(collab);
+    });
+
+  crepe.on((api) => {
+    api.markdownUpdated((_ctx, markdown, prev) => {
+      updateDocMeta(markdown);
+      if (prev != null && markdown !== prev) scheduleSave(markdown);
+    });
+  });
+
+  await crepe.create();
 
   updateDocMeta(template);
   setSaveState('saved');
 
-  editor.action((ctx) => {
+  crepe.editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
     ydoc = new YDoc();
     provider = new WebsocketProvider(`${BACKEND_WS_URL}/yjs-websocket`, roomName(projectId, path), ydoc);
@@ -228,14 +281,14 @@ export async function closeDocument(): Promise<void> {
   // Detach the collab plugins before any teardown: late provider/awareness
   // events otherwise dispatch into the view after editor.destroy() has
   // removed the editorState ctx slice (story 024).
-  editor?.action((ctx) => ctx.get(collabServiceCtx).disconnect());
+  crepe?.editor.action((ctx) => ctx.get(collabServiceCtx).disconnect());
   if (saveTimer) await flushSave();
   provider?.destroy();
   provider = null;
   ydoc?.destroy();
   ydoc = null;
-  if (editor) await editor.destroy();
-  editor = null;
+  if (crepe) await crepe.destroy();
+  crepe = null;
 }
 
 function roomName(projectId: number, path: string): string {
@@ -273,8 +326,8 @@ export async function flushSave(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (!editor) return;
-  const markdown = editor.action(getMarkdown());
+  if (!crepe) return;
+  const markdown = crepe.editor.action(getMarkdown());
   await doSave(markdown);
 }
 

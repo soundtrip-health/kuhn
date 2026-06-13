@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs && node scripts/collab-check.mjs",
+    "editor-check": "node scripts/editor-check.mjs",
+    "parity-check": "node scripts/parity-sweep.mjs",
     "smoke:chat": "node scripts/chat-check.mjs",
     "write-check": "node scripts/write-check.mjs"
   },
@@ -17,10 +19,9 @@
     "vite": "^8.0.12"
   },
   "dependencies": {
+    "@milkdown/crepe": "^7.21.2",
     "@milkdown/kit": "^7.21.2",
     "@milkdown/plugin-collab": "^7.21.2",
-    "@milkdown/plugin-math": "^7.5.9",
-    "@milkdown/theme-nord": "^7.21.2",
     "katex": "^0.17.0",
     "marked": "^18.0.5",
     "y-protocols": "^1.0.7",

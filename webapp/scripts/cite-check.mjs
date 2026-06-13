@@ -65,20 +65,22 @@ await page.goto(WEBAPP);
 await page.waitForSelector('#editor .milkdown', { timeout: 15000 });
 await page.waitForTimeout(1500);
 
-// --- Slash menu ---
-// Caret to the very end of the document (Cmd/Ctrl+End is not bound on mac)
+// --- Slash menu (Crepe unified block-edit menu, story 003) ---
+// Crepe only opens the menu when the block text starts with "/", so clear the
+// doc to a single empty block first, then type "/ci" to filter to the Cite
+// agent command.
 await page.click('#editor .milkdown [contenteditable]');
 await page.keyboard.press('ControlOrMeta+a');
-await page.keyboard.press('ArrowRight');
-await page.keyboard.press('Enter');
+await page.keyboard.press('Delete');
+await page.waitForTimeout(150);
 await page.keyboard.type('/');
-await page.waitForSelector('.slash-menu[data-show="true"]', { timeout: 5000 })
+await page.waitForSelector('.milkdown-slash-menu[data-show="true"]', { timeout: 5000 })
   .catch(() => fail('slash menu did not open on "/"'));
 await page.keyboard.type('ci'); // filter
 await page.waitForTimeout(400); // provider debounce
-const itemText = await page.textContent('.slash-item.active .slash-name').catch(() => null);
-if (itemText !== '/cite') fail(`expected /cite to be the active filtered item, got ${itemText}`);
-console.log('slash menu:', itemText);
+const itemText = await page.textContent('.milkdown-slash-menu').catch(() => null);
+if (!/Cite/.test(itemText ?? '')) fail(`expected Cite in the filtered menu, got ${itemText}`);
+console.log('slash menu filtered to Cite agent command');
 
 // --- Picker: select /cite, search, choose a candidate ---
 await page.keyboard.press('Enter');
