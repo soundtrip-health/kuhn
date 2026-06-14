@@ -10,6 +10,7 @@ import {
   searchCitations,
   upsertCitation,
 } from '../citations.js';
+import { listProjectReferences } from '../db/references.js';
 import { StorageError } from '../storage.js';
 
 const router = Router();
@@ -69,6 +70,15 @@ router.post('/api/projects/:projectId/citations', handle(async (projectId, req, 
   }
   const result = await upsertCitation(projectId, String(pmid), path || DEFAULT_BIB_PATH);
   res.status(result.created ? 201 : 200).json(result);
+}));
+
+/**
+ * GET /api/projects/:projectId/references — the project's stored references
+ * (canonical SQLite store), for a citation picker/library view.
+ */
+router.get('/api/projects/:projectId/references', handle(async (projectId, _req, res) => {
+  const references = await listProjectReferences(projectId);
+  res.json({ references });
 }));
 
 export default router;

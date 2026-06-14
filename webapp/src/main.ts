@@ -58,7 +58,9 @@ function wireExportMenu(): void {
 }
 
 // Empty-state editor hero (story 025 screen 3): shown by the editor when the
-// document is blank. Seed project → seeding pipeline; Start blank → dismiss.
+// document is blank. Seeding is now chat-driven — the PM greets and interviews
+// in the chat panel on a brand-new project — so the hero points there rather
+// than carrying its own seed button. Start blank → dismiss and start typing.
 function buildEditorHero(): void {
   const pane = document.getElementById('editor-pane');
   if (!pane || document.getElementById('editor-hero')) return;
@@ -69,16 +71,14 @@ function buildEditorHero(): void {
     `<div class="hero-inner">` +
       `<div class="hero-icon">${icon('file-text', { size: 24, stroke: 1.6 })}</div>` +
       `<h1 class="hero-title">Start your document</h1>` +
-      `<p class="hero-sub">Seed the project to get a researched skeleton — background, ` +
-        `objectives, design, endpoints — drafted from your materials. Or begin with a blank page.</p>` +
+      `<p class="hero-sub">Your project manager is in the chat — answer a few questions and ` +
+        `Kuhn will research and draft a skeleton from your materials. Or begin with a blank page.</p>` +
       `<div class="hero-actions">` +
-        `<button id="hero-seed" class="btn btn-accent">${icon('sparkle', { size: 15, stroke: 2 })} Seed project</button>` +
         `<button id="hero-blank" class="btn btn-ghost">Start blank</button>` +
       `</div>` +
       `<div class="hero-privacy">${icon('lock', { size: 13, stroke: 1.8 })} Your materials stay private to this project.</div>` +
     `</div>`;
   pane.append(hero);
-  hero.querySelector('#hero-seed')!.addEventListener('click', () => void startSeeding());
   hero.querySelector('#hero-blank')!.addEventListener('click', () => {
     hero.hidden = true;
     (document.querySelector('#editor .milkdown [contenteditable]') as HTMLElement | null)?.focus();
@@ -148,20 +148,33 @@ async function switchToActiveProject(): Promise<void> {
   if (seq !== switchSeq) return; // a newer switch superseded this one
 
   // Pick the document: the recorded active doc if it still exists, else the
-  // first markdown file, else bootstrap an empty main draft (which shows the
-  // seeding hero) for a brand-new project.
+  // first markdown file, else bootstrap an empty main draft for a brand-new
+  // project — the signal that the project has never been seeded.
   let doc = findMarkdownPath(project.config?.activeDocument);
   if (!doc) {
     await writeTextFile(projectId, MAIN_DOCUMENT, '');
     await refreshTree(projectId);
     if (seq !== switchSeq) return;
     doc = MAIN_DOCUMENT;
+    maybeAutoGreet(project);
   }
 
   setActiveFile(doc);
   await openDocument(projectId, doc);
   if (seq !== switchSeq) return;
   workspace.setActiveDocument(doc);
+}
+
+// A brand-new project (no markdown yet) that was never configured: the PM
+// greets and runs the intake interview in chat, then kicks off research +
+// skeleton (seeding pipeline). Guarded per-tab so a reload mid-interview
+// doesn't restart it. `startSeeding` itself no-ops while a run is in flight.
+function maybeAutoGreet(project: NonNullable<ReturnType<typeof workspace.activeProject>>): void {
+  if (project.config?.title) return; // already configured/seeded
+  const guardKey = `kuhn-greeted-${project.id}`;
+  if (sessionStorage.getItem(guardKey)) return;
+  sessionStorage.setItem(guardKey, '1');
+  void startSeeding();
 }
 
 /** Open a markdown file in the editor and record it as the active document. */
@@ -179,9 +192,6 @@ async function main(): Promise<void> {
   initBreadcrumb();
   const sendBtn = document.querySelector('.send-btn');
   if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });
-
-  // Seeding pipeline (story 015): PM interview → research → skeleton draft
-  document.getElementById('seed-project')!.addEventListener('click', () => void startSeeding());
 
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {

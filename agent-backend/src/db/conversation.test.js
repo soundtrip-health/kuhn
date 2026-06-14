@@ -52,13 +52,14 @@ describe('listProjectConversations (story 020)', () => {
     // instruction prompts (story 015) — and project-scoped
     const [conversationSql, conversationParams] = query.mock.calls[0];
     expect(conversationSql).toContain('parent_job_id IS NULL');
-    expect(conversationSql).toContain("'seedStage'");
+    expect(conversationSql).toContain('seedStage');
     expect(conversationParams).toEqual([3, 5]);
 
-    // Only user/assistant messages, for the requested conversations
+    // Only user/assistant messages, for the requested conversations (the
+    // conversation ids are spread as positional params into an IN (...) list)
     const [messageSql, messageParams] = query.mock.calls[1];
     expect(messageSql).toContain("role IN ('user', 'assistant')");
-    expect(messageParams).toEqual([[11, 10]]);
+    expect(messageParams).toEqual([11, 10]);
   });
 
   it('skips the message query when there are no conversations', async () => {

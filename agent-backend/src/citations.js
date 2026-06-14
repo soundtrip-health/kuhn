@@ -5,7 +5,8 @@
 // rule). The pure helpers are exported for tests.
 
 import { pubmedSearch } from './agents/search.js';
-import { StorageError, readProjectFile, writeProjectFile } from './storage.js';
+import { StorageError } from './storage.js';
+import { insertReference, materializeBib, findByPmid } from './db/references.js';
 
 export const DEFAULT_BIB_PATH = 'draft/references.bib';
 
@@ -137,8 +138,6 @@ export function parseNbib(text) {
   return records;
 }
 
-const normalizeDoi = (doi) => String(doi ?? '').trim().replace(/[.,;)\s]+$/, '').toLowerCase();
-
 /**
  * Generate a citation key: first author's last name + year (`smith2024`),
  * with `a`, `b`, … suffixes when the base key is already taken by a
@@ -157,8 +156,8 @@ export function makeCitekey(record, takenKeys) {
 
 const escapeBib = (value) => String(value).replace(/([&%#])/g, '\\$1');
 
-/** Render a normalized PubMed record as a BibTeX @article entry. */
-export function formatBibEntry(record, key) {
+/** Render a normalized record as a BibTeX entry (defaults to @article). */
+export function formatBibEntry(record, key, entryType = 'article') {
   const fields = [];
   const add = (name, value) => {
     if (value != null && String(value).trim() !== '') fields.push(`  ${name} = {${escapeBib(value)}}`);
@@ -171,80 +170,73 @@ export function formatBibEntry(record, key) {
   add('number', record.issue);
   add('pages', record.pages?.includes('-') ? record.pages.replace(/\s*-\s*/, '--') : record.pages);
   add('doi', record.doi);
+  add('url', record.url);
   add('pmid', record.pmid);
-  return `@article{${key},\n${fields.join(',\n')}\n}`;
+  return `@${entryType}{${key},\n${fields.join(',\n')}\n}`;
 }
 
-/**
- * Parse a BibTeX file just far enough for dedup: entry keys plus any doi and
- * pmid fields. Tolerant of hand-edited files; entries it cannot parse are
- * skipped (their text is preserved untouched on upsert, which only appends).
- */
-export function parseBibEntries(bibText) {
-  const entries = [];
-  for (const chunk of bibText.split(/^(?=@)/m)) {
-    const head = chunk.match(/^@([a-zA-Z]+)\s*\{\s*([^,\s]+)\s*,/);
-    if (!head) continue;
-    entries.push({
-      type: head[1].toLowerCase(),
-      key: head[2],
-      doi: normalizeDoi(chunk.match(/^\s*doi\s*=\s*[{"]([^}"]+)[}"]/im)?.[1] ?? '') || null,
-      pmid: chunk.match(/^\s*pmid\s*=\s*[{"]([^}"]+)[}"]/im)?.[1]?.trim() ?? null,
-    });
-  }
-  return entries;
-}
-
-/**
- * Upsert a PubMed record into BibTeX text (pure). Citing an already-present
- * work (same PMID or DOI) reuses its key instead of adding a duplicate.
- * @returns {{ bibText, key, created, bibtex }}
- */
-export function upsertBibText(bibText, record) {
-  const entries = parseBibEntries(bibText);
-  const doi = normalizeDoi(record.doi ?? '');
-  const existing = entries.find(
-    (e) => (record.pmid && e.pmid === String(record.pmid)) || (doi && e.doi === doi),
-  );
-  if (existing) {
-    return { bibText, key: existing.key, created: false, bibtex: null };
-  }
-  const key = makeCitekey(record, new Set(entries.map((e) => e.key)));
-  const bibtex = formatBibEntry(record, key);
-  const trimmed = bibText.replace(/\s+$/, '');
+/** Map a normalized PubMed record to the references.js insert shape. */
+function pubmedToRef(record) {
   return {
-    bibText: trimmed ? `${trimmed}\n\n${bibtex}\n` : `${bibtex}\n`,
-    key,
-    created: true,
-    bibtex,
+    title: record.title,
+    authors: record.authors,
+    year: record.year,
+    journal: record.journal ?? record.journalAbbrev,
+    volume: record.volume,
+    issue: record.issue,
+    pages: record.pages,
+    doi: record.doi,
+    pmid: record.pmid,
+    abstract: record.abstract,
+    entryType: 'article',
+    sourceType: 'pubmed',
   };
 }
 
 /**
- * Add a PubMed citation to the project bibliography (default
- * draft/references.bib), deduping against existing entries.
+ * Add a PubMed citation to the project's reference store (SQLite, canonical),
+ * deduping by PMID/DOI, and regenerate the derived bibliography file. Returns
+ * the same shape the /cite route and the add_citation agent tool expect.
  * @returns {Promise<{ key, created, bibtex, path }>}
  */
 export async function upsertCitation(projectId, pmid, bibPath = DEFAULT_BIB_PATH) {
-  let bibText = '';
-  try {
-    bibText = (await readProjectFile(projectId, bibPath)).toString('utf-8');
-  } catch (err) {
-    if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
-  }
-
-  // Re-citing a work already in the bibliography never needs PubMed
-  const already = parseBibEntries(bibText).find((e) => e.pmid === String(pmid));
-  if (already) {
-    return { key: already.key, created: false, bibtex: null, path: bibPath };
+  // Re-citing a work already stored never needs a PubMed round-trip.
+  const existing = await findByPmid(projectId, pmid);
+  if (existing) {
+    return { key: existing.cite_key, created: false, bibtex: null, path: bibPath };
   }
 
   const record = await fetchPubmedRecord(pmid);
   if (!record) throw new StorageError('not_found', `No PubMed record for PMID ${pmid}`);
 
-  const result = upsertBibText(bibText, record);
-  if (result.created) {
-    await writeProjectFile(projectId, bibPath, result.bibText);
-  }
-  return { key: result.key, created: result.created, bibtex: result.bibtex, path: bibPath };
+  const ref = pubmedToRef(record);
+  const result = insertReference(projectId, ref);
+  if (result.created) await materializeBib(projectId, bibPath);
+  const bibtex = result.created ? formatBibEntry(ref, result.key) : null;
+  return { key: result.key, created: result.created, bibtex, path: bibPath };
+}
+
+/**
+ * Add a non-PubMed reference (preprint, web, manual) to the project's reference
+ * store by full metadata, then regenerate the derived bibliography file.
+ * @param {object} input - { title, authors[], year, entry_type?, journal?, doi?,
+ *   url?, source_type?, abstract? }
+ * @returns {Promise<{ key, created, bibtex, path }>}
+ */
+export async function addReference(projectId, input, bibPath = DEFAULT_BIB_PATH) {
+  const ref = {
+    title: input.title,
+    authors: input.authors ?? [],
+    year: input.year,
+    journal: input.journal,
+    doi: input.doi,
+    url: input.url,
+    abstract: input.abstract,
+    entryType: input.entry_type ?? 'article',
+    sourceType: input.source_type ?? 'manual',
+  };
+  const result = insertReference(projectId, ref);
+  if (result.created) await materializeBib(projectId, bibPath);
+  const bibtex = result.created ? formatBibEntry(ref, result.key, ref.entryType) : null;
+  return { key: result.key, created: result.created, bibtex, path: bibPath };
 }

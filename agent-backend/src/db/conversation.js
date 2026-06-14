@@ -1,5 +1,13 @@
 import { query } from '../db.js';
 
+/** Parse a message row's JSON tool_calls column (TEXT in SQLite) to an array. */
+function parseMessage(row) {
+  if (row && typeof row.tool_calls === 'string') {
+    row.tool_calls = JSON.parse(row.tool_calls);
+  }
+  return row;
+}
+
 /**
  * Create a new conversation container.
  * @param {string} agentSlug - Which agent this conversation is with
@@ -41,7 +49,7 @@ export async function logMessage({ conversationId, role, content = null, toolCal
       tokenCount,
     ],
   );
-  return rows[0];
+  return parseMessage(rows[0]);
 }
 
 /**
@@ -63,21 +71,23 @@ export async function listProjectConversations(projectId, { limit = 20 } = {}) {
      JOIN jobs j ON j.conversation_id = c.id
      WHERE c.project_id = $1
        AND j.parent_job_id IS NULL
-       AND (j.context IS NULL OR NOT j.context ? 'seedStage')
+       AND (j.context IS NULL OR json_extract(j.context, '$.seedStage') IS NULL)
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT $2`,
     [projectId, limit],
   );
   if (conversations.length === 0) return [];
 
+  const ids = conversations.map((c) => c.id);
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
   const { rows: messages } = await query(
     `SELECT conversation_id, role, content, created_at
      FROM messages
-     WHERE conversation_id = ANY($1)
+     WHERE conversation_id IN (${placeholders})
        AND role IN ('user', 'assistant')
        AND content IS NOT NULL AND content <> ''
      ORDER BY created_at ASC, id ASC`,
-    [conversations.map((c) => c.id)],
+    ids,
   );
 
   const byConversation = new Map(conversations.map((c) => [c.id, { ...c, messages: [] }]));
@@ -99,10 +109,10 @@ export async function getHistory(conversationId, { limit = 100, before = null } 
   const { rows } = await query(
     `SELECT * FROM messages
      WHERE conversation_id = $1
-       AND ($2::timestamptz IS NULL OR created_at < $2)
+       AND ($2 IS NULL OR created_at < $2)
      ORDER BY created_at ASC
      LIMIT $3`,
-    [conversationId, before, limit],
+    [conversationId, before instanceof Date ? before.toISOString() : before, limit],
   );
-  return rows;
+  return rows.map(parseMessage);
 }

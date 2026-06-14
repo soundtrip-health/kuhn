@@ -51,6 +51,45 @@ export function close(): void {
   if (overlay) overlay.hidden = true;
 }
 
+// Swap the card's name label for an inline editor. Commits on Enter/blur,
+// cancels on Escape. The card click is suppressed while editing.
+function beginRename(
+  card: HTMLElement,
+  nameEl: HTMLElement,
+  projectId: number,
+  current: string,
+): void {
+  if (card.querySelector('.pb-rename-input')) return; // already editing
+  const input = document.createElement('input');
+  input.className = 'pb-rename-input';
+  input.value = current;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const stop = (e: Event) => e.stopPropagation();
+  input.addEventListener('click', stop);
+
+  const finish = (commit: boolean) => {
+    if (done) return;
+    done = true;
+    const next = input.value.trim();
+    if (commit && next && next !== current) {
+      void workspace.renameProject(projectId, next).catch(() => render());
+      // render() will be re-driven by the 'projects' change; restore for now.
+    }
+    input.replaceWith(nameEl);
+    if (commit && next) nameEl.textContent = next;
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
 function render(): void {
   const root = ensureOverlay();
   const org = workspace.activeOrg();
@@ -86,6 +125,9 @@ function render(): void {
     grid.append(empty);
   } else {
     for (const project of projects) {
+      const wrap = document.createElement('div');
+      wrap.className = 'pb-card-wrap';
+
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'pb-card';
@@ -110,7 +152,22 @@ function render(): void {
         workspace.setActiveProject(project.id);
         close();
       });
-      grid.append(card);
+
+      // Rename control — a sibling of the card button (a button can't nest a
+      // button), revealing an inline editor over the name on click.
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'pb-card-rename';
+      renameBtn.title = 'Rename project';
+      renameBtn.setAttribute('aria-label', `Rename ${project.name}`);
+      renameBtn.innerHTML = icon('pencil', { size: 14, stroke: 1.8 });
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        beginRename(card, name, project.id, project.name);
+      });
+
+      wrap.append(card, renameBtn);
+      grid.append(wrap);
     }
   }
 

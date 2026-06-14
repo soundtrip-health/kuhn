@@ -62,7 +62,7 @@ prototype is tested hands-on.
 │  │ (Claude     │ │ (project │ │  Pandoc,      │  │
 │  │  Agent SDK) │ │  scoped) │ │  sandboxed)   │  │
 │  └─────────────┘ └──────────┘ └───────────────┘  │
-│        Postgres + pgvector · Yjs servers          │
+│           SQLite (file) · Yjs servers             │
 └───────────────────────────────────────────────────┘
 ```
 
@@ -82,24 +82,22 @@ Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
 ## Agents
 
 Six specialized agents (PM, Writer, Research Assistant, Advisor, Reviewer, Analyst) power the
-writing assistance. Their system prompts, models, and tool assignments are defined in
-[`agent-backend/src/db/seed.sql`](agent-backend/src/db/seed.sql) and seeded into Postgres at
-startup; the runtime loads them from the database.
+writing assistance. Their system prompts live in
+[`agent-backend/src/db/prompts/`](agent-backend/src/db/prompts/) and their models/tools in
+`agent-backend/src/db/seed-data.js`; both are seeded into the database at startup, and the
+runtime loads prompts from there.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+
-- Docker (for Postgres and sandboxed rendering)
+- Docker (for sandboxed rendering only — the database is in-process SQLite)
 
 ### Agent Backend
 
 ```bash
 cd agent-backend
-
-# Start Postgres (first time or after reboot)
-docker compose up -d
 
 # Install deps (first time)
 npm install
@@ -108,10 +106,14 @@ npm install
 npm run dev
 ```
 
-Starts at **http://localhost:3002**. On startup it creates the database schema and seeds agents,
-tools, and assignments from `src/db/seed.sql`. Health check: http://localhost:3002/health
+Starts at **http://localhost:3002**. The database is in-process SQLite — no service to start.
+On startup it creates the DB file, applies the schema, and seeds agents, tools, and
+assignments. Health check: http://localhost:3002/health
 
-Re-seed after editing `src/db/seed.sql`: `npm run db:seed`
+The SQLite DB and uploaded project files live under `KUHN_DATA_DIR` (default: repo-root
+`./data`) — `data/db/kuhn.sqlite` and `data/files/<projectId>/`.
+
+Re-seed after editing prompts or seed data: `npm run db:seed`
 
 ### Webapp
 

@@ -1,4 +1,10 @@
 import 'dotenv/config';
+import { join } from 'node:path';
+
+// Single data root: SQLite DB + uploaded project files both live under here,
+// kept out of the source tree. Defaults to the repo-root ./data (gitignored).
+const dataDir = process.env.KUHN_DATA_DIR
+  || new URL('../../data', import.meta.url).pathname;
 
 function parseModelWeights(env) {
   const weights = { haiku: 1, sonnet: 3, opus: 5, default: 5 };
@@ -11,12 +17,9 @@ function parseModelWeights(env) {
 
 export const config = {
   port: parseInt(process.env.PORT || '3002'),
+  // SQLite database file. In-process, no service to run; lives under the data dir.
   db: {
-    host: process.env.PGHOST || 'localhost',
-    port: parseInt(process.env.PGPORT || '5432'),
-    database: process.env.PGDATABASE || 'kuhn',
-    user: process.env.PGUSER || 'kuhn',
-    password: process.env.PGPASSWORD || 'kuhn_dev',
+    path: process.env.KUHN_SQLITE_PATH || join(dataDir, 'db', 'kuhn.sqlite'),
   },
   cors: {
     // Comma-separated allowlist; the webapp dev server is pinned to 5174
@@ -26,7 +29,7 @@ export const config = {
   agent: {
     // Root directory under which per-project workspaces live; agent file
     // access is confined to <projectsRoot>/<projectId> (or projects.root_path)
-    projectsRoot: process.env.PROJECTS_ROOT || new URL('../projects', import.meta.url).pathname,
+    projectsRoot: process.env.PROJECTS_ROOT || join(dataDir, 'files'),
     // Per-task token budget (input + output across all turns, shared by the
     // whole dispatch tree). Denominated in root-agent-tier tokens: sub-agent
     // usage is weighted by relative model cost (story 020) — see modelWeights.

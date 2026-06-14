@@ -132,7 +132,9 @@ async function restoreTranscript(): Promise<void> {
     .reverse()
     .flatMap((c) => c.messages.map((m) => ({ ...m, agent: c.agent_slug })));
   if (messages.length === 0) {
-    appendGreeting();
+    // Skip the greeting card if seeding has already auto-started on open — the
+    // live pipeline is the greeting in that case (avoids a duplicate CTA).
+    if (!running) appendGreeting();
     return;
   }
 
@@ -312,6 +314,9 @@ async function send(): Promise<void> {
 export async function startSeeding(): Promise<void> {
   if (running) return;
   running = true;
+  // The interview is starting — drop the empty-state greeting card so its
+  // "Start project interview" CTA doesn't linger alongside the live pipeline.
+  document.querySelector('#chat-log .chat-msg.is-greeting')?.remove();
   showSeedingPanel();
   setAgentActivity('seeding…');
 

@@ -128,6 +128,18 @@ export async function createProject(
   return ((await res.json()) as { project: Project }).project;
 }
 
+/** Rename a project (the workspace dir is keyed by id, so files are untouched). */
+export async function renameProject(projectId: number, name: string): Promise<Project> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+  );
+  return ((await res.json()) as { project: Project }).project;
+}
+
 /** Persist which document is open in a project, so reopening restores it. */
 export async function setActiveDocument(projectId: number, path: string): Promise<void> {
   await expectOk(

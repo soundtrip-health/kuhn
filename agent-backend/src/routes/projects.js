@@ -12,6 +12,7 @@ import {
   getProject,
   listProjectsForUser,
   setActiveDocument,
+  updateProjectConfig,
 } from '../db/projects.js';
 import { streamEvents } from './sse.js';
 
@@ -75,6 +76,23 @@ async function authorizeProject(req, res) {
   }
   return project;
 }
+
+/**
+ * PATCH /api/projects/:id — body { name }
+ * Rename a project. The project directory is keyed by id, so this is a pure
+ * record update — no files move.
+ */
+router.patch('/api/projects/:id', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!name) {
+    res.status(400).json({ error: 'name is required' });
+    return;
+  }
+  const updated = await updateProjectConfig(project.id, { name });
+  res.json({ project: updated });
+});
 
 /**
  * PUT /api/projects/:id/active-document — body { path }

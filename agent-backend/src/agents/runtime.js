@@ -17,7 +17,7 @@ import {
   listProjectTree,
   searchProjectFiles,
 } from '../storage.js';
-import { DEFAULT_BIB_PATH, upsertCitation } from '../citations.js';
+import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
@@ -179,7 +179,7 @@ export async function* reattach(run, signal) {
 // return text only, so file mutation and bibliography upserts are removed from
 // the allowlist. This is the runtime guarantee behind the "no file_change
 // during /write" contract — the prompt asks, the tool filter enforces.
-const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'project_config']);
+const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'project_config']);
 
 async function runTask(task, internal, channel, state) {
   const { role, projectId, input, context = null, sessionId = null, compose = false } = task;
@@ -526,6 +526,45 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
     ));
   }
 
+  if (agent.tools.includes('add_reference')) {
+    tools.push(tool(
+      'add_reference',
+      'Add a non-PubMed reference (preprint, government/regulatory doc, software, or other web source) to the project bibliography by full metadata. Dedupes against existing entries and returns the BibTeX key to cite as [@key]. Use add_citation for anything indexed in PubMed; use this for everything else. Never fabricate metadata — only add references your searches actually returned.',
+      {
+        title: z.string().describe('Title of the work'),
+        authors: z.array(z.string()).describe('Author names, e.g. "Smith, Jane"'),
+        year: z.number().int().optional().describe('Publication year'),
+        entry_type: z.string().default('article').describe('BibTeX entry type (article, misc, techreport, ...)'),
+        journal: z.string().optional().describe('Journal, venue, or publisher'),
+        doi: z.string().optional().describe('DOI if available'),
+        url: z.string().optional().describe('URL if available'),
+        source_type: z.enum(['preprint', 'web', 'manual', 'government']).default('manual')
+          .describe('Source authority class'),
+        abstract: z.string().optional().describe('Abstract or summary'),
+        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
+      },
+      async ({ path, ...input }) => {
+        try {
+          const { key, created, bibtex } = await addReference(projectId, input, path);
+          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
+          if (created) {
+            channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: created
+                ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
+                : `Already in ${path} as "${key}". Cite it as [@${key}].`,
+            }],
+          };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `add_reference failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+  }
+
   if (agent.tools.includes('arxiv_search')) {
     tools.push(tool(
       'arxiv_search',
@@ -568,7 +607,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
   if (agent.tools.includes('project_config')) {
     tools.push(tool(
       'save_project_config',
-      'Save the structured project configuration gathered in the intake interview. Updates the project record (name, type, config) and writes project.json to the workspace root. Call it once, after the interview is complete and before dispatching sub-agents.',
+      'Save the structured project configuration gathered in the intake interview. Updates the project record (type, config) and writes project.json to the workspace root. The project keeps the name the user gave it; the title here is stored as metadata. Call it once, after the interview is complete and before dispatching sub-agents.',
       {
         title: z.string().describe('Project title'),
         project_type: z.enum(['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'])
@@ -591,8 +630,9 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
             source_materials: input.source_materials ?? [],
             ...(input.notes ? { notes: input.notes } : {}),
           };
+          // Keep the user's chosen project name; the manuscript title lives in
+          // config.title (and the user can rename the project explicitly).
           await updateProjectConfig(projectId, {
-            name: input.title,
             projectType: input.project_type,
             config: projectConfig,
           });

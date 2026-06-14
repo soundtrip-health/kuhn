@@ -1,11 +1,19 @@
-import { query } from '../db.js';
+import { query, querySync, transaction } from '../db.js';
 
 const LIST_COLUMNS = 'id, name, project_type, owner_id, org_id, config, created_at';
+
+/** Parse a project row's JSON config column (TEXT in SQLite) to an object. */
+function parseProject(row) {
+  if (row && typeof row.config === 'string') {
+    row.config = JSON.parse(row.config || '{}');
+  }
+  return row;
+}
 
 /** @returns {Promise<object|undefined>} */
 export async function getProject(projectId) {
   const { rows } = await query('SELECT * FROM projects WHERE id = $1', [projectId]);
-  return rows[0];
+  return parseProject(rows[0]);
 }
 
 /**
@@ -21,7 +29,7 @@ export async function listProjectsForUser(userId) {
      ORDER BY id`,
     [userId],
   );
-  return rows;
+  return rows.map(parseProject);
 }
 
 /** Projects in a single org, oldest first. Caller verifies membership. */
@@ -30,7 +38,7 @@ export async function listOrgProjects(orgId) {
     `SELECT ${LIST_COLUMNS} FROM projects WHERE org_id = $1 ORDER BY id`,
     [orgId],
   );
-  return rows;
+  return rows.map(parseProject);
 }
 
 /** Create a project owned by an org (story 005). */
@@ -41,45 +49,57 @@ export async function createProject({ name, projectType, orgId }) {
      RETURNING ${LIST_COLUMNS}`,
     [name, projectType, orgId],
   );
-  return rows[0];
+  return parseProject(rows[0]);
 }
 
 /**
  * Remember which document was last open in a project (story 006), merged into
  * projects.config under `activeDocument`. Returns the updated config.
+ *
+ * SQLite has no JSONB merge operator, so we read-modify-write inside a
+ * transaction to avoid a lost update.
  */
 export async function setActiveDocument(projectId, path) {
-  const { rows } = await query(
-    `UPDATE projects
-     SET config = config || jsonb_build_object('activeDocument', $2::text),
-         updated_at = now()
-     WHERE id = $1
-     RETURNING config`,
-    [projectId, path],
-  );
-  return rows[0]?.config;
+  return transaction(() => {
+    const { rows: cur } = querySync('SELECT config FROM projects WHERE id = $1', [projectId]);
+    if (!cur[0]) return undefined;
+    const merged = { ...JSON.parse(cur[0].config || '{}'), activeDocument: path };
+    querySync(
+      `UPDATE projects SET config = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = $1`,
+      [projectId, JSON.stringify(merged)],
+    );
+    return merged;
+  });
 }
 
 /**
- * Apply the PM interview result (story 012): rename the project, set its
- * type, and merge the structured config into projects.config.
+ * Apply the PM interview result (story 012): optionally set the project type
+ * and merge the structured config into projects.config. `name` is set only
+ * when explicitly provided — the seeding interview leaves the user's chosen
+ * name intact (the manuscript title lives in config.title).
  * @param {number|string} projectId
  * @param {object} fields
  * @param {string} [fields.name]
  * @param {string} [fields.projectType]
- * @param {object} [fields.config] - Merged over the existing config
+ * @param {object} [fields.config] - Merged (shallow) over the existing config
  * @returns {Promise<object|undefined>} The updated project row
  */
 export async function updateProjectConfig(projectId, { name, projectType, config: cfg } = {}) {
-  const { rows } = await query(
-    `UPDATE projects
-     SET name = COALESCE($2, name),
-         project_type = COALESCE($3, project_type),
-         config = config || $4::jsonb,
-         updated_at = now()
-     WHERE id = $1
-     RETURNING *`,
-    [projectId, name ?? null, projectType ?? null, JSON.stringify(cfg ?? {})],
-  );
-  return rows[0];
+  return transaction(() => {
+    const { rows: cur } = querySync('SELECT config FROM projects WHERE id = $1', [projectId]);
+    if (!cur[0]) return undefined;
+    const merged = { ...JSON.parse(cur[0].config || '{}'), ...(cfg ?? {}) };
+    const { rows } = querySync(
+      `UPDATE projects
+       SET name = COALESCE($2, name),
+           project_type = COALESCE($3, project_type),
+           config = $4,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = $1
+       RETURNING *`,
+      [projectId, name ?? null, projectType ?? null, JSON.stringify(merged)],
+    );
+    return parseProject(rows[0]);
+  });
 }

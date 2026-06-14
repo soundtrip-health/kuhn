@@ -9,6 +9,7 @@ import { dirname, basename } from 'node:path';
 
 import { pandocConvert, renderTypstPdf } from './sandbox.js';
 import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } from './storage.js';
+import { materializeBib } from './db/references.js';
 
 export const EXPORT_FORMATS = {
   docx: { outputName: 'export.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
@@ -57,6 +58,9 @@ function pandocArgs(bibPath, hasBib) {
 export async function renderPdf(projectId, sourcePath) {
   const source = await readProjectFile(projectId, sourcePath); // throws not_found early
   const bibPath = bibPathFor(sourcePath);
+  // References live in the DB; regenerate the .bib Pandoc reads so it always
+  // reflects the canonical store (a no-op when the project has no references).
+  await materializeBib(projectId, bibPath).catch(() => {});
   const bib = await readIfExists(projectId, bibPath);
 
   const hash = createHash('sha256')
@@ -109,6 +113,7 @@ export async function exportDocument(projectId, sourcePath, format) {
   }
   await readProjectFile(projectId, sourcePath); // throws not_found early
   const bibPath = bibPathFor(sourcePath);
+  await materializeBib(projectId, bibPath).catch(() => {});
   const hasBib = (await readIfExists(projectId, bibPath)) != null;
 
   const { output } = await pandocConvert(

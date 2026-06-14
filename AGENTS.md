@@ -13,14 +13,14 @@ content. There is **no root `package.json`** — run `npm` inside each package.
 
 ```
 kuhn/
-├── agent-backend/   # Node.js service: agent runtime, REST + WebSocket, Postgres, Yjs, render/export
+├── agent-backend/   # Node.js service: agent runtime, REST + WebSocket, SQLite, Yjs, render/export
 ├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
 ├── docs/            # architecture.md + epics/ (project management — see "Stories")
 └── guidance-docs/   # Curated reference corpus (regulatory guidance, etc.), by project type — content, not wired into the app
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from
-`agent-backend/src/db/seed.sql` — see "Agent prompts" below.
+`agent-backend/src/db/prompts/*.md` + `seed-data.js` — see "Agent prompts" below.
 
 ## Running the apps
 
@@ -30,19 +30,24 @@ Both run locally; the webapp talks to the backend over REST + WebSocket.
 
 ```bash
 cd agent-backend
-docker compose up -d   # Postgres (first run / after reboot)
 npm install            # first run
 npm run dev            # node --watch src/index.js
 ```
 
-On startup it ensures the DB schema and seeds agents/tools. Health: http://localhost:3002/health
+The database is **in-process SQLite** — no service to run. On startup it creates
+the DB file, applies the schema, and seeds agents/tools. Health:
+http://localhost:3002/health
 
 - `npm test` / `npm run test:watch` — vitest
-- `npm run db:seed` — re-seed agents & tools (run after editing `src/db/seed.sql`)
+- `npm run db:seed` — re-seed agents & tools (run after editing prompts/seed data)
 - `npm run smoke` — research smoke test (uses real model quota)
 
-Needs `ANTHROPIC_API_KEY` and Postgres config in `agent-backend/.env`. Render/export
-shell out to **sandboxed** Typst/Pandoc Docker images
+Needs `ANTHROPIC_API_KEY` in `agent-backend/.env`. The SQLite DB and uploaded
+project files both live under an explicit data directory, `KUHN_DATA_DIR`
+(default: repo-root `./data`, gitignored) — `data/db/kuhn.sqlite` and
+`data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
+or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
+Typst/Pandoc Docker images
 (`docker pull ghcr.io/typst/typst:latest pandoc/core:latest`).
 
 ### Webapp (`webapp/`) — port 5174 (pinned)
@@ -65,7 +70,7 @@ Token-free check scripts (drive the app without spending model quota):
 - `index.js` — server entry (Express + ws); `config.js` — env/config
 - `routes/` — REST handlers; `session.js` — agent chat sessions
 - `agents/` — agent **runtime** (the `runAgentTask` boundary, Claude Agent SDK, tool dispatch, project seeding pipeline)
-- `db/` + `db.js` — Postgres access: `schema.sql` (DDL), `seed.sql` (agent/tool seed data), `seed.js` (applies seed.sql), `init.js` (startup: schema → seed)
+- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export)
 - `storage.js` — project-scoped file API (**enforces the project root — all file access goes through here**)
 - `sandbox.js` — sandboxed subprocess execution; `render.js` — markdown → Typst → PDF, Pandoc export
 - `yjs-websocket.js` / `yjs-signaling.js` — real-time collab servers
@@ -76,21 +81,22 @@ Token-free check scripts (drive the app without spending model quota):
 `api.ts` (backend client), `citation.ts`/`cite-picker.ts`/`bib.ts` (`/cite`),
 `seeding.ts`, plus `style.css` / `kuhn-tokens.css` for the design system.
 
-## Agent prompts (`db/seed.sql`)
+## Agent prompts (`db/prompts/` + `db/seed-data.js`)
 
-The six agents (pm, writer, ra, advisor, reviewer, analyst), their tools, and the
-agent→tool matrix all live in **`agent-backend/src/db/seed.sql`** — the single
-canonical source. `init.js` runs it at startup (after `schema.sql`) and
-`npm run db:seed` re-applies it; every statement is an idempotent upsert. The
-runtime then loads prompts from the Postgres `agents` table.
+The six agents (pm, writer, ra, advisor, reviewer, analyst) have their system
+prompts in **`agent-backend/src/db/prompts/<slug>.md`** (plain markdown, no
+escaping). Their names/models, the tool definitions, the agent→tool matrix, and
+the default-tenant rows live in **`db/seed-data.js`**. `seed.js` applies both via
+idempotent parameterized upserts; `init.js` runs it at startup (after
+`schema.sql`) and `npm run db:seed` re-applies it. The runtime loads prompts
+from the `agents` table.
 
-- **To change a prompt, model, or tool assignment: edit `seed.sql`, then `npm run db:seed`.**
-- System prompts are dollar-quoted (`$kuhn$ … $kuhn$`) so markdown apostrophes/quotes need no escaping.
-- Per-agent `model` values are columns in the `agents` INSERT — change them there.
+- **To change a prompt: edit `db/prompts/<slug>.md`, then `npm run db:seed`.**
+- **To change a model, tool, or assignment: edit `db/seed-data.js`, then `npm run db:seed`.**
 
-(Historical note: prompts used to be markdown files under a top-level `agents/`
-directory read by `seed.js`. That tree — including orphaned CLI-era analyst
-scripts and a `guidance/` corpus — was removed; prompts now live only in `seed.sql`.)
+(Historical note: prompts lived in a top-level `agents/` tree, then in a single
+dollar-quoted `seed.sql`. The Postgres→SQLite move retired dollar-quoting, so
+prompts returned to per-agent `.md` files — now under `db/prompts/`.)
 
 ## Stories — project-management rules
 

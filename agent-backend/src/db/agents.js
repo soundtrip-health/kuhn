@@ -20,7 +20,7 @@ export async function getAgentWithTools(role) {
   const slug = resolveRoleSlug(role);
   const { rows } = await query(
     `SELECT a.slug, a.name, a.system_prompt, a.model,
-            COALESCE(array_agg(t.slug) FILTER (WHERE t.slug IS NOT NULL), '{}') AS tools
+            group_concat(t.slug) AS tools
      FROM agents a
      LEFT JOIN agent_tools at ON at.agent_id = a.id
      LEFT JOIN tools t ON t.id = at.tool_id
@@ -28,5 +28,9 @@ export async function getAgentWithTools(role) {
      GROUP BY a.id`,
     [slug],
   );
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  // group_concat ignores NULLs, so a tool-less agent yields tools = null.
+  row.tools = row.tools ? row.tools.split(',') : [];
+  return row;
 }

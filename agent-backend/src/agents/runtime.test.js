@@ -52,6 +52,11 @@ vi.mock('../db/jobs.js', () => ({
 vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
 }));
+vi.mock('../citations.js', () => ({
+  DEFAULT_BIB_PATH: 'draft/references.bib',
+  upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+  addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+}));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { writeProjectFile } from '../storage.js';
@@ -425,8 +430,9 @@ describe('PM agent tools (story 012)', () => {
     });
 
     expect(result.isError).toBeUndefined();
+    // The project keeps the user's chosen name — only the type and config are
+    // updated; the manuscript title lives in config.title (story: rename).
     expect(updateProjectConfig).toHaveBeenCalledWith(5, {
-      name: 'GLP-1 RWE Study',
       projectType: 'rwe-protocol',
       config: expect.objectContaining({
         title: 'GLP-1 RWE Study',
