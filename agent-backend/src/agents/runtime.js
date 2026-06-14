@@ -19,7 +19,8 @@ import {
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation } from '../citations.js';
 import { EventChannel } from './events.js';
-import { waitForReply, cancelQuestion } from './questions.js';
+import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
+import { registerRun, unregisterRun } from './runs.js';
 import { pubmedSearch, arxivSearch } from './search.js';
 
 // DB tool slug → built-in SDK tool names. File access deliberately maps to
@@ -58,7 +59,16 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  */
 export async function* runAgentTask(task, internal = {}) {
   const channel = new EventChannel();
-  const state = { sdkQuery: null, finished: false, job: null };
+  const state = {
+    sdkQuery: null,
+    finished: false,
+    job: null,
+    runHandle: null,
+    // Detachable runs (the chat task path) survive a disconnect while parked
+    // on a question, so a reconnect can resume them (story 027). Sub-agent and
+    // seeding-pipeline runs are not detachable: they keep today's teardown.
+    detachable: task.detachable === true,
+  };
 
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
@@ -71,25 +81,97 @@ export async function* runAgentTask(task, internal = {}) {
     .finally(() => {
       state.finished = true;
       channel.end();
+      unregisterRun(state.job?.id);
     });
+  state.pump = pump;
 
   try {
-    for await (const event of channel) {
-      yield event;
-    }
+    yield* consume(channel, task.signal);
   } finally {
-    if (!state.finished) {
-      // Consumer stopped early (e.g. browser disconnected) — stop the SDK loop.
-      // Unblock ask_user first: the SDK loop may be parked inside its handler.
-      if (state.job) cancelQuestion(state.job.id);
-      try {
-        await state.sdkQuery?.interrupt();
-      } catch { /* already stopped */ }
-      if (state.job) {
-        await updateJob(state.job.id, { status: 'cancelled' }).catch(() => {});
-      }
-    }
-    await pump;
+    await teardownOrDetach(state);
+  }
+}
+
+/**
+ * Drain a channel, yielding events until it ends or the consumer's AbortSignal
+ * fires. The signal is essential: when a run is parked on a question no events
+ * arrive, so the for-await would block in channel.next() and a plain
+ * generator.return() (from the SSE res 'close') could not run the teardown
+ * finally until the await settled. Racing the signal ends the loop promptly so
+ * teardownOrDetach runs at disconnect time (story 027).
+ */
+async function* consume(channel, signal) {
+  while (true) {
+    if (signal?.aborted) return;
+    const r = await raceNext(channel, signal);
+    if (r.aborted || r.done) return;
+    yield r.value;
+  }
+}
+
+function raceNext(channel, signal) {
+  const next = channel.next();
+  if (!signal) return next;
+  if (signal.aborted) return Promise.resolve({ aborted: true });
+  return new Promise((resolve) => {
+    const onAbort = () => resolve({ aborted: true });
+    signal.addEventListener('abort', onAbort, { once: true });
+    next.then(
+      (r) => { signal.removeEventListener('abort', onAbort); resolve(r); },
+      () => { signal.removeEventListener('abort', onAbort); resolve({ done: true }); },
+    );
+  });
+}
+
+/**
+ * Decide what happens when a run's SSE consumer stops. A detachable run that
+ * is currently parked on an ask_user question is left alive (its channel keeps
+ * buffering) so POST /api/agent/jobs/:id/reconnect can resume it; every other
+ * case interrupts the SDK loop and marks the job cancelled. A run that already
+ * finished just settles its pump. (story 027)
+ */
+async function teardownOrDetach(state) {
+  if (state.finished) {
+    await state.pump;
+    return;
+  }
+  const jobId = state.job?.id;
+  if (state.detachable && jobId != null && hasPendingQuestion(jobId) && state.runHandle) {
+    // Drop the abandoned channel waiter so events pushed after the user replies
+    // are buffered for the reconnecting consumer instead of lost to a dead one.
+    state.runHandle.channel.detach();
+    state.runHandle.consumerAttached = false;
+    return; // leave the run alive and parked; do NOT interrupt or await the pump
+  }
+  // Unblock ask_user first: the SDK loop may be parked inside its handler.
+  if (jobId != null) cancelQuestion(jobId);
+  try {
+    await state.sdkQuery?.interrupt();
+  } catch { /* already stopped */ }
+  if (jobId != null) {
+    await updateJob(jobId, { status: 'cancelled' }).catch(() => {});
+  }
+  await state.pump;
+  unregisterRun(jobId);
+}
+
+/**
+ * Re-attach a fresh SSE consumer to a still-alive run (story 027). Re-emits
+ * the currently-pending question so the reconnecting UI can re-render its card,
+ * then forwards live events. Shares runAgentTask's detach-vs-teardown finally,
+ * so a second disconnect while still parked detaches again.
+ *
+ * @param {import('./runs.js').RunHandle} run
+ * @param {AbortSignal} [signal] - fires when the reconnected consumer drops,
+ *   so a second disconnect while still parked detaches promptly (story 027)
+ */
+export async function* reattach(run, signal) {
+  try {
+    const q = getPendingQuestion(run.jobId);
+    if (q) yield { type: 'question', agent: q.agent ?? run.role, jobId: run.jobId, content: q.question };
+    yield* consume(run.channel, signal);
+  } finally {
+    await teardownOrDetach(run.state);
   }
 }
 
@@ -120,6 +202,14 @@ async function runTask(task, internal, channel, state) {
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId });
   state.job = job;
+
+  // Register detachable runs (the chat task path) so a reconnect can find the
+  // live channel if the browser drops while parked on a question (story 027).
+  if (state.detachable) {
+    const handle = { jobId: job.id, projectId, role: agent.slug, channel, state, consumerAttached: true };
+    registerRun(handle);
+    state.runHandle = handle;
+  }
 
   const conversation = await createConversation(agent.slug, projectId);
   await updateJob(job.id, { status: 'running', conversationId: conversation.id });
@@ -458,7 +548,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         // job id, then park until POST /api/agent/jobs/:id/reply delivers the
         // answer (or the timeout / task teardown unblocks us without one).
         channel.push({ type: 'question', agent: agent.slug, jobId: parentJob.id, content: question });
-        const reply = await waitForReply(parentJob.id, config.agent.questionTimeoutMs);
+        const reply = await waitForReply(parentJob.id, config.agent.questionTimeoutMs, { question, agent: agent.slug });
         if (reply == null) {
           // Tell the webapp the question is no longer answerable (story 020);
           // on task teardown the channel is already closed and this is a no-op.

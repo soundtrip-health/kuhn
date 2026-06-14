@@ -495,7 +495,10 @@ body {
 .stage.is-done .stage-sub, .stage.is-queued .stage-sub { color: var(--ink-3); }
 
 /* ---- Agent question card -------------------------------------------- */
-.question-card { border-radius: var(--r-lg); overflow: hidden; }
+/* flex-shrink:0: #chat-log is a flex column, and overflow:hidden gives a flex
+   item an automatic min-size of 0 — without this the card collapses to a
+   clipped sliver when the seeding panel leaves the log short on space. */
+.question-card { border-radius: var(--r-lg); overflow: hidden; flex-shrink: 0; }
 .question-card.is-pending { border: 1px solid var(--advisor); background: var(--advisor-soft); }
 .question-card .qc-inner { padding: 13px 14px 12px; }
 .qc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
@@ -508,7 +511,9 @@ body {
   padding: 3px 8px; border-radius: var(--r-pill);
 }
 .qc-countdown svg { width: 11px; height: 11px; }
-.qc-question { font-size: 13.5px; line-height: 1.55; color: var(--ink); margin-bottom: 12px; }
+/* pre-wrap keeps the agent's line breaks (e.g. a numbered options list) instead
+   of collapsing a multi-line question into one run-on paragraph. */
+.qc-question { font-size: 13.5px; line-height: 1.55; color: var(--ink); margin-bottom: 12px; white-space: pre-wrap; }
 .qc-actions { display: flex; gap: 8px; }
 .qc-btn { flex: 1; padding: 8px 10px; border-radius: var(--r-sm); font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1px solid var(--line); }
 .qc-btn-primary { background: var(--advisor); color: var(--ink-inv); border-color: var(--advisor); }

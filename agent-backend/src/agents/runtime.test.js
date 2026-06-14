@@ -60,7 +60,8 @@ import { logMessage } from '../db/conversation.js';
 import { updateJob } from '../db/jobs.js';
 import { updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
-import { runAgentTask } from './runtime.js';
+import { getRun } from './runs.js';
+import { runAgentTask, reattach } from './runtime.js';
 
 const RA_AGENT = {
   slug: 'ra',
@@ -458,5 +459,75 @@ describe('PM agent tools (story 012)', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/db down/);
+  });
+});
+
+// --- Story 027: survive a disconnect while parked on a question -------------
+
+describe('ask_user reconnect (story 027)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+  });
+
+  // SDK loop that parks in ask_user, then answers and finishes once unblocked.
+  const askThenAnswer = () => async function* () {
+    const { tools } = createSdkMcpServer.mock.calls[0][0];
+    const askUser = tools.find((t) => t.name === 'ask_user');
+    const result = await askUser.handler({ question: 'What type of document?' });
+    yield {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: `Answer: ${result.content[0].text}` }], usage: { input_tokens: 1, output_tokens: 1 } },
+    };
+    yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+  };
+
+  it('keeps a detachable run alive when the consumer drops mid-question, then reconnects to finish it', async () => {
+    sdkState.generator = askThenAnswer();
+
+    // First connection drops at the question (browser disconnected)
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', detachable: true })) {
+      if (ev.type === 'question') break;
+    }
+
+    // The run is left alive and parked — NOT interrupted or cancelled
+    expect(sdkState.interrupt).not.toHaveBeenCalled();
+    expect(updateJob).not.toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(hasPendingQuestion(42)).toBe(true);
+    const run = getRun(42);
+    expect(run).toBeDefined();
+    expect(run.consumerAttached).toBe(false);
+
+    // Reconnect: the question is re-emitted, then the agent continues once answered
+    const events = [];
+    for await (const ev of reattach(run)) {
+      events.push(ev);
+      if (ev.type === 'question') deliverReply(42, 'An NIH R01 grant');
+    }
+    expect(events[0]).toEqual({ type: 'question', agent: 'pm', jobId: 42, content: 'What type of document?' });
+    expect(events.find((e) => e.type === 'text')).toMatchObject({ content: 'Answer: An NIH R01 grant' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', jobId: 42 });
+    // Terminal completion removes the run from the registry
+    expect(getRun(42)).toBeUndefined();
+  });
+
+  it('still interrupts and cancels a NON-detachable run that drops mid-question', async () => {
+    sdkState.generator = askThenAnswer();
+
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start' })) {
+      if (ev.type === 'question') break; // browser disconnected; not detachable
+    }
+
+    expect(hasPendingQuestion(42)).toBe(false);
+    expect(sdkState.interrupt).toHaveBeenCalled();
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(getRun(42)).toBeUndefined();
+  });
+
+  it('does not register a run that finishes normally without disconnect', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 1, input: 'go' }); // not detachable
+    expect(getRun(42)).toBeUndefined();
   });
 });

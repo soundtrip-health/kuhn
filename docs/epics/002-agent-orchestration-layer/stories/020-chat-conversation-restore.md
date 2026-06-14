@@ -84,6 +84,8 @@ question round-trip.
 
 - Reload-resume mid-interview not yet exercised against the live SDK.
   **Deferred to [Story 022](022-live-seeding-verification.md).**
+- A pending ask_user question did not survive a reload (the run was bound to the
+  task's SSE stream). **Fixed in [Story 027](027-reconnect-pending-question.md).**
 
 ## Out of Scope
 

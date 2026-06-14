@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { waitForReply, deliverReply, cancelQuestion, hasPendingQuestion } from './questions.js';
+import { waitForReply, deliverReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 
 describe('question registry', () => {
   it('delivers a reply to the waiting job', async () => {
@@ -34,5 +34,17 @@ describe('question registry', () => {
     await expect(first).resolves.toBeNull();
     deliverReply(4, 'answer');
     await expect(second).resolves.toBe('answer');
+  });
+
+  it('exposes the pending question text and agent for reconnect (story 027)', async () => {
+    const wait = waitForReply(5, 1000, { question: 'What type of document?', agent: 'pm' });
+    expect(getPendingQuestion(5)).toEqual({ question: 'What type of document?', agent: 'pm' });
+    deliverReply(5, 'manuscript');
+    await wait;
+    expect(getPendingQuestion(5)).toBeNull();
+  });
+
+  it('getPendingQuestion is null when nothing is pending', () => {
+    expect(getPendingQuestion(123)).toBeNull();
   });
 });
