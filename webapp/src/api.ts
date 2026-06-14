@@ -337,6 +337,37 @@ export async function replyToAgent(jobId: number, reply: string): Promise<void> 
   );
 }
 
+export interface PendingQuestion {
+  jobId: number;
+  role: string;
+  agent: string;
+  question: string;
+}
+
+/**
+ * Runs that are alive and parked on an ask_user question with no attached
+ * stream — i.e. ones to reconnect to after a page reload (story 027).
+ */
+export async function getPendingQuestions(projectId: number): Promise<PendingQuestion[]> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/agent/pending?projectId=${projectId}`));
+  return ((await res.json()) as { pending: PendingQuestion[] }).pending;
+}
+
+/**
+ * Re-attach to a still-alive run after a reload (story 027). The server
+ * re-emits the pending `question` event, then streams subsequent live events.
+ */
+export async function reconnectAgent(
+  jobId: number,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reconnect`, { method: 'POST', signal }),
+  );
+  await readEventStream(res, onEvent);
+}
+
 export interface AgentTaskParams {
   role: string;
   projectId: number;

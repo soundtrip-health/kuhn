@@ -25,6 +25,16 @@ export class EventChannel {
     }
   }
 
+  /**
+   * Drop any waiter left by a consumer that stopped mid-await (e.g. the browser
+   * disconnected while the run was parked on a question). Without this the next
+   * push() would resolve that dead waiter and the event would be lost instead
+   * of buffered for the reconnecting consumer (story 027).
+   */
+  detach() {
+    this.waiters.length = 0;
+  }
+
   next() {
     if (this.buffer.length > 0) {
       return Promise.resolve({ value: this.buffer.shift(), done: false });

@@ -15,7 +15,9 @@ import { marked } from 'marked';
 
 import {
   getConversations,
+  getPendingQuestions,
   listJobs,
+  reconnectAgent,
   replyToAgent,
   runAgentTask,
   seedProject,
@@ -95,8 +97,31 @@ async function restore(): Promise<void> {
       // Jobs are newest first; keep the most recent session per role
       if (job.session_id && !sessions.has(job.role)) sessions.set(job.role, job.session_id);
     }
+    await reconnectPendingQuestion();
   } catch {
     // No backend or no history yet — start fresh
+  }
+}
+
+/**
+ * Story 027: if a run is still parked on an ask_user question (the browser
+ * dropped while waiting), reconnect to it. The server re-emits the question
+ * event, which createEventHandler turns back into a card + answer mode, and the
+ * reattached stream carries the agent's continuation once the user answers.
+ */
+async function reconnectPendingQuestion(): Promise<void> {
+  if (running) return;
+  const pending = await getPendingQuestions(activeProjectId);
+  const p = pending[0]; // one parked top-level run at a time in practice
+  if (!p) return;
+  running = true;
+  setAgentActivity(`${agentLabel(p.agent)} is waiting for your answer…`);
+  try {
+    await reconnectAgent(p.jobId, createEventHandler());
+  } catch (err) {
+    appendSystemLine((err as Error).message, 'error');
+  } finally {
+    finishRun();
   }
 }
 

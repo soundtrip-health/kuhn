@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { deliverReply } from '../agents/questions.js';
-import { runAgentTask } from '../agents/runtime.js';
+import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
+import { runAgentTask, reattach } from '../agents/runtime.js';
+import { getRun, listLiveRuns } from '../agents/runs.js';
 import { getJob, listJobs } from '../db/jobs.js';
 import { streamEvents } from './sse.js';
 
@@ -19,7 +20,13 @@ router.post('/api/agent/task', async (req, res) => {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
   }
-  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId, compose }));
+  // detachable: survive a browser disconnect while parked on an ask_user
+  // question, so the user can reload and reconnect to the question (story 027).
+  // The abort signal lets runAgentTask end its consume loop promptly on
+  // disconnect even while parked (no events arrive to unblock channel.next()).
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId, compose, detachable: true, signal: ac.signal }));
 });
 
 /**
@@ -74,6 +81,47 @@ router.post('/api/agent/jobs/:id/reply', (req, res) => {
     return;
   }
   res.json({ ok: true });
+});
+
+/**
+ * GET /api/agent/pending?projectId=
+ * Runs that are alive, parked on an ask_user question, and have no attached
+ * consumer — i.e. ones the browser can reconnect to after a reload (story 027).
+ * This is in-memory runtime state (it returns nothing after a server restart),
+ * so it is a dedicated endpoint rather than a field on the DB-backed jobs list.
+ */
+router.get('/api/agent/pending', (req, res) => {
+  const projectId = req.query.projectId != null ? parseInt(req.query.projectId) : null;
+  const pending = listLiveRuns(projectId)
+    .filter((r) => !r.consumerAttached && hasPendingQuestion(r.jobId))
+    .map((r) => {
+      const q = getPendingQuestion(r.jobId);
+      return { jobId: r.jobId, role: r.role, agent: q?.agent ?? r.role, question: q?.question ?? '' };
+    });
+  res.json({ pending });
+});
+
+/**
+ * POST /api/agent/jobs/:id/reconnect
+ * Re-attach an SSE stream to a still-alive run whose consumer dropped while it
+ * was parked on a question (story 027). Re-emits the pending question, then
+ * streams subsequent live events. 404 if no live run; 409 if one is already
+ * attached (the EventChannel is single-consumer).
+ */
+router.post('/api/agent/jobs/:id/reconnect', async (req, res) => {
+  const run = getRun(parseInt(req.params.id));
+  if (!run) {
+    res.status(404).json({ error: 'no live run for this job' });
+    return;
+  }
+  if (run.consumerAttached) {
+    res.status(409).json({ error: 'run already has a consumer' });
+    return;
+  }
+  run.consumerAttached = true;
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  await streamEvents(res, reattach(run, ac.signal));
 });
 
 export default router;
