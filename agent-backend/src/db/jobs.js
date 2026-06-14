@@ -1,5 +1,15 @@
 import { query } from '../db.js';
 
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/** Parse a job row's JSON context column (TEXT in SQLite) to an object. */
+function parseJob(row) {
+  if (row && typeof row.context === 'string') {
+    row.context = JSON.parse(row.context);
+  }
+  return row;
+}
+
 /**
  * Create a job record for an agent task.
  * @param {object} job
@@ -17,7 +27,7 @@ export async function createJob({ role, projectId = null, input, context = null,
      RETURNING *`,
     [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId],
   );
-  return rows[0];
+  return parseJob(rows[0]);
 }
 
 /**
@@ -52,18 +62,18 @@ export async function updateJob(jobId, fields) {
   if (sets.length === 0) return getJob(jobId);
   params.push(jobId);
   const { rows } = await query(
-    `UPDATE jobs SET ${sets.join(', ')}, updated_at = now()
+    `UPDATE jobs SET ${sets.join(', ')}, updated_at = ${NOW}
      WHERE id = $${params.length}
      RETURNING *`,
     params,
   );
-  return rows[0];
+  return parseJob(rows[0]);
 }
 
 /** @returns {Promise<object|undefined>} */
 export async function getJob(jobId) {
   const { rows } = await query('SELECT * FROM jobs WHERE id = $1', [jobId]);
-  return rows[0];
+  return parseJob(rows[0]);
 }
 
 /**
@@ -77,13 +87,13 @@ export async function getJob(jobId) {
 export async function listJobs({ projectId = null, status = null, limit = 50 } = {}) {
   const { rows } = await query(
     `SELECT * FROM jobs
-     WHERE ($1::integer IS NULL OR project_id = $1)
-       AND ($2::varchar IS NULL OR status = $2)
+     WHERE ($1 IS NULL OR project_id = $1)
+       AND ($2 IS NULL OR status = $2)
      ORDER BY created_at DESC
      LIMIT $3`,
     [projectId, status, limit],
   );
-  return rows;
+  return rows.map(parseJob);
 }
 
 /**
@@ -94,7 +104,7 @@ export async function listJobs({ projectId = null, status = null, limit = 50 } =
  */
 export async function markOrphanedJobsInterrupted() {
   const { rowCount } = await query(
-    `UPDATE jobs SET status = 'interrupted', updated_at = now()
+    `UPDATE jobs SET status = 'interrupted', updated_at = ${NOW}
      WHERE status IN ('pending', 'running')`,
   );
   return rowCount;

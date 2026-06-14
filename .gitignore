@@ -10,6 +10,12 @@ dist/
 .next/
 *.tsbuildinfo
 
+# Data dir (SQLite DB + uploaded project files) — see KUHN_DATA_DIR
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
 # OS
 .DS_Store
 Thumbs.db

@@ -61,8 +61,8 @@ captioned figures/tables, math (LaTeX syntax inside `$...$`).
 │  └──────┬──────┘ └─────────────┘ └──────────┘ └──────────┘   │
 │         │                                                    │
 │  ┌──────▼───────────────────────────────────────────────┐    │
-│  │ Postgres + pgvector: prompts, conversations, jobs,    │    │
-│  │ projects (all rows project/tenant-scoped)             │    │
+│  │ SQLite: prompts, conversations, jobs, projects,       │    │
+│  │ references (all rows project/tenant-scoped)           │    │
 │  └──────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────┘
         project storage: per-project directories (git-trackable)
@@ -129,10 +129,10 @@ determine agent quality.
 
 **Kept from the original design:**
 
-- **DB-backed prompts** — agent system prompts in Postgres, seeded from `agent-backend/src/db/seed.sql`,
-  editable at runtime
+- **DB-backed prompts** — agent system prompts in SQLite, seeded from `agent-backend/src/db/prompts/*.md`
+  (+ `seed-data.js`), editable at runtime
 - **Conversation logging** — every message, tool call, and response persisted (audit, replay,
-  future semantic search via pgvector)
+  future semantic search)
 - **Markdown files as agent handoffs** — the filesystem is shared memory; the project directory
   is the coordination medium (battle-tested in the CLI workflow)
 - **Deterministic orchestration** — multi-agent pipelines (e.g., seeding: interview → advisor
@@ -156,8 +156,8 @@ Full multi-tenancy (auth, orgs, quotas, billing) remains deferred, but three inv
 adopted **now** so that adding it later is auth + quotas, not a rewrite:
 
 1. **Everything is project-scoped.** Every DB row and file path carries a `project_id` (and a
-   tenant/owner column from the start, even while it has one value). Postgres path: single DB,
-   `tenant_id` + row-level security. pgvector rows are scoped the same way.
+   tenant/owner column from the start, even while it has one value). A future multi-tenant
+   path (e.g. a hosted Postgres) is then `tenant_id` + row-level security, not a rewrite.
 2. **One storage API, project-root enforced.** All agent and frontend file access goes through a
    single storage service that resolves paths inside the project root — no traversal, no symlink
    following. Agents never get raw filesystem access outside their project.
@@ -197,9 +197,9 @@ Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
 ## Data Model
 
 - Projects are directories on disk (git-trackable), accessed only via the Storage API
-- Documents are markdown (`.md`); bibliography in BibTeX (`.bib`)
+- Documents are markdown (`.md`); references canonically in SQLite, with `.bib` derived for rendering
 - Figures and tables in `figures/` and `tables/`
-- Agent prompts, conversations, jobs, and project metadata in Postgres (project/tenant-scoped)
+- Agent prompts, conversations, jobs, references, and project metadata in SQLite (project/tenant-scoped)
 - Tenant KB under the tenant's storage; shared guidance corpus in a separate global store
 
 ## Decision Revisions (2026-06-11)

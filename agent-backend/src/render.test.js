@@ -9,6 +9,12 @@ vi.mock('./db.js', () => ({
   })),
 }));
 
+// References live in the DB; render materializes the .bib from it. These tests
+// drive the .bib via on-disk fixtures, so stub materialization to a no-op.
+vi.mock('./db/references.js', () => ({
+  materializeBib: vi.fn(async () => false),
+}));
+
 vi.mock('./sandbox.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {

@@ -11,6 +11,7 @@ import {
   createProject as apiCreateProject,
   listOrgProjects,
   listOrgs,
+  renameProject as apiRenameProject,
   setActiveDocument as apiSetActiveDocument,
   type Org,
   type Project,
@@ -127,6 +128,15 @@ export async function createNewProject(name: string, projectType: string): Promi
   state.activeDocPath = project.config?.activeDocument ?? '';
   emit('project');
   return project;
+}
+
+/** Rename a project and update the store (fires 'projects', and 'project' when active). */
+export async function renameProject(projectId: number, name: string): Promise<Project> {
+  const updated = await apiRenameProject(projectId, name);
+  state.projects = state.projects.map((p) => (p.id === projectId ? { ...p, name: updated.name } : p));
+  emit('projects');
+  if (projectId === state.activeProjectId) emit('project'); // breadcrumb tracks the name
+  return updated;
 }
 
 /** Create an organization and switch to it. */

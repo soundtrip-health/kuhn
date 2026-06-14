@@ -3,9 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatBibEntry,
   makeCitekey,
-  parseBibEntries,
   parseNbib,
-  upsertBibText,
 } from './citations.js';
 
 const NBIB_SAMPLE = `
@@ -108,62 +106,3 @@ describe('formatBibEntry', () => {
   });
 });
 
-describe('parseBibEntries / upsertBibText', () => {
-  const record = () => parseNbib(NBIB_SAMPLE)[0];
-
-  it('appends a new entry to empty and non-empty files', () => {
-    const first = upsertBibText('', record());
-    expect(first.created).toBe(true);
-    expect(first.key).toBe('lincoff2024');
-    expect(first.bibText.startsWith('@article{lincoff2024,')).toBe(true);
-    expect(first.bibText.endsWith('\n')).toBe(true);
-
-    const second = upsertBibText(first.bibText, { authors: ['Other, Ann'], year: '2020', title: 'T', pmid: '99' });
-    expect(second.created).toBe(true);
-    expect(second.bibText).toContain('@article{lincoff2024,');
-    expect(second.bibText).toContain('\n\n@article{other2020,');
-  });
-
-  it('reuses the existing key when the same work is cited again (PMID match)', () => {
-    const { bibText } = upsertBibText('', record());
-    const again = upsertBibText(bibText, record());
-    expect(again.created).toBe(false);
-    expect(again.key).toBe('lincoff2024');
-    expect(again.bibText).toBe(bibText);
-  });
-
-  it('dedupes by DOI when the PMID is absent, case-insensitively', () => {
-    const { bibText } = upsertBibText('', record());
-    const byDoi = upsertBibText(bibText, {
-      authors: ['Lincoff, A Michael'],
-      year: '2024',
-      title: 'Same paper from another source',
-      doi: '10.1056/nejmoa2307563',
-    });
-    expect(byDoi.created).toBe(false);
-    expect(byDoi.key).toBe('lincoff2024');
-  });
-
-  it('disambiguates a different work that collides on author+year', () => {
-    const { bibText } = upsertBibText('', record());
-    const collision = upsertBibText(bibText, {
-      authors: ['Lincoff, A Michael'],
-      year: '2024',
-      title: 'A different 2024 paper',
-      pmid: '38099999',
-    });
-    expect(collision.created).toBe(true);
-    expect(collision.key).toBe('lincoff2024a');
-  });
-
-  it('tolerates hand-written entries it cannot fully parse', () => {
-    const handWritten = '% comment line\n@misc{note1,\n  title = {Lab notebook}\n}\n';
-    const entries = parseBibEntries(handWritten);
-    expect(entries).toEqual([{ type: 'misc', key: 'note1', doi: null, pmid: null }]);
-
-    const result = upsertBibText(handWritten, record());
-    expect(result.created).toBe(true);
-    expect(result.bibText).toContain('@misc{note1,');
-    expect(result.bibText).toContain('@article{lincoff2024,');
-  });
-});

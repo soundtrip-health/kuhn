@@ -198,10 +198,13 @@ function raInput(config) {
     '1. Search the literature (pubmed_search, arxiv_search, web_search) for the most',
     '   relevant and load-bearing work for this project — aim for the 10–20 best papers,',
     '   not an exhaustive sweep.',
-    '2. Write BibTeX entries for them to draft/references.bib (write_file). Flag any',
-    '   preprints in a comment. Never fabricate entries: only papers your searches returned.',
+    '2. Add each to the project bibliography: use add_citation with the PMID for PubMed',
+    '   results, and add_reference (with source_type) for preprints or other web sources.',
+    '   These store the reference and keep draft/references.bib in sync — never write the',
+    '   .bib file by hand. Never fabricate entries: only papers your searches returned.',
     '3. Write research/literature-summary.md: a short annotated overview grouping the',
-    '   papers by theme, with one or two sentences on why each matters to this project.',
+    '   papers by theme, with one or two sentences on why each matters to this project,',
+    '   citing each as [@key] using the keys the tools return.',
   ].join('\n');
 }
 

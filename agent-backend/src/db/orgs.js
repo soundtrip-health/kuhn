@@ -2,7 +2,7 @@
 // projects through org memberships. All listing here is membership-filtered so
 // a user only ever sees orgs they belong to.
 
-import { query } from '../db.js';
+import { query, querySync, transaction } from '../db.js';
 
 /** Orgs the user is a member of, oldest first. Includes their role. */
 export async function listUserOrgs(userId) {
@@ -48,16 +48,17 @@ export async function primaryOrgId(userId) {
  * membership insert can't leave an ownerless org. Returns the new org row.
  */
 export async function createOrg({ name, slug, userId }) {
-  const { rows } = await query(
-    `WITH new_org AS (
-       INSERT INTO organizations (name, slug) VALUES ($1, $2)
-       RETURNING id, name, slug, created_at
-     ), new_membership AS (
-       INSERT INTO memberships (user_id, org_id, role)
-       SELECT $3, id, 'owner' FROM new_org
-     )
-     SELECT id, name, slug, 'owner'::varchar AS role, created_at FROM new_org`,
-    [name, slug, userId],
-  );
-  return rows[0];
+  return transaction(() => {
+    const { rows } = querySync(
+      `INSERT INTO organizations (name, slug) VALUES ($1, $2)
+       RETURNING id, name, slug, created_at`,
+      [name, slug],
+    );
+    const org = rows[0];
+    querySync(
+      `INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, 'owner')`,
+      [userId, org.id],
+    );
+    return { ...org, role: 'owner' };
+  });
 }
