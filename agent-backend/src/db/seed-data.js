@@ -34,6 +34,10 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { path: { type: 'string', description: 'Relative directory path within the project' } }, required: ['path'] },
   },
   {
+    slug: 'file_move', name: 'Move File', description: 'Move or rename a project file or folder (used to organize uploads)',
+    parameterSchema: { type: 'object', properties: { from: { type: 'string', description: 'Source path' }, to: { type: 'string', description: 'Destination path including filename' } }, required: ['from', 'to'] },
+  },
+  {
     slug: 'pubmed_search', name: 'PubMed Search', description: 'Search PubMed for scientific papers',
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, max_results: { type: 'integer', description: 'Maximum results to return', default: 10 } }, required: ['query'] },
   },
@@ -72,6 +76,7 @@ export const ASSIGNMENTS = [
   ['pm', 'file_read'], ['writer', 'file_read'], ['ra', 'file_read'], ['advisor', 'file_read'], ['reviewer', 'file_read'], ['analyst', 'file_read'],
   ['writer', 'file_write'], ['analyst', 'file_write'], ['ra', 'file_write'], ['advisor', 'file_write'],
   ['pm', 'file_list'], ['writer', 'file_list'], ['ra', 'file_list'], ['advisor', 'file_list'], ['reviewer', 'file_list'], ['analyst', 'file_list'],
+  ['pm', 'file_move'],
   ['ra', 'pubmed_search'], ['ra', 'arxiv_search'],
   ['ra', 'add_citation'], ['writer', 'add_citation'], ['ra', 'add_reference'],
   ['ra', 'web_search'], ['advisor', 'web_search'],

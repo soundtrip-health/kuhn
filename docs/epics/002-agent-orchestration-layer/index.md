@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-06-14 (028 shipped — fixed the invisible question card during seeding, the root-cause behind the "question not showing" reports; 027 shipped — pending ask_user question survives reload via detachable runs + reconnect; remaining open work is 022 live verification, parked for bobd, plus 026)
+**Updated:** 2026-06-21 (029 shipped — backoff + visible retry for transient model-provider errors, after a 529 Overloaded hang on a new doc request; open work is 022 live verification (parked) and 026 upload error mapping)
 
 ## Goal
 
@@ -120,6 +120,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | done | S |
 | 026 | [Upload oversize error mapping](stories/026-upload-oversize-error-mapping.md) — backend `MulterError`→413 mapping; de-duplicate the size limit (surfaced by 014) | ready | S |
 | 028 | [Question card collapses to a sliver during seeding](stories/028-question-card-collapse.md) — flex `overflow:hidden` min-size 0; `flex-shrink:0` + `pre-wrap` (the real root cause behind the invisible-question reports) | done | S |
+| 029 | [Transient model-provider error resilience](stories/029-transient-model-error-resilience.md) — backoff on 529/429/5xx + visible "retrying…" status + actionable Try-again (surfaced by a 529 hang on 2026-06-21) | done | S–M |
 
 ### Preserved (may revisit)
 

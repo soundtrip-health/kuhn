@@ -105,6 +105,50 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
     if (input.files?.length) void uploadInto(input.files, panelTargetDir());
     input.value = '';
   });
+
+  initFilesResizer();
+}
+
+// ---- Resizable files panel --------------------------------------------------
+
+const FILES_WIDTH_KEY = 'kuhn-files-width';
+const FILES_WIDTH_MIN = 200;
+const FILES_WIDTH_MAX = 620;
+
+/** Apply a saved width and wire the drag handle (story: fixed/resizable files). */
+function initFilesResizer(): void {
+  const panel = document.getElementById('files-panel');
+  const handle = document.getElementById('files-resizer');
+  if (!panel || !handle) return;
+
+  const apply = (w: number) => panel.style.setProperty('--files-width', `${w}px`);
+  const saved = parseInt(localStorage.getItem(FILES_WIDTH_KEY) ?? '', 10);
+  if (Number.isFinite(saved)) apply(clampWidth(saved));
+
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const right = panel.getBoundingClientRect().right;
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing-pane');
+    handle.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: PointerEvent) => apply(clampWidth(right - ev.clientX));
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing-pane');
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      const current = Math.round(panel.getBoundingClientRect().width);
+      localStorage.setItem(FILES_WIDTH_KEY, String(current));
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+  });
+}
+
+function clampWidth(w: number): number {
+  return Math.max(FILES_WIDTH_MIN, Math.min(FILES_WIDTH_MAX, w));
 }
 
 /** Mark a file row as the open document and re-highlight without refetching. */
@@ -333,6 +377,7 @@ function renderNodes(nodes: TreeNode[]): HTMLUListElement {
         '<svg class="file-chevron"',
       );
       const label = document.createElement('span');
+      label.className = 'file-folder-name';
       label.textContent = node.name;
       summary.append(label);
       if (fileCount > 0) {

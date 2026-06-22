@@ -33,8 +33,12 @@ export const config = {
     // Per-task token budget (input + output across all turns, shared by the
     // whole dispatch tree). Denominated in root-agent-tier tokens: sub-agent
     // usage is weighted by relative model cost (story 020) — see modelWeights.
-    // 500k default so the PM seeding tree (interview + RA + Advisor) fits.
-    tokenBudget: parseInt(process.env.AGENT_TOKEN_BUDGET || '500000'),
+    // 2.5M default so a full seeding tree plus follow-on work comfortably fits.
+    tokenBudget: parseInt(process.env.AGENT_TOKEN_BUDGET || '2500000'),
+    // Grace margin applied to the hard cut-off: an in-flight task may run up to
+    // budgetGrace× the budget before it is interrupted, so the user can finish
+    // the current piece of work instead of being cut off abruptly at the limit.
+    budgetGrace: parseFloat(process.env.AGENT_TOKEN_BUDGET_GRACE || '1.1'),
     // Approximate model price ratios for budget weighting, matched by
     // substring of the model id. Override with AGENT_MODEL_WEIGHTS, e.g.
     // "haiku:1,sonnet:3,opus:5,default:5". Rough is fine (story 020).
@@ -47,6 +51,16 @@ export const config = {
     // Global fallback model, used only when an agent's model is NULL. Per-agent
     // models (agents.model, story 021) win and are set in db/seed.sql.
     model: process.env.AGENT_MODEL || undefined,
+    // Transient model-provider error handling (story 029). A 529 Overloaded /
+    // 429 / 5xx from the API is upstream and stateless, so the runtime retries
+    // the SDK query (resuming the session) with exponential backoff + jitter
+    // before surfacing a terminal error. The underlying SDK retries shallowly
+    // (~2); this is the outer net for a sustained capacity event.
+    retry: {
+      maxAttempts: parseInt(process.env.AGENT_RETRY_MAX_ATTEMPTS || '5'),
+      baseDelayMs: parseInt(process.env.AGENT_RETRY_BASE_MS || '1500'),
+      maxDelayMs: parseInt(process.env.AGENT_RETRY_MAX_MS || '30000'),
+    },
   },
   storage: {
     // Per-file size cap for reads, writes, and uploads

@@ -85,18 +85,24 @@
         </div>
       </section>
 
-      <!-- ---------- PDF PREVIEW (story 019) ---------- -->
+      <!-- ---------- PDF PREVIEW (story 019; floating window) ---------- -->
       <aside id="preview-panel" class="collapsed">
         <div id="preview-toolbar">
           <span class="panel-eyebrow">Preview</span>
           <span class="spacer"></span>
           <button id="preview-refresh" type="button" class="btn btn-quiet btn-sm" title="Re-render the PDF">Render</button>
+          <button id="preview-close" type="button" class="preview-close" title="Close preview" aria-label="Close preview">&times;</button>
         </div>
         <div id="preview-status"></div>
         <iframe id="preview-frame" title="PDF preview"></iframe>
         <!-- Non-PDF file previews (images, text, download links) — story 014 -->
         <div id="preview-alt" hidden></div>
+        <div id="preview-resize" title="Drag to resize"></div>
       </aside>
+
+      <!-- Drag handle to resize the files panel (story: fixed/resizable files) -->
+      <div id="files-resizer" class="pane-resizer" role="separator"
+        aria-orientation="vertical" title="Drag to resize the files panel"></div>
 
       <!-- ---------- RIGHT: FILES ---------- -->
       <aside id="files-panel">
@@ -119,7 +125,9 @@
       </div>
       <div class="status-right">
         <span id="status-agent"></span>
+        <span id="status-budget" data-state="ok"></span>
         <span id="status-tokens"></span>
+        <span id="status-version" title="App build"></span>
       </div>
     </footer>
 

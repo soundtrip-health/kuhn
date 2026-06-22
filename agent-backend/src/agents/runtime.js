@@ -16,6 +16,7 @@ import {
   writeProjectFile,
   listProjectTree,
   searchProjectFiles,
+  moveProjectEntry,
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
 import { EventChannel } from './events.js';
@@ -54,8 +55,9 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'citation', agent, key, bibtex, path } — add_citation upserted the bibliography (story 016)
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question timed out; the agent proceeds with defaults (story 020)
+ *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient API error before retrying (story 029)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
- *   { type: 'error', agent, jobId, message }
+ *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
   const channel = new EventChannel();
@@ -73,7 +75,20 @@ export async function* runAgentTask(task, internal = {}) {
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
       console.error('[agent] Task failed:', err);
-      channel.push({ type: 'error', agent: task.role, jobId: state.job?.id, message: err.message });
+      // A transient model-provider failure that survived the runtime's retry
+      // budget (story 029): tag it so the client offers a clean retry instead
+      // of rendering a raw `API Error: 529` line, and hand back the session id
+      // so a chat retry resumes this exact conversation.
+      const transient = isTransientApiError(err);
+      channel.push({
+        type: 'error',
+        agent: task.role,
+        jobId: state.job?.id,
+        message: transient
+          ? 'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.'
+          : err.message,
+        ...(transient ? { reason: 'provider_overloaded', sessionId: state.sdkSessionId } : {}),
+      });
       if (state.job) {
         await updateJob(state.job.id, { status: 'error', error: err.message }).catch(() => {});
       }
@@ -229,6 +244,39 @@ async function runTask(task, internal, channel, state) {
     ...mcpTools.map((t) => `mcp__kuhn__${t.name}`),
   ];
 
+  const usage = { inputTokens: 0, outputTokens: 0 };
+  let sdkSessionId = sessionId;
+
+  // Transient model-provider errors (529 Overloaded / 429 / 5xx) are upstream
+  // and stateless: retry the SDK query with exponential backoff before giving
+  // up, resuming the session so completed turns aren't re-run (story 029). The
+  // SDK does its own shallow retries; this outer net survives a sustained
+  // capacity event and narrates the wait to the client via a 'notice' event.
+  // (A turn that half-streamed before the failure re-streams on resume — a rare
+  // cosmetic doubling; the common case is a failure before any output.)
+  const retry = config.agent.retry;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await runSdkAttempt();
+      return;
+    } catch (err) {
+      if (!isTransientApiError(err) || attempt >= retry.maxAttempts) throw err;
+      const delay = backoffDelay(attempt + 1, retry);
+      channel.push({
+        type: 'notice',
+        agent: agent.slug,
+        jobId: job.id,
+        reason: 'provider_overloaded',
+        attempt: attempt + 1,
+        maxAttempts: retry.maxAttempts,
+        nextRetryMs: delay,
+        message: `Model provider is busy (attempt ${attempt + 1}/${retry.maxAttempts}); retrying in ${Math.round(delay / 1000)}s…`,
+      });
+      await sleep(delay);
+    }
+  }
+
+  async function runSdkAttempt() {
   const sdk = sdkQuery({
     prompt: buildPrompt(input, context),
     options: {
@@ -245,17 +293,17 @@ async function runTask(task, internal, channel, state) {
       includePartialMessages: true,  // token-level text_delta events for the chat UI (story 013)
       settingSources: [],            // never load host CLAUDE.md / settings into agent context
       ...(mcpServer ? { mcpServers: { kuhn: mcpServer } } : {}),
-      ...(sessionId ? { resume: sessionId } : {}),
+      // Resume the live session on retry so the agent continues from where the
+      // transient failure interrupted it, not from scratch (story 029).
+      ...(sdkSessionId ? { resume: sdkSessionId } : {}),
     },
   });
   state.sdkQuery = sdk;
 
-  const usage = { inputTokens: 0, outputTokens: 0 };
-  let sdkSessionId = sessionId;
-
   for await (const message of sdk) {
     if (message.type === 'system' && message.subtype === 'init') {
       sdkSessionId = message.session_id;
+      state.sdkSessionId = sdkSessionId;  // for resume on retry + terminal-error handoff (story 029)
       await updateJob(job.id, { sessionId: sdkSessionId });
       continue;
     }
@@ -297,7 +345,9 @@ async function runTask(task, internal, channel, state) {
         usage.inputTokens += inputTokens;
         usage.outputTokens += msgUsage.output_tokens ?? 0;
       }
-      if (budget.used > budget.limit) {
+      // A grace margin lets an in-flight task overshoot the budget so the
+      // current piece of work can finish instead of being cut off abruptly.
+      if (budget.used > budget.limit * config.agent.budgetGrace) {
         await sdk.interrupt().catch(() => {});
         await updateJob(job.id, {
           status: 'error',
@@ -309,7 +359,12 @@ async function runTask(task, internal, channel, state) {
           type: 'error',
           agent: agent.slug,
           jobId: job.id,
+          reason: 'budget_exceeded',
+          // The SDK session is recorded so the client can resume this exact
+          // conversation (with a fresh budget) instead of starting over.
+          sessionId: sdkSessionId,
           message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
+          budget: { used: Math.round(budget.used), limit: budget.limit },
         });
         return;
       }
@@ -342,7 +397,10 @@ async function runTask(task, internal, channel, state) {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
         });
-        channel.push({ type: 'done', agent: agent.slug, jobId: job.id, sessionId: sdkSessionId, usage });
+        channel.push({
+          type: 'done', agent: agent.slug, jobId: job.id, sessionId: sdkSessionId, usage,
+          budget: { used: Math.round(budget.used), limit: budget.limit },
+        });
       } else {
         const reason = message.subtype.replace(/^error_/, '').replaceAll('_', ' ');
         await updateJob(job.id, {
@@ -351,10 +409,39 @@ async function runTask(task, internal, channel, state) {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
         });
-        channel.push({ type: 'error', agent: agent.slug, jobId: job.id, message: `Agent task stopped: ${reason}` });
+        channel.push({
+          type: 'error', agent: agent.slug, jobId: job.id, message: `Agent task stopped: ${reason}`,
+          budget: { used: Math.round(budget.used), limit: budget.limit },
+        });
       }
     }
   }
+  }
+}
+
+// Transient model-provider errors (story 029): a 529 Overloaded, 429 rate-limit,
+// 5xx, or a network blip is upstream and safe to retry. Classify by HTTP status
+// when the SDK exposes one, else by the error text — the Agent SDK commonly
+// surfaces these as `API Error: 529 Overloaded`.
+const TRANSIENT_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+
+export function isTransientApiError(err) {
+  if (!err) return false;
+  const status = err.status ?? err.statusCode ?? err.response?.status;
+  if (typeof status === 'number' && (TRANSIENT_STATUS.has(status) || status >= 500)) return true;
+  const msg = `${err.message ?? err}`;
+  return /\b(429|5\d\d|overloaded|rate[\s_-]?limit|too many requests)\b/i.test(msg)
+    || /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up)\b/i.test(msg);
+}
+
+// Exponential backoff with full jitter, capped at retry.maxDelayMs (story 029).
+function backoffDelay(attempt, { baseDelayMs, maxDelayMs }) {
+  const ceil = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+  return Math.round(ceil * (0.5 + Math.random() * 0.5));
+}
+
+function sleep(ms) {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
 // Approximate model price ratio for budget weighting (story 020), matched by
@@ -443,6 +530,24 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
       async ({ path }) => fileToolResult(async () => {
         const tree = await listProjectTree(projectId, path);
         return JSON.stringify(tree, null, 2);
+      }),
+    ));
+  }
+
+  if (agent.tools.includes('file_move')) {
+    tools.push(tool(
+      'move_file',
+      'Move or rename a file or folder within the project workspace. Parent directories of the destination are created as needed. Use this to organize loose uploads — e.g. move "protocol.pdf" to "seed_docs/protocol.pdf".',
+      {
+        from: z.string().describe('Workspace-relative source path'),
+        to: z.string().describe('Workspace-relative destination path (including the new filename)'),
+      },
+      async ({ from, to }) => fileToolResult(async () => {
+        await moveProjectEntry(projectId, from, to);
+        // Mirror the change into the live file tree (delete old row, add new).
+        channel.push({ type: 'file_change', agent: agent.slug, path: from, kind: 'delete' });
+        channel.push({ type: 'file_change', agent: agent.slug, path: to, kind: 'create' });
+        return `Moved ${from} → ${to}`;
       }),
     ));
   }

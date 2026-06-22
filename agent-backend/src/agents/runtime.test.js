@@ -25,10 +25,13 @@ vi.mock('../config.js', () => ({
   config: {
     agent: {
       tokenBudget: 250000,
+      budgetGrace: 1.1,
       maxDispatchDepth: 2,
       questionTimeoutMs: 15 * 60 * 1000,
       model: undefined,
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
+      // Zero delays so the backoff retry path (story 029) runs instantly in tests.
+      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
     },
   },
 }));
@@ -39,6 +42,7 @@ vi.mock('../storage.js', () => ({
   writeProjectFile: vi.fn(async () => ({ created: true })),
   listProjectTree: vi.fn(async () => []),
   searchProjectFiles: vi.fn(async () => []),
+  moveProjectEntry: vi.fn(async () => ({})),
 }));
 vi.mock('../db/agents.js', () => ({ getAgentWithTools: vi.fn() }));
 vi.mock('../db/conversation.js', () => ({
@@ -121,6 +125,7 @@ describe('runAgentTask', () => {
         jobId: 42,
         sessionId: 'sess-1',
         usage: { inputTokens: 100, outputTokens: 50 },
+        budget: { used: 15, limit: 250000 },
       },
     ]);
 
@@ -254,6 +259,88 @@ describe('runAgentTask', () => {
     expect(options.allowedTools).toContain('mcp__kuhn__write_file');
     expect(options.allowedTools).toContain('mcp__kuhn__edit_file');
     expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
+  });
+});
+
+// --- Story 029: transient model-provider error resilience --------------------
+
+describe('transient API error retry (story 029)', () => {
+  const overloaded = () => Object.assign(new Error('API Error: 529 Overloaded'), { status: 529 });
+
+  it('retries on a 529, emitting a notice, then succeeds without a terminal error', async () => {
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      if (calls === 1) throw overloaded(); // first attempt fails before any output
+      yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+    expect(calls).toBe(2);
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice).toMatchObject({ type: 'notice', reason: 'provider_overloaded', attempt: 1, maxAttempts: 3 });
+    expect(events.find((e) => e.type === 'error')).toBeUndefined();
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('surfaces a terminal provider_overloaded error after exhausting retries', async () => {
+    sdkState.generator = () => (async function* () {
+      throw overloaded();
+      // eslint-disable-next-line no-unreachable
+      yield {};
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+    // maxAttempts 3 → 3 notices, then a terminal tagged error
+    expect(events.filter((e) => e.type === 'notice')).toHaveLength(3);
+    const error = events.find((e) => e.type === 'error');
+    expect(error).toMatchObject({ type: 'error', reason: 'provider_overloaded' });
+    expect(error.message).toMatch(/overloaded/i);
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+  });
+
+  it('does not retry a non-transient error — surfaces it once, untagged', async () => {
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      throw new Error('schema validation failed');
+      // eslint-disable-next-line no-unreachable
+      yield {};
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+    expect(calls).toBe(1);
+    expect(events.find((e) => e.type === 'notice')).toBeUndefined();
+    expect(events.at(-1)).toMatchObject({ type: 'error', message: 'schema validation failed' });
+    expect(events.at(-1).reason).toBeUndefined();
+  });
+
+  it('hands back the session id on a terminal transient error so a chat retry can resume', async () => {
+    sdkState.generator = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-resume' };
+      throw overloaded();
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+    const error = events.find((e) => e.type === 'error');
+    expect(error).toMatchObject({ reason: 'provider_overloaded', sessionId: 'sess-resume' });
+  });
+});
+
+describe('isTransientApiError (story 029)', () => {
+  it('classifies overload / rate-limit / 5xx / network as transient', async () => {
+    const { isTransientApiError } = await import('./runtime.js');
+    expect(isTransientApiError(Object.assign(new Error('x'), { status: 529 }))).toBe(true);
+    expect(isTransientApiError(Object.assign(new Error('x'), { status: 503 }))).toBe(true);
+    expect(isTransientApiError(new Error('API Error: 429 rate limit'))).toBe(true);
+    expect(isTransientApiError(new Error('Overloaded'))).toBe(true);
+    expect(isTransientApiError(new Error('read ECONNRESET'))).toBe(true);
+    expect(isTransientApiError(Object.assign(new Error('x'), { status: 400 }))).toBe(false);
+    expect(isTransientApiError(new Error('Unknown agent role: nope'))).toBe(false);
+    expect(isTransientApiError(null)).toBe(false);
   });
 });
 

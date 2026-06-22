@@ -32,7 +32,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'done' | 'error' | 'stage';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage';
   agent: string;
   content?: string;
   path?: string;
@@ -43,6 +43,16 @@ export interface AgentEvent {
   jobId?: number;
   sessionId?: string;
   usage?: { inputTokens: number; outputTokens: number };
+  // Per-task token budget snapshot (weighted tokens), carried on done/error.
+  budget?: { used: number; limit: number };
+  // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
+  // 'provider_overloaded' on a transient-error notice/terminal error (story 029).
+  reason?: string;
+  // Transient-error retry progress (story 029): emitted on a 'notice' while the
+  // runtime backs off before retrying.
+  attempt?: number;
+  maxAttempts?: number;
+  nextRetryMs?: number;
   message?: string;
   // Seeding pipeline stage markers (story 015)
   stage?: string;

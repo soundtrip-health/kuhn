@@ -24,7 +24,7 @@ import { findMarkdownPath, initFiles, recordFileChange, refreshTree, setActiveFi
 import { icon } from './icons';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
-import { notify } from './status';
+import { notify, setVersion } from './status';
 import * as workspace from './workspace';
 
 const MAIN_DOCUMENT = 'draft/main.md';
@@ -109,6 +109,9 @@ async function switchToActiveProject(): Promise<void> {
 
   const projectId = project.id;
 
+  // A configured project (has a saved title) has already been through intake —
+  // chat must not re-offer the interview greeting (story: invisible PM gating).
+  const seeded = Boolean(project.config?.title);
   initChat(projectId, (change) => {
     recordFileChange(change); // feed the files-panel status map (story 014)
     const changedPath = change.path;
@@ -123,7 +126,7 @@ async function switchToActiveProject(): Promise<void> {
         }
       });
     }
-  });
+  }, seeded);
 
   initFiles(projectId, {
     onOpenMarkdown: (path) => openInEditor(projectId, path),
@@ -185,6 +188,7 @@ function openInEditor(projectId: number, path: string): void {
 }
 
 async function main(): Promise<void> {
+  setVersion();
   wirePanelToggles();
   wireExportMenu();
   initAgentSelector();

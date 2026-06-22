@@ -160,7 +160,74 @@ export function initPreview(activeProjectId: number): void {
     const opened = !panel().classList.toggle('collapsed');
     if (opened && !blobUrl) void render();
   });
+  document.getElementById('preview-close')!.addEventListener('click', () => panel().classList.add('collapsed'));
   document.getElementById('preview-refresh')!.addEventListener('click', () => void render());
   document.getElementById('export-docx')!.addEventListener('click', () => void download('docx'));
   document.getElementById('export-tex')!.addEventListener('click', () => void download('tex'));
+  wireFloatingWindow();
+}
+
+// ---- Floating-window drag + resize ------------------------------------------
+
+/** Make the preview pane draggable by its toolbar and resizable from the grip. */
+function wireFloatingWindow(): void {
+  const el = panel();
+  const toolbar = document.getElementById('preview-toolbar')!;
+  const grip = document.getElementById('preview-resize')!;
+
+  // Drag: anchor to the left edge (drop the default right-anchor) and move.
+  toolbar.addEventListener('pointerdown', (e) => {
+    // Don't start a drag from the toolbar's buttons.
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.preventDefault();
+    const rect = el.getBoundingClientRect();
+    const offX = e.clientX - rect.left;
+    const offY = e.clientY - rect.top;
+    toolbar.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: PointerEvent) => {
+      const left = clamp(ev.clientX - offX, 0, window.innerWidth - rect.width);
+      const top = clamp(ev.clientY - offY, 0, window.innerHeight - 44);
+      el.style.setProperty('--preview-right', 'auto');
+      el.style.setProperty('--preview-left', `${left}px`);
+      el.style.setProperty('--preview-top', `${top}px`);
+    };
+    const onUp = () => {
+      toolbar.releasePointerCapture(e.pointerId);
+      toolbar.removeEventListener('pointermove', onMove);
+      toolbar.removeEventListener('pointerup', onUp);
+    };
+    toolbar.addEventListener('pointermove', onMove);
+    toolbar.addEventListener('pointerup', onUp);
+  });
+
+  // Resize from the bottom-right grip.
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = el.getBoundingClientRect();
+    // Pin the current left/top so resizing doesn't fight the right-anchor.
+    el.style.setProperty('--preview-right', 'auto');
+    el.style.setProperty('--preview-left', `${rect.left}px`);
+    el.style.setProperty('--preview-top', `${rect.top}px`);
+    grip.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: PointerEvent) => {
+      const w = clamp(ev.clientX - rect.left, 320, window.innerWidth - rect.left - 8);
+      const h = clamp(ev.clientY - rect.top, 240, window.innerHeight - rect.top - 8);
+      el.style.setProperty('--preview-width', `${w}px`);
+      el.style.setProperty('--preview-height', `${h}px`);
+    };
+    const onUp = () => {
+      grip.releasePointerCapture(e.pointerId);
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onUp);
+    };
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onUp);
+  });
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }

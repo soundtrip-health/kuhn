@@ -248,13 +248,30 @@ body {
   min-height: 0;
 }
 #files-panel {
-  flex: 0 0 288px;
+  /* Fixed width (user-resizable via #files-resizer, persisted), independent of
+     the longest filename: min-width:0 + overflow:hidden stop content from
+     widening the column. */
+  flex: 0 0 var(--files-width, 288px);
+  min-width: 0; overflow: hidden;
   display: flex; flex-direction: column;
   background: var(--chrome);
   border-left: 1px solid var(--line);
   min-height: 0;
 }
 #chat-panel.collapsed, #files-panel.collapsed { display: none; }
+
+/* Vertical drag handle between the editor and the files panel. */
+.pane-resizer {
+  flex: 0 0 5px; align-self: stretch;
+  cursor: col-resize; background: transparent;
+  border-left: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease);
+  z-index: 5;
+}
+.pane-resizer:hover, .pane-resizer.dragging { background: var(--accent-soft); }
+/* Hide the handle when the panel it resizes is collapsed. */
+#layout:has(#files-panel.collapsed) #files-resizer { display: none; }
+body.resizing-pane { cursor: col-resize; user-select: none; }
 
 #editor-pane {
   flex: 1; min-width: 0;
@@ -642,6 +659,7 @@ body {
   list-style: none;
 }
 .file-list summary::-webkit-details-marker { display: none; }
+.file-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-chevron { width: 13px; height: 13px; flex: none; color: var(--ink-3); transition: transform var(--dur-fast) var(--ease); }
 .file-list details:not([open]) > summary .file-chevron { transform: rotate(-90deg); }
 .file-count { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); font-weight: 400; }
@@ -710,14 +728,42 @@ body {
 #file-tree.drag-over { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-sm); }
 .file-list details.drag-over > summary { background: var(--accent-soft); border-radius: 7px; color: var(--ink); }
 
-/* ---- Preview panel (story 019) -------------------------------------- */
+/* ---- Preview panel (story 019; floating window) --------------------- */
+/* A draggable / resizable overlay rather than a layout column, so opening it
+   never squeezes the editor, chat, or files panes. Position is set inline by
+   preview.ts (default top-right) and clamped to the viewport. */
 #preview-panel {
-  flex: 0 0 460px;
+  position: fixed;
+  top: var(--preview-top, 84px);
+  left: var(--preview-left, auto);
+  right: var(--preview-right, 28px);
+  width: var(--preview-width, 480px);
+  height: var(--preview-height, min(72vh, 760px));
   display: flex; flex-direction: column;
-  background: var(--chrome); border-left: 1px solid var(--line);
-  min-height: 0;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  z-index: 60;
 }
 #preview-panel.collapsed { display: none; }
+#preview-toolbar { cursor: move; user-select: none; flex: 0 0 38px; }
+.preview-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; margin-left: 2px;
+  border: none; border-radius: var(--r-xs); cursor: pointer;
+  background: transparent; color: var(--ink-3);
+  font-size: 19px; line-height: 1;
+}
+.preview-close:hover { background: var(--soft-2); color: var(--ink); }
+/* Bottom-right resize grip. */
+#preview-resize {
+  position: absolute; right: 0; bottom: 0;
+  width: 16px; height: 16px; cursor: nwse-resize; z-index: 2;
+  background:
+    linear-gradient(135deg, transparent 0 50%, var(--line-strong) 50% 60%, transparent 60% 72%, var(--line-strong) 72% 82%, transparent 82%);
+}
 #preview-status {
   font: var(--ui-small); color: var(--ink-3);
   padding: 6px 14px; white-space: pre-wrap; max-height: 30%; overflow-y: auto;
@@ -737,6 +783,33 @@ body {
 }
 .preview-download { display: inline-block; margin: 18px; color: var(--accent); font-size: 13px; }
 
+/* ---- Inline chat notices: budget-reached, provider-overloaded ------- */
+.chat-notice-budget,
+.chat-notice-overload {
+  margin: 10px 0;
+  padding: 13px 15px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-left: 2.5px solid var(--advisor);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+.chat-notice-budget .notice-title,
+.chat-notice-overload .notice-title {
+  display: flex; align-items: center; gap: 7px;
+  font-weight: 600; font-size: 13px; color: var(--ink);
+  margin-bottom: 6px;
+}
+.chat-notice-budget .notice-title svg { color: var(--advisor); }
+.chat-notice-budget p,
+.chat-notice-overload p { margin: 0 0 8px; font: var(--ui-body); color: var(--ink-2); }
+.chat-notice-budget .notice-action,
+.chat-notice-overload .notice-action { margin-top: 2px; }
+
+/* Overload is a transient infra hiccup, not a project limit — accent it. */
+.chat-notice-overload { border-left-color: var(--accent); }
+.chat-notice-overload .notice-title svg { color: var(--accent); }
+
 /* ---- Status bar ----------------------------------------------------- */
 #statusbar {
   height: 30px; flex: 0 0 30px;
@@ -751,6 +824,10 @@ body {
 #status-save[data-state='dirty'], #status-save[data-state='saving'] { color: var(--advisor); }
 #status-agent:not(:empty) { color: var(--ink-2); }
 #status-notice { color: var(--advisor); }
+#status-budget:empty { display: none; }
+#status-version { color: var(--ink-3); opacity: 0.65; letter-spacing: .02em; }
+#status-budget[data-state='warn'] { color: var(--advisor); }
+#status-budget[data-state='over'] { color: var(--warn); }
 
 /* ---- Empty-state editor hero ---------------------------------------- */
 #editor-hero {
@@ -869,10 +946,10 @@ body {
 
 /* ---- Responsive collapse (graceful to ~1100px) --------------------- */
 @media (max-width: 1240px) {
-  #files-panel { flex-basis: 248px; }
+  #files-panel { --files-width: 248px; }
 }
 @media (max-width: 1100px) {
   #chat-panel { flex-basis: 320px; }
-  #files-panel { flex-basis: 220px; }
+  #files-panel { --files-width: 220px; }
   #editor { padding: 40px 24px 100px; }
 }

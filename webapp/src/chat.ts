@@ -28,7 +28,7 @@ import type { FileChange } from './files';
 import { icon } from './icons';
 import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
-import { addTokenUsage, notify, setAgentActivity } from './status';
+import { addTokenUsage, notify, setAgentActivity, setBudget } from './status';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -38,16 +38,28 @@ const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 const sessions = new Map<string, string>();
 
 let activeProjectId = 0;
+// Whether the active project has already been seeded/configured. Gates the
+// "Start project interview" greeting so it only shows for brand-new projects.
+let projectSeeded = false;
 let listenersWired = false;
 let running = false;
+// The last user-initiated action (a chat turn or the seeding pipeline), so the
+// "Try again" affordance on a transient-overload failure re-runs exactly it
+// without the user having to guess what to retype (story 029).
+let retryAction: (() => Promise<void>) | null = null;
 // Job waiting on an ask_user reply; the input box answers it instead of
 // starting a new task
 let pendingQuestionJobId: number | null = null;
 let activeQuestionCard: QuestionCard | null = null;
 let onFileChange: (change: FileChange) => void = () => {};
 
-export function initChat(projectId: number, fileChangeHandler: (change: FileChange) => void): void {
+export function initChat(
+  projectId: number,
+  fileChangeHandler: (change: FileChange) => void,
+  seeded = false,
+): void {
   activeProjectId = projectId;
+  projectSeeded = seeded;
   onFileChange = fileChangeHandler;
 
   // Reset per-project conversation state so switching projects (story 006)
@@ -132,9 +144,11 @@ async function restoreTranscript(): Promise<void> {
     .reverse()
     .flatMap((c) => c.messages.map((m) => ({ ...m, agent: c.agent_slug })));
   if (messages.length === 0) {
-    // Skip the greeting card if seeding has already auto-started on open — the
-    // live pipeline is the greeting in that case (avoids a duplicate CTA).
-    if (!running) appendGreeting();
+    // Greet only on a brand-new, unseeded project. An already-configured project
+    // with an empty transcript (its seeding ran before chat logging, or its
+    // history was cleared) must not re-offer the interview. Also skip if seeding
+    // has already auto-started on open — the live pipeline is the greeting then.
+    if (!running && !projectSeeded) appendGreeting();
     return;
   }
 
@@ -237,14 +251,42 @@ function createEventHandler(): (event: AgentEvent) => void {
         if (event.status === 'start') setAgentActivity(`seeding: ${STAGE_LABELS[event.stage ?? ''] ?? event.stage}…`);
         break;
       }
+      case 'notice': {
+        // Transient model-provider error: the runtime is backing off and will
+        // retry automatically. Show a visible "retrying…" status so the wait
+        // isn't an ambiguous silent spinner (story 029).
+        if (event.reason === 'provider_overloaded') {
+          const secs = event.nextRetryMs ? Math.round(event.nextRetryMs / 1000) : 0;
+          setAgentActivity(
+            `${agentLabel(event.agent)} paused — model provider busy, retrying${secs ? ` in ${secs}s` : ''}`
+            + ` (${event.attempt}/${event.maxAttempts})…`,
+          );
+          notify('Model provider is busy — retrying automatically…');
+        }
+        break;
+      }
       case 'done': {
         if (event.sessionId) sessions.set(event.agent, event.sessionId);
         if (event.usage) addTokenUsage(event.usage);
+        if (event.budget) setBudget(event.budget.used, event.budget.limit);
         break;
       }
       case 'error': {
         finalize();
-        appendSystemLine(event.message ?? 'agent error', 'error');
+        if (event.budget) setBudget(event.budget.used, event.budget.limit);
+        if (event.reason === 'budget_exceeded') {
+          // Keep the session so a follow-up resumes this exact conversation.
+          if (event.sessionId) sessions.set(event.agent, event.sessionId);
+          appendBudgetNotice(event.agent);
+        } else if (event.reason === 'provider_overloaded') {
+          // Transient upstream failure that outlasted the runtime's retries —
+          // keep the session so a chat "Try again" resumes it, and offer a
+          // one-click retry of the original action (story 029).
+          if (event.sessionId) sessions.set(event.agent, event.sessionId);
+          appendOverloadNotice();
+        } else {
+          appendSystemLine(event.message ?? 'agent error', 'error');
+        }
         break;
       }
     }
@@ -295,6 +337,17 @@ async function send(): Promise<void> {
   autoGrow(input);
 
   appendUserMessage(text);
+  retryAction = () => dispatchTask(role, text);
+  await dispatchTask(role, text);
+}
+
+/**
+ * Run a single chat turn. Separated from send() so the user message is appended
+ * once but the run itself can be re-invoked by "Try again" after a transient
+ * overload (story 029) — resuming the agent's session if one was recorded.
+ */
+async function dispatchTask(role: string, text: string): Promise<void> {
+  if (running) return;
   running = true;
   setAgentActivity(`${agentLabel(role)} is working…`);
 
@@ -313,6 +366,9 @@ async function send(): Promise<void> {
 /** Run the seeding pipeline (story 015), narrated by the seeding panel. */
 export async function startSeeding(): Promise<void> {
   if (running) return;
+  // "Try again" after a transient overload re-runs the whole seeding pipeline —
+  // the correct retry for a new-doc request, which is not a resumable chat turn.
+  retryAction = () => startSeeding();
   running = true;
   // The interview is starting — drop the empty-state greeting card so its
   // "Start project interview" CTA doesn't linger alongside the live pipeline.
@@ -521,6 +577,94 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
   line.textContent = text;
   log.append(line);
   scrollLog();
+}
+
+/**
+ * Budget-reached notice with a one-click clean resume. The task was paused at
+ * the budget limit; files already written are on disk and the SDK session is
+ * preserved, so resuming continues the same conversation with a fresh budget.
+ */
+function appendBudgetNotice(agent: string): void {
+  const log = document.getElementById('chat-log')!;
+  const label = agentLabel(agent);
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-budget';
+  card.innerHTML =
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Token budget reached — task paused</div>` +
+    `<p>Nothing is lost. Any files ${label} already wrote are saved (check the Files panel), and ` +
+    `this conversation is preserved.</p>` +
+    `<p>Resume and ${label} will recap what's done and what's still left, then keep going with a ` +
+    `fresh budget. Or send your own instruction to steer the rest of the work.</p>`;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-accent btn-sm notice-action';
+  btn.innerHTML = `Resume ${label} ${icon('arrow-right', { size: 13, stroke: 2 })}`;
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    void continueAfterBudget(agent);
+  });
+  card.append(btn);
+  log.append(card);
+  scrollLog();
+}
+
+/**
+ * Transient-overload notice (story 029). The model provider returned a 529 (or
+ * similar) that outlasted the runtime's automatic retries. The work is safe; the
+ * one-click action re-runs the original request — the chat turn (resuming the
+ * session) or the seeding pipeline, whichever failed.
+ */
+function appendOverloadNotice(): void {
+  const log = document.getElementById('chat-log')!;
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-overload';
+  card.innerHTML =
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Model provider is overloaded — task paused</div>` +
+    `<p>This is a temporary capacity issue upstream (a 529 from the model provider), ` +
+    `not a problem with your project. Any work already done is saved.</p>` +
+    `<p>It usually clears within seconds. Try again now, or wait a moment and retry.</p>`;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-accent btn-sm notice-action';
+  btn.innerHTML = `Try again ${icon('arrow-right', { size: 13, stroke: 2 })}`;
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    void retryLast();
+  });
+  card.append(btn);
+  log.append(card);
+  scrollLog();
+}
+
+/** Re-run the last user-initiated action (chat turn or seeding) — story 029. */
+async function retryLast(): Promise<void> {
+  if (running) return;
+  if (!retryAction) {
+    appendSystemLine('Nothing to retry.', 'error');
+    return;
+  }
+  await retryAction();
+}
+
+/** Resume a budget-paused agent: same SDK session, fresh budget. */
+async function continueAfterBudget(agent: string): Promise<void> {
+  if (running) return;
+  const prompt =
+    'Continue the previous task from where you left off. First, briefly note what you '
+    + 'completed and what still remains, then keep going.';
+  appendUserMessage(prompt);
+  running = true;
+  setAgentActivity(`${agentLabel(agent)} is working…`);
+  try {
+    await runAgentTask(
+      { role: agent, projectId: activeProjectId, input: prompt, sessionId: sessions.get(agent) },
+      createEventHandler(),
+    );
+  } catch (err) {
+    appendSystemLine((err as Error).message, 'error');
+  } finally {
+    finishRun();
+  }
 }
 
 function clockOf(iso: string): string {
