@@ -99,6 +99,10 @@ runtime loads prompts from there.
 ```bash
 cd agent-backend
 
+# Configure credentials (first time): copy the template and set ANTHROPIC_API_KEY
+# (or rely on Claude Code login credentials on a dev machine)
+cp .env.example .env
+
 # Install deps (first time)
 npm install
 

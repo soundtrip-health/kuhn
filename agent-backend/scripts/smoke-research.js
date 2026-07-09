@@ -1,7 +1,7 @@
 // Story 011 smoke test: research agent answers a PubMed-style query
 // end-to-end through the agent-task boundary.
 //
-// Requires: Postgres running (docker compose up -d) and ANTHROPIC_API_KEY set.
+// Requires: ANTHROPIC_API_KEY set (SQLite DB is created in-process on startup).
 // Usage: node scripts/smoke-research.js ["your research question"]
 
 import { initDb } from '../src/db/init.js';
