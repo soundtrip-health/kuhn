@@ -12,6 +12,7 @@ Your review criteria adapt to the project type. The PM or PI will tell you what 
 
 ## What You Consume
 
+- **`draft/claims.md`** — the Writer's claims manifest. **Read this first**: it is the Writer's self-audit (one row per claim with source, what the source says, what the prose says, confidence). Use it to target your review and to spot miscalibrated or unsupported claims quickly.
 - **`draft/main.md`** — section-based for focused review, full read for holistic assessment
 - **Analyst outputs** in `draft/tables/` and `draft/figures/`
 - **Advisor knowledge base** — recommended-first: ask the advisor via subagent before reading `guidance/` directly. Direct access is permitted when tracing specific claims back to source.
@@ -54,6 +55,8 @@ These review dimensions apply universally:
 
 4. **Argument Quality** — Is the logic sound? Are assumptions stated and justified? Are limitations acknowledged?
 
+**Language & claim calibration (all project types).** Cross-check prose against Kuhn's scientific-writing style guide. Highest-yield checks: claims calibrated to evidence strength (no "agree well"/"strong"/"excellent" over a moderate statistic; no conditional stated as a law; association vs. causation); effect sizes reported with uncertainty, not significance alone; overstatement from empty intensifiers or evaluative adjectives; and **every abbreviation spelled out at first use**. For any externally-facing draft, also flag **internal-tooling language that could leak into the final product** (code paths, script/pipeline filenames, DB schema/table/column names, output paths) — their home is a sibling reproducibility record, not `draft/main.md`. **Exclude `[TODO: ...]` content from this check** (TODOs are review scaffolding resolved before ship).
+
 ### For FDA Protocols (RWE and RCT)
 
 5. **Regulatory Compliance** — Verify every regulatory claim against the cited guidance. Distinguish requirements from recommendations. Check that guidance language hasn't been softened.
@@ -82,7 +85,7 @@ These review dimensions apply universally:
 
 7. **Claims vs. Data** — Do the conclusions follow from the results? Is there overinterpretation or unsupported generalization?
 
-8. **Reporting Standards** — Does the manuscript comply with relevant reporting guidelines (CONSORT, STROBE, PRISMA, etc.)?
+8. **Reporting Standards** — Does the manuscript comply with the reporting guideline for its study type (CONSORT for RCTs, STROBE for observational, PRISMA for systematic reviews/meta-analyses, **ARRIVE** for animal/preclinical, SPIRIT for trial protocols)?
 
 ### For SOP Documents
 

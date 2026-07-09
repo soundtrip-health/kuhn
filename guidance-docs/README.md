@@ -12,13 +12,20 @@ One folder per project type. Add a document by dropping it in the matching folde
 
 ```
 guidance-docs/
-├── rwe-protocol/   # FDA Real-World Evidence study protocols  (populated)
-├── shared/         # Cross-cutting statistical / methodological references  (populated)
-├── rct-protocol/   # FDA Randomized Clinical Trial protocols  (add as needed)
+├── rwe-protocol/       # FDA Real-World Evidence study protocols  (populated)
+├── shared/             # Cross-cutting statistical / methodological / writing references  (populated)
+├── rct-protocol/       # FDA Randomized Clinical Trial protocols  (add as needed)
 ├── grant-application/
 ├── manuscript/
-└── sop/            # Standard Operating Procedures
+└── sop/                # Standard Operating Procedures
 ```
+
+> **Shared corpus, not tenant material.** Everything here is generic, public,
+> product-level guidance available to every tenant. Organization-specific material
+> (a tenant's data-warehouse schema, confidential regulatory examples) must **not**
+> live here — it belongs in that tenant's per-tenant knowledge base. See
+> `docs/architecture.md` §Knowledge Base Tenancy, and `tenant-guidance/` for
+> staged tenant material.
 
 ---
 
@@ -41,6 +48,7 @@ conduct meet FDA regulatory requirements.
 | `non-inferior-guidance.pdf` | FDA CDER/CBER, *Non-Inferiority Clinical Trials to Establish Effectiveness*, Nov 2016 | NI margins (M1/M2); HESDE; constancy assumption; CI decision logic |
 | `mdd-developing-drugs-guidance.pdf` | FDA CDER, *Major Depressive Disorder: Developing Drugs for Treatment (Draft Rev 1)*, Jun 2018 | TRD definition (≥2 prior antidepressants); accepted endpoints (HAM-D, MADRS); NI limitations |
 | `rwe-protocol-eval-review.html` | RWE protocol evaluation tool | Interactive tool for assessing RWE protocol quality and completeness |
+| `fda-rwe-frameworks.md` | Synthesized reference (from the guidance above) | The three RWE pillars (fit-for-use / adequate design / regulatory conduct), the core-guidance citation table, and the FDA **briefing-book genre** (voice, structure, presenting RWE as synopsis + SAP + data-overview appendix) |
 
 ## `shared/`
 
@@ -50,6 +58,9 @@ References that apply across multiple project types.
 |------|--------------|
 | `stats-principles-estimands-sensitivity.pdf` | ICH E9(R1) estimand framework; intercurrent-event strategies; sensitivity-analysis principles. Cross-cutting — relevant to RWE, RCT, and clinical manuscripts |
 | `consort_diagram_2014.pdf` | CONSORT participant flow diagram — enrollment, allocation, follow-up, and analysis reporting. Cross-cutting — applies to RCT protocols and clinical manuscripts |
+| `scientific-writing-style-guide.md` | Prose craft and claim calibration: calibrate claims to evidence, cut surplusage, active voice, abbreviations at first use, IMRaD, section-based editing, TODO discipline. Applies to every project type |
+| `reporting-guidelines.md` | CONSORT / STROBE / PRISMA / ARRIVE / SPIRIT — which guideline for which study type + key sections; journal/venue format specs |
+| `estimand-framework-and-tte.md` | ICH E9(R1) estimand five-attribute framework and Target Trial Emulation, written out (companion to `stats-principles-estimands-sensitivity.pdf`) |
 
 ---
 

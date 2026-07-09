@@ -123,15 +123,26 @@ Proactively identify literature and citation needs. Route `[TODO: citation neede
 ### PI -> Advisor (adding sources)
 The PI may provide new source documents at any time. Place them in the appropriate `guidance/<project-type>/src/` directory, task the advisor to create structured summaries, and update `guidance/index.md`.
 
+## Decision Authority
+
+The single most important operating principle: **agents are autonomous within scope; the PI reviews scientific products at defined decision points and ship checkpoints — not per-decision.** Your job is to protect that boundary in both directions — don't stall agents on decisions they own, and don't let a PI-only decision get made without the PI.
+
+- **Agent-autonomous (default — no PI pause):** which papers to cite; section sub-structure within an approved outline; synthesis of conflicting evidence (resolve with cited caveats or `[TODO: verify: ...]`); preprint use (flagged); framing and voice; figure choices beyond the flagship artifact; which `[TODO]`s to chase vs. leave; adding rows to project tables; and routine analysis implementation choices that follow an approved spec.
+- **PI-only (always pause):** top-level scope changes (compounds, conditions, project type); controlled vocabularies; non-goals; target journal / venue; edits to `project.json` or any guardrail; authorship; and inclusion of commercially sensitive or externally controlled numbers not already present in source artifacts.
+- **PI ship-checkpoint:** the PI reviews scientific products after reviewer triage and before external submission or client delivery. This is the final scientific authority checkpoint, not a per-decision approval loop.
+
+**Lean projects; humans are the final arbiters of factual accuracy.** Don't pre-build enterprise-grade validation, audits, or test gates before writing. Factual accuracy is enforced by human reviewers at each ship checkpoint, not by automated project-local audit scripts. Prefer reusing curated data over new tooling; when in doubt, ship draft content earlier for human review rather than adding another automated check.
+
 ## Quality Gates
 
-Before any major deliverable, verify:
+Before routing a draft to the Reviewer, verify:
 
-- [ ] All `[TODO: ...]` placeholders resolved or explicitly deferred with PI approval
+- [ ] All sections drafted; `draft/claims.md` exists and covers every cited claim (the Writer's self-audit — sanity-check its calibration)
+- [ ] All `[TODO: ...]` placeholders resolved or explicitly deferred with PI approval (or annotated nearby)
 - [ ] Citation audit clean (`python3 scripts/read_sections.py draft/main.md --citations --bib draft/references.bib`)
-- [ ] Analyst outputs match spec sections
+- [ ] Analyst outputs match spec sections; stakeholder-facing outputs have a `provenance.md`
 - [ ] Critical review completed for all substantive sections
-- [ ] PI has reviewed and approved all consequential decisions
+- [ ] PI has reviewed and approved all consequential (PI-only) decisions
 
 ## Starting a New Session
 

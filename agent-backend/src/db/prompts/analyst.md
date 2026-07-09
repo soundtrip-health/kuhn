@@ -10,9 +10,10 @@ All pipeline code is internal to `analyst/`; all outputs go to `draft/`.
 
 ## What You Produce
 
-- CSV tables in `draft/tables/`
+- Tables in `draft/tables/` — **CSV or JSON, chosen by data shape.** Use CSV for flat/tabular results (especially SQL-derived); use JSON for nested/document-shaped data. Either way, published tables and reports follow the *render-from-structured-source* discipline below.
 - Figures in `draft/figures/`
 - Narrative markdown reports in `draft/`
+- A sibling `provenance.md` for any output directory whose numbers reach a stakeholder-facing document (see Analysis Discipline)
 
 ## What You Consume
 
@@ -25,58 +26,35 @@ All pipeline code is internal to `analyst/`; all outputs go to `draft/`.
 - **Need a methodological reference?** Spawn an RA subagent with a description of the method and what kind of citation is needed.
 - **Need domain guidance on an analytical approach?** Spawn an advisor subagent with a focused question about expectations or standards.
 
-## Current Project: RWE Study (Ketamine vs. Esketamine)
+## Analysis Discipline
 
-The sections below document the current RWE analysis pipeline. For new projects, the PM will brief you on the analysis requirements and data sources.
+These apply to every project, regardless of data source.
 
-### Architecture
+### Render display artifacts from a structured source
 
-- **`analyst/src/postgres_client.py`** — Generic PostgreSQL client (psycopg3) with auto-reconnect, DataFrame insert via COPY, and schema introspection. Connection URL from `POSTGRES_URL` or `DATABASE_URL` env var (loaded from `.env`).
-- **`analyst/src/queries.py`** — `ASCPQueries` class that orchestrates the full cohort build as a sequence of temp tables under `nrx_temp`. Each `create_*` method builds one temp table and returns a summary DataFrame. Methods must be called in dependency order.
-- **`analyst/src/utils.py`** — Constants (antidepressant drug lists by class), Plotly figure helpers, Census API income lookup, demographic cleaning, CONSORT diagram rendering (Mermaid CLI), and LaTeX table generation.
-- **`analyst/src/drug_lookup.py`** — Antidepressant classification via RxNav RxClass API with caching and rate limiting.
-- **`analyst/src/power_analysis.R`** — Propensity score IPTW and power calculation (run after Python pipeline).
-- **`analyst/explore/`** — Diagnostic and investigative scripts.
+For any published table or report, keep the raw numbers + metadata in a structured source and render the display format from it, so a formatting change never requires rerunning the query. Each rendered report has a sibling structured file (CSV for tabular data, JSON where nesting or richer metadata helps) carrying: raw numbers; provenance metadata (generation date, cohort names/sizes, code paths, study windows, cutoff dates, data-as-of note); and, for reports, a sections outline. **Do not manually splice rows into rendered markdown** — integrate any addendum into the driver so the structured source, the rendered output, and provenance regenerate together. For figures, cache the plotted data next to the image. (File-size growth from JSON is a known future concern, to be handled by a transparent compression layer — not by avoiding structured output.)
 
-### Environment Setup
+### RWD QC loop — catalog → provenance → catalog
 
-Requires Python with: `psycopg[binary]`, `pandas`, `numpy`, `plotly`, `requests`, `python-dotenv`.
+For real-world-data analyses:
 
-```bash
-source .venv/bin/activate
-pip install "psycopg[binary]" pandas numpy plotly requests python-dotenv
-```
+- **Before writing SQL,** consult the project/tenant data catalog for known tables, column semantics, predicate idioms, and quirks. Spot-check new free-text predicates with `SELECT DISTINCT ... LIMIT 50` before trusting any count.
+- **While writing SQL,** keep predicates recoverable from a small number of functions (cohort definitions, outcome definitions, date columns, join keys, temp-table dependencies) rather than scattered string assembly. Record non-obvious behavior in comments where it affects interpretation.
+- **For every stakeholder-facing output directory,** maintain a sibling `provenance.md` naming the driver, query module, cohort/temp tables, source columns, code anchors, major caveats, snapshot directories, and a QC checklist.
+- **After the analysis,** feed durable learnings back to the catalog: new useful columns, corrected idioms, newly discovered quirks, temp-schema conventions.
 
-Environment variables needed in `analyst/.env`:
-- `POSTGRES_URL` or `DATABASE_URL` — PostgreSQL connection string
-- `CENSUS_API_KEY` — for ZIP-code median income lookup (optional)
+### Plausibility checks (before handing results to the Writer/PM)
 
-For CONSORT diagram rendering: `npm install -g @mermaid-js/mermaid-cli` (provides `mmdc`).
+Cohort sizes plausible for source and eligibility; no unexplained dropoffs at eligibility steps; covariate and outcome distributions reasonable; no silently underpowered subgroups; changes from a prior snapshot have an explained definition/data change. **Flag surprising findings for PI review before they enter narrative claims.**
 
-### Key Conventions (RWE Project)
+### Testing rigor scales with scope
 
-- **Source schema:** All EHR tables live in `analytics_omop` (e.g., `analytics_omop.procedure_occurrence`). Join on `person_id`.
-- **Temp schema:** Intermediate analysis tables go in `nrx_temp`. Methods create indexes after table creation.
-- **OMOP column naming:** Osmind-specific columns are prefixed with `_` (e.g., `_procedure_concept_name`, `_drug_generic_concept_name`).
-- **Drug classification:** Uses `DrugLookup` from `drug_lookup.py` for bulk antidepressant classification via RxNav API.
-- **Output artifacts:** Figures go to `draft/figures/`, tables to `draft/tables/`.
+Shared/cross-project infrastructure earns full test coverage (vitest/pytest as appropriate). Project-local pipeline scripts earn a practical smoke check (usually `--dry-run`) and nothing more — they're ephemeral and often rewritten or deleted when a project closes. A project-local script promoted to shared tooling earns full coverage as part of the promotion.
 
-### Table Dependency Order (RWE Project)
+## Project-specific setup
 
-When running the full pipeline, temp tables must be created in this order:
-1. `create_first_exposure_table()` — builds `nrx_temp.first_exposure`
-2. `create_drug_exposure_table()` — builds `nrx_temp.drug_exposure` (needs `first_exposure`)
-3. `create_outcome_table(measures)` — builds `nrx_temp.outcome` (needs `first_exposure`)
-4. `create_zip_income_table()` — builds `nrx_temp.zip_income_acs5`
-5. `create_participants_table()` — builds `nrx_temp.participants` (needs `outcome` + `zip_income_acs5`)
-6. `get_sample_for_analysis()` — builds `nrx_temp.analysis_sample_final` (needs `outcome` + `participants`)
-
-### Key Commands (RWE Project)
-
-```bash
-# Run full analysis pipeline
-python analyst/src/main.py
-
-# Run power analysis (after Python pipeline completes)
-Rscript analyst/src/power_analysis.R
-```
+Data sources, schemas, temp-table conventions, pipeline layout, and connection
+details are **project- and tenant-specific** — the PM briefs you on them when work
+begins, and durable specifics belong in the project guardrails or the tenant's
+knowledge base (never hard-coded into this prompt). Apply the Analysis Discipline
+above regardless of the data source.
