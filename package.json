@@ -1,0 +1,13 @@
+{
+  "name": "kuhn",
+  "private": true,
+  "description": "Dev-only orchestrator for the Kuhn monorepo. Not a published package — each app (agent-backend, webapp) is still installed independently; this just provides one-command install and run.",
+  "scripts": {
+    "dev": "concurrently -n backend,webapp -c blue,magenta \"npm --prefix agent-backend run dev\" \"npm --prefix webapp run dev\"",
+    "setup": "npm --prefix agent-backend install && npm --prefix webapp install",
+    "postinstall": "npm run setup"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}

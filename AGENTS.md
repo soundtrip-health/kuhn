@@ -9,7 +9,11 @@ For what the product *is* and how to use it, see [README.md](README.md) and
 ## Repository layout
 
 This is a monorepo of two independently-installed Node packages plus supporting
-content. There is **no root `package.json`** — run `npm` inside each package.
+content. The root `package.json` is a **dev-only orchestrator** (a `dev` script that
+runs both apps via `concurrently`, and a `postinstall` that installs both packages) —
+it holds no app code and publishes nothing. Each package is still installed and run
+independently, so `npm` commands (`test`, `build`, `db:seed`, …) run **inside each
+package**; only `npm install` and `npm run dev` are meaningful at the root.
 
 ```
 kuhn/
