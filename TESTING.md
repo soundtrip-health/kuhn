@@ -111,22 +111,23 @@ each full run costs real quota. Scripted version: `node webapp/scripts/seed-chec
 - [ ] Jobs are durable: restart the backend mid-task — the job row ends up `interrupted`,
       `POST /api/agent/jobs/:id/dispatch` re-runs it with the recorded session
 
-## Agent Backend: Database + Seeding (Story 002-010, 2026-04-14)
+## Agent Backend: Database + Seeding (Story 002-010, 2026-04-14; setup updated for SQLite 2026-07-09)
 
-**Setup:** `cd agent-backend && docker compose up -d && npm run dev`
+**Setup:** `cd agent-backend && npm run dev` (in-process SQLite; no service to start).
+DB queries below assume the default DB path, repo-root `data/db/kuhn.sqlite`.
 
-- [ ] Server starts and prints "Schema applied" and "Applied db/seed.sql (agents, tools, assignments)"
+- [ ] Server starts and prints "[db] Schema applied." and "[seed] Applied default tenant, agents, tools, and assignments."
 - [ ] `curl http://localhost:3002/health` returns `{ "status": "ok", "db": { "ok": true, ... } }`
-- [ ] Verify agents in DB: `docker compose exec postgres psql -U kuhn -c "SELECT slug, name FROM agents ORDER BY slug;"` shows 6 rows (advisor, analyst, pm, ra, reviewer, writer)
-- [ ] Verify tools in DB: `docker compose exec postgres psql -U kuhn -c "SELECT slug, name FROM tools ORDER BY slug;"` shows 10 rows
-- [ ] Verify assignments: `docker compose exec postgres psql -U kuhn -c "SELECT count(*) FROM agent_tools;"` returns 26
+- [ ] Verify agents in DB: `sqlite3 ../data/db/kuhn.sqlite "SELECT slug, name FROM agents ORDER BY slug;"` shows 6 rows (advisor, analyst, pm, ra, reviewer, writer)
+- [ ] Verify tools in DB: `sqlite3 ../data/db/kuhn.sqlite "SELECT slug, name FROM tools ORDER BY slug;"` shows 12 rows
+- [ ] Verify assignments: `sqlite3 ../data/db/kuhn.sqlite "SELECT count(*) FROM agent_tools;"` returns 28
 - [ ] Idempotency: restart server (`npm run dev` again) — no errors, no duplicate rows
 - [ ] Standalone seed: `npm run db:seed` completes without errors
-- [ ] Graceful degradation: stop Postgres (`docker compose down`), start server — logs error but still listens on port 3002
+- [ ] Graceful degradation: point the DB at an unwritable path (`KUHN_SQLITE_PATH=/nonexistent/x.sqlite npm run dev`) — logs a DB init error but still listens on port 3002
 
-## Agent Backend: Scaffold (Story 002-009, 2026-04-13)
+## Agent Backend: Scaffold (Story 002-009, 2026-04-13; setup updated for SQLite 2026-07-09)
 
-**Setup:** `cd agent-backend && docker compose up -d && npm run dev`
+**Setup:** `cd agent-backend && npm run dev` (in-process SQLite; no service to start).
 
 - [ ] Health check: `GET http://localhost:3002/health` returns JSON with DB status and uptime
 - [ ] Yjs signaling: `ws://localhost:3002/yjs-signaling` accepts connections (historical — its

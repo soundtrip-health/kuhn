@@ -1,14 +1,14 @@
 # Kuhn Agent Backend
 
-Node.js backend for Kuhn's AI agents. Hosts the agent runtime, Postgres-backed
-prompt/conversation storage, and the Yjs signaling + WebSocket servers used for
-real-time collaboration.
+Node.js backend for Kuhn's AI agents. Hosts the agent runtime, in-process
+SQLite prompt/conversation storage, and the Yjs signaling + WebSocket servers
+used for real-time collaboration.
 
 ## Current State
 
 - Express server with health endpoint (`/health`)
-- Postgres (pgvector) via docker-compose; schema auto-created on startup
-- Agent prompts and tool definitions seeded from `src/db/seed.sql`
+- In-process SQLite (better-sqlite3); schema applied and agents/tools seeded on startup
+- Agent prompts seeded from `src/db/prompts/*.md`, plus tool/assignment/tenant data from `src/db/seed-data.js`
 - Conversation logging tables
 - y-webrtc signaling (`/yjs-signaling`) and y-websocket (`/yjs-websocket/:doc`) servers
 - **Agent runtime on the Claude Agent SDK** (story 011): `runAgentTask(role, projectId,
@@ -63,9 +63,9 @@ AgentEvent types: `text_delta` (token-level streaming), `text` (full turn),
 usage), `error`. Events carry `agent: <role-slug>`; sub-agent progress is forwarded
 into the parent stream.
 
-Auth: set `ANTHROPIC_API_KEY` (or rely on Claude Code login credentials on a dev machine).
+Auth: set `ANTHROPIC_API_KEY` in `.env` (or rely on Claude Code login credentials on a dev machine).
 
-Smoke test (needs Postgres + credentials): `npm run smoke`
+Smoke test (needs credentials, uses real model quota): `npm run smoke`
 
 ## Files API (story 018)
 
@@ -106,8 +106,8 @@ inside the repo, is fine; `/tmp` is not).
 ## Quick Start
 
 ```bash
-# Start Postgres (first time or after reboot)
-docker compose up -d
+# Configure credentials (first time): copy the template and set ANTHROPIC_API_KEY
+cp .env.example .env
 
 # Install deps (first time)
 npm install
@@ -116,7 +116,9 @@ npm install
 npm run dev
 ```
 
-Health check: http://localhost:3002/health
+The database is in-process SQLite — no service to start. On startup the backend
+creates the DB file under the data dir, applies the schema, and seeds
+agents/tools/assignments. Health check: http://localhost:3002/health
 
 ## Commands
 
@@ -124,9 +126,8 @@ Health check: http://localhost:3002/health
 |---------|------|
 | `npm run dev` | Start dev server with watch mode (port 3002) |
 | `npm start` | Start server |
-| `npm run db:seed` | Re-seed agent prompts and tools from `src/db/seed.sql` |
+| `npm run db:seed` | Re-seed agent prompts (`src/db/prompts/*.md`) and tool/assignment data (`src/db/seed-data.js`) |
 | `npm test` | Run tests |
-| `docker compose up -d` / `down` | Start/stop Postgres |
 
 ## Configuration
 
@@ -134,17 +135,20 @@ Environment variables (see `src/config.js`; `.env` supported):
 
 | Var | Default |
 |-----|---------|
+| `ANTHROPIC_API_KEY` | — (required unless using Claude Code login credentials) |
 | `PORT` | `3002` |
-| `PGHOST` / `PGPORT` | `localhost` / `5432` |
-| `PGDATABASE` / `PGUSER` / `PGPASSWORD` | `kuhn` / `kuhn` / `kuhn_dev` |
 | `CORS_ORIGIN` | `http://localhost:5173,http://localhost:5174` |
-| `PROJECTS_ROOT` | `agent-backend/projects` |
-| `AGENT_TOKEN_BUDGET` | `500000` (per task incl. sub-agents, weighted by model cost relative to the root agent's tier) |
+| `KUHN_DATA_DIR` | repo-root `./data` (holds `db/kuhn.sqlite` + `files/<projectId>/`) |
+| `KUHN_SQLITE_PATH` | `<KUHN_DATA_DIR>/db/kuhn.sqlite` (override the DB file alone) |
+| `PROJECTS_ROOT` | `<KUHN_DATA_DIR>/files` (override the project-files root alone) |
+| `AGENT_TOKEN_BUDGET` | `2500000` (per task incl. sub-agents, weighted by model cost relative to the root agent's tier) |
+| `AGENT_TOKEN_BUDGET_GRACE` | `1.1` (in-flight task may run to `grace×` the budget before interruption) |
 | `AGENT_MODEL_WEIGHTS` | `haiku:1,sonnet:3,opus:5,default:5` (approximate price ratios for budget weighting) |
 | `AGENT_QUESTION_TIMEOUT_MS` | `900000` (15 min for an `ask_user` reply, then the agent proceeds with defaults) |
 | `AGENT_MAX_DISPATCH_DEPTH` | `2` |
 | `AGENT_MAX_TURNS` | `50` |
 | `AGENT_MODEL` | SDK default (global fallback; `agents.model` per role wins, `AGENT_MODEL_<SLUG>` overrides at seed time) |
+| `AGENT_RETRY_MAX_ATTEMPTS` / `AGENT_RETRY_BASE_MS` / `AGENT_RETRY_MAX_MS` | `5` / `1500` / `30000` (transient model-provider error backoff, story 029) |
 | `STORAGE_MAX_FILE_BYTES` | `20971520` (20 MB per file) |
 | `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `ghcr.io/typst/typst:latest` / `pandoc/core:latest` |
 | `SANDBOX_TIMEOUT_MS` / `SANDBOX_CPUS` / `SANDBOX_MEMORY` | `60000` / `1` / `512m` |
