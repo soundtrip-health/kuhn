@@ -38,47 +38,34 @@ beforeEach(() => {
 });
 
 describe('runSeedPipeline', () => {
-  it('runs interview → research → skeleton and writes pm/status.md', async () => {
-    const runTask = makeRunTask({
-      pm: [{ type: 'text', agent: 'pm', content: 'Configured.' }, doneEvent('pm')],
-    });
+  it('runs research → skeleton and writes pm/status.md', async () => {
+    const runTask = makeRunTask();
     const events = await collect(runSeedPipeline(1, { runTask }));
 
     expect(stages(events)).toEqual([
-      'interview:start', 'interview:done',
       'research:start', 'research:done',
       'skeleton:start', 'skeleton:done',
       'seeding:done',
     ]);
 
-    // All four agents dispatched, with self-contained config-derived inputs
     const calls = runTask.mock.calls.map(([task]) => task);
-    expect(calls.map((t) => t.role)).toEqual(['pm', 'ra', 'advisor', 'writer']);
-    for (const task of calls.slice(1)) {
+    expect(calls.map((t) => t.role)).toEqual(['ra', 'advisor', 'writer']);
+    for (const task of calls) {
       expect(task.input).toContain(CONFIG.research_question);
       expect(task.projectId).toBe(1);
     }
-    expect(calls[0].input).toMatch(/do not dispatch/i);
-    // Stage jobs are tagged so transcript restore can exclude them (story 020)
-    expect(calls.map((t) => t.context?.seedStage)).toEqual(['interview', 'research', 'research', 'skeleton']);
+    expect(calls.map((t) => t.context?.seedStage)).toEqual(['research', 'research', 'skeleton']);
 
-    // Agent events forwarded between the stage markers
-    expect(events.find((e) => e.type === 'text')).toMatchObject({ agent: 'pm', content: 'Configured.' });
-
-    // Deterministic status file with per-stage outcomes
-    expect(writeProjectFile).toHaveBeenCalledWith(1, 'pm/status.md', expect.stringContaining('interview: ok'));
+    expect(writeProjectFile).toHaveBeenCalledWith(1, 'pm/status.md', expect.stringContaining('skeleton: ok'));
     expect(events.find((e) => e.type === 'file_change')).toMatchObject({ path: 'pm/status.md' });
   });
 
-  it('aborts after the interview when no project configuration was saved', async () => {
+  it('aborts with a clear error when the project is not configured', async () => {
     getProject.mockResolvedValue({ id: 1, config: {} });
     const runTask = makeRunTask();
     const events = await collect(runSeedPipeline(1, { runTask }));
-
-    expect(stages(events)).toEqual(['interview:start', 'interview:error', 'seeding:error']);
-    expect(runTask).toHaveBeenCalledTimes(1);
-    // Status file still records the failure
-    expect(writeProjectFile).toHaveBeenCalledWith(1, 'pm/status.md', expect.stringContaining('FAILED'));
+    expect(stages(events)).toEqual(['seeding:error']);
+    expect(runTask).not.toHaveBeenCalled();
   });
 
   it('treats a failed research branch as non-fatal and records it', async () => {
@@ -107,21 +94,24 @@ describe('runSeedPipeline', () => {
   });
 
   it('stops in-flight stage tasks when the consumer stops early', async () => {
-    let pmCleaned = false;
-    const runTask = vi.fn(() => (async function* () {
-      try {
-        yield { type: 'text', agent: 'pm', content: 'one' };
-        yield { type: 'text', agent: 'pm', content: 'two' };
-        yield doneEvent('pm');
-      } finally {
-        pmCleaned = true;
-      }
-    })());
+    let writerCleaned = false;
+    const runTask = vi.fn(({ role }) => {
+      if (role !== 'writer') return (async function* () { yield doneEvent(role); })();
+      return (async function* () {
+        try {
+          yield { type: 'text', agent: 'writer', content: 'one' };
+          yield { type: 'text', agent: 'writer', content: 'two' };
+          yield doneEvent('writer');
+        } finally {
+          writerCleaned = true;
+        }
+      })();
+    });
 
     for await (const event of runSeedPipeline(1, { runTask })) {
       if (event.type === 'text') break; // browser disconnected
     }
-    expect(pmCleaned).toBe(true);
+    expect(writerCleaned).toBe(true);
   });
 
   it('stops parallel research tasks when the consumer stops early', async () => {
@@ -135,8 +125,7 @@ describe('runSeedPipeline', () => {
         cleaned[role] = true;
       }
     })();
-    const runTask = vi.fn(({ role }) =>
-      role === 'pm' ? (async function* () { yield doneEvent('pm'); })() : research(role));
+    const runTask = vi.fn(({ role }) => research(role));
 
     for await (const event of runSeedPipeline(1, { runTask })) {
       if (event.type === 'text') break; // first research event, then disconnect
