@@ -256,6 +256,133 @@ export async function uploadFiles(
   return { uploaded: written, failed };
 }
 
+// ---- Org knowledge library (story 006-004; backend from 006-001/002) ----
+
+export interface OrgDocument {
+  id: number;
+  org_id: number;
+  filename: string;
+  title: string | null;
+  mime: string | null;
+  size_bytes: number;
+  /** Ingestion lifecycle (story 006-002). */
+  status: 'pending' | 'ingesting' | 'ready' | 'failed';
+  /** Human-readable failure reason when status is 'failed'. */
+  status_detail: string | null;
+  source: 'upload' | 'project-promotion' | 'guidance-import';
+  source_project_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The org's library documents, newest first. */
+export async function listOrgLibrary(orgId: number): Promise<OrgDocument[]> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library`));
+  return ((await res.json()) as { documents: OrgDocument[] }).documents;
+}
+
+/** One library document's current metadata (poll fallback for ingest status). */
+export async function getOrgDocument(orgId: number, docId: number): Promise<OrgDocument> {
+  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`));
+  return ((await res.json()) as { document: OrgDocument }).document;
+}
+
+/**
+ * Upload files into the org library (multipart, up to 20). Same oversize
+ * pre-check pattern as project uploadFiles: too-big files are reported in
+ * `failed` and excluded so the rest still land.
+ */
+export async function uploadOrgDocuments(
+  orgId: number,
+  files: File[],
+): Promise<{ uploaded: OrgDocument[]; failed: { name: string; error: string }[] }> {
+  const failed: { name: string; error: string }[] = [];
+  const sendable: File[] = [];
+  const limitMb = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+  for (const file of files) {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      failed.push({ name: file.name, error: `File exceeds the ${limitMb} MB limit` });
+    } else {
+      sendable.push(file);
+    }
+  }
+  if (sendable.length === 0) return { uploaded: [], failed };
+
+  const form = new FormData();
+  for (const file of sendable) form.append('files', file, file.name);
+  const res = await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const error = body.error ?? `${res.status} ${res.statusText}`;
+    for (const file of sendable) failed.push({ name: file.name, error });
+    return { uploaded: [], failed };
+  }
+  const { documents } = (await res.json()) as { documents: OrgDocument[] };
+  return { uploaded: documents, failed };
+}
+
+/** Remove a library document (record and bytes). */
+export async function deleteOrgDocument(orgId: number, docId: number): Promise<void> {
+  await expectOk(
+    await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`, { method: 'DELETE' }),
+  );
+}
+
+/**
+ * Copy a project file into the owning org's library (story 006-001 promote).
+ * The org is derived server-side from the project.
+ */
+export async function promoteFileToLibrary(
+  projectId: number,
+  path: string,
+  title?: string,
+): Promise<{ document: OrgDocument; deduped: boolean }> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, ...(title ? { title } : {}) }),
+    }),
+  );
+  return (await res.json()) as { document: OrgDocument; deduped: boolean };
+}
+
+/** Ingestion lifecycle event on the org feed (story 006-002). */
+export interface OrgDocStatusEvent {
+  type: 'doc_status';
+  docId: number;
+  filename: string;
+  status: OrgDocument['status'];
+  statusDetail?: string;
+}
+
+export interface OrgFeedHandlers {
+  onEvent: (event: OrgDocStatusEvent) => void;
+  onOpen?: () => void;
+  onError?: () => void;
+}
+
+/**
+ * Subscribe to the org event feed (`doc_status` ingestion transitions) via
+ * EventSource, which reconnects automatically. Returns an unsubscribe function.
+ */
+export function subscribeOrgEvents(orgId: number, handlers: OrgFeedHandlers): () => void {
+  const source = new EventSource(`${BACKEND_URL}/api/orgs/${orgId}/events`);
+  source.onopen = () => handlers.onOpen?.();
+  source.onerror = () => handlers.onError?.();
+  source.onmessage = (msg) => {
+    try {
+      handlers.onEvent(JSON.parse(msg.data) as OrgDocStatusEvent);
+    } catch {
+      // Malformed frame — skip; the stream itself is still healthy.
+    }
+  };
+  return () => source.close();
+}
+
 // ---- File activity & project feed (stories 005-001/002/003) ----
 
 /** One row of the persisted per-project file event log. */

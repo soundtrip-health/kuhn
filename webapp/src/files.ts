@@ -12,12 +12,15 @@ import {
   getTree,
   markFileSeen,
   moveFile,
+  promoteFileToLibrary,
   uploadFiles,
   type FileActivityEvent,
   type TreeNode,
 } from './api';
-import { icon, iconEl } from './icons';
+import { icon, iconEl, type IconName } from './icons';
+import { watchDocIngestion } from './org-library';
 import { toast } from './toast';
+import * as workspace from './workspace';
 
 /** Handlers wired by main.ts (it owns the editor + preview pane). */
 export interface FilesHandlers {
@@ -52,6 +55,10 @@ let listenersWired = false;
 let activePath = '';
 let lastTree: TreeNode[] = [];
 const statusMap = new Map<string, FileStatus>();
+/** Org-library ingestion badges for promoted files (story 006-004). Separate
+ * from statusMap: it isn't unseen state, so tree re-hydration and mark-seen
+ * must not clear it — only the ingestion outcome does. */
+const ingestMap = new Map<string, 'ingesting' | 'done'>();
 /** Recorded origin agent per path (from the activity log) — outlives badges,
  * so a seen file keeps its agent tint instead of the extension guess. */
 const originMap = new Map<string, string>();
@@ -78,6 +85,7 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   // maps on the first refreshTree (story 005-003).
   statusMap.clear();
   originMap.clear();
+  ingestMap.clear();
   seenSentAt.clear();
   updateUnseenPill();
   activePath = '';
@@ -290,7 +298,9 @@ export function markSeen(path: string): void {
     const entry = document
       .getElementById('file-tree')
       ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
-    entry?.querySelectorAll('.file-badge, .file-spinner, .file-done').forEach((el) => el.remove());
+    // Spinner/check belong to the org-library ingest flow (ingestMap), which
+    // opening the file doesn't resolve — remove only the unseen badge.
+    entry?.querySelectorAll('.file-badge').forEach((el) => el.remove());
     updateUnseenPill();
   }
   const last = seenSentAt.get(path) ?? 0;
@@ -498,6 +508,73 @@ async function renameEntry(node: TreeNode, newName: string): Promise<void> {
   await refreshTree(projectId);
 }
 
+// ---- Promote to org library (story 006-004) ----------------------------------
+
+/**
+ * Patch a row's ingest badge in place (set, advance, or clear) without a tree
+ * refetch; a later re-render reads the same state from ingestMap.
+ */
+function setIngestBadge(path: string, state: 'ingesting' | 'done' | null): void {
+  if (state) ingestMap.set(path, state);
+  else ingestMap.delete(path);
+  const entry = document
+    .getElementById('file-tree')
+    ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+  if (!entry) return;
+  entry.querySelectorAll('.file-spinner, .file-done').forEach((el) => el.remove());
+  const name = entry.querySelector('.file-name')?.textContent ?? path;
+  const st = state ? { status: state } as FileStatus : statusMap.get(path);
+  entry.setAttribute('aria-label', st ? `${name}, ${STATUS_TEXT[st.status]}` : name);
+  if (!state) return;
+  const badge = statusBadge({ status: state });
+  if (badge) {
+    badge.setAttribute('aria-hidden', 'true');
+    entry.append(badge);
+  }
+}
+
+/** Copy a file into the org library (confirmation names the org), then track
+ * its ingestion on the row: spinner while processing, check when searchable. */
+async function promoteEntry(node: TreeNode): Promise<void> {
+  const org = workspace.activeOrg();
+  if (!org) {
+    toast('No active organization to add to');
+    return;
+  }
+  // Documented exception (story 005-004): native confirm(), as with delete.
+  const ok = window.confirm(
+    `Add "${node.name}" to the ${org.name} library?\n\nAgents in every ${org.name} project will be able to search and cite it.`,
+  );
+  if (!ok) return;
+
+  let document_: Awaited<ReturnType<typeof promoteFileToLibrary>>;
+  try {
+    document_ = await promoteFileToLibrary(projectId, node.path);
+  } catch (err) {
+    toast(`Add to library failed: ${(err as Error).message}`);
+    return;
+  }
+  const { document: doc, deduped } = document_;
+  if (doc.status === 'ready') {
+    toast(deduped ? `Already in the ${org.name} library` : `Added to the ${org.name} library`);
+    return;
+  }
+  toast(`Added to the ${org.name} library — processing…`);
+  setIngestBadge(node.path, 'ingesting');
+  watchDocIngestion(org.id, doc.id, (status, detail) => {
+    if (status === 'ready') {
+      setIngestBadge(node.path, 'done');
+      window.setTimeout(() => {
+        if (ingestMap.get(node.path) === 'done') setIngestBadge(node.path, null);
+      }, 6000);
+      toast(`${node.name} is now searchable in the ${org.name} library`);
+    } else {
+      setIngestBadge(node.path, null);
+      toast(`Library processing failed for ${node.name}: ${detail || 'unknown error'}`);
+    }
+  });
+}
+
 // ---- Rendering --------------------------------------------------------------
 
 function emptyNotice(text: string): HTMLElement {
@@ -590,7 +667,9 @@ function renderFile(node: TreeNode): HTMLElement {
   button.setAttribute('aria-selected', String(node.path === activePath));
   if (node.path === activePath) button.classList.add('active');
 
-  const st = statusMap.get(node.path);
+  // A live org-library ingest badge outranks unseen state (story 006-004).
+  const ingest = ingestMap.get(node.path);
+  const st: FileStatus | undefined = ingest ? { status: ingest } : statusMap.get(node.path);
   // Recorded origin (badge, then activity history) beats the extension guess.
   const originAgent = st?.originAgent ?? originMap.get(node.path);
   const origin = originAgent ? ORIGIN_CLASS[originAgent] ?? '' : originClass(node.name);
@@ -633,13 +712,14 @@ function fileActions(node: TreeNode): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'file-actions';
   wrap.append(
+    actionButton('book', 'Add to org library', () => void promoteEntry(node)),
     actionButton('pencil', 'Rename', () => beginRename(node)),
     actionButton('trash', 'Delete', () => void deleteEntry(node)),
   );
   return wrap;
 }
 
-function actionButton(name: 'pencil' | 'trash', title: string, onClick: () => void): HTMLButtonElement {
+function actionButton(name: IconName, title: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'file-action';

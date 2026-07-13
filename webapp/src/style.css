@@ -199,6 +199,55 @@ body {
 .pb-input { flex: 1; }
 .pb-input:focus, .pb-select:focus { outline: none; border-color: var(--accent-line); }
 
+/* ---- Org library panel & creation modal (story 006-004) ------------ */
+.breadcrumb-menu-item.bm-library { border-top: 1px solid var(--line-2); margin-top: 2px; }
+.breadcrumb-menu-item.bm-library .bm-check { color: var(--ink-3); }
+.bm-hint {
+  font: 500 10px/1 var(--font-ui); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 3px 7px; border-radius: var(--r-pill); margin-left: auto;
+}
+
+.ol-modal { max-height: 76vh; }
+.ol-blurb { font: var(--ui-body); color: var(--ink-2); margin: -6px 0 0; line-height: 1.5; }
+.ol-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+.ol-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 10px 12px; background: var(--chrome);
+}
+.ol-doc-icon { color: var(--ink-3); display: inline-flex; margin-top: 2px; }
+.ol-doc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ol-doc-name { font: var(--ui-title); color: var(--ink); overflow-wrap: anywhere; }
+.ol-doc-meta { font: var(--ui-small); color: var(--ink-3); overflow-wrap: anywhere; }
+.ol-status { display: inline-flex; align-items: center; gap: 6px; font: var(--ui-small); color: var(--ink-2); }
+.ol-status.is-ready { color: var(--good); }
+.ol-status.is-ready svg { color: var(--good); }
+.ol-status.is-failed { color: var(--warn); }
+.ol-status .file-spinner { width: 11px; height: 11px; border-width: 1.5px; }
+.ol-delete { opacity: 0; }
+.ol-row:hover .ol-delete, .ol-delete:focus-visible { opacity: 1; }
+.ol-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  text-align: center; padding: 26px 20px;
+  border: 1px dashed var(--line); border-radius: var(--r);
+  color: var(--ink-3);
+}
+.ol-empty .dz-title { font-size: 13.5px; }
+.ol-empty .dz-sub { max-width: 42ch; }
+.ol-drop { min-height: 0; padding: 14px; }
+.ol-drop.drag-over { border-color: var(--accent-line); background: var(--accent-soft); }
+
+.om-modal { width: min(520px, 100%); }
+.om-body { display: flex; flex-direction: column; gap: 14px; }
+.om-form { display: flex; flex-direction: column; gap: 10px; }
+.om-label { font: var(--ui-small); color: var(--ink-2); }
+.om-slug { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); min-height: 15px; }
+.om-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.om-skip { text-align: left; white-space: normal; line-height: 1.35; }
+.om-seed-list:empty { display: none; }
+.om-seed-fail { font: var(--ui-small); color: var(--warn); padding: 2px 2px; }
+
 /* Live status in the top bar (seeding chip / saved check) */
 .topbar-activity {
   display: flex; align-items: center; gap: 8px;
