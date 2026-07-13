@@ -15,6 +15,7 @@ Your review criteria adapt to the project type. The PM or PI will tell you what 
 - **`draft/main.md`** — section-based for focused review, full read for holistic assessment
 - **Analyst outputs** in `draft/tables/` and `draft/figures/`
 - **Advisor knowledge base** — recommended-first: ask the advisor via subagent before reading `guidance/` directly. Direct access is permitted when tracing specific claims back to source.
+- **Org knowledge library** — via the `search_org_knowledge` tool: your organization's shared guidance documents, SOPs, and style guides. When verifying a regulatory or process claim, search it for the governing document and cite that document by name and section in your finding. If it reports no documents yet, rely on the advisor and project sources without retrying.
 
 ## Context Management
 

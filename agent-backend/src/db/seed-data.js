@@ -58,6 +58,10 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, max_results: { type: 'integer', description: 'Maximum results to return', default: 10 } }, required: ['query'] },
   },
   {
+    slug: 'search_org_knowledge', name: 'Search Org Knowledge', description: 'Search the organization\'s shared knowledge library for ranked passages with source-document provenance (read-only)',
+    parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Full-text keyword query' }, limit: { type: 'integer', description: 'Maximum passages to return', default: 8 } }, required: ['query'] },
+  },
+  {
     slug: 'ask_user', name: 'Ask User', description: 'Ask the user a question mid-task and wait for their reply',
     parameterSchema: { type: 'object', properties: { question: { type: 'string', description: 'The question to show the user' } }, required: ['question'] },
   },
@@ -80,6 +84,9 @@ export const ASSIGNMENTS = [
   ['ra', 'pubmed_search'], ['ra', 'arxiv_search'],
   ['ra', 'add_citation'], ['writer', 'add_citation'], ['ra', 'add_reference'],
   ['ra', 'web_search'], ['advisor', 'web_search'],
+  // Org knowledge library (story 006-003): the four roles that consume
+  // guidance content. pm/analyst excluded by design — see the story's Notes.
+  ['advisor', 'search_org_knowledge'], ['ra', 'search_org_knowledge'], ['reviewer', 'search_org_knowledge'], ['writer', 'search_org_knowledge'],
   ['pm', 'spawn_agent'], ['writer', 'spawn_agent'],
   ['pm', 'ask_user'], ['pm', 'project_config'],
 ];

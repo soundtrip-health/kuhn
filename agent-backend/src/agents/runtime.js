@@ -9,7 +9,8 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
-import { updateProjectConfig } from '../db/projects.js';
+import { getProject, updateProjectConfig } from '../db/projects.js';
+import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import {
   resolveProjectDir,
   readProjectFile,
@@ -696,6 +697,52 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
       async ({ query, max_results }) => searchToolResult(() => arxivSearch(query, max_results)),
+    ));
+  }
+
+  if (agent.tools.includes('search_org_knowledge')) {
+    // The one sanctioned crossing of the project-root boundary (story 006-003):
+    // read-only passages from the org's knowledge library, with provenance. The
+    // org is derived server-side from the task's project — agents never pick
+    // their tenant, so there is deliberately no org parameter.
+    tools.push(tool(
+      'search_org_knowledge',
+      'Search your organization\'s shared knowledge library (style guides, SOPs, regulatory guidance, templates, prior work) for relevant passages. Returns ranked excerpts, each with the source document and section — cite the source document by name when you rely on one. Read-only and org-wide; separate from this project\'s files.',
+      {
+        query: z.string().describe('Full-text keyword query (plain domain terms work best)'),
+        limit: z.number().int().min(1).max(25).default(8).describe('Maximum passages to return'),
+      },
+      async ({ query, limit }) => {
+        try {
+          const project = await getProject(projectId);
+          const orgId = project?.org_id;
+          if (orgId == null || !hasReadyOrgDocuments(orgId)) {
+            return {
+              content: [{
+                type: 'text',
+                text: 'The organization has no library documents yet. Proceed without org guidance — do not retry this search.',
+              }],
+            };
+          }
+          const passages = searchOrgKnowledge(orgId, query, limit);
+          if (passages.length === 0) {
+            return {
+              content: [{
+                type: 'text',
+                text: `No org library passages matched "${query}". Try once more with different keywords, or proceed without org guidance.`,
+              }],
+            };
+          }
+          const text = passages.map((p, i) => {
+            const doc = p.title || p.filename;
+            const section = p.headingPath ? ` — section: ${p.headingPath}` : '';
+            return `${i + 1}. Source: "${doc}" (${p.filename})${section}\n${p.snippet}`;
+          }).join('\n\n');
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `search_org_knowledge failed: ${err.message}` }], isError: true };
+        }
+      },
     ));
   }
 

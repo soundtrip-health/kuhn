@@ -170,4 +170,16 @@ describe('ingestOrgDocument lifecycle', () => {
     expect(() => searchOrgKnowledge(1, 'AND (NEAR "unclosed')).not.toThrow();
     expect(searchOrgKnowledge(1, '   ')).toEqual([]);
   });
+
+  it('falls back to OR matching when no chunk contains every term (story 006-003)', async () => {
+    const doc = await plantDoc(1, 'margins.txt', 'the capybara margin must be prespecified', 'sha-or');
+    await ingestOrgDocument(1, doc.id);
+    // "levitation" appears nowhere: all-terms matching returns nothing, the
+    // OR retry still surfaces the capybara passage; ranking favors more hits.
+    const hits = searchOrgKnowledge(1, 'capybara margin levitation');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]).toMatchObject({ docId: doc.id, filename: 'margins.txt' });
+    // A single absent term alone never matches anything even via OR.
+    expect(searchOrgKnowledge(1, 'levitation')).toEqual([]);
+  });
 });

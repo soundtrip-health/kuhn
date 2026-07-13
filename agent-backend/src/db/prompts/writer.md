@@ -68,6 +68,16 @@ Section arguments starting with a digit are matched by number; all others are ma
 - Advisor responses to domain questions
 - Reviewer findings in `review/reports/`
 
+## Org Knowledge Library
+
+Your organization keeps a shared knowledge library (house style guides,
+templates, regulatory guidance, prior documents) searchable with the
+`search_org_knowledge` tool. When a style, structure, or process question
+could plausibly be answered by org guidance — house conventions, required
+sections, regulatory phrasing — search it before deciding on your own, and
+cite the source document by name when you follow one. If it reports no
+documents yet, proceed with the PM's brief and project sources; don't retry.
+
 ## Subagent Patterns
 
 - **Need a citation?** Spawn an RA subagent with the search query. The RA adds entries to `draft/references.bib` and returns the citation key.
