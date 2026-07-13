@@ -55,14 +55,25 @@ vi.mock('../db/jobs.js', () => ({
 }));
 vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
+  getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
+}));
+// Like file-activity.js above: the real module imports db.js, which needs a
+// real config.db.path at import time (story 006-003).
+vi.mock('../db/org-documents.js', () => ({
+  searchOrgKnowledge: vi.fn(() => []),
+  hasReadyOrgDocuments: vi.fn(() => true),
 }));
 vi.mock('../citations.js', () => ({
   DEFAULT_BIB_PATH: 'draft/references.bib',
   upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
   addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
 }));
+// Keeps db.js (which needs a real config.db.path at import) out of this
+// mocked-config suite; the SQL is covered in db/file-activity.test.js.
+vi.mock('../db/file-activity.js', () => ({ migrateSeenPaths: vi.fn(), recordFileEvent: vi.fn() }));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { logMessage } from '../db/conversation.js';
@@ -622,5 +633,106 @@ describe('ask_user reconnect (story 027)', () => {
     ];
     await collect({ role: 'pm', projectId: 1, input: 'go' }); // not detachable
     expect(getRun(42)).toBeUndefined();
+  });
+});
+
+// --- Story 006-003: search_org_knowledge agent tool ---------------------------
+
+describe('search_org_knowledge (story 006-003)', () => {
+  const ADVISOR = {
+    slug: 'advisor',
+    name: 'Domain Expert (Advisor)',
+    system_prompt: 'You are the advisor.',
+    tools: ['file_read', 'search_org_knowledge'],
+  };
+  const success = [
+    { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+
+  async function orgSearchTool(role = 'advisor', projectId = 5) {
+    sdkState.messages = success;
+    await collect({ role, projectId, input: 'go' });
+    const { tools } = createSdkMcpServer.mock.calls[0][0];
+    return tools.find((t) => t.name === 'search_org_knowledge');
+  }
+
+  it('is exposed only to roles with the agent_tools assignment', async () => {
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    sdkState.messages = success;
+    await collect({ role: 'advisor', projectId: 1, input: 'go' });
+    expect(sdkQuery.mock.calls[0][0].options.allowedTools).toContain('mcp__kuhn__search_org_knowledge');
+
+    // An agent without the assignment (the default RA fixture) never sees it
+    getAgentWithTools.mockResolvedValue(RA_AGENT);
+    sdkState.messages = success;
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(sdkQuery.mock.calls[1][0].options.allowedTools).not.toContain('mcp__kuhn__search_org_knowledge');
+    const { tools } = createSdkMcpServer.mock.calls[1][0];
+    expect(tools.find((t) => t.name === 'search_org_knowledge')).toBeUndefined();
+  });
+
+  it("resolves the org from the task project's org_id and returns passages with provenance", async () => {
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    searchOrgKnowledge.mockReturnValueOnce([
+      {
+        docId: 9, title: 'rwe-protocol/framework', filename: 'framework.pdf',
+        headingPath: 'Considerations > Data Quality', seq: 3,
+        snippet: '…>>real-world data<< must be fit for use…', rank: -4.2,
+      },
+      {
+        docId: 12, title: null, filename: 'heliotrope.txt',
+        headingPath: null, seq: 0, snippet: '…>>heliotrope<< pigment…', rank: -3.1,
+      },
+    ]);
+
+    const searchTool = await orgSearchTool('advisor', 5);
+    const result = await searchTool.handler({ query: 'real-world data quality', limit: 8 });
+
+    // Org derived server-side from project 5 (mocked getProject → org_id 3);
+    // the tool schema has no org parameter for the agent to set.
+    expect(searchOrgKnowledge).toHaveBeenCalledWith(3, 'real-world data quality', 8);
+    expect(Object.keys(searchTool.schema)).toEqual(['query', 'limit']);
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    // Provenance line: document (title, falling back to filename) + section
+    expect(text).toContain('Source: "rwe-protocol/framework" (framework.pdf) — section: Considerations > Data Quality');
+    expect(text).toContain('real-world data');
+    expect(text).toContain('Source: "heliotrope.txt" (heliotrope.txt)');
+  });
+
+  it('reports an empty library as a graceful no-retry result, not an error', async () => {
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    hasReadyOrgDocuments.mockReturnValueOnce(false);
+
+    const searchTool = await orgSearchTool();
+    const result = await searchTool.handler({ query: 'style guide', limit: 8 });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/no library documents yet/i);
+    expect(result.content[0].text).toMatch(/do not retry/i);
+    expect(searchOrgKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes zero matches (in a populated library) from an empty library', async () => {
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    searchOrgKnowledge.mockReturnValueOnce([]);
+
+    const searchTool = await orgSearchTool();
+    const result = await searchTool.handler({ query: 'zeugma', limit: 8 });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/No org library passages matched "zeugma"/);
+  });
+
+  it('surfaces backend failures as tool errors', async () => {
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    searchOrgKnowledge.mockImplementationOnce(() => { throw new Error('fts index corrupt'); });
+
+    const searchTool = await orgSearchTool();
+    const result = await searchTool.handler({ query: 'anything', limit: 8 });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/fts index corrupt/);
   });
 });

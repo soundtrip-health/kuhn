@@ -14,6 +14,10 @@ import {
   setActiveDocument,
   updateProjectConfig,
 } from '../db/projects.js';
+import { markSeen, listFileActivity } from '../db/file-activity.js';
+import { subscribeProjectEvents, teeProjectEvents } from '../project-events.js';
+import { StorageError, readProjectFile } from '../storage.js';
+import { storeOrgDocument } from './org-library.js';
 import { streamEvents } from './sse.js';
 
 const router = Router();
@@ -119,7 +123,111 @@ router.put('/api/projects/:id/active-document', async (req, res) => {
 router.post('/api/projects/:id/seed', async (req, res) => {
   const project = await authorizeProject(req, res);
   if (!project) return;
-  await streamEvents(res, runSeedPipeline(project.id));
+  // teeProjectEvents publishes the pipeline's own stage markers / status-file
+  // event to the project feed; agent events inside the pipeline are already
+  // published by their channel tees (the hub dedupes overlap). (story 005-001)
+  await streamEvents(res, teeProjectEvents(project.id, runSeedPipeline(project.id)));
+});
+
+/**
+ * POST /api/projects/:id/files/promote — body { path, title? }. Copy a
+ * project file into the owning org's knowledge library (story 006-001).
+ * Authorization is project membership; the org is derived from the project,
+ * never taken from the client.
+ */
+router.post('/api/projects/:id/files/promote', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const { path, title } = req.body ?? {};
+  if (!path || typeof path !== 'string') {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  let buffer;
+  try {
+    buffer = await readProjectFile(project.id, path);
+  } catch (err) {
+    if (err instanceof StorageError) {
+      res.status(err.code === 'not_found' ? 404 : 400).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+  const { document, deduped } = await storeOrgDocument(project.org_id, buffer, {
+    filename: path.split('/').pop(),
+    title: typeof title === 'string' && title.trim() ? title.trim() : null,
+    source: 'project-promotion',
+    sourceProjectId: project.id,
+    createdBy: req.user.id,
+  });
+  res.status(deduped ? 200 : 201).json({ document, deduped });
+});
+
+/**
+ * POST /api/projects/:id/files/seen — body { path }. Mark a file seen by the
+ * session user; clears its new/changed badge (story 005-002). Idempotent.
+ */
+router.post('/api/projects/:id/files/seen', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const { path } = req.body ?? {};
+  if (!path || typeof path !== 'string') {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  markSeen(req.user.id, project.id, path);
+  res.json({ path, seen: true });
+});
+
+/**
+ * GET /api/projects/:id/files/activity?since=<iso>&limit= — recent file
+ * events, newest first (story 005-002). Hydration/audit companion to the
+ * live feed; the tree endpoint already carries per-node unseen flags.
+ */
+router.get('/api/projects/:id/files/activity', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const events = listFileActivity(project.id, {
+    since: typeof req.query.since === 'string' ? req.query.since : null,
+    limit: req.query.limit,
+  });
+  res.json({ events });
+});
+
+/**
+ * GET /api/projects/:id/events — always-on project event feed (story 005-001).
+ * SSE stream of every top-level agent/job event for the project, regardless of
+ * which request launched the work: file_change, job start, text, question,
+ * notice, done, error, seeding stage markers. Unlike the job-scoped streams,
+ * this stays open until the client disconnects.
+ */
+router.get('/api/projects/:id/events', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+
+  const unsubscribe = subscribeProjectEvents(project.id, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  if (!unsubscribe) {
+    res.status(503).json({ error: 'too many event subscribers for this project' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  res.write(': connected\n\n');
+
+  // Comment-frame heartbeat so idle connections survive proxies.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 /**

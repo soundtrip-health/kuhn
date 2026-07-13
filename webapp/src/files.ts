@@ -1,12 +1,21 @@
-// File panel (story 013 shell, restyled by 025, made functional by story 014):
-// render the project tree, upload materials (drag-drop + picker), preview
-// non-markdown files, and delete/rename entries — all through the story-018
-// storage API. A client-side status map (fed by `file_change` events and
-// upload activity) drives the per-file origin tint and status badge designed in
-// story 025; the badge CSS classes (.file-badge/.file-spinner/.file-done) are
-// already shipped, this module supplies their data.
+// File panel (story 013 shell, restyled by 025, made functional by story 014,
+// made live by story 005-003): render the project tree, upload materials
+// (drag-drop + picker), preview non-markdown files, and delete/rename entries
+// — all through the story-018 storage API. Badge state is server-backed:
+// per-user `unseen` flags on the tree plus the file-activity log hydrate the
+// status map on every refresh (so badges survive reload), live `file_change`
+// events update it between refreshes, and opening a file marks it seen.
 
-import { deleteFile, getTree, moveFile, uploadFiles, type TreeNode } from './api';
+import {
+  deleteFile,
+  getFileActivity,
+  getTree,
+  markFileSeen,
+  moveFile,
+  uploadFiles,
+  type FileActivityEvent,
+  type TreeNode,
+} from './api';
 import { icon, iconEl } from './icons';
 import { toast } from './toast';
 
@@ -43,6 +52,12 @@ let listenersWired = false;
 let activePath = '';
 let lastTree: TreeNode[] = [];
 const statusMap = new Map<string, FileStatus>();
+/** Recorded origin agent per path (from the activity log) — outlives badges,
+ * so a seen file keeps its agent tint instead of the extension guess. */
+const originMap = new Map<string, string>();
+/** Throttle mark-seen POSTs: path → last-sent epoch ms. */
+const seenSentAt = new Map<string, number>();
+let refreshTimer: number | null = null;
 
 const ORIGIN_CLASS: Record<string, string> = {
   pm: 'origin-pm',
@@ -59,12 +74,35 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   projectId = activeProjectId;
   handlers = h;
   // Per-project reset (story 006): drop the previous project's status tints and
-  // active-row highlight when switching projects.
+  // active-row highlight when switching projects. Server state re-hydrates the
+  // maps on the first refreshTree (story 005-003).
   statusMap.clear();
+  originMap.clear();
+  seenSentAt.clear();
+  updateUnseenPill();
   activePath = '';
 
   if (listenersWired) return; // tree/upload listeners bind once for the page
   listenersWired = true;
+
+  const treeRoot = document.getElementById('file-tree')!;
+  treeRoot.setAttribute('role', 'tree');
+  treeRoot.setAttribute('aria-label', 'Project files');
+  treeRoot.addEventListener('keydown', onTreeKeydown);
+  // Roving tabindex (story 005-004): exactly one treeitem is tabbable.
+  treeRoot.addEventListener('focusin', (e) => {
+    const item = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+    if (!item) return;
+    treeRoot.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"]')
+      .forEach((el) => el.setAttribute('tabindex', '-1'));
+    item.setAttribute('tabindex', '0');
+  });
+
+  const refreshBtn = document.getElementById('files-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
+    refreshBtn.addEventListener('click', () => void refreshTree(projectId));
+  }
 
   const tree = document.getElementById('file-tree')!;
   let dragTarget: HTMLElement | null = null;
@@ -154,21 +192,134 @@ function clampWidth(w: number): number {
 /** Mark a file row as the open document and re-highlight without refetching. */
 export function setActiveFile(path: string): void {
   activePath = path;
+  if (path) markSeen(path); // opening a file clears its badge (story 005-003)
   const tree = document.getElementById('file-tree');
   if (!tree) return;
-  tree.querySelectorAll('.file-entry.active').forEach((el) => el.classList.remove('active'));
-  tree.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`)?.classList.add('active');
+  tree.querySelectorAll('.file-entry.active').forEach((el) => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
+  const entry = tree.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+  entry?.classList.add('active');
+  entry?.setAttribute('aria-selected', 'true');
 }
 
 export async function refreshTree(activeProjectId: number): Promise<void> {
   projectId = activeProjectId;
   const container = document.getElementById('file-tree')!;
+  container.classList.add('is-loading');
+  if (!container.hasChildNodes()) container.replaceChildren(emptyNotice('Loading files…'));
   try {
-    lastTree = await getTree(activeProjectId);
+    // Tree carries per-user unseen flags; the activity log supplies each
+    // path's latest kind + origin agent. Together they rebuild the status
+    // map from server truth, so badges survive reload (story 005-003).
+    const [tree, activity] = await Promise.all([
+      getTree(activeProjectId),
+      getFileActivity(activeProjectId).catch(() => [] as FileActivityEvent[]),
+    ]);
+    if (projectId !== activeProjectId) return; // superseded by a project switch
+    lastTree = tree;
+    hydrateStatus(tree, activity);
     container.replaceChildren(lastTree.length > 0 ? renderNodes(lastTree) : emptyState());
+    initRovingTabindex(container);
   } catch (err) {
-    container.replaceChildren(emptyNotice(`Could not load files: ${(err as Error).message}`));
+    const notice = emptyNotice(`Could not load files: ${(err as Error).message}`);
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn-quiet btn-sm';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void refreshTree(activeProjectId));
+    notice.append(document.createElement('br'), retry);
+    container.replaceChildren(notice);
+  } finally {
+    container.classList.remove('is-loading');
+    updateUnseenPill();
   }
+}
+
+/**
+ * Coalesce refreshes driven by live feed events (story 005-003): a burst of
+ * agent writes — or the same change arriving via both the job stream and the
+ * project feed — triggers one refetch, not one per event.
+ */
+export function refreshTreeSoon(activeProjectId: number): void {
+  if (refreshTimer != null) return;
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = null;
+    void refreshTree(activeProjectId);
+  }, 250);
+}
+
+/** Rebuild status/origin maps from server state (tree flags + activity log). */
+function hydrateStatus(tree: TreeNode[], activity: FileActivityEvent[]): void {
+  statusMap.clear();
+  originMap.clear();
+  // Newest-first log: keep each path's latest event only.
+  const latest = new Map<string, FileActivityEvent>();
+  for (const ev of activity) {
+    if (!latest.has(ev.path)) latest.set(ev.path, ev);
+    if (ev.agent_slug && !originMap.has(ev.path)) originMap.set(ev.path, ev.agent_slug);
+  }
+  const walk = (nodes: TreeNode[]): void => {
+    for (const node of nodes) {
+      if (node.type === 'dir') {
+        walk(node.children ?? []);
+      } else if (node.unseen) {
+        const ev = latest.get(node.path);
+        statusMap.set(node.path, {
+          status: !ev
+            ? 'modified' // unseen but the event aged out of the log
+            : ev.agent_slug
+              ? (ev.kind === 'create' ? 'generated' : 'modified')
+              : (ev.kind === 'create' ? 'new' : 'modified'),
+          originAgent: ev?.agent_slug ?? (ev ? 'user' : undefined),
+        });
+      }
+    }
+  };
+  walk(tree);
+}
+
+/**
+ * Mark a file seen: clear its badge locally (in place, no refetch), update
+ * the unseen pill, and persist per-user seen state (throttled — opening the
+ * same file repeatedly sends one POST per few seconds).
+ */
+export function markSeen(path: string): void {
+  if (statusMap.delete(path)) {
+    const entry = document
+      .getElementById('file-tree')
+      ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+    entry?.querySelectorAll('.file-badge, .file-spinner, .file-done').forEach((el) => el.remove());
+    updateUnseenPill();
+  }
+  const last = seenSentAt.get(path) ?? 0;
+  if (Date.now() - last < 3000) return;
+  seenSentAt.set(path, Date.now());
+  void markFileSeen(projectId, path).catch(() => {
+    seenSentAt.delete(path); // let a later open retry
+  });
+}
+
+/** Unseen-count pill on the topbar Files toggle (story 005-003). */
+function updateUnseenPill(): void {
+  const toggle = document.getElementById('toggle-files');
+  if (!toggle) return;
+  let pill = toggle.querySelector<HTMLElement>('.toggle-pill');
+  const count = [...statusMap.values()]
+    .filter((s) => s.status === 'new' || s.status === 'generated' || s.status === 'modified')
+    .length;
+  if (count === 0) {
+    pill?.remove();
+    return;
+  }
+  if (!pill) {
+    pill = document.createElement('span');
+    pill.className = 'toggle-pill';
+    toggle.append(pill);
+  }
+  pill.textContent = String(count);
+  pill.setAttribute('aria-label', `${count} unseen file change${count === 1 ? '' : 's'}`);
 }
 
 /**
@@ -220,22 +371,31 @@ export function revealFile(path: string): void {
 export function recordFileChange(change: FileChange): void {
   if (change.kind === 'delete') {
     statusMap.delete(change.path);
-    return;
+  } else {
+    statusMap.set(change.path, {
+      status: change.agent
+        ? (change.kind === 'create' ? 'generated' : 'modified')
+        : (change.kind === 'create' ? 'new' : 'modified'),
+      originAgent: change.agent,
+    });
+    if (change.agent) originMap.set(change.path, change.agent);
   }
-  statusMap.set(change.path, {
-    status: change.kind === 'create' ? 'generated' : 'modified',
-    originAgent: change.agent,
-  });
+  updateUnseenPill();
 }
 
 function recordUpload(path: string): void {
   statusMap.set(path, { status: 'new', originAgent: 'user' });
+  updateUnseenPill();
 }
 
 function migrateStatus(from: string, to: string): void {
   const st = statusMap.get(from);
   statusMap.delete(from);
   if (st) statusMap.set(to, st);
+  const origin = originMap.get(from);
+  originMap.delete(from);
+  if (origin) originMap.set(to, origin);
+  seenSentAt.delete(from);
 }
 
 // ---- Upload -----------------------------------------------------------------
@@ -266,6 +426,9 @@ async function deleteEntry(node: TreeNode): Promise<void> {
   const message = isOpen
     ? `Delete "${node.name}"? It's the document you're editing — the editor will close.`
     : `Delete "${node.name}"?`;
+  // Documented exception (story 005-004): native confirm() is keyboard- and
+  // screen-reader-accessible by construction; a styled dialog isn't worth its
+  // focus-management surface until one exists elsewhere in the app.
   if (!window.confirm(message)) return;
   if (isOpen) handlers?.dropOpenDoc(node.path); // drop before delete so no save resurrects it
   try {
@@ -364,13 +527,21 @@ function emptyState(): DocumentFragment {
 function renderNodes(nodes: TreeNode[]): HTMLUListElement {
   const ul = document.createElement('ul');
   ul.className = 'file-list';
+  ul.setAttribute('role', 'group');
   for (const node of nodes) {
     const li = document.createElement('li');
+    li.setAttribute('role', 'none');
     if (node.type === 'dir') {
       const details = document.createElement('details');
       details.open = true;
       details.dataset.dir = node.path; // drop target for directory-scoped uploads
       const summary = document.createElement('summary');
+      summary.setAttribute('role', 'treeitem');
+      summary.setAttribute('aria-expanded', 'true');
+      summary.setAttribute('tabindex', '-1');
+      details.addEventListener('toggle', () =>
+        summary.setAttribute('aria-expanded', String(details.open)),
+      );
       const fileCount = (node.children ?? []).filter((c) => c.type === 'file').length;
       summary.innerHTML = icon('chevron-down', { size: 13, stroke: 2 }).replace(
         '<svg',
@@ -384,6 +555,7 @@ function renderNodes(nodes: TreeNode[]): HTMLUListElement {
         const count = document.createElement('span');
         count.className = 'file-count';
         count.textContent = String(fileCount);
+        count.setAttribute('aria-label', `${fileCount} file${fileCount === 1 ? '' : 's'}`);
         summary.append(count);
       }
       details.append(summary, renderNodes(node.children ?? []));
@@ -396,6 +568,15 @@ function renderNodes(nodes: TreeNode[]): HTMLUListElement {
   return ul;
 }
 
+/** Spoken text for a badge state — the treeitem label carries it (005-004). */
+const STATUS_TEXT: Record<FileStatusKind, string> = {
+  new: 'new upload',
+  generated: 'new AI changes',
+  modified: 'modified since last viewed',
+  ingesting: 'processing',
+  done: 'processed',
+};
+
 function renderFile(node: TreeNode): HTMLElement {
   const row = document.createElement('div');
   row.className = 'file-row';
@@ -404,10 +585,15 @@ function renderFile(node: TreeNode): HTMLElement {
   button.type = 'button';
   button.className = 'file-entry';
   button.dataset.path = node.path;
+  button.setAttribute('role', 'treeitem');
+  button.setAttribute('tabindex', '-1');
+  button.setAttribute('aria-selected', String(node.path === activePath));
   if (node.path === activePath) button.classList.add('active');
 
   const st = statusMap.get(node.path);
-  const origin = st?.originAgent ? ORIGIN_CLASS[st.originAgent] ?? '' : originClass(node.name);
+  // Recorded origin (badge, then activity history) beats the extension guess.
+  const originAgent = st?.originAgent ?? originMap.get(node.path);
+  const origin = originAgent ? ORIGIN_CLASS[originAgent] ?? '' : originClass(node.name);
   const iconSvg = icon('file-text', { size: 14, stroke: 1.7 }).replace(
     '<svg',
     `<svg class="file-icon${origin ? ` ${origin}` : ''}"`,
@@ -418,14 +604,25 @@ function renderFile(node: TreeNode): HTMLElement {
 
   button.innerHTML = iconSvg;
   button.append(name);
+  // Badge visuals are decorative here — the status is spoken via the
+  // treeitem's accessible name, not the color/dot alone (story 005-004).
+  button.setAttribute('aria-label', st ? `${node.name}, ${STATUS_TEXT[st.status]}` : node.name);
   const badge = statusBadge(st);
-  if (badge) button.append(badge);
+  if (badge) {
+    badge.setAttribute('aria-hidden', 'true');
+    button.append(badge);
+  }
 
   const isMarkdown = node.path.endsWith('.md');
   button.title = isMarkdown ? `Open ${node.path} in the editor` : `Preview ${node.path}`;
+  if (node.mtime) button.title += `\nModified ${new Date(node.mtime).toLocaleString()}`;
   button.addEventListener('click', () => {
-    if (isMarkdown) handlers?.onOpenMarkdown(node.path);
-    else handlers?.onPreviewFile(node.path);
+    if (isMarkdown) {
+      handlers?.onOpenMarkdown(node.path); // marks seen via setActiveFile
+    } else {
+      markSeen(node.path); // previews don't go through setActiveFile
+      handlers?.onPreviewFile(node.path);
+    }
   });
 
   row.append(button, fileActions(node));
@@ -500,6 +697,61 @@ function originClass(name: string): string {
   return '';
 }
 
+// ---- Tree keyboard navigation (story 005-004) --------------------------------
+
+/** Treeitems currently rendered and visible (rows inside a closed folder are
+ * display:none and drop out via offsetParent). */
+function visibleTreeItems(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+    .filter((el) => el.offsetParent !== null);
+}
+
+function initRovingTabindex(root: HTMLElement): void {
+  const items = visibleTreeItems(root);
+  items.forEach((el) => el.setAttribute('tabindex', '-1'));
+  const start = items.find((el) => el.classList.contains('active')) ?? items[0];
+  start?.setAttribute('tabindex', '0');
+}
+
+function onTreeKeydown(e: KeyboardEvent): void {
+  const root = e.currentTarget as HTMLElement;
+  const item = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+  if (!item) return;
+  const items = visibleTreeItems(root);
+  const idx = items.indexOf(item);
+  const details = item.tagName === 'SUMMARY' ? (item.parentElement as HTMLDetailsElement) : null;
+
+  const focusAt = (i: number): void => {
+    items[Math.max(0, Math.min(items.length - 1, i))]?.focus();
+  };
+
+  switch (e.key) {
+    case 'ArrowDown': e.preventDefault(); focusAt(idx + 1); break;
+    case 'ArrowUp': e.preventDefault(); focusAt(idx - 1); break;
+    case 'Home': e.preventDefault(); focusAt(0); break;
+    case 'End': e.preventDefault(); focusAt(items.length - 1); break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (details && !details.open) details.open = true;
+      else focusAt(idx + 1); // into the (now open) folder, or just onward
+      break;
+    case 'ArrowLeft': {
+      e.preventDefault();
+      if (details?.open) {
+        details.open = false;
+        break;
+      }
+      // Closed folder or file row: jump to the enclosing folder's summary.
+      (details ?? item).parentElement
+        ?.closest('details')
+        ?.querySelector<HTMLElement>(':scope > summary[role="treeitem"]')
+        ?.focus();
+      break;
+    }
+    // Enter/Space activate natively: file rows are <button>, folders <summary>.
+  }
+}
+
 // ---- Path helpers -----------------------------------------------------------
 
 function joinName(path: string, name: string): string {
@@ -507,6 +759,6 @@ function joinName(path: string, name: string): string {
   return slash === -1 ? name : `${path.slice(0, slash)}/${name}`;
 }
 
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, '\\$&');
-}
+// Platform CSS.escape (story 005-004) — replaces a hand-rolled escaper that
+// only covered quotes/backslashes.
+const cssEscape = (value: string): string => CSS.escape(value);

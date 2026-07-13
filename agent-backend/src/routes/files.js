@@ -5,10 +5,12 @@
 
 import { Router } from 'express';
 import express from 'express';
-import multer from 'multer';
 import { extname } from 'node:path';
 
 import { config } from '../config.js';
+import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
+import { publishProjectEvent } from '../project-events.js';
+import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import {
   StorageError,
   readProjectFile,
@@ -73,9 +75,19 @@ function requirePath(req, res) {
   return path;
 }
 
+/** Flag tree files whose latest event the current user has not seen (005-002). */
+function annotateUnseen(nodes, unseen) {
+  for (const node of nodes) {
+    if (node.type === 'dir') annotateUnseen(node.children ?? [], unseen);
+    else if (unseen.has(node.path)) node.unseen = true;
+  }
+}
+
 /** GET /api/projects/:projectId/files[?path=subdir] — project tree */
 router.get('/api/projects/:projectId/files', handle(async (projectId, req, res) => {
   const tree = await listProjectTree(projectId, typeof req.query.path === 'string' ? req.query.path : '.');
+  const unseen = unseenPaths(projectId, req.user?.id ?? null);
+  if (unseen.size > 0) annotateUnseen(tree, unseen);
   res.json({ tree });
 }));
 
@@ -91,10 +103,17 @@ router.get('/api/projects/:projectId/file', handle(async (projectId, req, res) =
 /**
  * PUT /api/projects/:projectId/file?path=... — create/overwrite a file.
  * Body is the raw file content (text/plain or application/octet-stream).
+ * Deliberately NOT published to the project feed / activity log (005-002):
+ * this is the editor's debounced autosave path, which would flood the log and
+ * mark the open document perpetually unseen; live doc sync is Yjs's job.
  */
+// Same request-time-limit rationale as uploadMiddleware below.
+const rawBody = (req, res, next) =>
+  express.raw({ type: () => true, limit: config.storage.maxFileBytes })(req, res, next);
+
 router.put(
   '/api/projects/:projectId/file',
-  express.raw({ type: () => true, limit: config.storage.maxFileBytes }),
+  rawBody,
   handle(async (projectId, req, res) => {
     const path = requirePath(req, res);
     if (path == null) return;
@@ -112,6 +131,7 @@ router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res
   const path = requirePath(req, res);
   if (path == null) return;
   await deleteProjectEntry(projectId, path);
+  publishProjectEvent(projectId, { type: 'file_change', path, kind: 'delete' });
   res.json({ path, deleted: true });
 }));
 
@@ -123,21 +143,27 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
     return;
   }
   await moveProjectEntry(projectId, from, to);
+  // Seen state follows the file (005-002); the move surfaces on the feed as
+  // the same delete+create pair the agent move_file tool emits.
+  migrateSeenPaths(projectId, from, to);
+  publishProjectEvent(projectId, { type: 'file_change', path: from, kind: 'delete' });
+  publishProjectEvent(projectId, { type: 'file_change', path: to, kind: 'create' });
   res.json({ from, to, moved: true });
 }));
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.storage.maxFileBytes, files: 20 },
-});
 
 /**
  * POST /api/projects/:projectId/files/upload — multipart upload.
  * Form fields: `files` (one or more), optional `path` (target directory).
+ *
+ * Batch semantics are all-or-nothing: multer enforces the size limit while
+ * the stream is still being parsed (protecting memory), so one oversize file
+ * aborts the whole request before any file is written — mapped to a 413 by
+ * the router error handler below. The webapp pre-checks sizes client-side so
+ * valid files in a mixed drop still land (story 026).
  */
 router.post(
   '/api/projects/:projectId/files/upload',
-  upload.array('files'),
+  uploadMiddleware,
   handle(async (projectId, req, res) => {
     const files = req.files ?? [];
     if (files.length === 0) {
@@ -151,10 +177,18 @@ router.post(
     for (const file of files) {
       const relPath = targetDir ? `${targetDir}/${file.originalname}` : file.originalname;
       const { created } = await writeProjectFile(projectId, relPath, file.buffer);
+      publishProjectEvent(projectId, {
+        type: 'file_change',
+        path: relPath,
+        kind: created ? 'create' : 'update',
+      });
       written.push({ path: relPath, size: file.buffer.length, created });
     }
     res.status(201).json({ files: written });
   }),
 );
+
+// Story-026 body-error mapping, shared with the org library (routes/uploads.js).
+router.use(bodyErrorHandler);
 
 export default router;

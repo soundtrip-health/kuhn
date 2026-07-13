@@ -191,3 +191,92 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_key  ON bib_references(projec
 CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_doi  ON bib_references(project_id, doi)  WHERE doi IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_pmid ON bib_references(project_id, pmid) WHERE pmid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_refs_project_weak ON bib_references(project_id, weak_id_hash);
+
+-- ============================================================
+-- File activity (story 005-002) — append-only per-project file event log
+-- plus per-user seen markers. A file is "unseen" for a user when its latest
+-- event is newer than their seen_at (or they have no seen row).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS file_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('create', 'update', 'delete', 'rename')),
+  agent_slug  TEXT,   -- NULL = user action (upload / delete / rename via the UI)
+  job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_events_project_path
+  ON file_events(project_id, path, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_events_project_time
+  ON file_events(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS file_seen (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  seen_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (user_id, project_id, path)
+);
+
+-- ============================================================
+-- Org knowledge library (story 006-001) — per-organization documents whose
+-- bytes live at <orgsRoot>/<orgId>/library/<docId>/<filename>. Ingestion
+-- (extraction + FTS chunks) is story 006-002; until it runs, documents rest
+-- at status 'pending'.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_documents (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id             INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  filename           TEXT NOT NULL,
+  title              TEXT,
+  mime               TEXT,
+  size_bytes         INTEGER NOT NULL,
+  sha256             TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                       'pending', 'ingesting', 'ready', 'failed'
+                     )),
+  status_detail      TEXT,
+  source             TEXT NOT NULL DEFAULT 'upload' CHECK (source IN (
+                       'upload', 'project-promotion', 'guidance-import'
+                     )),
+  source_project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  created_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_docs_org_sha ON org_documents(org_id, sha256);
+CREATE INDEX IF NOT EXISTS idx_org_docs_org ON org_documents(org_id, created_at DESC);
+
+-- ============================================================
+-- Org-library ingestion (story 006-002): extracted text chunks + FTS5 index.
+-- The FTS table uses the external-content pattern; the triggers keep it in
+-- sync for inserts and deletes (chunks are replace-only, never updated —
+-- re-ingestion deletes and reinserts, and org_documents cascades fire the
+-- delete trigger too).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_document_chunks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id        INTEGER NOT NULL REFERENCES org_documents(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,
+  heading_path  TEXT,
+  text          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_chunks_doc ON org_document_chunks(doc_id, seq);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS org_chunks_fts USING fts5(
+  text,
+  content='org_document_chunks',
+  content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS org_chunks_ai AFTER INSERT ON org_document_chunks BEGIN
+  INSERT INTO org_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS org_chunks_ad AFTER DELETE ON org_document_chunks BEGIN
+  INSERT INTO org_chunks_fts(org_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;

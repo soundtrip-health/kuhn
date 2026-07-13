@@ -9,7 +9,8 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
-import { updateProjectConfig } from '../db/projects.js';
+import { getProject, updateProjectConfig } from '../db/projects.js';
+import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import {
   resolveProjectDir,
   readProjectFile,
@@ -19,6 +20,8 @@ import {
   moveProjectEntry,
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
+import { migrateSeenPaths } from '../db/file-activity.js';
+import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
@@ -60,8 +63,17 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
-  const channel = new EventChannel();
-  const state = {
+  // Tee top-level runs into the per-project feed (story 005-001). Sub-agent
+  // runs (depth > 0) are covered by dispatch_agent forwarding their events
+  // into this (teed) parent channel — teeing both would double-publish.
+  const topLevel = (internal.depth ?? 0) === 0;
+  const state = {};
+  const channel = new EventChannel(
+    topLevel
+      ? { onEvent: (event) => publishProjectEvent(task.projectId, event, { jobId: state.job?.id }) }
+      : undefined,
+  );
+  Object.assign(state, {
     sdkQuery: null,
     finished: false,
     job: null,
@@ -70,7 +82,7 @@ export async function* runAgentTask(task, internal = {}) {
     // on a question, so a reconnect can resume them (story 027). Sub-agent and
     // seeding-pipeline runs are not detachable: they keep today's teardown.
     detachable: task.detachable === true,
-  };
+  });
 
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
@@ -217,6 +229,11 @@ async function runTask(task, internal, channel, state) {
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId });
   state.job = job;
+  if (depth === 0) {
+    // Top-level job-start marker for the project feed (story 005-001); the
+    // matching terminal 'done'/'error' flows through the channel tee.
+    publishProjectEvent(projectId, { type: 'job', status: 'started', jobId: job.id, agent: agent.slug });
+  }
 
   // Register detachable runs (the chat task path) so a reconnect can find the
   // live channel if the browser drops while parked on a question (story 027).
@@ -544,6 +561,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
       },
       async ({ from, to }) => fileToolResult(async () => {
         await moveProjectEntry(projectId, from, to);
+        migrateSeenPaths(projectId, from, to); // seen state follows the file (005-002)
         // Mirror the change into the live file tree (delete old row, add new).
         channel.push({ type: 'file_change', agent: agent.slug, path: from, kind: 'delete' });
         channel.push({ type: 'file_change', agent: agent.slug, path: to, kind: 'create' });
@@ -679,6 +697,52 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
       async ({ query, max_results }) => searchToolResult(() => arxivSearch(query, max_results)),
+    ));
+  }
+
+  if (agent.tools.includes('search_org_knowledge')) {
+    // The one sanctioned crossing of the project-root boundary (story 006-003):
+    // read-only passages from the org's knowledge library, with provenance. The
+    // org is derived server-side from the task's project — agents never pick
+    // their tenant, so there is deliberately no org parameter.
+    tools.push(tool(
+      'search_org_knowledge',
+      'Search your organization\'s shared knowledge library (style guides, SOPs, regulatory guidance, templates, prior work) for relevant passages. Returns ranked excerpts, each with the source document and section — cite the source document by name when you rely on one. Read-only and org-wide; separate from this project\'s files.',
+      {
+        query: z.string().describe('Full-text keyword query (plain domain terms work best)'),
+        limit: z.number().int().min(1).max(25).default(8).describe('Maximum passages to return'),
+      },
+      async ({ query, limit }) => {
+        try {
+          const project = await getProject(projectId);
+          const orgId = project?.org_id;
+          if (orgId == null || !hasReadyOrgDocuments(orgId)) {
+            return {
+              content: [{
+                type: 'text',
+                text: 'The organization has no library documents yet. Proceed without org guidance — do not retry this search.',
+              }],
+            };
+          }
+          const passages = searchOrgKnowledge(orgId, query, limit);
+          if (passages.length === 0) {
+            return {
+              content: [{
+                type: 'text',
+                text: `No org library passages matched "${query}". Try once more with different keywords, or proceed without org guidance.`,
+              }],
+            };
+          }
+          const text = passages.map((p, i) => {
+            const doc = p.title || p.filename;
+            const section = p.headingPath ? ` — section: ${p.headingPath}` : '';
+            return `${i + 1}. Source: "${doc}" (${p.filename})${section}\n${p.snippet}`;
+          }).join('\n\n');
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `search_org_knowledge failed: ${err.message}` }], isError: true };
+        }
+      },
     ));
   }
 

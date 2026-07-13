@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-07-09 (030 drafted — marker-syntax migration `[ ]`→`\x{}`, decided during the AGENT_GUIDANCE.md ingestion; open work is 022 live verification (parked), 026 upload error mapping, and 030)
+**Updated:** 2026-07-12 (026 shipped — oversize uploads now a mapped 413 with all-or-nothing batch semantics; 030 drafted — marker-syntax migration `[ ]`→`\x{}`, decided during the AGENT_GUIDANCE.md ingestion; open work is 022 live verification (parked) and 030)
 
 ## Goal
 
@@ -118,7 +118,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 023 | [Remove the TeXlyre fork](stories/023-remove-texlyre.md) — unblocked by 016 | done | S |
 | 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | done | S |
-| 026 | [Upload oversize error mapping](stories/026-upload-oversize-error-mapping.md) — backend `MulterError`→413 mapping; de-duplicate the size limit (surfaced by 014) | ready | S |
+| 026 | [Upload oversize error mapping](stories/026-upload-oversize-error-mapping.md) — backend `MulterError`→413 mapping; de-duplicate the size limit (surfaced by 014) | done | S |
 | 028 | [Question card collapses to a sliver during seeding](stories/028-question-card-collapse.md) — flex `overflow:hidden` min-size 0; `flex-shrink:0` + `pre-wrap` (the real root cause behind the invisible-question reports) | done | S |
 | 029 | [Transient model-provider error resilience](stories/029-transient-model-error-resilience.md) — backoff on 529/429/5xx + visible "retrying…" status + actionable Try-again (surfaced by a 529 hang on 2026-06-21) | done | S–M |
 | 030 | [Marker syntax migration `[ ]` → `\x{}`](stories/030-marker-syntax-migration.md) — atomic switch across prompts + citation tooling + audit + render + editor to a backslash-command grammar (decided during the 2026-07-09 guidance ingestion) | draft | L |

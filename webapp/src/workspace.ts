@@ -26,6 +26,8 @@ interface State {
   projects: Project[]; // projects in the active org
   activeProjectId: number | null;
   activeDocPath: string; // the open document, '' when none
+  projectsLoading: boolean; // a project-list fetch is in flight (story 005-004)
+  projectsError: string | null; // last project-list fetch failure, if any
 }
 
 const state: State = {
@@ -34,6 +36,8 @@ const state: State = {
   projects: [],
   activeProjectId: null,
   activeDocPath: '',
+  projectsLoading: false,
+  projectsError: null,
 };
 
 type Listener = (change: WorkspaceChange) => void;
@@ -57,6 +61,8 @@ export const projects = (): Project[] => state.projects;
 export const activeProject = (): Project | null =>
   state.projects.find((p) => p.id === state.activeProjectId) ?? null;
 export const activeDocPath = (): string => state.activeDocPath;
+export const projectsLoading = (): boolean => state.projectsLoading;
+export const projectsError = (): string | null => state.projectsError;
 
 // ---- Loading / switching ----------------------------------------------------
 
@@ -69,11 +75,24 @@ export async function initWorkspace(): Promise<void> {
   state.orgs = await listOrgs();
   state.activeOrgId = state.orgs[0]?.id ?? null;
   await loadProjects();
+  // Boot keeps its throw-on-unreachable contract (main shows the banner).
+  if (state.projectsError) throw new Error(state.projectsError);
   emit('init');
 }
 
+/** Fetch the active org's projects; failures land in projectsError instead of
+ * rejecting, so UI callers can render a retryable state (story 005-004). */
 async function loadProjects(): Promise<void> {
-  state.projects = state.activeOrgId != null ? await listOrgProjects(state.activeOrgId) : [];
+  state.projectsLoading = true;
+  state.projectsError = null;
+  try {
+    state.projects = state.activeOrgId != null ? await listOrgProjects(state.activeOrgId) : [];
+  } catch (err) {
+    state.projects = [];
+    state.projectsError = (err as Error).message;
+  } finally {
+    state.projectsLoading = false;
+  }
   const next = activeProject();
   if (!next || next.org_id !== state.activeOrgId) {
     state.activeProjectId = state.projects[0]?.id ?? null;
@@ -81,11 +100,22 @@ async function loadProjects(): Promise<void> {
   }
 }
 
+/** Re-fetch the project list (retry affordance in the project browser). */
+export async function reloadProjects(): Promise<void> {
+  await loadProjects();
+  emit('projects');
+  emit('project');
+}
+
 /** Switch the active org, reloading its projects and selecting the first. */
 export async function setActiveOrg(orgId: number): Promise<void> {
   if (orgId === state.activeOrgId) return;
   state.activeOrgId = orgId;
   state.activeProjectId = null;
+  state.projects = [];
+  state.projectsLoading = true;
+  state.projectsError = null;
+  emit('projects'); // let open views show the loading state during the switch
   await loadProjects();
   emit('projects');
   emit('project'); // active project changed as a side effect of the org switch
