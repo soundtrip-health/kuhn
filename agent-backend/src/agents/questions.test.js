@@ -47,4 +47,13 @@ describe('question registry', () => {
   it('getPendingQuestion is null when nothing is pending', () => {
     expect(getPendingQuestion(123)).toBeNull();
   });
+
+  it('waits indefinitely when timeoutMs is null (no auto-resolve)', async () => {
+    const wait = waitForReply(6, null);
+    expect(hasPendingQuestion(6)).toBe(true);
+    await new Promise((r) => setTimeout(r, 20)); // a tick passes…
+    expect(hasPendingQuestion(6)).toBe(true);    // …still parked
+    deliverReply(6, 'eventually');
+    await expect(wait).resolves.toBe('eventually');
+  });
 });
