@@ -13,6 +13,15 @@ vi.mock('../db/orgs.js', () => ({
   primaryOrgId: vi.fn(async () => 7),
 }));
 vi.mock('../agents/seeding.js', () => ({ runSeedPipeline: vi.fn() }));
+// Covers both this router's imports and the real project-events hub's
+// persistence hook; the SQL itself is tested in db/file-activity.test.js.
+vi.mock('../db/file-activity.js', () => ({
+  recordFileEvent: vi.fn(),
+  markSeen: vi.fn(),
+  listFileActivity: vi.fn(() => []),
+  unseenPaths: vi.fn(() => new Set()),
+  migrateSeenPaths: vi.fn(),
+}));
 
 import { runSeedPipeline } from '../agents/seeding.js';
 import { listProjectConversations } from '../db/conversation.js';
@@ -25,6 +34,7 @@ import {
 } from '../db/projects.js';
 import projectsRouter from './projects.js';
 import { config } from '../config.js';
+import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { publishProjectEvent, projectSubscriberCount } from '../project-events.js';
 
 let server;
@@ -172,6 +182,45 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
       { type: 'text', agent: 'pm', content: 'hi' },
     ]);
     expect(runSeedPipeline).toHaveBeenCalledWith(3);
+  });
+});
+
+describe('file seen & activity endpoints (story 005-002)', () => {
+  it('marks a file seen for the session user', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    const res = await fetch(`${base}/api/projects/3/files/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'draft/main.md' }),
+    });
+    expect(res.status).toBe(200);
+    expect(markSeen).toHaveBeenCalledWith(1, 3, 'draft/main.md');
+  });
+
+  it('400s without a path and 404s for non-members', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    const noPath = await fetch(`${base}/api/projects/3/files/seen`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    expect(noPath.status).toBe(400);
+    expect(markSeen).not.toHaveBeenCalled();
+
+    isMember.mockResolvedValue(false);
+    const forbidden = await fetch(`${base}/api/projects/3/files/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'x.md' }),
+    });
+    expect(forbidden.status).toBe(404);
+  });
+
+  it('lists recent activity, passing since/limit through', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    listFileActivity.mockReturnValue([{ path: 'a.md', kind: 'create' }]);
+    const res = await fetch(`${base}/api/projects/3/files/activity?since=2026-07-01&limit=5`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ events: [{ path: 'a.md', kind: 'create' }] });
+    expect(listFileActivity).toHaveBeenCalledWith(3, { since: '2026-07-01', limit: '5' });
   });
 });
 

@@ -71,6 +71,11 @@ export const config = {
     // runaway-tab backstop, not a scaling knob.
     maxSubscribers: parseInt(process.env.PROJECT_EVENTS_MAX_SUBSCRIBERS || '20'),
   },
+  fileActivity: {
+    // Per-project cap on retained file_events rows (story 005-002); oldest
+    // pruned on insert. Badges only need the recent tail.
+    maxEventsPerProject: parseInt(process.env.FILE_ACTIVITY_MAX_EVENTS || '1000'),
+  },
   sandbox: {
     // Container images for document-derived code execution (Typst/Pandoc now,
     // analyst Python later). All sandbox runs: no network, project mounted

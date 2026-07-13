@@ -192,7 +192,13 @@ async function walkTree(dir, root) {
       nodes.push({ name: entry.name, path, type: 'dir', children: await walkTree(abs, root) });
     } else if (entry.isFile()) {
       const stats = await lstat(abs);
-      nodes.push({ name: entry.name, path, type: 'file', size: stats.size });
+      nodes.push({
+        name: entry.name,
+        path,
+        type: 'file',
+        size: stats.size,
+        mtime: stats.mtime.toISOString(),
+      });
     }
   }
   return nodes;

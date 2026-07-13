@@ -61,6 +61,9 @@ vi.mock('../citations.js', () => ({
   upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
   addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
 }));
+// Keeps db.js (which needs a real config.db.path at import) out of this
+// mocked-config suite; the SQL is covered in db/file-activity.test.js.
+vi.mock('../db/file-activity.js', () => ({ migrateSeenPaths: vi.fn(), recordFileEvent: vi.fn() }));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { writeProjectFile } from '../storage.js';

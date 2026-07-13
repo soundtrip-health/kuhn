@@ -191,3 +191,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_key  ON bib_references(projec
 CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_doi  ON bib_references(project_id, doi)  WHERE doi IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_project_pmid ON bib_references(project_id, pmid) WHERE pmid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_refs_project_weak ON bib_references(project_id, weak_id_hash);
+
+-- ============================================================
+-- File activity (story 005-002) — append-only per-project file event log
+-- plus per-user seen markers. A file is "unseen" for a user when its latest
+-- event is newer than their seen_at (or they have no seen row).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS file_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('create', 'update', 'delete', 'rename')),
+  agent_slug  TEXT,   -- NULL = user action (upload / delete / rename via the UI)
+  job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_events_project_path
+  ON file_events(project_id, path, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_events_project_time
+  ON file_events(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS file_seen (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  seen_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (user_id, project_id, path)
+);
