@@ -169,6 +169,13 @@ export async function renameProject(projectId: number, name: string): Promise<Pr
   return updated;
 }
 
+/** Merge an updated project row into the store (fires 'projects', and 'project' when active). */
+export function applyProjectUpdate(project: Project): void {
+  state.projects = state.projects.map((p) => (p.id === project.id ? { ...p, ...project } : p));
+  emit('projects');
+  if (project.id === state.activeProjectId) emit('project');
+}
+
 /** Create an organization and switch to it. */
 export async function createNewOrg(name: string): Promise<Org> {
   const org = await apiCreateOrg(name);
