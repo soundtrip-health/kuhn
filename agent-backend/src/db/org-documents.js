@@ -102,27 +102,48 @@ export function countDocumentChunks(docId) {
 }
 
 /**
+ * Whether the org has any searchable (ready) library documents — lets the
+ * agent tool distinguish "empty library" from "no matches" (story 006-003).
+ */
+export function hasReadyOrgDocuments(orgId) {
+  const { rows } = querySync(
+    "SELECT 1 FROM org_documents WHERE org_id = $1 AND status = 'ready' LIMIT 1",
+    [orgId],
+  );
+  return rows.length > 0;
+}
+
+/**
  * FTS5 queries have their own operator syntax; a raw user string ("AND",
  * quotes, parens) can be a syntax error. Quote each term so input is always
  * treated as literal words.
  */
-function sanitizeFtsQuery(query) {
+function sanitizeFtsTerms(query) {
   return String(query)
     .split(/\s+/)
     .map((term) => term.replace(/"/g, ''))
     .filter(Boolean)
-    .map((term) => `"${term}"`)
-    .join(' ');
+    .map((term) => `"${term}"`);
 }
 
 /**
  * BM25-ranked passage search over an org's ready documents (story 006-002).
+ * All-terms match first; when a multi-term query has no chunk containing
+ * every term, retry with OR semantics so one absent word doesn't zero the
+ * result — BM25 still ranks chunks matching more terms higher (story 006-003
+ * eval finding).
  * @returns {Array<{ docId, title, filename, headingPath, seq, snippet, rank }>}
  */
 export function searchOrgKnowledge(orgId, query, limit = 8) {
-  const match = sanitizeFtsQuery(query);
-  if (!match) return [];
+  const terms = sanitizeFtsTerms(query);
+  if (terms.length === 0) return [];
   const cap = Math.min(Math.max(parseInt(limit) || 8, 1), 25);
+  const rows = ftsQuery(orgId, terms.join(' '), cap);
+  if (rows.length > 0 || terms.length < 2) return rows;
+  return ftsQuery(orgId, terms.join(' OR '), cap);
+}
+
+function ftsQuery(orgId, match, cap) {
   const { rows } = querySync(
     `SELECT c.doc_id AS docId, d.title, d.filename, c.heading_path AS headingPath, c.seq,
             snippet(org_chunks_fts, 0, '>>', '<<', ' … ', 16) AS snippet,

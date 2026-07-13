@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-07-12
-**Updated:** 2026-07-12 (002 shipped — sandboxed extraction + FTS5 live on the full guidance corpus; next: 003 agent tool)
+**Updated:** 2026-07-12 (003 shipped — agents can search the org library with provenance; FTS eval 10/11, no embeddings story needed; next: 004 UI/onboarding)
 
 ## Goal
 
@@ -38,9 +38,9 @@ corpus" (deferred from Epic 004).
 
 ### Must Have
 
-- [ ] `org_documents` store + org-scoped storage root, membership-guarded CRUD
-- [ ] Ingestion pipeline: extract → chunk → FTS5 index, with status lifecycle
-- [ ] `search_org_knowledge` agent tool, allowlisted via `agent_tools`;
+- [x] `org_documents` store + org-scoped storage root, membership-guarded CRUD
+- [x] Ingestion pipeline: extract → chunk → FTS5 index, with status lifecycle
+- [x] `search_org_knowledge` agent tool, allowlisted via `agent_tools`;
       advisor/RA prompts updated to use it
 - [ ] Org library UI: browse/upload/delete, ingestion status visible
 - [ ] Org-creation flow replaced (no more `window.prompt`) with a modal that
@@ -59,7 +59,7 @@ corpus" (deferred from Epic 004).
 |---|-------|--------|------|
 | 001 | [Org document store & storage scope](stories/001-org-document-store.md) — `org_documents` table, org storage root via `storage.js`, guarded CRUD routes | done | L |
 | 002 | [Ingestion pipeline & FTS index](stories/002-ingestion-and-fts.md) — sandboxed text extraction, chunking, FTS5 table, status lifecycle events | done | L |
-| 003 | [`search_org_knowledge` agent tool](stories/003-search-org-knowledge-tool.md) — MCP tool + allowlist + prompt updates; provenance in results | ready | M |
+| 003 | [`search_org_knowledge` agent tool](stories/003-search-org-knowledge-tool.md) — MCP tool + allowlist + prompt updates; provenance in results | done | M |
 | 004 | [Org library UI & onboarding](stories/004-org-library-ui-onboarding.md) — library browser, org-creation modal with seed step, promote-from-project | ready | L |
 
 ## Sequencing
