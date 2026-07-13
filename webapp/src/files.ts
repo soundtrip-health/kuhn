@@ -1,12 +1,21 @@
-// File panel (story 013 shell, restyled by 025, made functional by story 014):
-// render the project tree, upload materials (drag-drop + picker), preview
-// non-markdown files, and delete/rename entries — all through the story-018
-// storage API. A client-side status map (fed by `file_change` events and
-// upload activity) drives the per-file origin tint and status badge designed in
-// story 025; the badge CSS classes (.file-badge/.file-spinner/.file-done) are
-// already shipped, this module supplies their data.
+// File panel (story 013 shell, restyled by 025, made functional by story 014,
+// made live by story 005-003): render the project tree, upload materials
+// (drag-drop + picker), preview non-markdown files, and delete/rename entries
+// — all through the story-018 storage API. Badge state is server-backed:
+// per-user `unseen` flags on the tree plus the file-activity log hydrate the
+// status map on every refresh (so badges survive reload), live `file_change`
+// events update it between refreshes, and opening a file marks it seen.
 
-import { deleteFile, getTree, moveFile, uploadFiles, type TreeNode } from './api';
+import {
+  deleteFile,
+  getFileActivity,
+  getTree,
+  markFileSeen,
+  moveFile,
+  uploadFiles,
+  type FileActivityEvent,
+  type TreeNode,
+} from './api';
 import { icon, iconEl } from './icons';
 import { toast } from './toast';
 
@@ -43,6 +52,12 @@ let listenersWired = false;
 let activePath = '';
 let lastTree: TreeNode[] = [];
 const statusMap = new Map<string, FileStatus>();
+/** Recorded origin agent per path (from the activity log) — outlives badges,
+ * so a seen file keeps its agent tint instead of the extension guess. */
+const originMap = new Map<string, string>();
+/** Throttle mark-seen POSTs: path → last-sent epoch ms. */
+const seenSentAt = new Map<string, number>();
+let refreshTimer: number | null = null;
 
 const ORIGIN_CLASS: Record<string, string> = {
   pm: 'origin-pm',
@@ -59,12 +74,22 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   projectId = activeProjectId;
   handlers = h;
   // Per-project reset (story 006): drop the previous project's status tints and
-  // active-row highlight when switching projects.
+  // active-row highlight when switching projects. Server state re-hydrates the
+  // maps on the first refreshTree (story 005-003).
   statusMap.clear();
+  originMap.clear();
+  seenSentAt.clear();
+  updateUnseenPill();
   activePath = '';
 
   if (listenersWired) return; // tree/upload listeners bind once for the page
   listenersWired = true;
+
+  const refreshBtn = document.getElementById('files-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
+    refreshBtn.addEventListener('click', () => void refreshTree(projectId));
+  }
 
   const tree = document.getElementById('file-tree')!;
   let dragTarget: HTMLElement | null = null;
@@ -154,6 +179,7 @@ function clampWidth(w: number): number {
 /** Mark a file row as the open document and re-highlight without refetching. */
 export function setActiveFile(path: string): void {
   activePath = path;
+  if (path) markSeen(path); // opening a file clears its badge (story 005-003)
   const tree = document.getElementById('file-tree');
   if (!tree) return;
   tree.querySelectorAll('.file-entry.active').forEach((el) => el.classList.remove('active'));
@@ -163,12 +189,118 @@ export function setActiveFile(path: string): void {
 export async function refreshTree(activeProjectId: number): Promise<void> {
   projectId = activeProjectId;
   const container = document.getElementById('file-tree')!;
+  container.classList.add('is-loading');
+  if (!container.hasChildNodes()) container.replaceChildren(emptyNotice('Loading files…'));
   try {
-    lastTree = await getTree(activeProjectId);
+    // Tree carries per-user unseen flags; the activity log supplies each
+    // path's latest kind + origin agent. Together they rebuild the status
+    // map from server truth, so badges survive reload (story 005-003).
+    const [tree, activity] = await Promise.all([
+      getTree(activeProjectId),
+      getFileActivity(activeProjectId).catch(() => [] as FileActivityEvent[]),
+    ]);
+    if (projectId !== activeProjectId) return; // superseded by a project switch
+    lastTree = tree;
+    hydrateStatus(tree, activity);
     container.replaceChildren(lastTree.length > 0 ? renderNodes(lastTree) : emptyState());
   } catch (err) {
-    container.replaceChildren(emptyNotice(`Could not load files: ${(err as Error).message}`));
+    const notice = emptyNotice(`Could not load files: ${(err as Error).message}`);
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn-quiet btn-sm';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void refreshTree(activeProjectId));
+    notice.append(document.createElement('br'), retry);
+    container.replaceChildren(notice);
+  } finally {
+    container.classList.remove('is-loading');
+    updateUnseenPill();
   }
+}
+
+/**
+ * Coalesce refreshes driven by live feed events (story 005-003): a burst of
+ * agent writes — or the same change arriving via both the job stream and the
+ * project feed — triggers one refetch, not one per event.
+ */
+export function refreshTreeSoon(activeProjectId: number): void {
+  if (refreshTimer != null) return;
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = null;
+    void refreshTree(activeProjectId);
+  }, 250);
+}
+
+/** Rebuild status/origin maps from server state (tree flags + activity log). */
+function hydrateStatus(tree: TreeNode[], activity: FileActivityEvent[]): void {
+  statusMap.clear();
+  originMap.clear();
+  // Newest-first log: keep each path's latest event only.
+  const latest = new Map<string, FileActivityEvent>();
+  for (const ev of activity) {
+    if (!latest.has(ev.path)) latest.set(ev.path, ev);
+    if (ev.agent_slug && !originMap.has(ev.path)) originMap.set(ev.path, ev.agent_slug);
+  }
+  const walk = (nodes: TreeNode[]): void => {
+    for (const node of nodes) {
+      if (node.type === 'dir') {
+        walk(node.children ?? []);
+      } else if (node.unseen) {
+        const ev = latest.get(node.path);
+        statusMap.set(node.path, {
+          status: !ev
+            ? 'modified' // unseen but the event aged out of the log
+            : ev.agent_slug
+              ? (ev.kind === 'create' ? 'generated' : 'modified')
+              : (ev.kind === 'create' ? 'new' : 'modified'),
+          originAgent: ev?.agent_slug ?? (ev ? 'user' : undefined),
+        });
+      }
+    }
+  };
+  walk(tree);
+}
+
+/**
+ * Mark a file seen: clear its badge locally (in place, no refetch), update
+ * the unseen pill, and persist per-user seen state (throttled — opening the
+ * same file repeatedly sends one POST per few seconds).
+ */
+export function markSeen(path: string): void {
+  if (statusMap.delete(path)) {
+    const entry = document
+      .getElementById('file-tree')
+      ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+    entry?.querySelectorAll('.file-badge, .file-spinner, .file-done').forEach((el) => el.remove());
+    updateUnseenPill();
+  }
+  const last = seenSentAt.get(path) ?? 0;
+  if (Date.now() - last < 3000) return;
+  seenSentAt.set(path, Date.now());
+  void markFileSeen(projectId, path).catch(() => {
+    seenSentAt.delete(path); // let a later open retry
+  });
+}
+
+/** Unseen-count pill on the topbar Files toggle (story 005-003). */
+function updateUnseenPill(): void {
+  const toggle = document.getElementById('toggle-files');
+  if (!toggle) return;
+  let pill = toggle.querySelector<HTMLElement>('.toggle-pill');
+  const count = [...statusMap.values()]
+    .filter((s) => s.status === 'new' || s.status === 'generated' || s.status === 'modified')
+    .length;
+  if (count === 0) {
+    pill?.remove();
+    return;
+  }
+  if (!pill) {
+    pill = document.createElement('span');
+    pill.className = 'toggle-pill';
+    toggle.append(pill);
+  }
+  pill.textContent = String(count);
+  pill.setAttribute('aria-label', `${count} unseen file change${count === 1 ? '' : 's'}`);
 }
 
 /**
@@ -220,22 +352,31 @@ export function revealFile(path: string): void {
 export function recordFileChange(change: FileChange): void {
   if (change.kind === 'delete') {
     statusMap.delete(change.path);
-    return;
+  } else {
+    statusMap.set(change.path, {
+      status: change.agent
+        ? (change.kind === 'create' ? 'generated' : 'modified')
+        : (change.kind === 'create' ? 'new' : 'modified'),
+      originAgent: change.agent,
+    });
+    if (change.agent) originMap.set(change.path, change.agent);
   }
-  statusMap.set(change.path, {
-    status: change.kind === 'create' ? 'generated' : 'modified',
-    originAgent: change.agent,
-  });
+  updateUnseenPill();
 }
 
 function recordUpload(path: string): void {
   statusMap.set(path, { status: 'new', originAgent: 'user' });
+  updateUnseenPill();
 }
 
 function migrateStatus(from: string, to: string): void {
   const st = statusMap.get(from);
   statusMap.delete(from);
   if (st) statusMap.set(to, st);
+  const origin = originMap.get(from);
+  originMap.delete(from);
+  if (origin) originMap.set(to, origin);
+  seenSentAt.delete(from);
 }
 
 // ---- Upload -----------------------------------------------------------------
@@ -407,7 +548,9 @@ function renderFile(node: TreeNode): HTMLElement {
   if (node.path === activePath) button.classList.add('active');
 
   const st = statusMap.get(node.path);
-  const origin = st?.originAgent ? ORIGIN_CLASS[st.originAgent] ?? '' : originClass(node.name);
+  // Recorded origin (badge, then activity history) beats the extension guess.
+  const originAgent = st?.originAgent ?? originMap.get(node.path);
+  const origin = originAgent ? ORIGIN_CLASS[originAgent] ?? '' : originClass(node.name);
   const iconSvg = icon('file-text', { size: 14, stroke: 1.7 }).replace(
     '<svg',
     `<svg class="file-icon${origin ? ` ${origin}` : ''}"`,
@@ -423,9 +566,14 @@ function renderFile(node: TreeNode): HTMLElement {
 
   const isMarkdown = node.path.endsWith('.md');
   button.title = isMarkdown ? `Open ${node.path} in the editor` : `Preview ${node.path}`;
+  if (node.mtime) button.title += `\nModified ${new Date(node.mtime).toLocaleString()}`;
   button.addEventListener('click', () => {
-    if (isMarkdown) handlers?.onOpenMarkdown(node.path);
-    else handlers?.onPreviewFile(node.path);
+    if (isMarkdown) {
+      handlers?.onOpenMarkdown(node.path); // marks seen via setActiveFile
+    } else {
+      markSeen(node.path); // previews don't go through setActiveFile
+      handlers?.onPreviewFile(node.path);
+    }
   });
 
   row.append(button, fileActions(node));

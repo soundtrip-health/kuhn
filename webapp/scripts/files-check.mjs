@@ -42,6 +42,17 @@ check((await treePaths()).includes(UPLOADED), 'uploaded file appears in the tree
 const stored = await (await fetch(fileApi(UPLOADED))).text();
 check(stored === CONTENT, 'stored content matches the uploaded bytes');
 
+// --- API: activity log + unseen flags (stories 005-002/003) ---
+const findNode = async (p) => flatten((await (await fetch(api('/files'))).json()).tree).find((n) => n.path === p);
+const uploadedNode = await findNode(UPLOADED);
+check(uploadedNode?.unseen === true, 'uploaded file is flagged unseen in the tree');
+check(typeof uploadedNode?.mtime === 'string', 'tree file nodes carry mtime');
+const activity = (await (await fetch(api('/files/activity?limit=20'))).json()).events;
+check(
+  activity.some((e) => e.path === UPLOADED && e.kind === 'create' && e.agent_slug === null),
+  'activity log records the upload as a user action',
+);
+
 // --- API: oversize upload is a readable 413, all-or-nothing (story 026) ---
 const LIMIT_BYTES = 20 * 1024 * 1024; // backend default; see STORAGE_MAX_FILE_BYTES
 const MIXED_OK = 'files-check-mixed-ok.txt';
@@ -77,6 +88,10 @@ await page.waitForTimeout(1000);
 
 const entry = `.file-entry[data-path="${UPLOADED}"]`;
 await page.waitForSelector(entry, { timeout: 10000 }).catch(() => fail('uploaded file not listed in the panel'));
+// Server-hydrated badge (story 005-003): the upload happened via the API
+// before this page loaded, so the "new" badge must come from hydration.
+check((await page.locator(`${entry} .file-badge`).count()) === 1, 'unseen file shows a hydrated badge');
+check((await page.locator('#toggle-files .toggle-pill').count()) === 1, 'Files toggle shows the unseen-count pill');
 await page.click(entry).catch(() => {});
 await page
   .waitForFunction(
@@ -89,7 +104,11 @@ check(
   (await page.locator('#preview-panel:not(.collapsed)').count()) === 1,
   'preview panel opens when a file is previewed',
 );
+check((await page.locator(`${entry} .file-badge`).count()) === 0, 'opening the file clears its badge');
+await page.waitForTimeout(400); // let the fire-and-forget mark-seen POST land
 await browser.close();
+
+check((await findNode(UPLOADED))?.unseen !== true, 'seen state persisted server-side after the click');
 
 // --- API: rename via move ---
 const mvRes = await fetch(api('/files/move'), {
