@@ -1,6 +1,9 @@
-// Story 018: project-root-enforcing storage service. Every file operation on
-// user projects — HTTP routes and agent tools alike — goes through this module.
-// Nothing else in the codebase may touch project files with raw fs calls.
+// Story 018: root-enforcing storage service. Every file operation on user
+// content — HTTP routes and agent tools alike — goes through this module.
+// Nothing else in the codebase may touch project or org files with raw fs
+// calls. Two scopes share one containment core (resolveWithin): per-project
+// workspaces (<projectsRoot>/<id>) and, since story 006-001, per-org library
+// roots (<orgsRoot>/<orgId>/library).
 
 import {
   mkdir, readFile, writeFile, rm, rename, readdir, lstat, realpath,
@@ -42,13 +45,39 @@ export async function resolveProjectDir(projectId) {
 }
 
 /**
+ * Resolve (and create) an organization's library directory:
+ * <orgsRoot>/<orgId>/library. Throws not_found if the org row does not exist.
+ * (story 006-001)
+ */
+export async function resolveOrgLibraryDir(orgId) {
+  const { rows } = await dbQuery('SELECT id FROM organizations WHERE id = $1', [orgId]);
+  if (rows.length === 0) {
+    throw new StorageError('not_found', `Unknown organization: ${orgId}`);
+  }
+  const dir = join(config.storage.orgsRoot, String(orgId), 'library');
+  await mkdir(dir, { recursive: true });
+  return realpath(dir);
+}
+
+/**
  * Resolve a user/agent-supplied relative path to an absolute path that is
  * guaranteed to live inside the project root. Rejects absolute paths, `..`
  * traversal, and symlinks that resolve outside the root.
  */
 export async function resolveSafe(projectId, relPath) {
-  const root = await resolveProjectDir(projectId);
+  return resolveWithin(await resolveProjectDir(projectId), relPath, 'project root');
+}
 
+/** Same containment contract, scoped to an org's library root. (006-001) */
+export async function resolveOrgSafe(orgId, relPath) {
+  return resolveWithin(await resolveOrgLibraryDir(orgId), relPath, 'library root');
+}
+
+/**
+ * The containment core shared by both scopes: rejects absolute paths, `..`
+ * traversal, and symlinks that resolve outside the given root.
+ */
+async function resolveWithin(root, relPath, what) {
   if (typeof relPath !== 'string' || relPath.length === 0) {
     throw new StorageError('invalid_path', 'Path is required');
   }
@@ -60,12 +89,12 @@ export async function resolveSafe(projectId, relPath) {
   }
   const normalized = normalize(relPath);
   if (normalized === '..' || normalized.startsWith(`..${sep}`)) {
-    throw new StorageError('outside_root', 'Path escapes the project root');
+    throw new StorageError('outside_root', `Path escapes the ${what}`);
   }
 
   const abs = resolve(root, normalized);
   if (abs !== root && !abs.startsWith(root + sep)) {
-    throw new StorageError('outside_root', 'Path escapes the project root');
+    throw new StorageError('outside_root', `Path escapes the ${what}`);
   }
 
   // Symlink containment: real-path the deepest existing ancestor (the target
@@ -73,7 +102,7 @@ export async function resolveSafe(projectId, relPath) {
   // under the root.
   const real = await realpathDeepestExisting(abs, root);
   if (real !== root && !real.startsWith(root + sep)) {
-    throw new StorageError('outside_root', 'Path resolves outside the project root');
+    throw new StorageError('outside_root', `Path resolves outside the ${what}`);
   }
 
   return { root, abs };
@@ -163,6 +192,55 @@ export async function moveProjectEntry(projectId, fromPath, toPath) {
   if (destinationExists) throw new StorageError('conflict', `Destination exists: ${toPath}`);
   await mkdir(dirname(to), { recursive: true });
   await rename(from, to);
+}
+
+// ---- Org library scope (story 006-001) --------------------------------------
+// Same read/write/delete contracts as the project scope, confined to
+// <orgsRoot>/<orgId>/library via resolveOrgSafe.
+
+/** Read an org library file. Returns a Buffer. */
+export async function readOrgFile(orgId, relPath) {
+  const { abs } = await resolveOrgSafe(orgId, relPath);
+  try {
+    const stats = await lstat(abs);
+    if (stats.isDirectory()) throw new StorageError('invalid_path', `Is a directory: ${relPath}`);
+    if (stats.size > maxFileBytes()) {
+      throw new StorageError('too_large', `File exceeds ${maxFileBytes()} bytes: ${relPath}`);
+    }
+    return await readFile(abs);
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new StorageError('not_found', `No such file: ${relPath}`);
+    throw err;
+  }
+}
+
+/** Write (create or overwrite) an org library file. Returns { created } */
+export async function writeOrgFile(orgId, relPath, data) {
+  const { abs } = await resolveOrgSafe(orgId, relPath);
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf-8');
+  if (buf.length > maxFileBytes()) {
+    throw new StorageError('too_large', `Content exceeds ${maxFileBytes()} bytes`);
+  }
+  let created = true;
+  try {
+    await lstat(abs);
+    created = false;
+  } catch { /* new file */ }
+  await mkdir(dirname(abs), { recursive: true });
+  await writeFile(abs, buf);
+  return { created };
+}
+
+/** Delete an org library file or directory (recursive); the root itself cannot be deleted. */
+export async function deleteOrgEntry(orgId, relPath) {
+  const { root, abs } = await resolveOrgSafe(orgId, relPath);
+  if (abs === root) throw new StorageError('invalid_path', 'Cannot delete the library root');
+  try {
+    await lstat(abs);
+  } catch {
+    throw new StorageError('not_found', `No such file: ${relPath}`);
+  }
+  await rm(abs, { recursive: true });
 }
 
 /**

@@ -219,3 +219,33 @@ CREATE TABLE IF NOT EXISTS file_seen (
   seen_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (user_id, project_id, path)
 );
+
+-- ============================================================
+-- Org knowledge library (story 006-001) — per-organization documents whose
+-- bytes live at <orgsRoot>/<orgId>/library/<docId>/<filename>. Ingestion
+-- (extraction + FTS chunks) is story 006-002; until it runs, documents rest
+-- at status 'pending'.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_documents (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id             INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  filename           TEXT NOT NULL,
+  title              TEXT,
+  mime               TEXT,
+  size_bytes         INTEGER NOT NULL,
+  sha256             TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                       'pending', 'ingesting', 'ready', 'failed'
+                     )),
+  status_detail      TEXT,
+  source             TEXT NOT NULL DEFAULT 'upload' CHECK (source IN (
+                       'upload', 'project-promotion', 'guidance-import'
+                     )),
+  source_project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  created_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_docs_org_sha ON org_documents(org_id, sha256);
+CREATE INDEX IF NOT EXISTS idx_org_docs_org ON org_documents(org_id, created_at DESC);
