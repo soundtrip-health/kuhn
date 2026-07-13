@@ -5,22 +5,14 @@
 // switcher itself lives in the breadcrumb's org menu (story 007); this overlay
 // is the project surface.
 
+import { trapFocus } from './a11y';
 import { icon } from './icons';
+import { PROJECT_TYPES, TYPE_LABEL } from './project-types';
 import * as workspace from './workspace';
-
-const PROJECT_TYPES: { value: string; label: string }[] = [
-  { value: 'manuscript', label: 'Manuscript' },
-  { value: 'rwe-protocol', label: 'RWE protocol' },
-  { value: 'rct-protocol', label: 'RCT protocol' },
-  { value: 'grant', label: 'Grant' },
-  { value: 'sop', label: 'SOP' },
-];
-
-const TYPE_LABEL: Record<string, string> =
-  Object.fromEntries(PROJECT_TYPES.map((t) => [t.value, t.label]));
 
 let overlay: HTMLElement | null = null;
 let creating = false;
+let releaseFocus: (() => void) | null = null;
 
 function ensureOverlay(): HTMLElement {
   if (overlay) return overlay;
@@ -28,6 +20,9 @@ function ensureOverlay(): HTMLElement {
   overlay.id = 'project-browser';
   overlay.className = 'pb-overlay';
   overlay.hidden = true;
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'Projects');
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close(); // backdrop click closes
   });
@@ -43,12 +38,21 @@ function ensureOverlay(): HTMLElement {
 }
 
 export function openProjectBrowser(): void {
-  ensureOverlay().hidden = false;
+  const root = ensureOverlay();
+  const wasHidden = root.hidden;
+  root.hidden = false;
   render();
+  // Trap focus only on a genuine open, not on live re-renders (story 005-004).
+  if (wasHidden) {
+    releaseFocus?.();
+    releaseFocus = trapFocus(root);
+  }
 }
 
 export function close(): void {
   if (overlay) overlay.hidden = true;
+  releaseFocus?.(); // also restores focus to the opener
+  releaseFocus = null;
 }
 
 // Swap the card's name label for an inline editor. Commits on Enter/blur,
@@ -115,10 +119,29 @@ function render(): void {
   closeBtn.addEventListener('click', () => close());
   head.append(heading, closeBtn);
 
-  // Project grid
+  // Project grid — loading and retryable error states (story 005-004)
   const grid = document.createElement('div');
   grid.className = 'pb-grid';
-  if (projects.length === 0) {
+  const fetchError = workspace.projectsError();
+  if (workspace.projectsLoading()) {
+    const loading = document.createElement('div');
+    loading.className = 'pb-empty';
+    loading.setAttribute('role', 'status');
+    loading.textContent = 'Loading projects…';
+    grid.append(loading);
+  } else if (fetchError) {
+    const errBox = document.createElement('div');
+    errBox.className = 'pb-empty';
+    errBox.setAttribute('role', 'alert');
+    errBox.textContent = `Could not load projects: ${fetchError} `;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn-quiet btn-sm';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void workspace.reloadProjects());
+    errBox.append(retry);
+    grid.append(errBox);
+  } else if (projects.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'pb-empty';
     empty.textContent = 'No projects yet — create your first below.';

@@ -10,7 +10,7 @@ Each epic is a directory containing an `index.md` (overview) and a `stories/` su
 | 002 | [Agent Orchestration Layer](002-agent-orchestration-layer/index.md) | In Progress |
 | 003 | [TeXlyre Citation Assistant](003-texlyre-citation-assistant/index.md) | Done (ports to Milkdown in story 016) |
 | 004 | [Editor Upgrade + Project Management](004-editor-and-project-management/index.md) | Done |
-| 005 | [File Activity & Project Events](005-file-activity-and-events/index.md) | In Progress |
+| 005 | [File Activity & Project Events](005-file-activity-and-events/index.md) | Done |
 | 006 | [Org Knowledge Library](006-org-knowledge-library/index.md) | Ready |
 | 007 | [Identity & User Memory](007-identity-and-user-memory/index.md) | Ready |
 

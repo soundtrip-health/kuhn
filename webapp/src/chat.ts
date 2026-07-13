@@ -110,8 +110,11 @@ async function restore(): Promise<void> {
       if (job.session_id && !sessions.has(job.role)) sessions.set(job.role, job.session_id);
     }
     await reconnectPendingQuestion();
-  } catch {
-    // No backend or no history yet — start fresh
+  } catch (err) {
+    // A fresh project restores an *empty* transcript without erroring, so a
+    // rejection here is a real failure — surface it non-blockingly instead of
+    // swallowing it (story 005-004). Chat still works; history may be missing.
+    notify(`Could not restore chat history: ${(err as Error).message}`);
   }
 }
 
