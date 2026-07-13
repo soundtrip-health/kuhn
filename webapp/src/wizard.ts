@@ -102,6 +102,7 @@ function close(): void {
 
 /** Abort: keep answers as a draft so re-entry prefills; do not launch anything. */
 function abort(): void {
+  if (saving) return;
   void persistDraft();
   close();
 }
