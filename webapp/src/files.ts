@@ -85,6 +85,19 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   if (listenersWired) return; // tree/upload listeners bind once for the page
   listenersWired = true;
 
+  const treeRoot = document.getElementById('file-tree')!;
+  treeRoot.setAttribute('role', 'tree');
+  treeRoot.setAttribute('aria-label', 'Project files');
+  treeRoot.addEventListener('keydown', onTreeKeydown);
+  // Roving tabindex (story 005-004): exactly one treeitem is tabbable.
+  treeRoot.addEventListener('focusin', (e) => {
+    const item = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+    if (!item) return;
+    treeRoot.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"]')
+      .forEach((el) => el.setAttribute('tabindex', '-1'));
+    item.setAttribute('tabindex', '0');
+  });
+
   const refreshBtn = document.getElementById('files-refresh-btn');
   if (refreshBtn) {
     refreshBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
@@ -182,8 +195,13 @@ export function setActiveFile(path: string): void {
   if (path) markSeen(path); // opening a file clears its badge (story 005-003)
   const tree = document.getElementById('file-tree');
   if (!tree) return;
-  tree.querySelectorAll('.file-entry.active').forEach((el) => el.classList.remove('active'));
-  tree.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`)?.classList.add('active');
+  tree.querySelectorAll('.file-entry.active').forEach((el) => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
+  const entry = tree.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
+  entry?.classList.add('active');
+  entry?.setAttribute('aria-selected', 'true');
 }
 
 export async function refreshTree(activeProjectId: number): Promise<void> {
@@ -203,6 +221,7 @@ export async function refreshTree(activeProjectId: number): Promise<void> {
     lastTree = tree;
     hydrateStatus(tree, activity);
     container.replaceChildren(lastTree.length > 0 ? renderNodes(lastTree) : emptyState());
+    initRovingTabindex(container);
   } catch (err) {
     const notice = emptyNotice(`Could not load files: ${(err as Error).message}`);
     const retry = document.createElement('button');
@@ -407,6 +426,9 @@ async function deleteEntry(node: TreeNode): Promise<void> {
   const message = isOpen
     ? `Delete "${node.name}"? It's the document you're editing — the editor will close.`
     : `Delete "${node.name}"?`;
+  // Documented exception (story 005-004): native confirm() is keyboard- and
+  // screen-reader-accessible by construction; a styled dialog isn't worth its
+  // focus-management surface until one exists elsewhere in the app.
   if (!window.confirm(message)) return;
   if (isOpen) handlers?.dropOpenDoc(node.path); // drop before delete so no save resurrects it
   try {
@@ -505,13 +527,21 @@ function emptyState(): DocumentFragment {
 function renderNodes(nodes: TreeNode[]): HTMLUListElement {
   const ul = document.createElement('ul');
   ul.className = 'file-list';
+  ul.setAttribute('role', 'group');
   for (const node of nodes) {
     const li = document.createElement('li');
+    li.setAttribute('role', 'none');
     if (node.type === 'dir') {
       const details = document.createElement('details');
       details.open = true;
       details.dataset.dir = node.path; // drop target for directory-scoped uploads
       const summary = document.createElement('summary');
+      summary.setAttribute('role', 'treeitem');
+      summary.setAttribute('aria-expanded', 'true');
+      summary.setAttribute('tabindex', '-1');
+      details.addEventListener('toggle', () =>
+        summary.setAttribute('aria-expanded', String(details.open)),
+      );
       const fileCount = (node.children ?? []).filter((c) => c.type === 'file').length;
       summary.innerHTML = icon('chevron-down', { size: 13, stroke: 2 }).replace(
         '<svg',
@@ -525,6 +555,7 @@ function renderNodes(nodes: TreeNode[]): HTMLUListElement {
         const count = document.createElement('span');
         count.className = 'file-count';
         count.textContent = String(fileCount);
+        count.setAttribute('aria-label', `${fileCount} file${fileCount === 1 ? '' : 's'}`);
         summary.append(count);
       }
       details.append(summary, renderNodes(node.children ?? []));
@@ -537,6 +568,15 @@ function renderNodes(nodes: TreeNode[]): HTMLUListElement {
   return ul;
 }
 
+/** Spoken text for a badge state — the treeitem label carries it (005-004). */
+const STATUS_TEXT: Record<FileStatusKind, string> = {
+  new: 'new upload',
+  generated: 'new AI changes',
+  modified: 'modified since last viewed',
+  ingesting: 'processing',
+  done: 'processed',
+};
+
 function renderFile(node: TreeNode): HTMLElement {
   const row = document.createElement('div');
   row.className = 'file-row';
@@ -545,6 +585,9 @@ function renderFile(node: TreeNode): HTMLElement {
   button.type = 'button';
   button.className = 'file-entry';
   button.dataset.path = node.path;
+  button.setAttribute('role', 'treeitem');
+  button.setAttribute('tabindex', '-1');
+  button.setAttribute('aria-selected', String(node.path === activePath));
   if (node.path === activePath) button.classList.add('active');
 
   const st = statusMap.get(node.path);
@@ -561,8 +604,14 @@ function renderFile(node: TreeNode): HTMLElement {
 
   button.innerHTML = iconSvg;
   button.append(name);
+  // Badge visuals are decorative here — the status is spoken via the
+  // treeitem's accessible name, not the color/dot alone (story 005-004).
+  button.setAttribute('aria-label', st ? `${node.name}, ${STATUS_TEXT[st.status]}` : node.name);
   const badge = statusBadge(st);
-  if (badge) button.append(badge);
+  if (badge) {
+    badge.setAttribute('aria-hidden', 'true');
+    button.append(badge);
+  }
 
   const isMarkdown = node.path.endsWith('.md');
   button.title = isMarkdown ? `Open ${node.path} in the editor` : `Preview ${node.path}`;
@@ -648,6 +697,61 @@ function originClass(name: string): string {
   return '';
 }
 
+// ---- Tree keyboard navigation (story 005-004) --------------------------------
+
+/** Treeitems currently rendered and visible (rows inside a closed folder are
+ * display:none and drop out via offsetParent). */
+function visibleTreeItems(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+    .filter((el) => el.offsetParent !== null);
+}
+
+function initRovingTabindex(root: HTMLElement): void {
+  const items = visibleTreeItems(root);
+  items.forEach((el) => el.setAttribute('tabindex', '-1'));
+  const start = items.find((el) => el.classList.contains('active')) ?? items[0];
+  start?.setAttribute('tabindex', '0');
+}
+
+function onTreeKeydown(e: KeyboardEvent): void {
+  const root = e.currentTarget as HTMLElement;
+  const item = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+  if (!item) return;
+  const items = visibleTreeItems(root);
+  const idx = items.indexOf(item);
+  const details = item.tagName === 'SUMMARY' ? (item.parentElement as HTMLDetailsElement) : null;
+
+  const focusAt = (i: number): void => {
+    items[Math.max(0, Math.min(items.length - 1, i))]?.focus();
+  };
+
+  switch (e.key) {
+    case 'ArrowDown': e.preventDefault(); focusAt(idx + 1); break;
+    case 'ArrowUp': e.preventDefault(); focusAt(idx - 1); break;
+    case 'Home': e.preventDefault(); focusAt(0); break;
+    case 'End': e.preventDefault(); focusAt(items.length - 1); break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (details && !details.open) details.open = true;
+      else focusAt(idx + 1); // into the (now open) folder, or just onward
+      break;
+    case 'ArrowLeft': {
+      e.preventDefault();
+      if (details?.open) {
+        details.open = false;
+        break;
+      }
+      // Closed folder or file row: jump to the enclosing folder's summary.
+      (details ?? item).parentElement
+        ?.closest('details')
+        ?.querySelector<HTMLElement>(':scope > summary[role="treeitem"]')
+        ?.focus();
+      break;
+    }
+    // Enter/Space activate natively: file rows are <button>, folders <summary>.
+  }
+}
+
 // ---- Path helpers -----------------------------------------------------------
 
 function joinName(path: string, name: string): string {
@@ -655,6 +759,6 @@ function joinName(path: string, name: string): string {
   return slash === -1 ? name : `${path.slice(0, slash)}/${name}`;
 }
 
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, '\\$&');
-}
+// Platform CSS.escape (story 005-004) — replaces a hand-rolled escaper that
+// only covered quotes/backslashes.
+const cssEscape = (value: string): string => CSS.escape(value);

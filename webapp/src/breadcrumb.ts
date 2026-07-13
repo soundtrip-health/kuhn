@@ -9,15 +9,8 @@
 import { revealFile } from './files';
 import { icon } from './icons';
 import { openProjectBrowser } from './project-browser';
+import { TYPE_LABEL } from './project-types';
 import * as workspace from './workspace';
-
-const TYPE_LABEL: Record<string, string> = {
-  manuscript: 'Manuscript',
-  'rwe-protocol': 'RWE protocol',
-  'rct-protocol': 'RCT protocol',
-  grant: 'Grant',
-  sop: 'SOP',
-};
 
 let orgMenuOpen = false;
 
@@ -73,12 +66,19 @@ function orgSegment(label: string): HTMLElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'breadcrumb-seg breadcrumb-org';
+  btn.setAttribute('aria-haspopup', 'menu');
+  btn.setAttribute('aria-expanded', String(orgMenuOpen));
   btn.innerHTML = `<span></span>${icon('chevron-down', { size: 12, stroke: 2 })}`;
   (btn.querySelector('span') as HTMLElement).textContent = label;
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     orgMenuOpen = !orgMenuOpen;
     render();
+    if (orgMenuOpen) {
+      document
+        .querySelector<HTMLElement>('.breadcrumb-menu .breadcrumb-menu-item')
+        ?.focus();
+    }
   });
   wrap.append(btn);
 
@@ -86,14 +86,37 @@ function orgSegment(label: string): HTMLElement {
   return wrap;
 }
 
+/** Close the org menu and hand focus back to its trigger (story 005-004). */
+function closeOrgMenu(): void {
+  orgMenuOpen = false;
+  render();
+  document.querySelector<HTMLElement>('.breadcrumb-org')?.focus();
+}
+
 function orgMenu(): HTMLElement {
   const menu = document.createElement('div');
   menu.className = 'breadcrumb-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Organization');
+  menu.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeOrgMenu();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const idx = items.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === 'ArrowDown' ? idx + 1 : idx - 1;
+    items[(next + items.length) % items.length]?.focus();
+  });
   const activeId = workspace.activeOrg()?.id;
   for (const org of workspace.orgs()) {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'breadcrumb-menu-item';
+    item.setAttribute('role', 'menuitem');
     if (org.id === activeId) item.classList.add('is-active');
     item.innerHTML = `<span class="bm-check">${org.id === activeId ? icon('check', { size: 13, stroke: 2 }) : ''}</span><span></span>`;
     (item.querySelector('span:last-child') as HTMLElement).textContent = org.name;
@@ -107,10 +130,12 @@ function orgMenu(): HTMLElement {
   const create = document.createElement('button');
   create.type = 'button';
   create.className = 'breadcrumb-menu-item bm-create';
+  create.setAttribute('role', 'menuitem');
   create.innerHTML = `<span class="bm-check">${icon('plus', { size: 13, stroke: 2 })}</span><span>New organization…</span>`;
   create.addEventListener('click', () => {
-    orgMenuOpen = false;
-    render();
+    closeOrgMenu();
+    // window.prompt is a documented interim: the org-creation modal (with the
+    // library seeding step) is Epic 006 story 004.
     const name = window.prompt('New organization name')?.trim();
     if (name) void workspace.createNewOrg(name);
   });

@@ -25,7 +25,7 @@
         <nav id="breadcrumb" class="breadcrumb" aria-label="Workspace location"></nav>
       </div>
       <div class="topbar-right">
-        <span id="topbar-activity" class="topbar-activity" hidden></span>
+        <span id="topbar-activity" class="topbar-activity" role="status" aria-live="polite" hidden></span>
         <button id="toggle-chat" type="button" class="btn btn-quiet" title="Toggle chat panel">Chat</button>
         <button id="toggle-files" type="button" class="btn btn-quiet" title="Toggle files panel">Files</button>
         <button id="toggle-preview" type="button" class="btn btn-ghost" title="Toggle PDF preview">Preview&nbsp;PDF</button>
@@ -122,7 +122,7 @@
       <div class="status-left">
         <span id="status-doc"></span>
         <span id="status-save" data-state="saved">saved</span>
-        <span id="status-notice"></span>
+        <span id="status-notice" role="status" aria-live="polite"></span>
       </div>
       <div class="status-right">
         <span id="status-agent"></span>

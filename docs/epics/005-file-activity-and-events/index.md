@@ -1,8 +1,8 @@
 # Epic 005: File Activity & Project Events
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-12
-**Updated:** 2026-07-12 (003 shipped — live badges/pill/refresh in the webapp; only 004 a11y sweep remains)
+**Updated:** 2026-07-12 (004 shipped — epic complete: all four stories done)
 
 ## Goal
 
@@ -64,7 +64,7 @@ activity for the first time (today each SSE channel has exactly one consumer).
 | 001 | [Project event feed](stories/001-project-event-feed.md) — broadcast hub + `GET /api/projects/:id/events` SSE endpoint, membership-guarded | done | M |
 | 002 | [Persisted file activity & seen model](stories/002-file-activity-seen-model.md) — `file_events` + `file_seen` tables, activity/seen endpoints, `mtime` in tree API | done | M |
 | 003 | [Live file manager UX](stories/003-live-file-manager-ux.md) — server-hydrated badges, feed subscription, clear-on-open, unseen count, refresh + loading state | done | L |
-| 004 | [File-tree a11y & UI debt sweep](stories/004-file-tree-a11y-debt-sweep.md) — tree roles/keyboard nav, focus management, loading/error states, small webapp debt items | ready | M |
+| 004 | [File-tree a11y & UI debt sweep](stories/004-file-tree-a11y-debt-sweep.md) — tree roles/keyboard nav, focus management, loading/error states, small webapp debt items | done | M |
 
 ## Sequencing
 
