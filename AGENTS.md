@@ -52,7 +52,7 @@ project files both live under an explicit data directory, `KUHN_DATA_DIR`
 `data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
 or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
-(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest`).
+(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002).
 
 ### Webapp (`webapp/`) — port 5174 (pinned)
 

@@ -80,8 +80,9 @@ See [webapp/README.md](webapp/README.md) for webapp-specific notes.
 
 ### Additional prerequisites
 
-- Typst + Pandoc sandbox images for rendering/export (one-time:
-  `docker pull ghcr.io/typst/typst:latest && docker pull pandoc/core:latest`)
+- Typst + Pandoc + Poppler sandbox images for rendering/export and org-library
+  PDF ingestion (one-time: `docker pull ghcr.io/typst/typst:latest &&
+  docker pull pandoc/core:latest && docker pull minidocks/poppler:latest`)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
 Render/export and any future analyst code execution run inside sandboxed Docker images (no host

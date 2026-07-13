@@ -16,6 +16,8 @@ import {
   insertOrgDocument,
   listOrgDocuments,
 } from '../db/org-documents.js';
+import { queueIngest } from '../ingest.js';
+import { subscribeOrgEvents } from '../project-events.js';
 import { StorageError, deleteOrgEntry, readOrgFile, writeOrgFile } from '../storage.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 
@@ -55,11 +57,13 @@ export const docPath = (doc) => `${doc.id}/${doc.filename}`;
 /**
  * Store one uploaded/promoted buffer as a library document. Dedupe by
  * (org, sha256); a fresh row gets its bytes written, and a failed write
- * removes the row again so no orphan metadata survives.
+ * removes the row again so no orphan metadata survives. Unless
+ * `ingest: false`, a fresh document is queued for ingestion (006-002) — and
+ * re-offering bytes whose earlier ingestion failed retries it.
  */
 export async function storeOrgDocument(orgId, buffer, {
   filename, title = null, mime = null, source = 'upload',
-  sourceProjectId = null, createdBy = null,
+  sourceProjectId = null, createdBy = null, ingest = true,
 }) {
   const { document, deduped } = insertOrgDocument({
     orgId,
@@ -72,13 +76,17 @@ export async function storeOrgDocument(orgId, buffer, {
     sourceProjectId,
     createdBy,
   });
-  if (deduped) return { document, deduped };
+  if (deduped) {
+    if (ingest && document.status === 'failed') queueIngest(orgId, document.id);
+    return { document, deduped };
+  }
   try {
     await writeOrgFile(orgId, docPath(document), buffer);
   } catch (err) {
     deleteOrgDocument(orgId, document.id); // no orphan metadata
     throw err;
   }
+  if (ingest) queueIngest(orgId, document.id);
   return { document, deduped };
 }
 
@@ -157,6 +165,39 @@ router.delete('/api/orgs/:orgId/library/:docId', async (req, res) => {
   }
   deleteOrgDocument(orgId, doc.id);
   res.json({ id: doc.id, deleted: true });
+});
+
+/**
+ * GET /api/orgs/:orgId/events — org event feed (story 006-002): `doc_status`
+ * ingestion transitions, streamed as SSE with the same framing/heartbeat
+ * contract as the project feed. Poll fallback: the list endpoint carries
+ * status too.
+ */
+router.get('/api/orgs/:orgId/events', async (req, res) => {
+  const orgId = await authorizeOrg(req, res);
+  if (orgId == null) return;
+
+  const unsubscribe = subscribeOrgEvents(orgId, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  if (!unsubscribe) {
+    res.status(503).json({ error: 'too many event subscribers for this organization' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  res.write(': connected\n\n');
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 router.use(bodyErrorHandler);

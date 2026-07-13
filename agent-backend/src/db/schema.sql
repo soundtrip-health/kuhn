@@ -249,3 +249,34 @@ CREATE TABLE IF NOT EXISTS org_documents (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_org_docs_org_sha ON org_documents(org_id, sha256);
 CREATE INDEX IF NOT EXISTS idx_org_docs_org ON org_documents(org_id, created_at DESC);
+
+-- ============================================================
+-- Org-library ingestion (story 006-002): extracted text chunks + FTS5 index.
+-- The FTS table uses the external-content pattern; the triggers keep it in
+-- sync for inserts and deletes (chunks are replace-only, never updated —
+-- re-ingestion deletes and reinserts, and org_documents cascades fire the
+-- delete trigger too).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_document_chunks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id        INTEGER NOT NULL REFERENCES org_documents(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,
+  heading_path  TEXT,
+  text          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_chunks_doc ON org_document_chunks(doc_id, seq);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS org_chunks_fts USING fts5(
+  text,
+  content='org_document_chunks',
+  content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS org_chunks_ai AFTER INSERT ON org_document_chunks BEGIN
+  INSERT INTO org_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS org_chunks_ad AFTER DELETE ON org_document_chunks BEGIN
+  INSERT INTO org_chunks_fts(org_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;

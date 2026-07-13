@@ -75,6 +75,14 @@ export const config = {
     // runaway-tab backstop, not a scaling knob.
     maxSubscribers: parseInt(process.env.PROJECT_EVENTS_MAX_SUBSCRIBERS || '20'),
   },
+  ingest: {
+    // Org-library ingestion bounds (story 006-002). Chunk sizes are in
+    // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).
+    maxPdfPages: parseInt(process.env.INGEST_MAX_PDF_PAGES || '200'),
+    minTextChars: parseInt(process.env.INGEST_MIN_TEXT_CHARS || '20'),
+    chunkTargetChars: parseInt(process.env.INGEST_CHUNK_TARGET_CHARS || '3200'),
+    chunkMaxChars: parseInt(process.env.INGEST_CHUNK_MAX_CHARS || '4400'),
+  },
   fileActivity: {
     // Per-project cap on retained file_events rows (story 005-002); oldest
     // pruned on insert. Badges only need the recent tail.
@@ -86,6 +94,8 @@ export const config = {
     // read-only, CPU/memory/time limits.
     typstImage: process.env.SANDBOX_TYPST_IMAGE || 'ghcr.io/typst/typst:latest',
     pandocImage: process.env.SANDBOX_PANDOC_IMAGE || 'pandoc/core:latest',
+    // PDF text extraction for org-library ingestion (story 006-002)
+    popplerImage: process.env.SANDBOX_POPPLER_IMAGE || 'minidocks/poppler:latest',
     timeoutMs: parseInt(process.env.SANDBOX_TIMEOUT_MS || '60000'),
     cpus: process.env.SANDBOX_CPUS || '1',
     memory: process.env.SANDBOX_MEMORY || '512m',
