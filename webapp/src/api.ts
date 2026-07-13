@@ -36,8 +36,10 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job';
   agent: string;
+  /** Feed envelope timestamp — present on project-feed events (story 005-001). */
+  ts?: string;
   content?: string;
   path?: string;
   kind?: 'create' | 'update' | 'delete';
@@ -58,9 +60,10 @@ export interface AgentEvent {
   maxAttempts?: number;
   nextRetryMs?: number;
   message?: string;
-  // Seeding pipeline stage markers (story 015)
+  // Seeding pipeline stage markers (story 015); 'started' is the project
+  // feed's job-start marker (story 005-001).
   stage?: string;
-  status?: 'start' | 'done' | 'error';
+  status?: 'start' | 'done' | 'error' | 'started';
   detail?: string;
 }
 
@@ -251,6 +254,67 @@ export async function uploadFiles(
   }
   const { files: written } = (await res.json()) as { files: UploadOutcome['uploaded'] };
   return { uploaded: written, failed };
+}
+
+// ---- File activity & project feed (stories 005-001/002/003) ----
+
+/** One row of the persisted per-project file event log. */
+export interface FileActivityEvent {
+  id: number;
+  path: string;
+  kind: 'create' | 'update' | 'delete' | 'rename';
+  agent_slug: string | null; // null = user action
+  job_id: number | null;
+  created_at: string;
+}
+
+/** Recent file events, newest first (hydrates badge origin on load). */
+export async function getFileActivity(projectId: number, limit = 200): Promise<FileActivityEvent[]> {
+  const res = await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/activity?limit=${limit}`),
+  );
+  return ((await res.json()) as { events: FileActivityEvent[] }).events;
+}
+
+/** Mark a file seen by the current user — clears its new/changed badge. */
+export async function markFileSeen(projectId: number, path: string): Promise<void> {
+  await expectOk(
+    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  );
+}
+
+export interface ProjectFeedHandlers {
+  onEvent: (event: AgentEvent) => void;
+  /** Feed (re)connected — job-stream fallbacks can stand down. */
+  onOpen?: () => void;
+  /** Feed dropped; EventSource retries automatically with backoff. */
+  onError?: () => void;
+}
+
+/**
+ * Subscribe to the always-on project event feed (story 005-001) via
+ * EventSource, which reconnects automatically after drops (the story-028
+ * resilience pattern for free). Returns an unsubscribe function.
+ */
+export function subscribeProjectEvents(
+  projectId: number,
+  handlers: ProjectFeedHandlers,
+): () => void {
+  const source = new EventSource(`${BACKEND_URL}/api/projects/${projectId}/events`);
+  source.onopen = () => handlers.onOpen?.();
+  source.onerror = () => handlers.onError?.();
+  source.onmessage = (msg) => {
+    try {
+      handlers.onEvent(JSON.parse(msg.data) as AgentEvent);
+    } catch {
+      // Malformed frame — skip; the stream itself is still healthy.
+    }
+  };
+  return () => source.close();
 }
 
 /** Delete a project file or directory. */

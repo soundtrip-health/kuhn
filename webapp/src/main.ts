@@ -8,7 +8,7 @@ import './kuhn-tokens.css';
 import './style.css';
 
 import { initAgentSelector } from './agent-selector';
-import { writeTextFile } from './api';
+import { subscribeProjectEvents, writeTextFile } from './api';
 import { initBreadcrumb } from './breadcrumb';
 import { refreshBib } from './bib';
 import { initChat, startSeeding } from './chat';
@@ -20,7 +20,16 @@ import {
   flushSave,
   openDocument,
 } from './editor';
-import { findMarkdownPath, initFiles, recordFileChange, refreshTree, setActiveFile } from './files';
+import {
+  findMarkdownPath,
+  initFiles,
+  markSeen,
+  recordFileChange,
+  refreshTree,
+  refreshTreeSoon,
+  setActiveFile,
+  type FileChange,
+} from './files';
 import { icon } from './icons';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
@@ -89,6 +98,14 @@ function buildEditorHero(): void {
 // so racing switches can't cross-wire one project's document into another.
 let switchSeq = 0;
 
+// Always-on project event feed (story 005-003): one subscription per active
+// project, torn down on switch. While it is open, the job-scoped chat stream's
+// file_change side-effects stand down so the same event isn't applied twice;
+// if the feed drops, EventSource auto-reconnects and the chat stream covers
+// the gap in the meantime.
+let closeFeed: (() => void) | null = null;
+let feedOpen = false;
+
 /**
  * Open the workspace's active project in place: re-wire the per-project panes
  * (chat, files, preview), then open its recorded document (or a sensible
@@ -109,24 +126,49 @@ async function switchToActiveProject(): Promise<void> {
 
   const projectId = project.id;
 
+  // One handler for a file change regardless of which channel delivered it
+  // (project feed or job stream) — badge state, tree refresh (debounced so a
+  // burst or a double delivery coalesces), bib panel, and open-editor updates.
+  const handleFileChange = (change: FileChange): void => {
+    recordFileChange(change); // feed the files-panel status map (story 014)
+    refreshTreeSoon(projectId);
+    if (change.path.endsWith('.bib')) void refreshBib(projectId);
+    if (change.path === currentDocumentPath()) {
+      // Live-update a clean editor in place (story 017); a dirty editor keeps
+      // the reload prompt so unsaved local edits aren't clobbered.
+      void applyExternalChange(change.path).then((applied) => {
+        if (applied) {
+          markSeen(change.path); // the update is on screen — that's seen
+        } else {
+          notify(`${change.path} was changed by an agent — reload to pick up the new version`);
+        }
+      });
+    }
+  };
+
   // A configured project (has a saved title) has already been through intake —
   // chat must not re-offer the interview greeting (story: invisible PM gating).
   const seeded = Boolean(project.config?.title);
   initChat(projectId, (change) => {
-    recordFileChange(change); // feed the files-panel status map (story 014)
-    const changedPath = change.path;
-    void refreshTree(projectId);
-    if (changedPath.endsWith('.bib')) void refreshBib(projectId);
-    if (changedPath === currentDocumentPath()) {
-      // Live-update a clean editor in place (story 017); a dirty editor keeps
-      // the reload prompt so unsaved local edits aren't clobbered.
-      void applyExternalChange(changedPath).then((applied) => {
-        if (!applied) {
-          notify(`${changedPath} was changed by an agent — reload to pick up the new version`);
-        }
-      });
-    }
+    // The project feed carries the same events; only apply from the job
+    // stream while the feed is down (story 005-003 reconciliation).
+    if (!feedOpen) handleFileChange(change);
   }, seeded);
+
+  closeFeed?.();
+  feedOpen = false;
+  closeFeed = subscribeProjectEvents(projectId, {
+    onOpen: () => { feedOpen = true; },
+    onError: () => { feedOpen = false; },
+    onEvent: (event) => {
+      if (seq !== switchSeq) return; // stale subscription racing a switch
+      // Citation events arrive alongside their own file_change — file_change
+      // alone is sufficient here; chat renders citation system lines itself.
+      if (event.type === 'file_change' && event.path) {
+        handleFileChange({ path: event.path, kind: event.kind, agent: event.agent });
+      }
+    },
+  });
 
   initFiles(projectId, {
     onOpenMarkdown: (path) => openInEditor(projectId, path),
