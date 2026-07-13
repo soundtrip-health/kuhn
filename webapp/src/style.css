@@ -1002,3 +1002,74 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   #files-panel { --files-width: 220px; }
   #editor { padding: 40px 24px 100px; }
 }
+
+/* ---- Project setup wizard -------------------------------------------- */
+.wz-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(20, 22, 28, 0.32);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 12vh 24px 24px;
+}
+.wz-overlay[hidden] { display: none; }
+.wz-modal {
+  width: min(560px, 100%);
+  max-height: 76vh; overflow: auto;
+  background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  padding: 22px;
+}
+.wz-eyebrow { font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); }
+.wz-title { font: var(--ui-h1); color: var(--ink); margin: 4px 0 12px; }
+.wz-dots { display: flex; gap: 6px; margin-bottom: 14px; }
+.wz-dot { width: 22px; height: 3px; border-radius: var(--r-xs); background: var(--line); }
+.wz-dot.is-on { background: var(--accent); }
+.wz-body { display: flex; flex-direction: column; gap: 14px; }
+.wz-body.wz-shake { animation: wz-shake .25s; }
+@keyframes wz-shake { 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+.wz-field { display: flex; flex-direction: column; gap: 5px; }
+.wz-label { font: var(--ui-small); font-weight: 600; color: var(--ink-2); }
+.wz-input, .wz-textarea, .wz-select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: var(--r-sm); background: var(--soft); color: var(--ink); font: var(--ui-body);
+}
+.wz-textarea { resize: vertical; }
+.wz-chiplist { display: flex; flex-wrap: wrap; gap: 6px; }
+.wz-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: var(--r-pill);
+  background: var(--soft-2); color: var(--ink); font: var(--ui-small);
+}
+.wz-chip-x { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; color: var(--ink-3); }
+.wz-chip-add { display: flex; gap: 6px; }
+.wz-guide { margin: 14px 0 4px; border-top: 1px solid var(--line); padding-top: 10px; }
+.wz-guide summary { cursor: pointer; font: var(--ui-small); font-weight: 600; color: var(--ink-2); }
+.wz-guide-body { font: var(--ui-small); line-height: 1.5; color: var(--ink-2); margin-top: 8px; }
+.wz-guide-body ul { margin: 6px 0 0 18px; }
+.wz-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+.wz-foot-right { display: flex; gap: 8px; }
+.wz-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px;
+  border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg); background: var(--soft);
+  cursor: pointer; text-align: center; font: var(--ui-body); color: var(--ink-2);
+}
+.wz-drop.is-over { border-color: var(--accent-line); background: var(--accent-soft); }
+.wz-drop.is-busy { opacity: .6; pointer-events: none; }
+.wz-file-input { display: none; }
+.wz-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.wz-file-chip { padding: 3px 8px; border-radius: var(--r-sm); background: var(--soft-2); font: var(--ui-small); }
+.wz-review-row { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line-2); font: var(--ui-body); }
+.wz-review-label { width: 110px; color: var(--ink-3); flex: none; }
+.wz-review-value { flex: 1; color: var(--ink); }
+.wz-nudge {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; padding: 10px 12px;
+  background: var(--accent-soft); border-radius: var(--r-sm); font: var(--ui-small); line-height: 1.45; color: var(--ink-2);
+}
+.wz-nudge svg { flex: none; margin-top: 2px; color: var(--accent); }
+.wz-launch { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.wz-launch-opt {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 12px;
+  border: 1.5px solid var(--line); border-radius: var(--r-sm); background: none; cursor: pointer;
+}
+.wz-launch-opt.is-on { border-color: var(--accent); background: var(--accent-soft); }
+.wz-launch-label { font-weight: 600; font: var(--ui-body); color: var(--ink); }
+.wz-launch-sub { font: var(--ui-small); color: var(--ink-2); }
+.wz-error { color: var(--warn); font: var(--ui-small); margin-bottom: 8px; }
