@@ -97,3 +97,40 @@ export async function* teeProjectEvents(projectId, events) {
 export function projectSubscriberCount(projectId) {
   return subscribers.get(Number(projectId))?.size ?? 0;
 }
+
+// ---- Org-scoped hub (story 006-002) -------------------------------------------
+// Same fan-out contract, keyed by org instead of project. Used for org-library
+// ingestion status (`doc_status` events); no persistence hook and no dedupe —
+// org events are published from exactly one site each.
+
+/** @type {Map<number, Set<(event: object) => void>>} */
+const orgSubscribers = new Map();
+
+/** @returns {(() => void) | null} unsubscribe, or null when over the cap. */
+export function subscribeOrgEvents(orgId, listener) {
+  const key = Number(orgId);
+  let set = orgSubscribers.get(key);
+  if (!set) {
+    set = new Set();
+    orgSubscribers.set(key, set);
+  }
+  if (set.size >= config.projectEvents.maxSubscribers) return null;
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+    if (set.size === 0) orgSubscribers.delete(key);
+  };
+}
+
+export function publishOrgEvent(orgId, event) {
+  const set = orgSubscribers.get(Number(orgId));
+  if (!set || set.size === 0) return;
+  const envelope = { ...event, ts: new Date().toISOString() };
+  for (const listener of [...set]) {
+    try {
+      listener(envelope);
+    } catch (err) {
+      console.error('[project-events] Org subscriber threw; dropping event for it:', err);
+    }
+  }
+}

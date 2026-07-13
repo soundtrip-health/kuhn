@@ -6,6 +6,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "db:seed": "node src/db/seed.js",
+    "import:guidance": "node scripts/import-guidance.mjs",
     "smoke": "node scripts/smoke-research.js",
     "test": "vitest run",
     "test:watch": "vitest"

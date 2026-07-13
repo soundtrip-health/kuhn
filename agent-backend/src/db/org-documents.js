@@ -2,7 +2,7 @@
 // org-scoped storage root (storage.js); this module owns the metadata rows.
 // Synchronous (querySync), matching the other db/ modules.
 
-import { querySync } from '../db.js';
+import { querySync, transaction } from '../db.js';
 
 const COLS =
   'id, org_id, filename, title, mime, size_bytes, sha256, status, status_detail, ' +
@@ -73,4 +73,67 @@ export function setOrgDocumentStatus(orgId, docId, status, statusDetail = null) 
      WHERE org_id = $1 AND id = $2`,
     [orgId, docId, status, statusDetail],
   );
+}
+
+// ---- Chunks & full-text search (story 006-002) --------------------------------
+
+/**
+ * Atomically replace a document's chunks (re-ingestion overwrites, never
+ * appends). The schema triggers keep the FTS index in sync for both the
+ * deletes and the inserts.
+ * @param {Array<{ seq: number, headingPath: string|null, text: string }>} chunks
+ */
+export function replaceDocumentChunks(docId, chunks) {
+  transaction(() => {
+    querySync('DELETE FROM org_document_chunks WHERE doc_id = $1', [docId]);
+    for (const chunk of chunks) {
+      querySync(
+        'INSERT INTO org_document_chunks (doc_id, seq, heading_path, text) VALUES ($1, $2, $3, $4)',
+        [docId, chunk.seq, chunk.headingPath ?? null, chunk.text],
+      );
+    }
+  });
+}
+
+export function countDocumentChunks(docId) {
+  return querySync(
+    'SELECT COUNT(*) AS n FROM org_document_chunks WHERE doc_id = $1', [docId],
+  ).rows[0].n;
+}
+
+/**
+ * FTS5 queries have their own operator syntax; a raw user string ("AND",
+ * quotes, parens) can be a syntax error. Quote each term so input is always
+ * treated as literal words.
+ */
+function sanitizeFtsQuery(query) {
+  return String(query)
+    .split(/\s+/)
+    .map((term) => term.replace(/"/g, ''))
+    .filter(Boolean)
+    .map((term) => `"${term}"`)
+    .join(' ');
+}
+
+/**
+ * BM25-ranked passage search over an org's ready documents (story 006-002).
+ * @returns {Array<{ docId, title, filename, headingPath, seq, snippet, rank }>}
+ */
+export function searchOrgKnowledge(orgId, query, limit = 8) {
+  const match = sanitizeFtsQuery(query);
+  if (!match) return [];
+  const cap = Math.min(Math.max(parseInt(limit) || 8, 1), 25);
+  const { rows } = querySync(
+    `SELECT c.doc_id AS docId, d.title, d.filename, c.heading_path AS headingPath, c.seq,
+            snippet(org_chunks_fts, 0, '>>', '<<', ' … ', 16) AS snippet,
+            bm25(org_chunks_fts) AS rank
+     FROM org_chunks_fts
+     JOIN org_document_chunks c ON c.id = org_chunks_fts.rowid
+     JOIN org_documents d ON d.id = c.doc_id
+     WHERE org_chunks_fts MATCH $2 AND d.org_id = $1 AND d.status = 'ready'
+     ORDER BY rank
+     LIMIT ${cap}`,
+    [orgId, match],
+  );
+  return rows;
 }
