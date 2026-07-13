@@ -14,6 +14,7 @@ import {
   setActiveDocument,
   updateProjectConfig,
 } from '../db/projects.js';
+import { subscribeProjectEvents, teeProjectEvents } from '../project-events.js';
 import { streamEvents } from './sse.js';
 
 const router = Router();
@@ -119,7 +120,46 @@ router.put('/api/projects/:id/active-document', async (req, res) => {
 router.post('/api/projects/:id/seed', async (req, res) => {
   const project = await authorizeProject(req, res);
   if (!project) return;
-  await streamEvents(res, runSeedPipeline(project.id));
+  // teeProjectEvents publishes the pipeline's own stage markers / status-file
+  // event to the project feed; agent events inside the pipeline are already
+  // published by their channel tees (the hub dedupes overlap). (story 005-001)
+  await streamEvents(res, teeProjectEvents(project.id, runSeedPipeline(project.id)));
+});
+
+/**
+ * GET /api/projects/:id/events — always-on project event feed (story 005-001).
+ * SSE stream of every top-level agent/job event for the project, regardless of
+ * which request launched the work: file_change, job start, text, question,
+ * notice, done, error, seeding stage markers. Unlike the job-scoped streams,
+ * this stays open until the client disconnects.
+ */
+router.get('/api/projects/:id/events', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+
+  const unsubscribe = subscribeProjectEvents(project.id, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  if (!unsubscribe) {
+    res.status(503).json({ error: 'too many event subscribers for this project' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  res.write(': connected\n\n');
+
+  // Comment-frame heartbeat so idle connections survive proxies.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 /**

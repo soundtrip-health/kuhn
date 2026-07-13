@@ -4,14 +4,27 @@
  * AgentEvents into the single stream consumed by runAgentTask's generator.
  */
 export class EventChannel {
-  constructor() {
+  /**
+   * @param {object} [opts]
+   * @param {(event: object) => void} [opts.onEvent] - Tee called for every
+   *   accepted push, before delivery — fires even while no consumer is
+   *   attached (detached runs), which is what lets the project event feed see
+   *   background work (story 005-001). Must not throw into the pump.
+   */
+  constructor({ onEvent } = {}) {
     this.buffer = [];
     this.waiters = [];
     this.ended = false;
+    this.onEvent = onEvent;
   }
 
   push(event) {
     if (this.ended) return;
+    try {
+      this.onEvent?.(event);
+    } catch (err) {
+      console.error('[events] onEvent tee threw:', err);
+    }
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value: event, done: false });
     else this.buffer.push(event);

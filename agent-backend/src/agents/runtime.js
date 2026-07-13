@@ -19,6 +19,7 @@ import {
   moveProjectEntry,
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
+import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
@@ -60,8 +61,17 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
-  const channel = new EventChannel();
-  const state = {
+  // Tee top-level runs into the per-project feed (story 005-001). Sub-agent
+  // runs (depth > 0) are covered by dispatch_agent forwarding their events
+  // into this (teed) parent channel — teeing both would double-publish.
+  const topLevel = (internal.depth ?? 0) === 0;
+  const state = {};
+  const channel = new EventChannel(
+    topLevel
+      ? { onEvent: (event) => publishProjectEvent(task.projectId, event, { jobId: state.job?.id }) }
+      : undefined,
+  );
+  Object.assign(state, {
     sdkQuery: null,
     finished: false,
     job: null,
@@ -70,7 +80,7 @@ export async function* runAgentTask(task, internal = {}) {
     // on a question, so a reconnect can resume them (story 027). Sub-agent and
     // seeding-pipeline runs are not detachable: they keep today's teardown.
     detachable: task.detachable === true,
-  };
+  });
 
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
@@ -217,6 +227,11 @@ async function runTask(task, internal, channel, state) {
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId });
   state.job = job;
+  if (depth === 0) {
+    // Top-level job-start marker for the project feed (story 005-001); the
+    // matching terminal 'done'/'error' flows through the channel tee.
+    publishProjectEvent(projectId, { type: 'job', status: 'started', jobId: job.id, agent: agent.slug });
+  }
 
   // Register detachable runs (the chat task path) so a reconnect can find the
   // live channel if the browser drops while parked on a question (story 027).
