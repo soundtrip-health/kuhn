@@ -52,6 +52,10 @@ let retryAction: (() => Promise<void>) | null = null;
 let pendingQuestionJobId: number | null = null;
 let activeQuestionCard: QuestionCard | null = null;
 let onFileChange: (change: FileChange) => void = () => {};
+// The greeting CTA opens the setup wizard; main wires this so chat.ts doesn't
+// import wizard.ts (which imports startSeeding from here — would be a cycle).
+let setupHandler: (projectId: number) => void = () => {};
+export function setSetupHandler(fn: (projectId: number) => void): void { setupHandler = fn; }
 
 export function initChat(
   projectId: number,
@@ -547,15 +551,15 @@ function appendGreeting(): void {
   const body = document.createElement('div');
   body.className = 'chat-body';
   body.innerHTML =
-    `<p>Hi — I'm your project manager. Tell me what you're writing and I'll assemble the ` +
-    `team, pull the literature, and draft a working skeleton.</p>` +
-    `<p>A short interview gets the best result, but you can also just start typing.</p>`;
+    `<p>Hi — I'm your project manager. Once your project is set up, I'll pull the ` +
+    `literature and draft a working skeleton from your materials.</p>` +
+    `<p>Set up takes a minute — or just start typing and set up later.</p>`;
   const cta = document.createElement('button');
   cta.type = 'button';
   cta.className = 'btn btn-accent';
   cta.style.marginTop = '4px';
-  cta.innerHTML = `Start project interview ${icon('arrow-right', { size: 13, stroke: 2 })}`;
-  cta.addEventListener('click', () => void startSeeding());
+  cta.innerHTML = `Set up project ${icon('arrow-right', { size: 13, stroke: 2 })}`;
+  cta.addEventListener('click', () => setupHandler(activeProjectId));
   body.append(cta);
 
   main.append(head, body);

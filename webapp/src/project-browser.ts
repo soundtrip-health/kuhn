@@ -9,6 +9,7 @@ import { trapFocus } from './a11y';
 import { icon } from './icons';
 import { PROJECT_TYPES, TYPE_LABEL } from './project-types';
 import * as workspace from './workspace';
+import { openSetupWizard } from './wizard';
 
 let overlay: HTMLElement | null = null;
 let creating = false;
@@ -189,7 +190,27 @@ function render(): void {
         beginRename(card, name, project.id, project.name);
       });
 
-      wrap.append(card, renameBtn);
+      // Setup / resume-setup control — opens the wizard prefilled from the draft.
+      const setupState = project.config?.setup?.status;
+      const setupBtn = document.createElement('button');
+      setupBtn.type = 'button';
+      setupBtn.className = 'pb-card-setup';
+      const setupLabel = project.config?.title
+        ? 'Edit setup'
+        : setupState === 'draft' ? 'Resume setup' : 'Set up';
+      setupBtn.title = setupLabel;
+      setupBtn.setAttribute('aria-label', `${setupLabel} — ${project.name}`);
+      // No dedicated settings/sliders icon in the icon set (icons.ts) — sparkle
+      // stands in for "set up" (also used for the wizard's seed-materials nudge).
+      setupBtn.innerHTML = icon('sparkle', { size: 14, stroke: 1.8 });
+      setupBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        workspace.setActiveProject(project.id);
+        close();
+        openSetupWizard(project.id);
+      });
+
+      wrap.append(card, renameBtn, setupBtn);
       grid.append(wrap);
     }
   }

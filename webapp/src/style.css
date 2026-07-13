@@ -177,6 +177,18 @@ body {
 .pb-card-wrap:hover .pb-card-rename,
 .pb-card-rename:focus-visible { opacity: 1; }
 .pb-card-rename:hover { color: var(--ink); background: var(--soft-2); border-color: var(--line); }
+/* Setup/resume-setup control — left of the rename pencil, same treatment. */
+.pb-card-setup {
+  position: absolute; top: 8px; right: 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--r);
+  background: transparent; color: var(--ink-3); cursor: pointer;
+  opacity: 0; transition: opacity .12s ease, color .12s ease, background .12s ease;
+}
+.pb-card-wrap:hover .pb-card-setup,
+.pb-card-setup:focus-visible { opacity: 1; }
+.pb-card-setup:hover { color: var(--ink); background: var(--soft-2); border-color: var(--line); }
 .pb-rename-input {
   font: var(--ui-title); color: var(--ink);
   border: 1px solid var(--accent-line); border-radius: 6px;
