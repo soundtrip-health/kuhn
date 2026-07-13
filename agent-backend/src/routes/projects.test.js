@@ -24,6 +24,8 @@ import {
   setActiveDocument,
 } from '../db/projects.js';
 import projectsRouter from './projects.js';
+import { config } from '../config.js';
+import { publishProjectEvent, projectSubscriberCount } from '../project-events.js';
 
 let server;
 let base;
@@ -170,5 +172,75 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
       { type: 'text', agent: 'pm', content: 'hi' },
     ]);
     expect(runSeedPipeline).toHaveBeenCalledWith(3);
+  });
+});
+
+describe('GET /api/projects/:id/events (story 005-001)', () => {
+  /** Read SSE frames until a `data:` line arrives, then return its payload. */
+  async function nextDataFrame(body) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (let i = 0; i < 20; i++) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const match = buf.match(/^data: (.*)$/m);
+      if (match) {
+        reader.releaseLock();
+        return JSON.parse(match[1]);
+      }
+    }
+    throw new Error(`no data frame in: ${buf}`);
+  }
+
+  it('404s for non-members without leaking existence', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    isMember.mockResolvedValue(false);
+    const res = await fetch(`${base}/api/projects/3/events`);
+    expect(res.status).toBe(404);
+  });
+
+  it('delivers published events to every open feed', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    const ac = new AbortController();
+    try {
+      const [res1, res2] = await Promise.all([
+        fetch(`${base}/api/projects/3/events`, { signal: ac.signal }),
+        fetch(`${base}/api/projects/3/events`, { signal: ac.signal }),
+      ]);
+      expect(res1.status).toBe(200);
+      expect(res1.headers.get('content-type')).toContain('text/event-stream');
+
+      // Headers received ⇒ the subscription is registered server-side.
+      publishProjectEvent(3, { type: 'file_change', agent: 'writer', path: 'draft/main.md', kind: 'update' });
+
+      const [e1, e2] = await Promise.all([nextDataFrame(res1.body), nextDataFrame(res2.body)]);
+      for (const e of [e1, e2]) {
+        expect(e).toMatchObject({ type: 'file_change', path: 'draft/main.md', kind: 'update' });
+        expect(typeof e.ts).toBe('string');
+      }
+    } finally {
+      ac.abort();
+    }
+    // Disconnect cleans up the subscriptions.
+    await vi.waitFor(() => expect(projectSubscriberCount(3)).toBe(0));
+  });
+
+  it('503s beyond the per-project subscriber cap', async () => {
+    getProject.mockResolvedValue({ id: 4, org_id: 7 });
+    const saved = config.projectEvents.maxSubscribers;
+    config.projectEvents.maxSubscribers = 1;
+    const ac = new AbortController();
+    try {
+      const first = await fetch(`${base}/api/projects/4/events`, { signal: ac.signal });
+      expect(first.status).toBe(200);
+      const second = await fetch(`${base}/api/projects/4/events`);
+      expect(second.status).toBe(503);
+    } finally {
+      config.projectEvents.maxSubscribers = saved;
+      ac.abort();
+    }
+    await vi.waitFor(() => expect(projectSubscriberCount(4)).toBe(0));
   });
 });

@@ -66,6 +66,11 @@ export const config = {
     // Per-file size cap for reads, writes, and uploads
     maxFileBytes: parseInt(process.env.STORAGE_MAX_FILE_BYTES || String(20 * 1024 * 1024)),
   },
+  projectEvents: {
+    // Cap on concurrent SSE subscribers per project (story 005-001) — a
+    // runaway-tab backstop, not a scaling knob.
+    maxSubscribers: parseInt(process.env.PROJECT_EVENTS_MAX_SUBSCRIBERS || '20'),
+  },
   sandbox: {
     // Container images for document-derived code execution (Typst/Pandoc now,
     // analyst Python later). All sandbox runs: no network, project mounted
