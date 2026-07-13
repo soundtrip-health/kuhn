@@ -12,6 +12,7 @@ import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
 import filesRouter from './routes/files.js';
 import orgsRouter from './routes/orgs.js';
+import orgLibraryRouter from './routes/org-library.js';
 import projectsRouter from './routes/projects.js';
 import renderRouter from './routes/render.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
@@ -27,6 +28,7 @@ app.use(agentRouter);
 app.use(citationsRouter);
 app.use(filesRouter);
 app.use(orgsRouter);
+app.use(orgLibraryRouter);
 app.use(projectsRouter);
 app.use(renderRouter);
 

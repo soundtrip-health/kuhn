@@ -65,6 +65,10 @@ export const config = {
   storage: {
     // Per-file size cap for reads, writes, and uploads
     maxFileBytes: parseInt(process.env.STORAGE_MAX_FILE_BYTES || String(20 * 1024 * 1024)),
+    // Root for org-scoped content (story 006-001): the org knowledge library
+    // lives at <orgsRoot>/<orgId>/library, behind the same containment
+    // enforcement as project workspaces.
+    orgsRoot: process.env.ORGS_ROOT || join(dataDir, 'orgs'),
   },
   projectEvents: {
     // Cap on concurrent SSE subscribers per project (story 005-001) — a

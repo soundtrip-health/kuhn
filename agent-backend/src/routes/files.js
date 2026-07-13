@@ -5,12 +5,12 @@
 
 import { Router } from 'express';
 import express from 'express';
-import multer from 'multer';
 import { extname } from 'node:path';
 
 import { config } from '../config.js';
 import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
 import { publishProjectEvent } from '../project-events.js';
+import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import {
   StorageError,
   readProjectFile,
@@ -151,17 +151,6 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
   res.json({ from, to, moved: true });
 }));
 
-const MAX_UPLOAD_FILES = 20;
-
-// Read limits at request time, not import time, so STORAGE_MAX_FILE_BYTES
-// overrides (and tests that adjust config) always match storage.js.
-function uploadMiddleware(req, res, next) {
-  multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: config.storage.maxFileBytes, files: MAX_UPLOAD_FILES },
-  }).array('files')(req, res, next);
-}
-
 /**
  * POST /api/projects/:projectId/files/upload — multipart upload.
  * Form fields: `files` (one or more), optional `path` (target directory).
@@ -199,39 +188,7 @@ router.post(
   }),
 );
 
-// Errors thrown by body-parsing middleware (multer, express.raw) never reach
-// handle()'s catch — without this handler they fall through to Express's
-// default HTML 500/413. Map them to the same { error, code } shape as
-// StorageError responses (story 026).
-router.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      res.status(413).json({
-        error: `File exceeds ${config.storage.maxFileBytes} bytes; nothing was uploaded`,
-        code: 'too_large',
-      });
-      return;
-    }
-    if (err.code === 'LIMIT_FILE_COUNT') {
-      res.status(400).json({
-        error: `Too many files in one upload (max ${MAX_UPLOAD_FILES})`,
-        code: 'too_many_files',
-      });
-      return;
-    }
-    res.status(400).json({ error: err.message, code: 'upload_error' });
-    return;
-  }
-  // express.raw() body-size rejection on PUT /file
-  if (err?.type === 'entity.too.large') {
-    res.status(413).json({
-      error: `Content exceeds ${config.storage.maxFileBytes} bytes`,
-      code: 'too_large',
-    });
-    return;
-  }
-  next(err);
-});
+// Story-026 body-error mapping, shared with the org library (routes/uploads.js).
+router.use(bodyErrorHandler);
 
 export default router;

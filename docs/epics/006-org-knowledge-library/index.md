@@ -1,8 +1,8 @@
 # Epic 006: Org Knowledge Library
 
-**Status:** ready
+**Status:** in-progress
 **Created:** 2026-07-12
-**Updated:** 2026-07-12
+**Updated:** 2026-07-12 (001 shipped — org document store + storage org scope; next: 002 ingestion)
 
 ## Goal
 
@@ -57,7 +57,7 @@ corpus" (deferred from Epic 004).
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Org document store & storage scope](stories/001-org-document-store.md) — `org_documents` table, org storage root via `storage.js`, guarded CRUD routes | ready | L |
+| 001 | [Org document store & storage scope](stories/001-org-document-store.md) — `org_documents` table, org storage root via `storage.js`, guarded CRUD routes | done | L |
 | 002 | [Ingestion pipeline & FTS index](stories/002-ingestion-and-fts.md) — sandboxed text extraction, chunking, FTS5 table, status lifecycle events | ready | L |
 | 003 | [`search_org_knowledge` agent tool](stories/003-search-org-knowledge-tool.md) — MCP tool + allowlist + prompt updates; provenance in results | ready | M |
 | 004 | [Org library UI & onboarding](stories/004-org-library-ui-onboarding.md) — library browser, org-creation modal with seed step, promote-from-project | ready | L |
