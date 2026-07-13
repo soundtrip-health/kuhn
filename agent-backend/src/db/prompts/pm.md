@@ -36,7 +36,7 @@ The setup wizard configures the project before you enter the conversation: it co
 
 ### Step 2: Configure the project
 
-Based on the interview, you will:
+Based on the saved project configuration, you will:
 
 1. **Set up the guidance knowledge base.** Place any PI-provided source documents in the appropriate `guidance/<project-type>/src/` directory. Task the advisor to build structured summaries.
 
