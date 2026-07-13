@@ -113,6 +113,58 @@ describe('file routes', () => {
     expect(put.status).toBe(403);
   });
 
+  describe('upload size limits (story 026)', () => {
+    let savedMax;
+    beforeAll(() => {
+      savedMax = config.storage.maxFileBytes;
+      config.storage.maxFileBytes = 64;
+    });
+    afterAll(() => {
+      config.storage.maxFileBytes = savedMax;
+    });
+
+    const oversize = () => new Blob(['y'.repeat(100)], { type: 'text/plain' });
+    const valid = () => new Blob(['ok'], { type: 'text/plain' });
+
+    it('maps an oversize multipart upload to 413 { error, code: too_large }', async () => {
+      const form = new FormData();
+      form.append('files', oversize(), 'big.txt');
+      const res = await fetch(url('/api/projects/1/files/upload'), { method: 'POST', body: form });
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.code).toBe('too_large');
+      expect(body.error).toContain('64 bytes');
+    });
+
+    it('a mixed batch is all-or-nothing: valid files do not land either', async () => {
+      const form = new FormData();
+      form.append('files', valid(), 'small-026.txt');
+      form.append('files', oversize(), 'big.txt');
+      const res = await fetch(url('/api/projects/1/files/upload'), { method: 'POST', body: form });
+      expect(res.status).toBe(413);
+      const read = await fetch(url('/api/projects/1/file', { path: 'small-026.txt' }));
+      expect(read.status).toBe(404);
+    });
+
+    it('maps too many files to 400 { code: too_many_files }', async () => {
+      const form = new FormData();
+      for (let i = 0; i < 21; i++) form.append('files', valid(), `f${i}.txt`);
+      const res = await fetch(url('/api/projects/1/files/upload'), { method: 'POST', body: form });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('too_many_files');
+    });
+
+    it('maps an oversize PUT raw body to 413 { code: too_large }', async () => {
+      const res = await fetch(url('/api/projects/1/file', { path: 'big-raw.txt' }), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'z'.repeat(100),
+      });
+      expect(res.status).toBe(413);
+      expect((await res.json()).code).toBe('too_large');
+    });
+  });
+
   it('maps unknown projects and files to 404, bad input to 400', async () => {
     expect((await fetch(url('/api/projects/99/files'))).status).toBe(404);
     expect((await fetch(url('/api/projects/1/file', { path: 'nope.md' }))).status).toBe(404);

@@ -192,10 +192,12 @@ export async function writeTextFile(projectId: number, path: string, content: st
 /**
  * Max upload size, mirroring the backend's STORAGE_MAX_FILE_BYTES default
  * (20 MB). We pre-check client-side so an oversize file shows a readable error
- * and is excluded from the batch — the upload endpoint's multer `fileSize`
- * limit would otherwise abort the *whole* multipart request (and surfaces as a
- * generic 500, since the backend has no error middleware). Keep in sync with
- * agent-backend `config.storage.maxFileBytes` if that env var is overridden.
+ * and is excluded from the batch — the upload endpoint's batch semantics are
+ * all-or-nothing (one oversize file aborts the request as a 413, story 026),
+ * so the pre-check is the intentional UX fast-path that lets the valid files
+ * in a mixed drop still land. If the pre-check drifts from the backend limit
+ * (STORAGE_MAX_FILE_BYTES overridden), the backend now returns a readable
+ * `413 { error, code: 'too_large' }` that uploadFiles surfaces per file.
  */
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 

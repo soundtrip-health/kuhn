@@ -92,9 +92,13 @@ router.get('/api/projects/:projectId/file', handle(async (projectId, req, res) =
  * PUT /api/projects/:projectId/file?path=... — create/overwrite a file.
  * Body is the raw file content (text/plain or application/octet-stream).
  */
+// Same request-time-limit rationale as uploadMiddleware below.
+const rawBody = (req, res, next) =>
+  express.raw({ type: () => true, limit: config.storage.maxFileBytes })(req, res, next);
+
 router.put(
   '/api/projects/:projectId/file',
-  express.raw({ type: () => true, limit: config.storage.maxFileBytes }),
+  rawBody,
   handle(async (projectId, req, res) => {
     const path = requirePath(req, res);
     if (path == null) return;
@@ -126,18 +130,30 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
   res.json({ from, to, moved: true });
 }));
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.storage.maxFileBytes, files: 20 },
-});
+const MAX_UPLOAD_FILES = 20;
+
+// Read limits at request time, not import time, so STORAGE_MAX_FILE_BYTES
+// overrides (and tests that adjust config) always match storage.js.
+function uploadMiddleware(req, res, next) {
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: config.storage.maxFileBytes, files: MAX_UPLOAD_FILES },
+  }).array('files')(req, res, next);
+}
 
 /**
  * POST /api/projects/:projectId/files/upload — multipart upload.
  * Form fields: `files` (one or more), optional `path` (target directory).
+ *
+ * Batch semantics are all-or-nothing: multer enforces the size limit while
+ * the stream is still being parsed (protecting memory), so one oversize file
+ * aborts the whole request before any file is written — mapped to a 413 by
+ * the router error handler below. The webapp pre-checks sizes client-side so
+ * valid files in a mixed drop still land (story 026).
  */
 router.post(
   '/api/projects/:projectId/files/upload',
-  upload.array('files'),
+  uploadMiddleware,
   handle(async (projectId, req, res) => {
     const files = req.files ?? [];
     if (files.length === 0) {
@@ -156,5 +172,40 @@ router.post(
     res.status(201).json({ files: written });
   }),
 );
+
+// Errors thrown by body-parsing middleware (multer, express.raw) never reach
+// handle()'s catch — without this handler they fall through to Express's
+// default HTML 500/413. Map them to the same { error, code } shape as
+// StorageError responses (story 026).
+router.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({
+        error: `File exceeds ${config.storage.maxFileBytes} bytes; nothing was uploaded`,
+        code: 'too_large',
+      });
+      return;
+    }
+    if (err.code === 'LIMIT_FILE_COUNT') {
+      res.status(400).json({
+        error: `Too many files in one upload (max ${MAX_UPLOAD_FILES})`,
+        code: 'too_many_files',
+      });
+      return;
+    }
+    res.status(400).json({ error: err.message, code: 'upload_error' });
+    return;
+  }
+  // express.raw() body-size rejection on PUT /file
+  if (err?.type === 'entity.too.large') {
+    res.status(413).json({
+      error: `Content exceeds ${config.storage.maxFileBytes} bytes`,
+      code: 'too_large',
+    });
+    return;
+  }
+  next(err);
+});
 
 export default router;
