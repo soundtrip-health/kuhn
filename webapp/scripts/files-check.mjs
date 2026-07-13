@@ -42,6 +42,30 @@ check((await treePaths()).includes(UPLOADED), 'uploaded file appears in the tree
 const stored = await (await fetch(fileApi(UPLOADED))).text();
 check(stored === CONTENT, 'stored content matches the uploaded bytes');
 
+// --- API: oversize upload is a readable 413, all-or-nothing (story 026) ---
+const LIMIT_BYTES = 20 * 1024 * 1024; // backend default; see STORAGE_MAX_FILE_BYTES
+const MIXED_OK = 'files-check-mixed-ok.txt';
+try {
+  const bigForm = new FormData();
+  bigForm.append('files', new Blob(['small sibling'], { type: 'text/plain' }), MIXED_OK);
+  bigForm.append(
+    'files',
+    new Blob([new Uint8Array(LIMIT_BYTES + 1024)], { type: 'application/octet-stream' }),
+    'files-check-too-big.bin',
+  );
+  const bigRes = await fetch(api('/files/upload'), { method: 'POST', body: bigForm });
+  const bigBody = await bigRes.json().catch(() => ({}));
+  check(bigRes.status === 413, `oversize upload returns 413 (got ${bigRes.status})`);
+  check(
+    bigBody.code === 'too_large' && typeof bigBody.error === 'string' && bigBody.error.length > 0,
+    'oversize upload carries a readable too_large error',
+  );
+  check(!(await treePaths()).includes(MIXED_OK), 'mixed batch is all-or-nothing (valid sibling did not land)');
+} catch (err) {
+  fail(`oversize upload probe threw instead of returning 413: ${err.message}`);
+}
+await fetch(fileApi(MIXED_OK), { method: 'DELETE' }).catch(() => {});
+
 // --- Browser: click the file → it previews in the pane ---
 const browser = await chromium.launch();
 const page = await browser.newPage();

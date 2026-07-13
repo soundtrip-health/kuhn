@@ -1,8 +1,33 @@
 # Story 026: Upload Oversize Error Mapping (backend)
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** S
+
+## Outcome
+
+All acceptance criteria met (2026-07-12). A router-level error handler in
+`routes/files.js` maps body-parsing errors to the `{ error, code }` shape:
+multer `LIMIT_FILE_SIZE` → 413 `too_large`, `LIMIT_FILE_COUNT` → 400
+`too_many_files`, and `express.raw`'s `entity.too.large` (oversize PUT) → 413
+`too_large`. Both parsers now read `config.storage.maxFileBytes` at request
+time instead of import time, so `STORAGE_MAX_FILE_BYTES` overrides and tests
+always match `storage.js`.
+
+**Batch semantics decided: all-or-nothing.** Multer enforces the limit while
+the stream is parsed (protecting memory from unbounded buffering), so one
+oversize file aborts the whole request before anything is written — documented
+on the route. The webapp's client-side pre-check (`api.ts` `MAX_UPLOAD_BYTES`)
+is retained as the intentional UX fast-path that lets valid files in a mixed
+drop still land; if it drifts from an overridden backend limit, the fallback
+is now the readable 413 instead of a generic 500 (duplication documented at
+both sites).
+
+Verified: 4 new vitest cases (oversize multipart 413, mixed batch
+all-or-nothing, 21-file batch 400, oversize PUT 413) — 146/146 backend tests
+pass — plus a live probe against a running backend with a real 21 MB body
+(clean 413 JSON mid-stream, valid sibling absent from tree, small upload still
+201). `files-check.mjs` gained the oversize/all-or-nothing assertions.
 
 ## Goal
 
@@ -52,13 +77,15 @@ upload.
 
 ## Acceptance Criteria
 
-- [ ] A direct multipart upload of an oversize file returns `413` with
+- [x] A direct multipart upload of an oversize file returns `413` with
       `{ error, code: 'too_large' }`, not a generic 500
-- [ ] Batch semantics for a mix of valid + oversize files are defined and
-      tested (which files land, what the response reports)
-- [ ] `webapp/scripts/files-check.mjs` gains an oversize-upload assertion
-- [ ] The size limit is not silently duplicated between client and server (or
-      the duplication is documented as an intentional UX fast-path)
+- [x] Batch semantics for a mix of valid + oversize files are defined and
+      tested (which files land, what the response reports) — all-or-nothing;
+      nothing lands, response is the mapped 413
+- [x] `webapp/scripts/files-check.mjs` gains an oversize-upload assertion
+- [x] The size limit is not silently duplicated between client and server (or
+      the duplication is documented as an intentional UX fast-path) —
+      documented as the intentional fast-path at both sites
 
 ## Out of Scope
 
