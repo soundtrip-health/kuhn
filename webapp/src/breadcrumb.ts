@@ -8,6 +8,12 @@
 
 import { revealFile } from './files';
 import { icon } from './icons';
+import {
+  libraryNeedsSetup,
+  openCreateOrgModal,
+  openOrgLibrary,
+  refreshLibraryHint,
+} from './org-library';
 import { openProjectBrowser } from './project-browser';
 import { TYPE_LABEL } from './project-types';
 import * as workspace from './workspace';
@@ -127,6 +133,30 @@ function orgMenu(): HTMLElement {
     menu.append(item);
   }
 
+  // Org library entry (story 006-004) — carries a subtle "Set up" hint until
+  // the org's first document is ready. The cached answer renders immediately;
+  // a background refresh corrects the tag in place if it's stale.
+  const orgId = activeId;
+  if (orgId != null) {
+    const library = document.createElement('button');
+    library.type = 'button';
+    library.className = 'breadcrumb-menu-item bm-library';
+    library.setAttribute('role', 'menuitem');
+    library.innerHTML =
+      `<span class="bm-check">${icon('book', { size: 13, stroke: 1.8 })}</span>` +
+      `<span>Org library…</span><span class="bm-hint" hidden>Set up</span>`;
+    const hint = library.querySelector('.bm-hint') as HTMLElement;
+    hint.hidden = libraryNeedsSetup(orgId) !== true;
+    void refreshLibraryHint(orgId).then((needs) => {
+      if (needs !== undefined) hint.hidden = !needs;
+    });
+    library.addEventListener('click', () => {
+      closeOrgMenu();
+      openOrgLibrary();
+    });
+    menu.append(library);
+  }
+
   const create = document.createElement('button');
   create.type = 'button';
   create.className = 'breadcrumb-menu-item bm-create';
@@ -134,10 +164,7 @@ function orgMenu(): HTMLElement {
   create.innerHTML = `<span class="bm-check">${icon('plus', { size: 13, stroke: 2 })}</span><span>New organization…</span>`;
   create.addEventListener('click', () => {
     closeOrgMenu();
-    // window.prompt is a documented interim: the org-creation modal (with the
-    // library seeding step) is Epic 006 story 004.
-    const name = window.prompt('New organization name')?.trim();
-    if (name) void workspace.createNewOrg(name);
+    openCreateOrgModal(); // modal with the library-seeding step (story 006-004)
   });
   menu.append(create);
   return menu;

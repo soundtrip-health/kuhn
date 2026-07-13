@@ -1,8 +1,8 @@
 # Epic 006: Org Knowledge Library
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-12
-**Updated:** 2026-07-12 (003 shipped — agents can search the org library with provenance; FTS eval 10/11, no embeddings story needed; next: 004 UI/onboarding)
+**Updated:** 2026-07-13 (004 shipped — library panel, org-creation modal with seed step, promote-from-project with live badges. All 4 stories done; epic closed. Deferred items remain deferred: embeddings only with failing queries in hand, versioning/roles to Epic 007+)
 
 ## Goal
 
@@ -42,8 +42,8 @@ corpus" (deferred from Epic 004).
 - [x] Ingestion pipeline: extract → chunk → FTS5 index, with status lifecycle
 - [x] `search_org_knowledge` agent tool, allowlisted via `agent_tools`;
       advisor/RA prompts updated to use it
-- [ ] Org library UI: browse/upload/delete, ingestion status visible
-- [ ] Org-creation flow replaced (no more `window.prompt`) with a modal that
+- [x] Org library UI: browse/upload/delete, ingestion status visible
+- [x] Org-creation flow replaced (no more `window.prompt`) with a modal that
       prompts seeding the library; "promote to org library" from project files
 
 ### Deferred
@@ -60,7 +60,7 @@ corpus" (deferred from Epic 004).
 | 001 | [Org document store & storage scope](stories/001-org-document-store.md) — `org_documents` table, org storage root via `storage.js`, guarded CRUD routes | done | L |
 | 002 | [Ingestion pipeline & FTS index](stories/002-ingestion-and-fts.md) — sandboxed text extraction, chunking, FTS5 table, status lifecycle events | done | L |
 | 003 | [`search_org_knowledge` agent tool](stories/003-search-org-knowledge-tool.md) — MCP tool + allowlist + prompt updates; provenance in results | done | M |
-| 004 | [Org library UI & onboarding](stories/004-org-library-ui-onboarding.md) — library browser, org-creation modal with seed step, promote-from-project | ready | L |
+| 004 | [Org library UI & onboarding](stories/004-org-library-ui-onboarding.md) — library browser, org-creation modal with seed step, promote-from-project | done | L |
 
 ## Sequencing
 
