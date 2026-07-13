@@ -14,6 +14,7 @@ import {
   setActiveDocument,
   updateProjectConfig,
 } from '../db/projects.js';
+import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { subscribeProjectEvents, teeProjectEvents } from '../project-events.js';
 import { streamEvents } from './sse.js';
 
@@ -124,6 +125,37 @@ router.post('/api/projects/:id/seed', async (req, res) => {
   // event to the project feed; agent events inside the pipeline are already
   // published by their channel tees (the hub dedupes overlap). (story 005-001)
   await streamEvents(res, teeProjectEvents(project.id, runSeedPipeline(project.id)));
+});
+
+/**
+ * POST /api/projects/:id/files/seen — body { path }. Mark a file seen by the
+ * session user; clears its new/changed badge (story 005-002). Idempotent.
+ */
+router.post('/api/projects/:id/files/seen', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const { path } = req.body ?? {};
+  if (!path || typeof path !== 'string') {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  markSeen(req.user.id, project.id, path);
+  res.json({ path, seen: true });
+});
+
+/**
+ * GET /api/projects/:id/files/activity?since=<iso>&limit= — recent file
+ * events, newest first (story 005-002). Hydration/audit companion to the
+ * live feed; the tree endpoint already carries per-node unseen flags.
+ */
+router.get('/api/projects/:id/files/activity', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const events = listFileActivity(project.id, {
+    since: typeof req.query.since === 'string' ? req.query.since : null,
+    limit: req.query.limit,
+  });
+  res.json({ events });
 });
 
 /**

@@ -15,6 +15,7 @@
 // published at most once no matter how many paths carry it.
 
 import { config } from './config.js';
+import { recordFileEvent } from './db/file-activity.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
 const subscribers = new Map();
@@ -50,6 +51,21 @@ export function publishProjectEvent(projectId, event, { jobId } = {}) {
   if (event == null || typeof event !== 'object') return;
   if (seen.has(event)) return;
   seen.add(event);
+  // Persist file activity here — the one point every file_change crosses,
+  // with or without live subscribers (story 005-002). Failure must never
+  // break event delivery or the emitting run.
+  if (event.type === 'file_change' && event.path) {
+    try {
+      recordFileEvent(Number(projectId), {
+        path: event.path,
+        kind: event.kind,
+        agentSlug: event.agent ?? null,
+        jobId: event.jobId ?? jobId ?? null,
+      });
+    } catch (err) {
+      console.error('[project-events] Failed to persist file event:', err);
+    }
+  }
   const set = subscribers.get(Number(projectId));
   if (!set || set.size === 0) return;
   const envelope = {

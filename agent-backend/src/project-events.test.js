@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+// Keep this a pure hub test: persistence (005-002) is covered against real
+// SQLite in db/file-activity.test.js.
+vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
+
 import { config } from './config.js';
 import {
   subscribeProjectEvents,

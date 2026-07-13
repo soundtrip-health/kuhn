@@ -28,6 +28,10 @@ export interface TreeNode {
   path: string;
   type: 'file' | 'dir';
   size?: number;
+  /** Last-modified time (ISO), files only (story 005-002). */
+  mtime?: string;
+  /** True when the file changed since this user last opened it (story 005-002). */
+  unseen?: boolean;
   children?: TreeNode[];
 }
 

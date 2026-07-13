@@ -19,6 +19,7 @@ import {
   moveProjectEntry,
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
+import { migrateSeenPaths } from '../db/file-activity.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
@@ -559,6 +560,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
       },
       async ({ from, to }) => fileToolResult(async () => {
         await moveProjectEntry(projectId, from, to);
+        migrateSeenPaths(projectId, from, to); // seen state follows the file (005-002)
         // Mirror the change into the live file tree (delete old row, add new).
         channel.push({ type: 'file_change', agent: agent.slug, path: from, kind: 'delete' });
         channel.push({ type: 'file_change', agent: agent.slug, path: to, kind: 'create' });
