@@ -174,7 +174,7 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
   it('streams the pipeline events as SSE', async () => {
     getProject.mockResolvedValue({ id: 3, org_id: 7, config: {} });
     runSeedPipeline.mockReturnValue((async function* () {
-      yield { type: 'stage', stage: 'interview', status: 'start' };
+      yield { type: 'stage', stage: 'research', status: 'start' };
       yield { type: 'text', agent: 'pm', content: 'hi' };
     })());
 
@@ -184,7 +184,7 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
 
     const frames = (await res.text()).trim().split('\n\n').map((f) => JSON.parse(f.replace(/^data: /, '')));
     expect(frames).toEqual([
-      { type: 'stage', stage: 'interview', status: 'start' },
+      { type: 'stage', stage: 'research', status: 'start' },
       { type: 'text', agent: 'pm', content: 'hi' },
     ]);
     expect(runSeedPipeline).toHaveBeenCalledWith(3);

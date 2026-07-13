@@ -3,7 +3,7 @@
 // free-text answer typed into the chat input, so the card is the visual
 // surface: it shows the question; the actual answer is driven by chat.ts
 // (markAnswered) and, only on task teardown, the `question_expired` event
-// (markClosed). There is no countdown — a question waits until answered.
+// (markExpired). There is no countdown — a question waits until answered.
 
 import { agentIdentity } from './agents';
 import { icon } from './icons';

@@ -171,7 +171,7 @@ const describeProject = (config) => [
   `Research question: ${config.research_question}`,
   config.deliverables?.length ? `Deliverables: ${config.deliverables.join('; ')}` : null,
   config.source_materials?.length ? `Source materials on hand: ${config.source_materials.join('; ')}` : null,
-  config.notes ? `Interview notes: ${config.notes}` : null,
+  config.notes ? `Notes: ${config.notes}` : null,
 ].filter(Boolean).join('\n');
 
 function raInput(config) {

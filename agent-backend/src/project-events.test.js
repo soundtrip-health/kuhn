@@ -87,7 +87,7 @@ describe('project event hub (story 005-001)', () => {
     const alreadyPublished = { type: 'text', content: 'hi' };
     publishProjectEvent(1, alreadyPublished);
     async function* pipeline() {
-      yield { type: 'stage', stage: 'interview', status: 'start' };
+      yield { type: 'stage', stage: 'research', status: 'start' };
       yield alreadyPublished; // forwarded sub-run event: already on the hub
     }
     const out = [];
