@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
-import { getProject, updateProjectConfig } from '../db/projects.js';
+import { getProject } from '../db/projects.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import {
   resolveProjectDir,
@@ -26,6 +26,7 @@ import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
 import { pubmedSearch, arxivSearch } from './search.js';
+import { applyProjectConfig } from './project-config.js';
 
 // DB tool slug → built-in SDK tool names. File access deliberately maps to
 // no built-ins (story 018): agents get storage-backed MCP tools instead, so
@@ -801,15 +802,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
           };
           // Keep the user's chosen project name; the manuscript title lives in
           // config.title (and the user can rename the project explicitly).
-          await updateProjectConfig(projectId, {
-            projectType: input.project_type,
-            config: projectConfig,
-          });
-          const { created } = await writeProjectFile(
-            projectId,
-            'project.json',
-            JSON.stringify(projectConfig, null, 2) + '\n',
-          );
+          const { created } = await applyProjectConfig(projectId, projectConfig);
           channel.push({
             type: 'file_change',
             agent: agent.slug,
