@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
-import { getProject, updateProjectConfig } from '../db/projects.js';
+import { getProject } from '../db/projects.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import {
   resolveProjectDir,
@@ -26,6 +26,7 @@ import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
 import { pubmedSearch, arxivSearch } from './search.js';
+import { applyProjectConfig } from './project-config.js';
 
 // DB tool slug → built-in SDK tool names. File access deliberately maps to
 // no built-ins (story 018): agents get storage-backed MCP tools instead, so
@@ -60,7 +61,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
  *   { type: 'citation', agent, key, bibtex, path } — add_citation upserted the bibliography (story 016)
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
- *   { type: 'question_expired', agent, jobId } — the pending question timed out; the agent proceeds with defaults (story 020)
+ *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient API error before retrying (story 029)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
@@ -781,7 +782,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
   if (agent.tools.includes('project_config')) {
     tools.push(tool(
       'save_project_config',
-      'Save the structured project configuration gathered in the intake interview. Updates the project record (type, config) and writes project.json to the workspace root. The project keeps the name the user gave it; the title here is stored as metadata. Call it once, after the interview is complete and before dispatching sub-agents.',
+      'Save the structured project configuration (type, config) to the project record and write project.json to the workspace root. The project keeps the name the user gave it; the title here is stored as metadata. Normally handled by the setup wizard before this agent runs — retained for edge cases where the config still needs to be saved or updated from here.',
       {
         title: z.string().describe('Project title'),
         project_type: z.enum(['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'])
@@ -806,15 +807,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
           };
           // Keep the user's chosen project name; the manuscript title lives in
           // config.title (and the user can rename the project explicitly).
-          await updateProjectConfig(projectId, {
-            projectType: input.project_type,
-            config: projectConfig,
-          });
-          const { created } = await writeProjectFile(
-            projectId,
-            'project.json',
-            JSON.stringify(projectConfig, null, 2) + '\n',
-          );
+          const { created } = await applyProjectConfig(projectId, projectConfig);
           channel.push({
             type: 'file_change',
             agent: agent.slug,

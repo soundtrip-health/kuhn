@@ -1,8 +1,9 @@
 /**
  * Pending ask_user questions, keyed by job id (story 012). The ask_user tool
  * handler blocks on waitForReply(); POST /api/agent/jobs/:id/reply resolves it
- * via deliverReply(). The timeout — and cancelQuestion() on task teardown —
- * guarantee the registry never leaks a waiter when no reply arrives.
+ * via deliverReply(). By default there is no timeout — the job waits until the
+ * PI replies; cancelQuestion() on task teardown still guarantees the registry
+ * never leaks a waiter if the task is torn down first.
  */
 
 const pending = new Map(); // jobId -> { resolve, timer, question, agent }
@@ -10,7 +11,7 @@ const pending = new Map(); // jobId -> { resolve, timer, question, agent }
 /**
  * Wait for the user's reply to a question asked by the given job.
  * @param {number} jobId
- * @param {number} timeoutMs
+ * @param {number | null} timeoutMs - null/0 waits indefinitely (no auto-resolve)
  * @param {object} [meta] - { question, agent } stored so a reconnecting
  *   consumer can re-render the pending question card (story 027).
  * @returns {Promise<string|null>} The reply, or null on timeout/cancellation
@@ -18,11 +19,16 @@ const pending = new Map(); // jobId -> { resolve, timer, question, agent }
 export function waitForReply(jobId, timeoutMs, meta = {}) {
   cancelQuestion(jobId); // a job asks one question at a time
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pending.delete(jobId);
-      resolve(null);
-    }, timeoutMs);
-    timer.unref?.();
+    // timeoutMs null/0 → wait indefinitely: the PI may step away mid-question,
+    // and the job just waits until they reply (or the task is torn down).
+    let timer = null;
+    if (timeoutMs != null && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        pending.delete(jobId);
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+    }
     pending.set(jobId, { resolve, timer, question: meta.question, agent: meta.agent });
   });
 }

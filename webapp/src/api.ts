@@ -18,14 +18,32 @@ async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Re
   return res;
 }
 
+export interface WizardAnswers {
+  title: string;
+  projectType: string;
+  researchQuestion: string;
+  deliverables: string[];
+  timeline: string;
+  sourceMaterials: string[];
+  notes?: string;
+}
+
 export interface Project {
   id: number;
   name: string;
   project_type: string;
   owner_id: string;
   org_id: number;
-  /** Project config blob; `activeDocument` records the last-open file (story 006). */
-  config?: { activeDocument?: string; [key: string]: unknown };
+  /** Project config blob. `activeDocument` records the last-open file (story 006);
+   *  `setup` holds the wizard's draft/complete state (setup wizard). */
+  config?: {
+    activeDocument?: string;
+    title?: string;
+    project_type?: string;
+    research_question?: string;
+    setup?: { status: 'draft' | 'complete'; answers: Partial<WizardAnswers> };
+    [key: string]: unknown;
+  };
 }
 
 export interface Org {
@@ -195,6 +213,26 @@ export async function renameProject(projectId: number, name: string): Promise<Pr
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
+    }),
+  );
+  return ((await res.json()) as { project: Project }).project;
+}
+
+/**
+ * Save project setup from the wizard (token-free intake). draft=true persists a
+ * resumable draft; draft=false is the final save (writes project.json, marks
+ * setup complete). Returns the updated project.
+ */
+export async function saveProjectConfig(
+  projectId: number,
+  answers: WizardAnswers,
+  draft: boolean,
+): Promise<Project> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers, draft }),
     }),
   );
   return ((await res.json()) as { project: Project }).project;

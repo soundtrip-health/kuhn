@@ -5,6 +5,7 @@
 
 import { Router } from 'express';
 import { runSeedPipeline } from '../agents/seeding.js';
+import { applyProjectConfig } from '../agents/project-config.js';
 import { listProjectConversations } from '../db/conversation.js';
 import { isMember, primaryOrgId } from '../db/orgs.js';
 import {
@@ -97,6 +98,72 @@ router.patch('/api/projects/:id', async (req, res) => {
   const updated = await updateProjectConfig(project.id, { name });
   res.json({ project: updated });
 });
+
+/**
+ * PUT /api/projects/:id/config — body { answers, draft? }
+ * The setup wizard's save endpoint (token-free replacement for the PM intake
+ * interview). `answers` is the camelCase wizard state. draft:true persists a
+ * resumable draft under config.setup; a final save validates the pipeline's
+ * required fields, writes canonical config + project.json, and marks setup
+ * complete.
+ */
+router.put('/api/projects/:id/config', async (req, res) => {
+  const project = await authorizeProject(req, res);
+  if (!project) return;
+  const body = req.body ?? {};
+  if (!body.answers || typeof body.answers !== 'object') {
+    res.status(400).json({ error: 'answers is required' });
+    return;
+  }
+  const answers = normalizeAnswers(body.answers);
+
+  if (body.draft) {
+    const updated = await updateProjectConfig(project.id, {
+      config: { setup: { status: 'draft', answers } },
+    });
+    res.json({ project: updated });
+    return;
+  }
+
+  const errors = [];
+  if (!answers.title.trim()) errors.push('title is required');
+  if (!PROJECT_TYPES.includes(answers.projectType)) {
+    errors.push(`projectType must be one of: ${PROJECT_TYPES.join(', ')}`);
+  }
+  if (!answers.researchQuestion.trim()) errors.push('research question is required');
+  if (errors.length) {
+    res.status(400).json({ error: errors.join('; ') });
+    return;
+  }
+
+  const canonical = {
+    title: answers.title.trim(),
+    project_type: answers.projectType,
+    research_question: answers.researchQuestion.trim(),
+    deliverables: answers.deliverables,
+    timeline: answers.timeline,
+    source_materials: answers.sourceMaterials,
+    ...(answers.notes ? { notes: answers.notes } : {}),
+  };
+  const { project: updated } = await applyProjectConfig(project.id, canonical, {
+    extraConfig: { setup: { status: 'complete', answers } },
+  });
+  res.json({ project: updated });
+});
+
+/** Coerce a wizard answers payload to the expected shape/types (camelCase). */
+function normalizeAnswers(a) {
+  const strArr = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()) : []);
+  return {
+    title: typeof a.title === 'string' ? a.title : '',
+    projectType: typeof a.projectType === 'string' ? a.projectType : '',
+    researchQuestion: typeof a.researchQuestion === 'string' ? a.researchQuestion : '',
+    deliverables: strArr(a.deliverables),
+    timeline: typeof a.timeline === 'string' ? a.timeline : '',
+    sourceMaterials: strArr(a.sourceMaterials),
+    ...(typeof a.notes === 'string' && a.notes.trim() ? { notes: a.notes.trim() } : {}),
+  };
+}
 
 /**
  * PUT /api/projects/:id/active-document — body { path }

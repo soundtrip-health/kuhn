@@ -1,6 +1,7 @@
 // Story 015: deterministic project seeding pipeline. The flow from
-// use-case.md Phase 1 — interview → research → skeleton — is code dispatching
-// agent tasks (epic key decision), not agent-driven control flow. Each stage
+// use-case.md Phase 1 — research → skeleton — is code dispatching agent
+// tasks (epic key decision), not agent-driven control flow. Intake is
+// handled by the setup wizard before this pipeline ever runs. Each stage
 // is a separate top-level runAgentTask, so each gets its own weighted token
 // budget (story 020) instead of sharing one dispatch-tree budget.
 
@@ -12,13 +13,14 @@ import { runAgentTask } from './runtime.js';
 /**
  * Run the seeding pipeline for a project. Yields the stages' agent events
  * interleaved with stage markers:
- *   { type: 'stage', stage: 'interview'|'research'|'skeleton'|'seeding',
+ *   { type: 'stage', stage: 'research'|'skeleton'|'seeding',
  *     status: 'start'|'done'|'error', detail? }
  *
- * Failure policy: no project config after the interview aborts the pipeline;
- * a failed research branch is reported but does not block the skeleton; a
- * skeleton failure ends the pipeline as an error. pm/status.md records the
- * per-stage outcomes either way.
+ * Failure policy: a project without a saved config (title + research
+ * question — set by the setup wizard) aborts the pipeline before any agent
+ * is dispatched; a failed research branch is reported but does not block
+ * the skeleton; a skeleton failure ends the pipeline as an error.
+ * pm/status.md records the per-stage outcomes either way.
  *
  * @param {number|string} projectId
  * @param {object} [opts]
@@ -29,27 +31,21 @@ import { runAgentTask } from './runtime.js';
 export async function* runSeedPipeline(projectId, { runTask = runAgentTask, userId = null } = {}) {
   const outcomes = {}; // stage/agent → 'ok' | error message
 
-  // --- Stage 1: PM intake interview -----------------------------------------
-  // Stage jobs carry a seedStage context marker so transcript restore
-  // (story 020) can exclude their instruction prompts from the chat history.
-  yield { type: 'stage', stage: 'interview', status: 'start' };
-  const interviewError = yield* forwardTask(
-    runTask({ role: 'pm', projectId, input: INTERVIEW_INPUT, context: { seedStage: 'interview' }, userId }),
-  );
   const project = await getProject(projectId);
   const config = project?.config ?? {};
-  if (interviewError || !config.title || !config.research_question) {
-    const detail = interviewError ?? 'interview ended without saving a project configuration';
-    outcomes.interview = detail;
-    yield { type: 'stage', stage: 'interview', status: 'error', detail };
-    yield { type: 'stage', stage: 'seeding', status: 'error', detail: 'seeding aborted' };
-    await writeStatusFile(projectId, config, outcomes);
+  // Intake now comes from the setup wizard; guard an unconfigured project so the
+  // research/skeleton stages never run on an empty config.
+  if (!config.title || !config.research_question) {
+    yield {
+      type: 'stage',
+      stage: 'seeding',
+      status: 'error',
+      detail: 'project is not configured yet — complete project setup first',
+    };
     return;
   }
-  outcomes.interview = 'ok';
-  yield { type: 'stage', stage: 'interview', status: 'done' };
 
-  // --- Stage 2: RA + Advisor research in parallel ----------------------------
+  // --- Stage 1: RA + Advisor research in parallel ----------------------------
   yield { type: 'stage', stage: 'research', status: 'start' };
   const branchErrors = yield* forwardParallel([
     runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' }, userId }),
@@ -65,7 +61,7 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask, user
     ...(failed.length > 0 ? { detail: `${failed.length} of 2 research tasks failed` } : {}),
   };
 
-  // --- Stage 3: Writer skeleton ----------------------------------------------
+  // --- Stage 2: Writer skeleton ----------------------------------------------
   yield { type: 'stage', stage: 'skeleton', status: 'start' };
   const skeletonError = yield* forwardTask(
     runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' }, userId }),
@@ -172,24 +168,12 @@ async function writeStatusFile(projectId, config, outcomes) {
 // prompt or readable from the workspace; none of them may ask the user.
 // ---------------------------------------------------------------------------
 
-const INTERVIEW_INPUT = [
-  'Conduct the project intake interview now.',
-  'Ask your intake questions one at a time with ask_user and adapt to the answers,',
-  'then call save_project_config exactly once.',
-  'Before saving, list_files at the workspace root and, if the PI uploaded loose',
-  'source documents, organize them into a seed_docs/ folder with move_file and list',
-  'them in source_materials.',
-  'Do NOT dispatch any sub-agents: this interview is the first stage of the seeding',
-  'pipeline, which itself runs the research and skeleton stages after you finish.',
-  'End with a one-paragraph summary of the configured project.',
-].join(' ');
-
 const describeProject = (config) => [
   `Project: ${config.title} (${config.project_type})`,
   `Research question: ${config.research_question}`,
   config.deliverables?.length ? `Deliverables: ${config.deliverables.join('; ')}` : null,
   config.source_materials?.length ? `Source materials on hand: ${config.source_materials.join('; ')}` : null,
-  config.notes ? `Interview notes: ${config.notes}` : null,
+  config.notes ? `Notes: ${config.notes}` : null,
 ].filter(Boolean).join('\n');
 
 function raInput(config) {

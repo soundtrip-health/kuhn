@@ -20,8 +20,8 @@ interface StageDef {
 }
 
 // The canonical pipeline order. `seeding` is the overall wrapper (not a row).
+// Intake is handled by the setup wizard, not a pipeline stage.
 const STAGES: StageDef[] = [
-  { id: 'interview', label: 'Interview', owner: 'pm' },
   { id: 'research', label: 'Build bibliography', owner: 'ra' },
   { id: 'skeleton', label: 'Generate skeleton', owner: 'writer' },
 ];

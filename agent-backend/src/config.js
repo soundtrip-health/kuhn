@@ -63,9 +63,12 @@ export const config = {
     modelWeights: parseModelWeights(process.env.AGENT_MODEL_WEIGHTS),
     // Max nested dispatch depth (writer -> research is depth 1)
     maxDispatchDepth: parseInt(process.env.AGENT_MAX_DISPATCH_DEPTH || '2'),
-    // How long ask_user waits for a reply before telling the agent to proceed
-    // with defaults (story 012)
-    questionTimeoutMs: parseInt(process.env.AGENT_QUESTION_TIMEOUT_MS || String(15 * 60 * 1000)),
+    // How long ask_user waits for a reply before proceeding. Default null =
+    // wait indefinitely (if the PI steps away, the question just waits). Set
+    // AGENT_QUESTION_TIMEOUT_MS to a number to re-enable an auto-default.
+    questionTimeoutMs: process.env.AGENT_QUESTION_TIMEOUT_MS
+      ? parseInt(process.env.AGENT_QUESTION_TIMEOUT_MS)
+      : null,
     // Global fallback model, used only when an agent's model is NULL. Per-agent
     // models (agents.model, story 021) win and are set in db/seed.sql.
     model: process.env.AGENT_MODEL || undefined,

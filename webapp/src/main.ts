@@ -11,7 +11,7 @@ import { initAgentSelector } from './agent-selector';
 import { subscribeProjectEvents, writeTextFile } from './api';
 import { initBreadcrumb } from './breadcrumb';
 import { refreshBib } from './bib';
-import { initChat, startSeeding } from './chat';
+import { initChat, setSetupHandler } from './chat';
 import {
   applyExternalChange,
   closeDocument,
@@ -36,6 +36,7 @@ import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
 import { notify, setVersion } from './status';
 import * as workspace from './workspace';
+import { openSetupWizard } from './wizard';
 
 const MAIN_DOCUMENT = 'draft/main.md';
 
@@ -202,7 +203,7 @@ async function switchToActiveProject(): Promise<void> {
     await refreshTree(projectId);
     if (seq !== switchSeq) return;
     doc = MAIN_DOCUMENT;
-    maybeAutoGreet(project);
+    maybeOpenSetupWizard(project);
   }
 
   setActiveFile(doc);
@@ -211,16 +212,15 @@ async function switchToActiveProject(): Promise<void> {
   workspace.setActiveDocument(doc);
 }
 
-// A brand-new project (no markdown yet) that was never configured: the PM
-// greets and runs the intake interview in chat, then kicks off research +
-// skeleton (seeding pipeline). Guarded per-tab so a reload mid-interview
-// doesn't restart it. `startSeeding` itself no-ops while a run is in flight.
-function maybeAutoGreet(project: NonNullable<ReturnType<typeof workspace.activeProject>>): void {
-  if (project.config?.title) return; // already configured/seeded
-  const guardKey = `kuhn-greeted-${project.id}`;
-  if (sessionStorage.getItem(guardKey)) return;
-  sessionStorage.setItem(guardKey, '1');
-  void startSeeding();
+// A brand-new project (no markdown yet) that was never set up: open the setup
+// wizard automatically. It stamps a draft on open (config.setup) so it opens
+// exactly once — after that, re-entry is manual from the project browser.
+function maybeOpenSetupWizard(
+  project: NonNullable<ReturnType<typeof workspace.activeProject>>,
+): void {
+  if (project.config?.title) return; // already configured
+  if (project.config?.setup) return; // wizard already shown/aborted once
+  openSetupWizard(project.id, { auto: true });
 }
 
 /** Open a markdown file in the editor and record it as the active document. */
@@ -240,6 +240,7 @@ async function main(): Promise<void> {
   wireExportMenu();
   initAgentSelector();
   buildEditorHero();
+  setSetupHandler((projectId) => openSetupWizard(projectId));
   initBreadcrumb();
   const sendBtn = document.querySelector('.send-btn');
   if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });

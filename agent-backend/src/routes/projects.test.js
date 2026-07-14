@@ -7,6 +7,10 @@ vi.mock('../db/projects.js', () => ({
   listProjectsForUser: vi.fn(async () => []),
   createProject: vi.fn(),
   setActiveDocument: vi.fn(async () => ({})),
+  updateProjectConfig: vi.fn(async (id, fields) => ({ id, ...fields })),
+}));
+vi.mock('../agents/project-config.js', () => ({
+  applyProjectConfig: vi.fn(async (id) => ({ project: { id, config: { setup: { status: 'complete' } } }, created: true })),
 }));
 vi.mock('../db/orgs.js', () => ({
   isMember: vi.fn(async () => true),
@@ -31,7 +35,9 @@ import {
   listProjectsForUser,
   createProject,
   setActiveDocument,
+  updateProjectConfig,
 } from '../db/projects.js';
+import { applyProjectConfig } from '../agents/project-config.js';
 import projectsRouter from './projects.js';
 import { config } from '../config.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
@@ -168,7 +174,7 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
   it('streams the pipeline events as SSE', async () => {
     getProject.mockResolvedValue({ id: 3, org_id: 7, config: {} });
     runSeedPipeline.mockReturnValue((async function* () {
-      yield { type: 'stage', stage: 'interview', status: 'start' };
+      yield { type: 'stage', stage: 'research', status: 'start' };
       yield { type: 'text', agent: 'pm', content: 'hi' };
     })());
 
@@ -178,7 +184,7 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
 
     const frames = (await res.text()).trim().split('\n\n').map((f) => JSON.parse(f.replace(/^data: /, '')));
     expect(frames).toEqual([
-      { type: 'stage', stage: 'interview', status: 'start' },
+      { type: 'stage', stage: 'research', status: 'start' },
       { type: 'text', agent: 'pm', content: 'hi' },
     ]);
     // The seeding user is stamped on every stage's records (story 007-001).
@@ -292,5 +298,65 @@ describe('GET /api/projects/:id/events (story 005-001)', () => {
       ac.abort();
     }
     await vi.waitFor(() => expect(projectSubscriberCount(4)).toBe(0));
+  });
+});
+
+describe('PUT /api/projects/:id/config', () => {
+  const answers = {
+    title: 'GLP-1 RWE Study',
+    projectType: 'rwe-protocol',
+    researchQuestion: 'Does GLP-1 use reduce MACE in T2D?',
+    deliverables: ['FDA RWE protocol'],
+    timeline: 'Draft by 2026-08-01',
+    sourceMaterials: [],
+  };
+
+  beforeEach(() => getProject.mockResolvedValue({ id: 5, org_id: 7, config: {} }));
+
+  it('saves a draft without writing project.json or validating', async () => {
+    const res = await fetch(`${base}/api/projects/5/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { title: '' }, draft: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(applyProjectConfig).not.toHaveBeenCalled();
+    expect(updateProjectConfig).toHaveBeenCalledWith(5, {
+      config: { setup: { status: 'draft', answers: expect.objectContaining({ title: '' }) } },
+    });
+  });
+
+  it('final save writes canonical config + project.json and marks complete', async () => {
+    const res = await fetch(`${base}/api/projects/5/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers }),
+    });
+    expect(res.status).toBe(200);
+    expect(applyProjectConfig).toHaveBeenCalledWith(
+      5,
+      expect.objectContaining({
+        title: 'GLP-1 RWE Study',
+        project_type: 'rwe-protocol',
+        research_question: 'Does GLP-1 use reduce MACE in T2D?',
+      }),
+      { extraConfig: { setup: { status: 'complete', answers: expect.any(Object) } } },
+    );
+  });
+
+  it('rejects a final save missing required fields', async () => {
+    const res = await fetch(`${base}/api/projects/5/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { ...answers, title: '', projectType: 'nope' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(applyProjectConfig).not.toHaveBeenCalled();
+  });
+
+  it('404s for a project the user cannot access', async () => {
+    isMember.mockResolvedValue(false);
+    const res = await fetch(`${base}/api/projects/5/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers }),
+    });
+    expect(res.status).toBe(404);
   });
 });
