@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-07-13 (031 shipped — the deterministic project setup wizard replaces the PM intake interview and the `ask_user` countdown; record written after the fact, see the story. 034 shipped — stray `# CLAUDE.md` preamble stripped from all six agent prompts. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, and 036 user interrupt of agent work)
+**Updated:** 2026-07-13 (031 shipped — the deterministic project setup wizard replaces the PM intake interview and the `ask_user` countdown; record written after the fact, see the story. 034 shipped — stray `# CLAUDE.md` preamble stripped from all six agent prompts. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work, and 037 chat-panel flex widening)
 
 ## Goal
 
@@ -139,6 +139,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 034 | [Strip the stray `# CLAUDE.md` preamble from all six agent prompts](stories/034-agent-prompt-preamble.md) — every agent was told it's Claude Code working on a repo before it was told its role; live since PR #19 | done | S |
 | 035 | [Prompts instruct agents to run a script that doesn't exist](stories/035-dead-cli-instructions-in-prompts.md) — `read_sections.py` + `.venv` blocks in pm/writer/ra/reviewer, with no shell tool and no such script (surfaced by the 034 audit) | ready | M |
 | 036 | [Let the user stop or redirect agent work](stories/036-stop-and-redirect-agent-work.md) — no user-facing interrupt exists; the runtime mechanism does. Cancel endpoint + stop control + "stop and send" redirect | ready | M |
+| 037 | [Chat panel widens and crushes the editor](stories/037-chat-panel-widens.md) — `flex: 0 0 380px` with no `min-width: 0`; one long URL takes the panel 380px→905px (measured). Same trap as 028 | ready | S |
 
 ### Preserved (may revisit)
 
