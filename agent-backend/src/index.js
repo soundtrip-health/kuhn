@@ -6,8 +6,9 @@ import { WebSocketServer } from 'ws';
 import { config } from './config.js';
 import { initDb } from './db/init.js';
 import { markOrphanedJobsInterrupted } from './db/jobs.js';
-import { session } from './session.js';
+import { session, assertAuthConfig } from './session.js';
 import healthRouter from './routes/health.js';
+import { authRouter, meRouter } from './routes/auth.js';
 import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
 import filesRouter from './routes/files.js';
@@ -19,11 +20,15 @@ import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
 const app = express();
-app.use(cors({ origin: config.cors.origin }));
+// credentials: the session cookie rides cross-origin fetches from the webapp
+// dev server (story 007-002); the allowlist above stays the gate.
+app.use(cors({ origin: config.cors.origin, credentials: true }));
 app.use(express.json());
 app.use(healthRouter); // health needs no identity
+app.use(authRouter);   // login/logout happen before identity exists (007-002)
 // Story 005: resolve req.user before any tenant-scoped route runs.
 app.use(session);
+app.use(meRouter);
 app.use(agentRouter);
 app.use(citationsRouter);
 app.use(filesRouter);
@@ -58,6 +63,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 async function main() {
+  assertAuthConfig(); // refuse to start in non-dev auth mode without a secret
   try {
     await initDb();
     const interrupted = await markOrphanedJobsInterrupted();

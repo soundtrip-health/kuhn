@@ -77,6 +77,31 @@ CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
 CREATE INDEX IF NOT EXISTS idx_memberships_org  ON memberships(org_id);
 
 -- ============================================================
+-- Auth (story 007-002): magic-link login tokens and DB-backed sessions.
+-- Both store only a sha256 hash of the secret the user holds — a leaked DB
+-- cannot mint logins. The session cookie carries the raw session token plus
+-- an HMAC signature (KUHN_SESSION_SECRET); see src/db/auth.js.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash  TEXT NOT NULL UNIQUE,
+  email       TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash  TEXT NOT NULL UNIQUE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- ============================================================
 -- Projects
 -- ============================================================
 CREATE TABLE IF NOT EXISTS projects (

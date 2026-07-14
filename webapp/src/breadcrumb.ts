@@ -8,6 +8,7 @@
 
 import { revealFile } from './files';
 import { icon } from './icons';
+import { authMode, currentUser, signOut } from './login';
 import {
   libraryNeedsSetup,
   openCreateOrgModal,
@@ -167,6 +168,24 @@ function orgMenu(): HTMLElement {
     openCreateOrgModal(); // modal with the library-seeding step (story 006-004)
   });
   menu.append(create);
+
+  // Sign out (story 007-002) — only in real auth mode; dev mode has no
+  // session to end. Labelled with the signed-in email so it doubles as the
+  // "who am I" answer.
+  if (authMode() !== 'dev') {
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'breadcrumb-menu-item bm-signout';
+    out.setAttribute('role', 'menuitem');
+    out.innerHTML = `<span class="bm-check">${icon('lock', { size: 13, stroke: 1.8 })}</span><span></span>`;
+    (out.querySelector('span:last-child') as HTMLElement).textContent =
+      `Sign out${currentUser() ? ` (${currentUser()!.email})` : ''}`;
+    out.addEventListener('click', () => {
+      closeOrgMenu();
+      void signOut();
+    });
+    menu.append(out);
+  }
   return menu;
 }
 

@@ -6,6 +6,18 @@ export const BACKEND_URL: string =
 
 export const BACKEND_WS_URL = BACKEND_URL.replace(/^http/, 'ws');
 
+/**
+ * Every backend call goes through here (story 007-002): the session cookie
+ * rides along (credentials — the webapp dev server is a different origin than
+ * the backend), and any 401 raises `kuhn:unauthorized` so login.ts can put up
+ * the sign-in screen no matter which call hit the wall.
+ */
+async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(input, { credentials: 'include', ...init });
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('kuhn:unauthorized'));
+  return res;
+}
+
 export interface Project {
   id: number;
   name: string;
@@ -96,18 +108,49 @@ async function expectOk(res: Response): Promise<Response> {
   return res;
 }
 
+// ---- Auth (story 007-002) ----
+
+export interface Me {
+  user: { id: number; email: string; display_name: string | null };
+  mode: 'dev' | 'magic-link';
+}
+
+/** The signed-in user and auth mode; null when not authenticated. */
+export async function fetchMe(): Promise<Me | null> {
+  const res = await apiFetch(`${BACKEND_URL}/api/auth/me`);
+  if (res.status === 401) return null;
+  await expectOk(res);
+  return (await res.json()) as Me;
+}
+
+/** Ask the backend to email a magic sign-in link (dev: logged to its console). */
+export async function requestLoginLink(email: string): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/auth/request-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    }),
+  );
+}
+
+/** Revoke the session server-side and clear the cookie. */
+export async function logout(): Promise<void> {
+  await expectOk(await apiFetch(`${BACKEND_URL}/api/auth/logout`, { method: 'POST' }));
+}
+
 // ---- Organizations (story 005) ----
 
 /** The current user's organizations. */
 export async function listOrgs(): Promise<Org[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs`));
   return ((await res.json()) as { orgs: Org[] }).orgs;
 }
 
 /** Create an organization (the current user becomes its owner). */
 export async function createOrg(name: string): Promise<Org> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/orgs`, {
+    await apiFetch(`${BACKEND_URL}/api/orgs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -120,13 +163,13 @@ export async function createOrg(name: string): Promise<Org> {
 
 /** All projects across the current user's orgs. */
 export async function listProjects(): Promise<Project[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/projects`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/projects`));
   return ((await res.json()) as { projects: Project[] }).projects;
 }
 
 /** Projects belonging to a single organization. */
 export async function listOrgProjects(orgId: number): Promise<Project[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/projects`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/projects`));
   return ((await res.json()) as { projects: Project[] }).projects;
 }
 
@@ -136,7 +179,7 @@ export async function createProject(
   orgId?: number,
 ): Promise<Project> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects`, {
+    await apiFetch(`${BACKEND_URL}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, projectType, orgId }),
@@ -148,7 +191,7 @@ export async function createProject(
 /** Rename a project (the workspace dir is keyed by id, so files are untouched). */
 export async function renameProject(projectId: number, name: string): Promise<Project> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -160,7 +203,7 @@ export async function renameProject(projectId: number, name: string): Promise<Pr
 /** Persist which document is open in a project, so reopening restores it. */
 export async function setActiveDocument(projectId: number, path: string): Promise<void> {
   await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/active-document`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/active-document`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -169,7 +212,7 @@ export async function setActiveDocument(projectId: number, path: string): Promis
 }
 
 export async function getTree(projectId: number): Promise<TreeNode[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/projects/${projectId}/files`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files`));
   return ((await res.json()) as { tree: TreeNode[] }).tree;
 }
 
@@ -178,7 +221,7 @@ const fileUrl = (projectId: number, path: string) =>
 
 /** Read a text file; returns null if it does not exist. */
 export async function readTextFile(projectId: number, path: string): Promise<string | null> {
-  const res = await fetch(fileUrl(projectId, path));
+  const res = await apiFetch(fileUrl(projectId, path));
   if (res.status === 404) return null;
   await expectOk(res);
   return res.text();
@@ -186,7 +229,7 @@ export async function readTextFile(projectId: number, path: string): Promise<str
 
 export async function writeTextFile(projectId: number, path: string, content: string): Promise<void> {
   await expectOk(
-    await fetch(fileUrl(projectId, path), {
+    await apiFetch(fileUrl(projectId, path), {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: content,
@@ -242,7 +285,7 @@ export async function uploadFiles(
   if (dir) form.append('path', dir);
   for (const file of sendable) form.append('files', file, file.name);
 
-  const res = await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/upload`, {
+  const res = await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/upload`, {
     method: 'POST',
     body: form,
   });
@@ -277,13 +320,13 @@ export interface OrgDocument {
 
 /** The org's library documents, newest first. */
 export async function listOrgLibrary(orgId: number): Promise<OrgDocument[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/library`));
   return ((await res.json()) as { documents: OrgDocument[] }).documents;
 }
 
 /** One library document's current metadata (poll fallback for ingest status). */
 export async function getOrgDocument(orgId: number, docId: number): Promise<OrgDocument> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`));
   return ((await res.json()) as { document: OrgDocument }).document;
 }
 
@@ -310,7 +353,7 @@ export async function uploadOrgDocuments(
 
   const form = new FormData();
   for (const file of sendable) form.append('files', file, file.name);
-  const res = await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/upload`, {
+  const res = await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/library/upload`, {
     method: 'POST',
     body: form,
   });
@@ -327,7 +370,7 @@ export async function uploadOrgDocuments(
 /** Remove a library document (record and bytes). */
 export async function deleteOrgDocument(orgId: number, docId: number): Promise<void> {
   await expectOk(
-    await fetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`, { method: 'DELETE' }),
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/library/${docId}`, { method: 'DELETE' }),
   );
 }
 
@@ -341,7 +384,7 @@ export async function promoteFileToLibrary(
   title?: string,
 ): Promise<{ document: OrgDocument; deduped: boolean }> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/promote`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/promote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, ...(title ? { title } : {}) }),
@@ -370,7 +413,7 @@ export interface OrgFeedHandlers {
  * EventSource, which reconnects automatically. Returns an unsubscribe function.
  */
 export function subscribeOrgEvents(orgId: number, handlers: OrgFeedHandlers): () => void {
-  const source = new EventSource(`${BACKEND_URL}/api/orgs/${orgId}/events`);
+  const source = new EventSource(`${BACKEND_URL}/api/orgs/${orgId}/events`, { withCredentials: true });
   source.onopen = () => handlers.onOpen?.();
   source.onerror = () => handlers.onError?.();
   source.onmessage = (msg) => {
@@ -398,7 +441,7 @@ export interface FileActivityEvent {
 /** Recent file events, newest first (hydrates badge origin on load). */
 export async function getFileActivity(projectId: number, limit = 200): Promise<FileActivityEvent[]> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/activity?limit=${limit}`),
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/activity?limit=${limit}`),
   );
   return ((await res.json()) as { events: FileActivityEvent[] }).events;
 }
@@ -406,7 +449,7 @@ export async function getFileActivity(projectId: number, limit = 200): Promise<F
 /** Mark a file seen by the current user — clears its new/changed badge. */
 export async function markFileSeen(projectId: number, path: string): Promise<void> {
   await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/seen`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/seen`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -431,7 +474,7 @@ export function subscribeProjectEvents(
   projectId: number,
   handlers: ProjectFeedHandlers,
 ): () => void {
-  const source = new EventSource(`${BACKEND_URL}/api/projects/${projectId}/events`);
+  const source = new EventSource(`${BACKEND_URL}/api/projects/${projectId}/events`, { withCredentials: true });
   source.onopen = () => handlers.onOpen?.();
   source.onerror = () => handlers.onError?.();
   source.onmessage = (msg) => {
@@ -446,14 +489,14 @@ export function subscribeProjectEvents(
 
 /** Delete a project file or directory. */
 export async function deleteFile(projectId: number, path: string): Promise<void> {
-  await expectOk(await fetch(fileUrl(projectId, path), { method: 'DELETE' }));
+  await expectOk(await apiFetch(fileUrl(projectId, path), { method: 'DELETE' }));
 }
 
 /** Move/rename an entry; rejects with the backend's readable error (409 on a
  * destination that already exists). */
 export async function moveFile(projectId: number, from: string, to: string): Promise<void> {
   await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/files/move`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to }),
@@ -463,7 +506,7 @@ export async function moveFile(projectId: number, from: string, to: string): Pro
 
 /** Fetch raw file bytes (correct Content-Type) for previewing. */
 export async function fetchFileBlob(projectId: number, path: string): Promise<Blob> {
-  const res = await expectOk(await fetch(fileUrl(projectId, path)));
+  const res = await expectOk(await apiFetch(fileUrl(projectId, path)));
   return res.blob();
 }
 
@@ -475,7 +518,7 @@ export const fileBlobUrl = (projectId: number, path: string): string => fileUrl(
 /** Render a markdown document to PDF; rejects with the backend's readable error. */
 export async function renderPdf(projectId: number, path: string): Promise<Blob> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/render`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -508,7 +551,7 @@ export async function searchCitations(
   signal?: AbortSignal,
 ): Promise<CitationCandidate[]> {
   const res = await expectOk(
-    await fetch(
+    await apiFetch(
       `${BACKEND_URL}/api/projects/${projectId}/citations/search?q=${encodeURIComponent(query)}&max=${max}`,
       { signal },
     ),
@@ -522,7 +565,7 @@ export async function addCitation(
   pmid: string,
 ): Promise<{ key: string; created: boolean; path: string }> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/citations`, {
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/citations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pmid }),
@@ -534,21 +577,21 @@ export async function addCitation(
 /** Recent top-level conversations with messages, newest first (story 020). */
 export async function getConversations(projectId: number, limit = 20): Promise<Conversation[]> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/conversations?limit=${limit}`),
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/conversations?limit=${limit}`),
   );
   return ((await res.json()) as { conversations: Conversation[] }).conversations;
 }
 
 /** List agent jobs for a project, newest first. */
 export async function listJobs(projectId: number): Promise<Job[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/agent/jobs?projectId=${projectId}`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/agent/jobs?projectId=${projectId}`));
   return ((await res.json()) as { jobs: Job[] }).jobs;
 }
 
 /** Answer a running job's pending ask_user question (story 012). */
 export async function replyToAgent(jobId: number, reply: string): Promise<void> {
   await expectOk(
-    await fetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reply`, {
+    await apiFetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reply }),
@@ -568,7 +611,7 @@ export interface PendingQuestion {
  * stream — i.e. ones to reconnect to after a page reload (story 027).
  */
 export async function getPendingQuestions(projectId: number): Promise<PendingQuestion[]> {
-  const res = await expectOk(await fetch(`${BACKEND_URL}/api/agent/pending?projectId=${projectId}`));
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/agent/pending?projectId=${projectId}`));
   return ((await res.json()) as { pending: PendingQuestion[] }).pending;
 }
 
@@ -582,7 +625,7 @@ export async function reconnectAgent(
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reconnect`, { method: 'POST', signal }),
+    await apiFetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/reconnect`, { method: 'POST', signal }),
   );
   await readEventStream(res, onEvent);
 }
@@ -607,7 +650,7 @@ export async function runAgentTask(
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/agent/task`, {
+    await apiFetch(`${BACKEND_URL}/api/agent/task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -627,7 +670,7 @@ export async function seedProject(
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await expectOk(
-    await fetch(`${BACKEND_URL}/api/projects/${projectId}/seed`, { method: 'POST', signal }),
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/seed`, { method: 'POST', signal }),
   );
   await readEventStream(res, onEvent);
 }
