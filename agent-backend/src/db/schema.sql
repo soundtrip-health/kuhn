@@ -77,6 +77,31 @@ CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
 CREATE INDEX IF NOT EXISTS idx_memberships_org  ON memberships(org_id);
 
 -- ============================================================
+-- Auth (story 007-002): magic-link login tokens and DB-backed sessions.
+-- Both store only a sha256 hash of the secret the user holds — a leaked DB
+-- cannot mint logins. The session cookie carries the raw session token plus
+-- an HMAC signature (KUHN_SESSION_SECRET); see src/db/auth.js.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash  TEXT NOT NULL UNIQUE,
+  email       TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash  TEXT NOT NULL UNIQUE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- ============================================================
 -- Projects
 -- ============================================================
 CREATE TABLE IF NOT EXISTS projects (
@@ -104,6 +129,9 @@ CREATE INDEX IF NOT EXISTS idx_projects_org   ON projects(org_id);
 CREATE TABLE IF NOT EXISTS conversations (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  -- Who started it (story 007-001). Nullable: pre-attribution history stays
+  -- NULL — no fake backfill. Existing DBs get the column via db/init.js.
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
   agent_slug  TEXT NOT NULL,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -122,6 +150,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
   conversation_id  INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
   parent_job_id    INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  -- Whose request ran this job (story 007-001); sub-jobs inherit the parent's.
+  user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
   role             TEXT NOT NULL,
   status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
                      'pending', 'running', 'done', 'error', 'interrupted', 'cancelled'
@@ -147,6 +177,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status
 CREATE TABLE IF NOT EXISTS messages (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id   INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  -- Attribution (story 007-001): assistant/tool rows carry the user whose
+  -- request ran the job, not an agent identity.
+  user_id           INTEGER REFERENCES users(id) ON DELETE SET NULL,
   role              TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
   content           TEXT,
   tool_calls        TEXT,  -- JSON
@@ -203,6 +236,9 @@ CREATE TABLE IF NOT EXISTS file_events (
   path        TEXT NOT NULL,
   kind        TEXT NOT NULL CHECK (kind IN ('create', 'update', 'delete', 'rename')),
   agent_slug  TEXT,   -- NULL = user action (upload / delete / rename via the UI)
+  -- Who acted (story 007-001): the uploading/deleting user, or for agent
+  -- events the user whose request ran the job. Epic 005 shipped without this.
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
   job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

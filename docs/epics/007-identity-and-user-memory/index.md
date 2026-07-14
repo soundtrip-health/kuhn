@@ -1,8 +1,8 @@
 # Epic 007: Identity & User Memory
 
-**Status:** ready
+**Status:** in-progress
 **Created:** 2026-07-12
-**Updated:** 2026-07-12
+**Updated:** 2026-07-13
 
 ## Goal
 
@@ -41,9 +41,10 @@ is unbuildable without the first:
 
 ### Must Have
 
-- [ ] `user_id` attribution on conversations, jobs, and messages
-- [ ] Real login (magic link + session cookie); `x-kuhn-user` dev-only
-- [ ] Yjs room authorization tied to project membership
+- [x] `user_id` attribution on conversations, jobs, and messages (001; also
+      closed the Epic 005 gap — `file_events.user_id`)
+- [x] Real login (magic link + session cookie); `x-kuhn-user` dev-only (002)
+- [x] Yjs room authorization tied to project membership (003)
 - [ ] `user_memories` store + post-job distillation with dedup/decay
 - [ ] Memory injection into `buildSystemPrompt`, bounded and relevant
 - [ ] "What Kuhn knows about you" panel: view, edit, delete, pause
@@ -63,9 +64,9 @@ is unbuildable without the first:
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [User attribution on content rows](stories/001-user-attribution.md) — `user_id` on conversations/jobs/messages, stamped from session | ready | S |
-| 002 | [Minimal real auth](stories/002-minimal-real-auth.md) — magic-link login, signed session cookie, dev-mode fallback, logout | ready | L |
-| 003 | [Yjs room authorization](stories/003-yjs-room-authorization.md) — membership-checked room join tokens | ready | M |
+| 001 | [User attribution on content rows](stories/001-user-attribution.md) — `user_id` on conversations/jobs/messages, stamped from session | done | S |
+| 002 | [Minimal real auth](stories/002-minimal-real-auth.md) — magic-link login, signed session cookie, dev-mode fallback, logout | done | L |
+| 003 | [Yjs room authorization](stories/003-yjs-room-authorization.md) — membership-checked room join tokens | done | M |
 | 004 | [User memory store & distillation](stories/004-memory-store-distillation.md) — `user_memories` table, post-job Haiku distillation, dedup/decay | ready | L |
 | 005 | [Memory injection at run time](stories/005-memory-injection.md) — bounded, relevance-ranked footer in `buildSystemPrompt` | ready | M |
 | 006 | ["What Kuhn knows about you" panel](stories/006-memory-panel.md) — view/edit/delete/pause UI | ready | M |

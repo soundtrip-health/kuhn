@@ -47,13 +47,15 @@ export function subscribeProjectEvents(projectId, listener) {
  * (dispatch_agent → parent channel, seed-route tee) can safely re-offer an
  * event that a tee already published.
  */
-export function publishProjectEvent(projectId, event, { jobId } = {}) {
+export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
   if (event == null || typeof event !== 'object') return;
   if (seen.has(event)) return;
   seen.add(event);
   // Persist file activity here — the one point every file_change crosses,
   // with or without live subscribers (story 005-002). Failure must never
-  // break event delivery or the emitting run.
+  // break event delivery or the emitting run. `userId` attributes the event
+  // (story 007-001): the acting user for UI mutations, the requesting user
+  // for agent runs (supplied by the channel tee).
   if (event.type === 'file_change' && event.path) {
     try {
       recordFileEvent(Number(projectId), {
@@ -61,6 +63,7 @@ export function publishProjectEvent(projectId, event, { jobId } = {}) {
         kind: event.kind,
         agentSlug: event.agent ?? null,
         jobId: event.jobId ?? jobId ?? null,
+        userId: userId ?? null,
       });
     } catch (err) {
       console.error('[project-events] Failed to persist file event:', err);
@@ -85,10 +88,11 @@ export function publishProjectEvent(projectId, event, { jobId } = {}) {
 /**
  * Pass-through generator that offers every yielded event to the hub. Used by
  * the seed route for pipeline-level events that never cross a teed channel.
+ * `userId` attributes any file_change among them (story 007-001).
  */
-export async function* teeProjectEvents(projectId, events) {
+export async function* teeProjectEvents(projectId, events, { userId } = {}) {
   for await (const event of events) {
-    publishProjectEvent(projectId, event);
+    publishProjectEvent(projectId, event, { userId });
     yield event;
   }
 }

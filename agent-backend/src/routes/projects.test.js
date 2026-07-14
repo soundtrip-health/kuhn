@@ -187,7 +187,8 @@ describe('POST /api/projects/:id/seed (story 015)', () => {
       { type: 'stage', stage: 'research', status: 'start' },
       { type: 'text', agent: 'pm', content: 'hi' },
     ]);
-    expect(runSeedPipeline).toHaveBeenCalledWith(3);
+    // The seeding user is stamped on every stage's records (story 007-001).
+    expect(runSeedPipeline).toHaveBeenCalledWith(3, { userId: 1 });
   });
 });
 

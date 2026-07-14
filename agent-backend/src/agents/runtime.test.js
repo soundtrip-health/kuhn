@@ -76,8 +76,8 @@ import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agen
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
-import { logMessage } from '../db/conversation.js';
-import { updateJob } from '../db/jobs.js';
+import { createConversation, logMessage } from '../db/conversation.js';
+import { createJob, updateJob } from '../db/jobs.js';
 import { updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
@@ -270,6 +270,69 @@ describe('runAgentTask', () => {
     expect(options.allowedTools).toContain('mcp__kuhn__write_file');
     expect(options.allowedTools).toContain('mcp__kuhn__edit_file');
     expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
+  });
+});
+
+// --- Story 007-001: user attribution on jobs/conversations/messages ----------
+
+describe('user attribution (story 007-001)', () => {
+  const successMessages = () => [
+    { type: 'system', subtype: 'init', session_id: 'sess-1' },
+    {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'ok' },
+          { type: 'tool_use', id: 't1', name: 'mcp__kuhn__read_file', input: { path: 'a.md' } },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+    { type: 'result', subtype: 'success', session_id: 'sess-1', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+
+  it('stamps each run\'s user on its job, conversation, and every message row — including a second user resuming the shared per-role session', async () => {
+    sdkState.messages = successMessages();
+    await collect({ role: 'ra', projectId: 1, input: 'question from A', userId: 1 });
+    // User B continues the same project/agent stream (today's shared-session
+    // behavior, story-013 known issue): B's rows still carry B, not A.
+    sdkState.messages = successMessages();
+    await collect({ role: 'ra', projectId: 1, input: 'question from B', sessionId: 'sess-1', userId: 2 });
+
+    expect(createJob.mock.calls.map(([j]) => j.userId)).toEqual([1, 2]);
+    expect(createConversation.mock.calls.map((c) => c[2])).toEqual([1, 2]);
+    // user + assistant + tool rows all carry the run's user (007-001 AC)
+    const byRun = logMessage.mock.calls.map(([m]) => [m.role, m.userId]);
+    expect(byRun.slice(0, 3)).toEqual([['user', 1], ['assistant', 1], ['tool', 1]]);
+    expect(byRun.slice(3)).toEqual([['user', 2], ['assistant', 2], ['tool', 2]]);
+  });
+
+  it('leaves user_id NULL when no session user is supplied', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(createJob.mock.calls[0][0].userId).toBeNull();
+    expect(logMessage.mock.calls[0][0].userId).toBeNull();
+  });
+
+  it('sub-agent dispatches inherit the dispatching user', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'pm', tools: ['spawn_agent'] });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 1, input: 'go', userId: 5 });
+
+    // Invoke the dispatch_agent handler the run registered with the MCP server.
+    const dispatch = createSdkMcpServer.mock.calls[0][0].tools.find((t) => t.name === 'dispatch_agent');
+    getAgentWithTools.mockResolvedValue(RA_AGENT);
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
+
+    expect(createJob.mock.calls.map(([j]) => [j.role, j.userId])).toEqual([['pm', 5], ['ra', 5]]);
   });
 });
 

@@ -26,6 +26,24 @@ export const config = {
     origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
       .split(',').map((s) => s.trim()),
   },
+  auth: {
+    // 'dev' (default): x-kuhn-user header / seeded dev user, no login needed —
+    // local development and the token-free check scripts. Anything else
+    // (canonically 'magic-link') requires a session cookie on every request
+    // and a KUHN_SESSION_SECRET at startup (story 007-002).
+    mode: process.env.KUHN_AUTH_MODE || 'dev',
+    // HMAC key for session-cookie signatures. Required outside dev mode.
+    sessionSecret: process.env.KUHN_SESSION_SECRET || '',
+    // Magic-link token lifetime (single-use) and session lifetime.
+    tokenTtlMs: parseInt(process.env.KUHN_AUTH_TOKEN_TTL_MS || String(15 * 60 * 1000)),
+    sessionTtlMs: parseInt(process.env.KUHN_SESSION_TTL_MS || String(30 * 24 * 60 * 60 * 1000)),
+    // Where /api/auth/verify redirects after setting the cookie (the webapp).
+    appUrl: process.env.KUHN_APP_URL || 'http://localhost:5174',
+    // smtp[s]://user:pass@host:port — empty logs magic links to the server
+    // console instead of sending mail (the dev transport).
+    smtpUrl: process.env.KUHN_SMTP_URL || '',
+    mailFrom: process.env.KUHN_MAIL_FROM || 'Kuhn <login@kuhn.local>',
+  },
   agent: {
     // Root directory under which per-project workspaces live; agent file
     // access is confined to <projectsRoot>/<projectId> (or projects.root_path)

@@ -259,6 +259,11 @@ body {
 .om-seed-list:empty { display: none; }
 .om-seed-fail { font: var(--ui-small); color: var(--warn); padding: 2px 2px; }
 
+/* ---- Login screen (story 007-002) — reuses pb/om modal chrome ------- */
+.login-note { font: var(--ui-small); color: var(--warn); margin: 0; }
+.login-error { font: var(--ui-small); color: var(--warn); margin: 0; }
+.login-sent { font: var(--ui-body); color: var(--ink-2); margin: 0; line-height: 1.45; }
+
 /* Live status in the top bar (seeding chip / saved check) */
 .topbar-activity {
   display: flex; align-items: center; gap: 8px;

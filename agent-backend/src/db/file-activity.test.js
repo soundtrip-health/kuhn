@@ -117,6 +117,13 @@ describe('hub persistence (publishProjectEvent → file_events)', () => {
     expect(events[0]).toMatchObject({ path: 'refs.bib', kind: 'update', agent_slug: 'ra' });
   });
 
+  it('stamps the acting user when supplied, NULL otherwise (story 007-001)', () => {
+    publishProjectEvent(PROJECT_ID, { type: 'file_change', path: 'up.md', kind: 'create' }, { userId: USER_ID });
+    publishProjectEvent(PROJECT_ID, { type: 'file_change', path: 'anon.md', kind: 'create' });
+    const byPath = Object.fromEntries(listFileActivity(PROJECT_ID).map((e) => [e.path, e.user_id]));
+    expect(byPath).toEqual({ 'up.md': USER_ID, 'anon.md': null });
+  });
+
   it('ignores non-file events and survives a failing insert', () => {
     publishProjectEvent(PROJECT_ID, { type: 'text', agent: 'pm', content: 'hi' });
     expect(listFileActivity(PROJECT_ID)).toHaveLength(0);
