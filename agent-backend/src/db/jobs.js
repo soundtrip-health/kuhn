@@ -18,14 +18,16 @@ function parseJob(row) {
  * @param {string} job.input - User message or dispatch instruction
  * @param {object|null} job.context - Optional editor context (selection, cursor, files)
  * @param {number|null} job.parentJobId - Set when dispatched by another agent
+ * @param {number|null} job.userId - Whose request ran this job (story 007-001);
+ *   sub-jobs inherit the parent's user
  * @returns {Promise<object>} The inserted job row
  */
-export async function createJob({ role, projectId = null, input, context = null, parentJobId = null }) {
+export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null }) {
   const { rows } = await query(
-    `INSERT INTO jobs (role, project_id, input, context, parent_job_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId],
+    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId],
   );
   return parseJob(rows[0]);
 }

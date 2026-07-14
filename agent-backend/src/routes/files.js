@@ -131,7 +131,7 @@ router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res
   const path = requirePath(req, res);
   if (path == null) return;
   await deleteProjectEntry(projectId, path);
-  publishProjectEvent(projectId, { type: 'file_change', path, kind: 'delete' });
+  publishProjectEvent(projectId, { type: 'file_change', path, kind: 'delete' }, { userId: req.user?.id ?? null });
   res.json({ path, deleted: true });
 }));
 
@@ -146,8 +146,8 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
   // Seen state follows the file (005-002); the move surfaces on the feed as
   // the same delete+create pair the agent move_file tool emits.
   migrateSeenPaths(projectId, from, to);
-  publishProjectEvent(projectId, { type: 'file_change', path: from, kind: 'delete' });
-  publishProjectEvent(projectId, { type: 'file_change', path: to, kind: 'create' });
+  publishProjectEvent(projectId, { type: 'file_change', path: from, kind: 'delete' }, { userId: req.user?.id ?? null });
+  publishProjectEvent(projectId, { type: 'file_change', path: to, kind: 'create' }, { userId: req.user?.id ?? null });
   res.json({ from, to, moved: true });
 }));
 
@@ -181,7 +181,7 @@ router.post(
         type: 'file_change',
         path: relPath,
         kind: created ? 'create' : 'update',
-      });
+      }, { userId: req.user?.id ?? null });
       written.push({ path: relPath, size: file.buffer.length, created });
     }
     res.status(201).json({ files: written });

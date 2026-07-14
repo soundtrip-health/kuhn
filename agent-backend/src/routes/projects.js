@@ -126,7 +126,7 @@ router.post('/api/projects/:id/seed', async (req, res) => {
   // teeProjectEvents publishes the pipeline's own stage markers / status-file
   // event to the project feed; agent events inside the pipeline are already
   // published by their channel tees (the hub dedupes overlap). (story 005-001)
-  await streamEvents(res, teeProjectEvents(project.id, runSeedPipeline(project.id)));
+  await streamEvents(res, teeProjectEvents(project.id, runSeedPipeline(project.id, { userId: req.user.id }), { userId: req.user.id }));
 });
 
 /**

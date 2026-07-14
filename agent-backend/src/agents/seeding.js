@@ -23,8 +23,10 @@ import { runAgentTask } from './runtime.js';
  * @param {number|string} projectId
  * @param {object} [opts]
  * @param {Function} [opts.runTask] - runAgentTask, injectable for tests
+ * @param {number|null} [opts.userId] - Who triggered the seed (story 007-001);
+ *   stamped on every stage's job/conversation/messages
  */
-export async function* runSeedPipeline(projectId, { runTask = runAgentTask } = {}) {
+export async function* runSeedPipeline(projectId, { runTask = runAgentTask, userId = null } = {}) {
   const outcomes = {}; // stage/agent → 'ok' | error message
 
   // --- Stage 1: PM intake interview -----------------------------------------
@@ -32,7 +34,7 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask } = {
   // (story 020) can exclude their instruction prompts from the chat history.
   yield { type: 'stage', stage: 'interview', status: 'start' };
   const interviewError = yield* forwardTask(
-    runTask({ role: 'pm', projectId, input: INTERVIEW_INPUT, context: { seedStage: 'interview' } }),
+    runTask({ role: 'pm', projectId, input: INTERVIEW_INPUT, context: { seedStage: 'interview' }, userId }),
   );
   const project = await getProject(projectId);
   const config = project?.config ?? {};
@@ -50,8 +52,8 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask } = {
   // --- Stage 2: RA + Advisor research in parallel ----------------------------
   yield { type: 'stage', stage: 'research', status: 'start' };
   const branchErrors = yield* forwardParallel([
-    runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' } }),
-    runTask({ role: 'advisor', projectId, input: advisorInput(config), context: { seedStage: 'research' } }),
+    runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' }, userId }),
+    runTask({ role: 'advisor', projectId, input: advisorInput(config), context: { seedStage: 'research' }, userId }),
   ]);
   outcomes.ra = branchErrors[0] ?? 'ok';
   outcomes.advisor = branchErrors[1] ?? 'ok';
@@ -66,7 +68,7 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask } = {
   // --- Stage 3: Writer skeleton ----------------------------------------------
   yield { type: 'stage', stage: 'skeleton', status: 'start' };
   const skeletonError = yield* forwardTask(
-    runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' } }),
+    runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' }, userId }),
   );
   outcomes.skeleton = skeletonError ?? 'ok';
   yield { type: 'stage', stage: 'skeleton', status: skeletonError ? 'error' : 'done', ...(skeletonError ? { detail: skeletonError } : {}) };

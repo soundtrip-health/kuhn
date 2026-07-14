@@ -36,6 +36,8 @@ beforeAll(async () => {
 
   const app = express();
   app.use(express.json());
+  // Stand-in for the session middleware, so attribution is observable (007-001).
+  app.use((req, _res, next) => { req.user = { id: 9, email: 'dev@kuhn.local' }; next(); });
   app.use(filesRouter);
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
@@ -98,12 +100,14 @@ describe('file routes', () => {
       ['delete', 'tmp.md'],
       ['create', 'archive/tmp.md'],
     ]);
+    // User actions carry the session user's attribution (story 007-001).
+    expect(publishProjectEvent.mock.calls.every(([, , opts]) => opts.userId === 9)).toBe(true);
 
     const del = await fetch(url('/api/projects/1/file', { path: 'archive/tmp.md' }), { method: 'DELETE' });
     expect(del.status).toBe(200);
     expect(publishProjectEvent).toHaveBeenLastCalledWith(1, {
       type: 'file_change', path: 'archive/tmp.md', kind: 'delete',
-    });
+    }, { userId: 9 });
     const gone = await fetch(url('/api/projects/1/file', { path: 'archive/tmp.md' }));
     expect(gone.status).toBe(404);
   });
@@ -118,7 +122,7 @@ describe('file routes', () => {
     expect(files).toEqual([expect.objectContaining({ path: 'figures/fig1.png', created: true })]);
     expect(publishProjectEvent).toHaveBeenCalledWith(1, {
       type: 'file_change', path: 'figures/fig1.png', kind: 'create',
-    });
+    }, { userId: 9 });
   });
 
   it('tree nodes carry mtime and the current user\'s unseen flags (story 005-002)', async () => {
