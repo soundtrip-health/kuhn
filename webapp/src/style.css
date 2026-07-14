@@ -306,7 +306,12 @@ body {
 #layout { flex: 1; display: flex; min-height: 0; }
 
 #chat-panel {
+  /* min-width:0 is load-bearing: without it a flex item can't shrink below its
+     content's min-content width, so the basis below is only a suggestion and a
+     single long URL in the transcript widens the panel over the editor. The
+     matching half of the fix is `overflow-wrap: anywhere` on .chat-body. */
   flex: 0 0 380px;
+  min-width: 0;
   display: flex; flex-direction: column;
   background: var(--chrome);
   border-right: 1px solid var(--line);
@@ -464,7 +469,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-time { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
 .chat-working { font-size: 11px; color: var(--role); display: flex; align-items: center; gap: 4px; }
 .chat-working .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--role); animation: kuhn-pulse 1s ease-in-out infinite; }
-.chat-body { font-size: 13.5px; line-height: 1.55; color: var(--ink); overflow-wrap: break-word; }
+/* `anywhere`, not `break-word`: only `anywhere` shrinks the element's
+   min-content size, which is what keeps a long URL from widening the panel. */
+.chat-body { font-size: 13.5px; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; }
 .chat-body p { margin: 0 0 9px; }
 .chat-body p:last-child { margin-bottom: 0; }
 .chat-body pre {

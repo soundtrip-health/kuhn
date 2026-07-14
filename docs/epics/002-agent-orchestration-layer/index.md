@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-07-12 (026 shipped — oversize uploads now a mapped 413 with all-or-nothing batch semantics; 030 drafted — marker-syntax migration `[ ]`→`\x{}`, decided during the AGENT_GUIDANCE.md ingestion; open work is 022 live verification (parked) and 030)
+**Updated:** 2026-07-13 (031 shipped — the deterministic project setup wizard replaces the PM intake interview and the `ask_user` countdown; record written after the fact, see the story. 034 shipped — stray `# CLAUDE.md` preamble stripped from all six agent prompts. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work. 037 shipped — chat-panel flex widening fixed)
 
 ## Goal
 
@@ -30,7 +30,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 ### Still in force from 2026-04-13
 
-- **Chat-first** workspace; PM interview seeds projects
+- **Chat-first** workspace (but intake is a form, not an interview — see below)
 - **DB-backed prompts** seeded from `agents/*/AGENTS.md`, editable at runtime
 - **Full conversation logging** to Postgres (audit/replay)
 - **Postgres + pgvector** via docker-compose
@@ -40,6 +40,11 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 ### Superseded
 
+- ~~PM interview seeds projects~~ (2026-07-13, story 031) — intake moved to a
+  deterministic, token-free **setup wizard**; the seeding pipeline runs
+  research → skeleton from the wizard config, and the PM is clarifying-only.
+  The interview spent model quota collecting form data, re-asked the project
+  type, and pressured the PI; the `ask_user` countdown went with it.
 - ~~Provider-agnostic LLM interface~~ (story 008) — replaced by the agent-task boundary
 - ~~Custom agent router + tool registry~~ — the Agent SDK provides the loop and tools
 - ~~Two separate apps / `/write` inside TeXlyre~~ — single app on Milkdown
@@ -51,12 +56,13 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 
 - [x] Agent runtime on Claude Agent SDK behind the agent-task boundary (011)
 - [x] Single-app scaffold: chat UI + Milkdown editor + file manager shell (013)
-- [x] PM agent conducts interview, seeds project; RA + Advisor work during seeding (012, 015 — live verification in 022)
+- [x] Setup wizard configures the project, then seeding runs; RA + Advisor work during seeding (012, 015, 031 — live verification in 022, 032)
 - [x] Storage API with project-root enforcement; all agent file access through it (018)
 - [x] `/cite` ported to Milkdown: slash-command plugin, citation picker, chips, bib upsert (016)
 - [x] `/write` slash command with streaming writer agent (017)
 - [x] Typst render pipeline: markdown → PDF preview; Pandoc docx export (019)
 - [ ] Durable job model for long-running agent work (part of 011)
+- [ ] User can stop or redirect a running agent (036) — today the only interrupt is closing the tab
 
 ### Deferred
 
@@ -112,6 +118,14 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 |---|-------|--------|------|
 | 025 | [UI design implementation ("Column")](stories/025-ui-design-implementation.md) — tokens, shell, chat/seeding/question/editor/files restyle per `docs/design/handoff/` | done | L |
 
+### Phase 5: Project setup
+
+| # | Story | Status | Size |
+|---|-------|--------|------|
+| 031 | [Project setup wizard + calmer PM](stories/031-project-setup-wizard.md) — token-free intake modal replaces the PM interview; seeding runs from the saved config; `ask_user` countdown removed (supersedes the interview half of 012/015) | done | L |
+| 032 | [Live verification of the wizard flow](stories/032-wizard-live-verification.md) — browser E2E deferred from 031; sibling of 022 | ready | S |
+| 033 | ["Edit setup" loses answers on legacy-configured projects](stories/033-edit-setup-legacy-config.md) — no `config.setup` on pre-wizard projects, so the wizard reopens near-empty | ready | S |
+
 ### Cleanup & fixes
 
 | # | Story | Status | Size |
@@ -122,6 +136,10 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 028 | [Question card collapses to a sliver during seeding](stories/028-question-card-collapse.md) — flex `overflow:hidden` min-size 0; `flex-shrink:0` + `pre-wrap` (the real root cause behind the invisible-question reports) | done | S |
 | 029 | [Transient model-provider error resilience](stories/029-transient-model-error-resilience.md) — backoff on 529/429/5xx + visible "retrying…" status + actionable Try-again (surfaced by a 529 hang on 2026-06-21) | done | S–M |
 | 030 | [Marker syntax migration `[ ]` → `\x{}`](stories/030-marker-syntax-migration.md) — atomic switch across prompts + citation tooling + audit + render + editor to a backslash-command grammar (decided during the 2026-07-09 guidance ingestion) | draft | L |
+| 034 | [Strip the stray `# CLAUDE.md` preamble from all six agent prompts](stories/034-agent-prompt-preamble.md) — every agent was told it's Claude Code working on a repo before it was told its role; live since PR #19 | done | S |
+| 035 | [Prompts instruct agents to run a script that doesn't exist](stories/035-dead-cli-instructions-in-prompts.md) — `read_sections.py` + `.venv` blocks in pm/writer/ra/reviewer, with no shell tool and no such script (surfaced by the 034 audit) | ready | M |
+| 036 | [Let the user stop or redirect agent work](stories/036-stop-and-redirect-agent-work.md) — no user-facing interrupt exists; the runtime mechanism does. Cancel endpoint + stop control + "stop and send" redirect | ready | M |
+| 037 | [Chat panel widens and crushes the editor](stories/037-chat-panel-widens.md) — `flex: 0 0 380px` with no `min-width: 0`; one long URL took the panel to 692px. Fixed: `min-width: 0` + `overflow-wrap: anywhere` (`break-word` does not shrink min-content) | done | S |
 
 ### Preserved (may revisit)
 
