@@ -1,6 +1,6 @@
 # Story 037: Chat panel widens and crushes the editor
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** S
 
@@ -49,23 +49,35 @@ fresh load and explains the "auto-widened itself" character of the report.
 
 ## Acceptance Criteria
 
-- [ ] `#chat-panel` gets `min-width: 0`, so its `flex-basis` is actually
+- [x] `#chat-panel` gets `min-width: 0`, so its `flex-basis` is actually
       honored and no message content can widen it.
-- [ ] Long unbreakable strings in chat messages **wrap rather than being
-      clipped** — `overflow-wrap: anywhere` (or `break-word`) on the message
-      body. Simply adding `overflow: hidden` to the panel would fix the layout
-      by hiding the URL, which is the wrong trade: the PI needs to read it.
-      Fix the layout *and* keep the content legible.
-- [ ] Verify with the reproduction above: a message containing a long URL /
-      path / DOI leaves the panel at 380px and the editor at full width.
-- [ ] Check the same trap in the other flex columns while here — the pattern
-      has now bitten `question-card` (028), `files-panel` (fixed), and
-      `chat-panel`. Anything with a `flex: 0 0 <basis>` and no `min-width: 0`
-      is the same latent bug.
+- [x] Long unbreakable strings in chat messages **wrap rather than being
+      clipped**. `.chat-body` already carried `overflow-wrap: break-word` —
+      and that was *not enough*, which is the real lesson here: per spec
+      `break-word` does not reduce an element's **min-content size**, so the
+      long word still forced the panel wide even though it would have wrapped
+      once the panel was sized. Only **`overflow-wrap: anywhere`** shrinks
+      min-content. Changed to `anywhere`.
+      (Deliberately *not* `overflow: hidden` on the panel: that would fix the
+      layout by clipping the URL out of sight, and the PI needs to read it.)
+- [x] Verified live in the running app against the real `.chat-body` markup:
+      | | chat panel | editor pane |
+      |---|---|---|
+      | long URL, before fix | **692px** | 276px |
+      | long URL, after fix | **380px** | **588px** |
+      URL wraps across lines and stays fully visible. `npm run build`
+      (tsc + vite) clean.
+- [x] Audited the other `flex: 0 0` rules. **No further instances**: the rest
+      are row items in a column container (`#topbar`, `#editor-subheader`,
+      `#files-header`, `#statusbar` — their basis is a *height*, so `min-width`
+      is irrelevant), the 5px `.pane-resizer`, or fixed-size icons with short
+      content (`.chat-avatar`, `.stage-icon`). `#files-panel` was already
+      fixed; `#chat-panel` was the last real one.
 
 ## Notes
 
-- Two-line CSS fix; the value is mostly in the audit criterion.
-- Consider a comment on `#chat-panel` mirroring the one on `#files-panel` — the
-  existing comment is the reason files survived and chat didn't, so it earned
-  its keep.
+- Fixed 2026-07-13, same session it was reported.
+- The `#files-panel` comment is why that panel survived and chat didn't, so
+  `#chat-panel` now carries a matching one — including the `anywhere`-vs-
+  `break-word` distinction, which is the non-obvious half and the thing most
+  likely to be "cleaned up" back into a bug by someone tidying the CSS.
