@@ -1,23 +1,65 @@
-// Minimal identity/session resolution (story 005).
+// Identity/session resolution (story 005; real auth in story 007-002).
 //
 // Resolves a "current user" for every request so project/org queries can be
-// tenant-scoped. This is deliberately NOT a full auth provider: the user is
-// taken from the `x-kuhn-user` header (an email/handle) and falls back to the
-// seeded dev user when absent — a dev login, not SSO. The user row is created
-// on first sight (get-or-create) and, if they belong to no org yet, attached
-// to the seeded default organization so they always have a workspace.
+// tenant-scoped. Two modes (config.auth.mode):
 //
-// Swapping in real auth later means replacing only this resolver: validate a
-// token/cookie, map it to a `users` row, and attach `req.user`. Everything
-// downstream already scopes on `req.user.id`.
+//   'dev' (default)  — the `x-kuhn-user` header (an email/handle) or the
+//     seeded dev user. No login, no cookies: local development and the
+//     token-free check scripts keep working unchanged.
+//   anything else    — the signed session cookie minted by the magic-link
+//     flow (routes/auth.js) is the ONLY accepted identity; the header and
+//     dev-user fallback are inert. No/invalid/expired cookie → 401.
+//
+// The user row is created on first sight (get-or-create at dev-request /
+// verify time) and, if they belong to no org yet, attached to the seeded
+// default organization so they always have a workspace. Swapping in SSO
+// later still means replacing only this resolver.
 
 import { query } from './db.js';
+import { config } from './config.js';
+import { getSessionUser } from './db/auth.js';
 
 const DEV_USER_EMAIL = process.env.DEV_USER_EMAIL || 'dev@kuhn.local';
 const DEFAULT_ORG_SLUG = 'default';
 
+/** Session cookie name (story 007-002). Shared with routes/auth.js. */
+export const SESSION_COOKIE = 'kuhn_session';
+
+/**
+ * Extract the session cookie value from a request (or a raw Cookie header —
+ * the Yjs WS upgrade path in story 007-003 has no Express req). Minimal
+ * parser: we only ever need this one cookie, so no cookie-parser dependency.
+ * @param {{ headers?: { cookie?: string } } | string | undefined} reqOrHeader
+ * @returns {string|null}
+ */
+export function readSessionCookie(reqOrHeader) {
+  const header = typeof reqOrHeader === 'string' ? reqOrHeader : reqOrHeader?.headers?.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return null;
+}
+
+/**
+ * Fail fast at startup: outside dev mode a session secret is mandatory —
+ * without one every cookie signature would be forgeable.
+ */
+export function assertAuthConfig() {
+  if (config.auth.mode !== 'dev' && !config.auth.sessionSecret) {
+    throw new Error(
+      `KUHN_AUTH_MODE=${config.auth.mode} requires KUHN_SESSION_SECRET to be set`,
+    );
+  }
+}
+
 /**
  * Get-or-create a user by email, guaranteeing at least one org membership.
+ * Called at magic-link verify time (007-002) and per-request in dev mode.
  * @param {string} email
  * @returns {Promise<{id: number, email: string, display_name: string|null}>}
  */
@@ -52,14 +94,24 @@ export async function resolveUser(email) {
 }
 
 /**
- * Express middleware: attach `req.user` from the `x-kuhn-user` header (or the
- * dev user). Fails closed with 503 if identity can't be resolved (e.g. DB down)
- * so handlers never run unscoped.
+ * Express middleware: attach `req.user` (see module doc for the two modes).
+ * Fails closed — 401 without a valid session outside dev mode, 503 if
+ * identity can't be resolved at all (e.g. DB down) — so handlers never run
+ * unscoped.
  */
 export async function session(req, res, next) {
   try {
-    const header = req.get('x-kuhn-user');
-    req.user = await resolveUser(header);
+    if (config.auth.mode === 'dev') {
+      req.user = await resolveUser(req.get('x-kuhn-user'));
+      next();
+      return;
+    }
+    const user = await getSessionUser(readSessionCookie(req));
+    if (!user) {
+      res.status(401).json({ error: 'authentication required' });
+      return;
+    }
+    req.user = user;
     next();
   } catch (err) {
     res.status(503).json({ error: `identity unavailable: ${err.message}` });

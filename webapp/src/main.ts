@@ -31,6 +31,7 @@ import {
   type FileChange,
 } from './files';
 import { icon } from './icons';
+import { initAuth } from './login';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
 import { notify, setVersion } from './status';
@@ -230,6 +231,10 @@ function openInEditor(projectId: number, path: string): void {
 }
 
 async function main(): Promise<void> {
+  // Auth gate first (story 007-002): in real auth mode nothing below can load
+  // without a session — initAuth puts up the login screen and we stop here.
+  // The magic-link verify redirect reloads the page into the signed-in path.
+  if (!(await initAuth())) return;
   setVersion();
   wirePanelToggles();
   wireExportMenu();
