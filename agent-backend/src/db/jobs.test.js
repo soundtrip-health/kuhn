@@ -11,11 +11,17 @@ beforeEach(() => {
 });
 
 describe('createJob', () => {
-  it('inserts role, project, input, context, and parent', async () => {
-    await createJob({ role: 'ra', projectId: 3, input: 'find papers', context: { files: ['a.md'] }, parentJobId: 9 });
+  it('inserts role, project, input, context, parent, and user attribution', async () => {
+    await createJob({ role: 'ra', projectId: 3, input: 'find papers', context: { files: ['a.md'] }, parentJobId: 9, userId: 4 });
     const [sql, params] = query.mock.calls[0];
     expect(sql).toContain('INSERT INTO jobs');
-    expect(params).toEqual(['ra', 3, 'find papers', JSON.stringify({ files: ['a.md'] }), 9]);
+    expect(params).toEqual(['ra', 3, 'find papers', JSON.stringify({ files: ['a.md'] }), 9, 4]);
+  });
+
+  it('defaults user_id to NULL when no user is supplied (story 007-001)', async () => {
+    await createJob({ role: 'ra', projectId: 3, input: 'find papers' });
+    const [, params] = query.mock.calls[0];
+    expect(params).toEqual(['ra', 3, 'find papers', null, null, null]);
   });
 });
 

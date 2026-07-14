@@ -3,10 +3,30 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../db.js', () => ({ query: vi.fn() }));
 
 import { query } from '../db.js';
-import { listProjectConversations } from './conversation.js';
+import { createConversation, logMessage, listProjectConversations } from './conversation.js';
 
 beforeEach(() => {
   query.mockReset();
+});
+
+describe('user attribution (story 007-001)', () => {
+  beforeEach(() => {
+    query.mockResolvedValue({ rows: [{ id: 1 }] });
+  });
+
+  it('createConversation stamps the starting user (NULL when absent)', async () => {
+    await createConversation('pm', 3, 4);
+    expect(query.mock.calls[0][1]).toEqual(['pm', 3, 4]);
+    await createConversation('pm', 3);
+    expect(query.mock.calls[1][1]).toEqual(['pm', 3, null]);
+  });
+
+  it('logMessage stamps the user on any role\'s row', async () => {
+    await logMessage({ conversationId: 1, role: 'assistant', content: 'hi', userId: 4 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toContain('user_id');
+    expect(params.at(-1)).toBe(4);
+  });
 });
 
 describe('listProjectConversations (story 020)', () => {
@@ -53,12 +73,14 @@ describe('listProjectConversations (story 020)', () => {
     const [conversationSql, conversationParams] = query.mock.calls[0];
     expect(conversationSql).toContain('parent_job_id IS NULL');
     expect(conversationSql).toContain('seedStage');
+    expect(conversationSql).toContain('c.user_id'); // attribution for turn labels (007-001)
     expect(conversationParams).toEqual([3, 5]);
 
     // Only user/assistant messages, for the requested conversations (the
     // conversation ids are spread as positional params into an IN (...) list)
     const [messageSql, messageParams] = query.mock.calls[1];
     expect(messageSql).toContain("role IN ('user', 'assistant')");
+    expect(messageSql).toContain('user_id');
     expect(messageParams).toEqual([11, 10]);
   });
 

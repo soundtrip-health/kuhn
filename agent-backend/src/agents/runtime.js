@@ -46,6 +46,9 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {string} task.role - 'pm' | 'writer' | 'analyst' | 'advisor' | 'research'/'ra' | 'review'/'reviewer'
  * @param {number|string} task.projectId - Project whose workspace the task may touch
  * @param {string} task.input - User message or dispatch instruction
+ * @param {number|null} [task.userId] - Session user for attribution (story
+ *   007-001): stamped on the job, conversation, messages, and file events;
+ *   sub-agent dispatches inherit it
  * @param {object} [task.context] - Optional editor context: { selection, cursor: {line}, files }
  * @param {string} [task.sessionId] - Continue a prior SDK session
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
@@ -70,7 +73,7 @@ export async function* runAgentTask(task, internal = {}) {
   const state = {};
   const channel = new EventChannel(
     topLevel
-      ? { onEvent: (event) => publishProjectEvent(task.projectId, event, { jobId: state.job?.id }) }
+      ? { onEvent: (event) => publishProjectEvent(task.projectId, event, { jobId: state.job?.id, userId: task.userId ?? null }) }
       : undefined,
   );
   Object.assign(state, {
@@ -209,7 +212,7 @@ export async function* reattach(run, signal) {
 const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'project_config']);
 
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null, compose = false } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false, userId = null } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
@@ -227,7 +230,7 @@ async function runTask(task, internal, channel, state) {
   budget.baseWeight ??= modelWeight;
   const costRatio = modelWeight / budget.baseWeight;
 
-  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId });
+  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId });
   state.job = job;
   if (depth === 0) {
     // Top-level job-start marker for the project feed (story 005-001); the
@@ -243,14 +246,14 @@ async function runTask(task, internal, channel, state) {
     state.runHandle = handle;
   }
 
-  const conversation = await createConversation(agent.slug, projectId);
+  const conversation = await createConversation(agent.slug, projectId, userId);
   await updateJob(job.id, { status: 'running', conversationId: conversation.id });
-  await logMessage({ conversationId: conversation.id, role: 'user', content: input });
+  await logMessage({ conversationId: conversation.id, role: 'user', content: input, userId });
 
   const projectDir = await resolveProjectDir(projectId);
 
   // In-process MCP tools, filtered by the role's DB allowlist
-  const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel });
+  const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel, userId });
   const mcpServer = mcpTools.length > 0
     ? createSdkMcpServer({ name: 'kuhn', version: '1.0.0', tools: mcpTools })
     : null;
@@ -347,6 +350,7 @@ async function runTask(task, internal, channel, state) {
         content: text || null,
         toolCalls: toolCalls.length > 0 ? toolCalls : null,
         tokenCount: message.message?.usage?.output_tokens ?? null,
+        userId,
       });
 
       if (text) channel.push({ type: 'text', agent: agent.slug, content: text });
@@ -397,6 +401,7 @@ async function runTask(task, internal, channel, state) {
             role: 'tool',
             content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
             toolCallId: block.tool_use_id,
+            userId,
           });
         }
       }
@@ -509,7 +514,7 @@ function fileChangeEvent(agentSlug, toolCall) {
   return null;
 }
 
-function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) {
+function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId }) {
   const tools = [];
 
   // File tools (story 018): all project file access goes through the storage
@@ -838,7 +843,8 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel }) 
         let finalText = '';
         let errorMessage = null;
         const child = runAgentTask(
-          { role: agent_slug, projectId, input },
+          // Sub-jobs inherit the dispatching user's attribution (story 007-001).
+          { role: agent_slug, projectId, input, userId },
           { depth: depth + 1, parentJobId: parentJob.id, budget },
         );
         for await (const event of child) {

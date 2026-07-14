@@ -1,6 +1,6 @@
 # Story 001: User attribution on content rows
 
-**Status:** ready
+**Status:** done
 **Epic:** [007 — Identity & User Memory](../index.md)
 **Estimate:** S
 
@@ -14,23 +14,34 @@ replaces the dev-stub identity, with no further schema work.
 
 ## Acceptance Criteria
 
-- [ ] Idempotent schema migration adds nullable `user_id` (FK `users`) to
+- [x] Idempotent schema migration adds nullable `user_id` (FK `users`) to
       `conversations`, `jobs`, and `messages`. Existing rows stay NULL
       (unattributable history is honest history — no fake backfill to the dev
-      user).
-- [ ] Every creation path stamps the current session user: conversation
+      user). — `schema.sql` covers fresh DBs; `db/init.js` gained a
+      `COLUMN_MIGRATIONS` table + `applyColumnMigrations()` (pragma-checked
+      `ALTER TABLE`) for existing DBs, verified against a copy of the live
+      dev database and by `db/init.test.js`.
+- [x] Every creation path stamps the current session user: conversation
       get-or-create, job insert, and `logMessage` for user/assistant/tool
       turns (assistant/tool rows carry the user whose request ran the job).
-- [ ] Uploads and file mutations already covered by Epic 005's
-      `file_events.created_by`? If Epic 005 shipped without it, add the
-      column there in this migration — one attribution sweep, not two.
-- [ ] `GET /api/projects/:id/conversations` (transcript restore) includes the
+      Also threaded: `dispatch_agent` sub-jobs inherit the dispatching user;
+      the seed pipeline stamps the user who triggered it; job re-dispatch
+      stamps the re-dispatcher.
+- [x] Uploads and file mutations already covered by Epic 005's
+      `file_events.created_by`? **Epic 005 shipped without it** — added
+      `file_events.user_id` in this migration; user actions (upload / delete
+      / rename) stamp `req.user.id` and agent file events carry the
+      requesting user via the project-event tee.
+- [x] `GET /api/projects/:id/conversations` (transcript restore) includes the
       attribution so the UI *can* label turns later (no UI change required
-      here).
-- [ ] Vitest coverage: a run under user A stamps A on job + messages; a
+      here) — `user_id` on both conversation and message rows; NULL for
+      pre-attribution history.
+- [x] Vitest coverage: a run under user A stamps A on job + messages; a
       second user's run on the same project/agent stamps B on their rows
       while sharing the conversation (documenting today's shared-stream
-      behavior — see Notes).
+      behavior — see Notes). — `runtime.test.js` "user attribution (story
+      007-001)" block; user B resumes user A's SDK session and still gets B
+      on B's rows.
 
 ## Notes
 

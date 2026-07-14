@@ -26,7 +26,7 @@ router.post('/api/agent/task', async (req, res) => {
   // disconnect even while parked (no events arrive to unblock channel.next()).
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId, compose, detachable: true, signal: ac.signal }));
+  await streamEvents(res, runAgentTask({ role, projectId, input, context, sessionId, compose, userId: req.user.id, detachable: true, signal: ac.signal }));
 });
 
 /**
@@ -61,6 +61,7 @@ router.post('/api/agent/jobs/:id/dispatch', async (req, res) => {
     input: job.input,
     context: job.context,
     sessionId: job.session_id ?? undefined,
+    userId: req.user.id, // the re-dispatcher, not the original job's user
   }));
 });
 
