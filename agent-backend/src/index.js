@@ -16,6 +16,7 @@ import orgsRouter from './routes/orgs.js';
 import orgLibraryRouter from './routes/org-library.js';
 import projectsRouter from './routes/projects.js';
 import renderRouter from './routes/render.js';
+import { createUpgradeHandler } from './collab-auth.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
@@ -46,21 +47,10 @@ const yjsWss = new WebSocketServer({ noServer: true });
 signalingWss.on('connection', handleSignalingConnection);
 yjsWss.on('connection', handleYjsConnection);
 
-server.on('upgrade', (req, socket, head) => {
-  const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
-
-  if (pathname === '/yjs-signaling') {
-    signalingWss.handleUpgrade(req, socket, head, (ws) => {
-      signalingWss.emit('connection', ws, req);
-    });
-  } else if (pathname.startsWith('/yjs-websocket/')) {
-    yjsWss.handleUpgrade(req, socket, head, (ws) => {
-      yjsWss.emit('connection', ws, req);
-    });
-  } else {
-    socket.destroy();
-  }
-});
+// Route + authenticate + authorize every WS upgrade (story 007-003): doc-sync
+// rooms are membership-checked before the handshake completes; signaling is
+// authenticated here and topic-checked per message.
+server.on('upgrade', createUpgradeHandler({ signalingWss, yjsWss }));
 
 async function main() {
   assertAuthConfig(); // refuse to start in non-dev auth mode without a secret
