@@ -19,6 +19,9 @@ three surfaces:
 A Node.js backend hosts the agent runtime, project storage, rendering/export, and Yjs
 collaboration servers.
 
+For the operator's view — where data is persisted, how it is processed, and what leaves
+the machine — see [data-pipeline.md](data-pipeline.md) (story 040).
+
 ## Document Format Strategy
 
 - **Canonical authoring format: markdown** (Pandoc/Quarto flavor) with BibTeX (`.bib`)

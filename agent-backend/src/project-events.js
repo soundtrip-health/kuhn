@@ -16,6 +16,7 @@
 
 import { config } from './config.js';
 import { recordFileEvent } from './db/file-activity.js';
+import { evictRoom } from './yjs-websocket.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
 const subscribers = new Map();
@@ -67,6 +68,18 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
       });
     } catch (err) {
       console.error('[project-events] Failed to persist file event:', err);
+    }
+    // Evict any in-memory collab room for this path (story 038): a stale room
+    // inside its empty-room grace window would otherwise win over the bytes
+    // just written to storage when the file is next opened. This is the same
+    // single choke point as the activity log — every delete/upload/agent write
+    // crosses it; the editor's own autosave PUT deliberately does not.
+    try {
+      evictRoom(`project-${Number(projectId)}/${event.path}`, {
+        closeConnections: event.kind === 'delete',
+      });
+    } catch (err) {
+      console.error('[project-events] Failed to evict collab room:', err);
     }
   }
   const set = subscribers.get(Number(projectId));

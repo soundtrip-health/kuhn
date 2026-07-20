@@ -74,6 +74,40 @@ function getOrCreateDoc(name) {
   return entry;
 }
 
+/**
+ * Evict a room so the next client to open it seeds fresh from storage
+ * (story 038). Rooms outlive their file: after the last client disconnects
+ * the empty room lingers for 30s (grace period below), and a file deleted
+ * and re-uploaded inside that window would reconnect to the stale state —
+ * which then wins over the new bytes and can even be autosaved back over
+ * them. With `closeConnections` (the file was deleted) live sockets are
+ * closed with 4001; without it the room is dropped only when idle, so live
+ * collaborators are never kicked by a mere overwrite — their open editor
+ * reconciles through the file_change feed instead.
+ * @returns {boolean} whether a room was evicted
+ */
+export function evictRoom(name, { closeConnections = false } = {}) {
+  const entry = docs.get(name);
+  if (!entry) return false;
+  if (entry.conns.size > 0 && !closeConnections) return false;
+  for (const ws of entry.conns) {
+    try {
+      ws.close(4001, 'Document removed');
+    } catch {
+      // a dying socket must not block eviction
+    }
+  }
+  entry.conns.clear();
+  docs.delete(name); // out of the map before destroy so no update rebroadcasts
+  entry.doc.destroy();
+  return true;
+}
+
+/** Test hook: does a room currently exist in memory? */
+export function hasRoom(name) {
+  return docs.has(name);
+}
+
 function sendSync(ws, doc) {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MSG_SYNC);
