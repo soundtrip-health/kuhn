@@ -84,12 +84,36 @@
             <!-- Rich ⇄ raw markdown toggle (story 039) — editor.ts owns it -->
             <button id="editor-mode-toggle" type="button" class="btn btn-quiet btn-sm"
               aria-pressed="false" hidden>Source</button>
+            <!-- Margin comments (story 008-004) — comments.ts owns it -->
+            <button id="editor-comments-btn" type="button" class="btn btn-quiet btn-sm"
+              aria-pressed="false" title="Margin comments">Comments</button>
           </div>
         </div>
         <div id="editor-scroll">
           <div id="editor"></div>
         </div>
       </section>
+
+      <!-- ---------- MARGIN COMMENTS (story 008-004) — comments.ts owns it ---------- -->
+      <aside id="comments-panel" class="collapsed">
+        <div id="comments-toolbar">
+          <span class="panel-eyebrow">Comments</span>
+          <span class="spacer"></span>
+          <button id="comments-close" type="button" class="preview-close"
+            title="Close comments" aria-label="Close comments">&times;</button>
+        </div>
+        <div id="comments-composer" hidden>
+          <blockquote class="mc-quote"></blockquote>
+          <form class="mc-compose">
+            <textarea class="mc-input" rows="3" placeholder="Comment on the selected text…"></textarea>
+            <div class="mc-compose-actions">
+              <button type="button" class="mc-cancel btn btn-ghost btn-sm">Cancel</button>
+              <button type="submit" class="btn btn-accent btn-sm">Comment</button>
+            </div>
+          </form>
+        </div>
+        <div id="comments-list"></div>
+      </aside>
 
       <!-- ---------- PDF PREVIEW (story 019; floating window) ---------- -->
       <aside id="preview-panel" class="collapsed">

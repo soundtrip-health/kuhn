@@ -54,6 +54,10 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { title: { type: 'string', description: 'Title of the work' }, authors: { type: 'array', items: { type: 'string' }, description: 'Author names, e.g. "Smith, Jane"' }, year: { type: 'integer', description: 'Publication year' }, entry_type: { type: 'string', description: 'BibTeX entry type', default: 'article' }, journal: { type: 'string', description: 'Journal or venue' }, doi: { type: 'string', description: 'DOI if available' }, url: { type: 'string', description: 'URL if available' }, source_type: { type: 'string', enum: ['preprint', 'web', 'manual', 'government'], description: 'Source authority class' }, abstract: { type: 'string', description: 'Abstract or summary' }, path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' } }, required: ['title', 'authors', 'year'] },
   },
   {
+    slug: 'add_comment', name: 'Add Comment', description: 'File a margin comment anchored to quoted text in a project document',
+    parameterSchema: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path of the document' }, quote: { type: 'string', description: 'Exact target text copied verbatim from the current file' }, body: { type: 'string', description: 'The comment body' } }, required: ['path', 'quote', 'body'] },
+  },
+  {
     slug: 'web_search', name: 'Web Search', description: 'General web search for documents, guidelines, and references',
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, max_results: { type: 'integer', description: 'Maximum results to return', default: 10 } }, required: ['query'] },
   },
@@ -87,6 +91,9 @@ export const ASSIGNMENTS = [
   // Org knowledge library (story 006-003): the four roles that consume
   // guidance content. pm/analyst excluded by design — see the story's Notes.
   ['advisor', 'search_org_knowledge'], ['ra', 'search_org_knowledge'], ['reviewer', 'search_org_knowledge'], ['writer', 'search_org_knowledge'],
+  // Margin comments (story 008-004): the two roles that give feedback on the
+  // manuscript. Reviewer's first mutating tool — critique lands in the text.
+  ['reviewer', 'add_comment'], ['pm', 'add_comment'],
   ['pm', 'spawn_agent'], ['writer', 'spawn_agent'],
   ['pm', 'ask_user'], ['pm', 'project_config'],
 ];

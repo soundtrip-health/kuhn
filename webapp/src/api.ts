@@ -66,7 +66,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job';
   agent: string;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
   ts?: string;
@@ -92,6 +92,8 @@ export interface AgentEvent {
   maxAttempts?: number;
   nextRetryMs?: number;
   message?: string;
+  // Margin-comment mutation (story 008-004) — re-fetch comments for `path`.
+  action?: 'create' | 'reply' | 'resolve' | 'reopen' | 'delete';
   // Seeding pipeline stage markers (story 015); 'started' is the project
   // feed's job-start marker (story 005-001).
   stage?: string;
@@ -424,6 +426,115 @@ export async function rejectPendingEdit(
     }),
   );
   return (await res.json()) as PendingEditMutation;
+}
+
+// ---- Margin comments (story 008-004) ----
+
+export interface CommentAnchor {
+  /** Exact quoted target text; null = unanchored (whole-document) comment. */
+  quote: string | null;
+  /** Character-offset hints into the stored markdown. */
+  start: number | null;
+  end: number | null;
+}
+
+export interface Comment {
+  id: number;
+  path: string;
+  parentId: number | null;
+  userId: number | null;
+  userName: string | null;
+  /** Agent slug for agent-filed comments; null = human-authored. */
+  agent: string | null;
+  body: string;
+  /** Root rows only; null on replies. */
+  anchor: CommentAnchor | null;
+  orphaned: boolean;
+  resolvedAt: string | null;
+  resolvedByName: string | null;
+  createdAt: string;
+}
+
+export interface CommentThread extends Comment {
+  replies: Comment[];
+}
+
+/** Threads (roots with nested replies) for a project, optionally one path. */
+export async function getComments(projectId: number, path?: string): Promise<CommentThread[]> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments${query}`),
+  );
+  return ((await res.json()) as { threads: CommentThread[] }).threads;
+}
+
+/** Unresolved-thread count per path — the file-tree badge query. */
+export async function getCommentCounts(projectId: number): Promise<Record<string, number>> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments/counts`),
+  );
+  return ((await res.json()) as { counts: Record<string, number> }).counts;
+}
+
+export async function createComment(
+  projectId: number,
+  params: { path: string; body: string; anchor?: { quote: string; start?: number; end?: number } },
+): Promise<CommentThread> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }),
+  );
+  return (await res.json()) as CommentThread;
+}
+
+export async function replyToComment(projectId: number, rootId: number, body: string): Promise<Comment> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments/${rootId}/replies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body }),
+    }),
+  );
+  return (await res.json()) as Comment;
+}
+
+export async function setCommentResolved(
+  projectId: number,
+  rootId: number,
+  resolved: boolean,
+): Promise<CommentThread> {
+  const res = await expectOk(
+    await apiFetch(
+      `${BACKEND_URL}/api/projects/${projectId}/comments/${rootId}/${resolved ? 'resolve' : 'reopen'}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    ),
+  );
+  return (await res.json()) as CommentThread;
+}
+
+/** Anchor maintenance from the live editor: drifted quote/offsets, orphaning. */
+export async function updateCommentAnchor(
+  projectId: number,
+  rootId: number,
+  anchor: { quote?: string; start?: number; end?: number; orphaned?: boolean },
+): Promise<CommentThread> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments/${rootId}/anchor`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(anchor),
+    }),
+  );
+  return (await res.json()) as CommentThread;
+}
+
+export async function deleteComment(projectId: number, id: number): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments/${id}`, { method: 'DELETE' }),
+  );
 }
 
 // ---- File manager (story 014) ----

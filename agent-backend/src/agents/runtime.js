@@ -21,6 +21,7 @@ import {
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
 import { migrateSeenPaths } from '../db/file-activity.js';
+import { createThread, resolveQuote } from '../db/comments.js';
 import { isSuggestionPath, proposeEdit, effectiveContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
@@ -217,7 +218,7 @@ export async function* reattach(run, signal) {
 // return text only, so file mutation and bibliography upserts are removed from
 // the allowlist. This is the runtime guarantee behind the "no file_change
 // during /write" contract — the prompt asks, the tool filter enforces.
-const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'project_config']);
+const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'add_comment', 'project_config']);
 
 async function runTask(task, internal, channel, state) {
   const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null } = task;
@@ -724,6 +725,52 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
           };
         } catch (err) {
           return { content: [{ type: 'text', text: `add_reference failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+  }
+
+  if (agent.tools.includes('add_comment')) {
+    tools.push(tool(
+      'add_comment',
+      'File a margin comment on a passage of a project document. Quote the exact target text and the comment appears anchored to that passage in the editor, where the user and collaborators read, reply to, and resolve it. Use this for feedback on specific text instead of writing critique into chat or separate report files.',
+      {
+        path: z.string().describe('Workspace-relative path of the document'),
+        quote: z.string().min(1).describe('The target text, copied VERBATIM from the current file content — a short excerpt (one clause to a few sentences) that pins down the passage'),
+        body: z.string().min(1).describe('The comment: the issue, why it matters, and what needs to change'),
+      },
+      async ({ path, quote, body }) => {
+        try {
+          // Anchor against the stored bytes — what the user's editor shows.
+          // A quote that no longer matches is the agent's error to fix.
+          const content = (await readProjectFile(projectId, path)).toString('utf-8');
+          const range = resolveQuote(content, quote);
+          if (!range) {
+            return {
+              content: [{
+                type: 'text',
+                text: `add_comment failed: the quote was not found in ${path}. Re-read the file and copy the target text exactly as it appears now.`,
+              }],
+              isError: true,
+            };
+          }
+          const thread = createThread(projectId, {
+            path,
+            body,
+            quote: content.slice(range.start, range.end),
+            start: range.start,
+            end: range.end,
+            userId,
+            agentSlug: agent.slug,
+            jobId: parentJob.id,
+          });
+          channel.push({
+            type: 'comment', action: 'create', agent: agent.slug,
+            path, id: thread.id, rootId: thread.id,
+          });
+          return { content: [{ type: 'text', text: `Comment filed on ${path} (comment ${thread.id}).` }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `add_comment failed: ${err.message}` }], isError: true };
         }
       },
     ));

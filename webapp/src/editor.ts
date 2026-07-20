@@ -44,6 +44,13 @@ import { agentIdentity } from './agents';
 import { refreshBib } from './bib';
 import { citationPlugins, installCitationTooltips } from './citation';
 import { openCitePicker } from './cite-picker';
+import {
+  attachComments,
+  beginCommentFromSelection,
+  commentsPlugin,
+  detachComments,
+  sourceCommentGutter,
+} from './comments';
 import { refreshTree } from './files';
 import { icon } from './icons';
 import { setDocument, setSaveState } from './status';
@@ -272,7 +279,20 @@ export async function openDocument(
   const commands = agentCommands();
   crepe = new CrepeBuilder({ root: '#editor' });
   crepe
-    .addFeature(toolbar)
+    // The selection toolbar carries the margin-comment entry point (story
+    // 008-004): comment-on-selection lives beside bold/italic, where Docs
+    // users expect it.
+    .addFeature(toolbar, {
+      buildToolbar: (builder) => {
+        builder
+          .addGroup('kuhn-comment', 'Comment')
+          .addItem('comment', {
+            active: () => false,
+            icon: icon('comment'),
+            onRun: (ctx) => beginCommentFromSelection(ctx.get(editorViewCtx)),
+          });
+      },
+    })
     .addFeature(blockEdit, {
       buildMenu: (builder) => {
         const group = builder.addGroup('kuhn-agents', 'AI commands');
@@ -296,7 +316,7 @@ export async function openDocument(
     // Custom Kuhn surface (story 003): citation chips, the `/write` suggestion
     // decoration, and the Yjs collab plugin all attach to the underlying editor.
     .addFeature((editor: Editor) => {
-      editor.use(citationPlugins).use(writeSuggestionPlugin).use(suggestionHunksPlugin).use(collab);
+      editor.use(citationPlugins).use(writeSuggestionPlugin).use(suggestionHunksPlugin).use(commentsPlugin).use(collab);
     });
 
   crepe.on((api) => {
@@ -373,6 +393,9 @@ export async function openDocument(
       path,
       flush: () => flushSave(),
     });
+    // Margin comments for this doc (story 008-004): fetched by the module,
+    // anchored by quote, tracked live via decoration mapping.
+    attachComments(ctx.get(editorViewCtx), { projectId, path });
   });
 }
 
@@ -386,6 +409,7 @@ export async function closeDocument(): Promise<void> {
 /** Tear down Crepe + collab (used by close and by entering source mode). */
 async function teardownRich(): Promise<void> {
   detachSuggestions();
+  detachComments();
   // Detach the collab plugins before any teardown: late provider/awareness
   // events otherwise dispatch into the view after editor.destroy() has
   // removed the editorState ctx slice (story 024).
@@ -420,11 +444,15 @@ async function enterSourceMode(): Promise<void> {
   lastSavedMarkdown = stored;
   const root = document.getElementById('editor')!;
   root.classList.add('editor-source');
+  // Gutter markers for commented lines (story 008-004, source-mode v1).
+  const commentGutter = await sourceCommentGutter(projectId, path, stored);
+  if (projectId !== currentProjectId || path !== currentPath || sourceView) return;
   sourceView = new CmEditorView({
     parent: root,
     state: EditorState.create({
       doc: stored,
       extensions: [
+        commentGutter,
         history(),
         cmKeymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         cmMarkdown(),

@@ -31,6 +31,7 @@ import {
   setActiveFile,
   type FileChange,
 } from './files';
+import { refreshCommentsSoon } from './comments';
 import { initHistoryButton } from './history-panel';
 import { icon } from './icons';
 import { initAuth } from './login';
@@ -140,6 +141,9 @@ async function switchToActiveProject(): Promise<void> {
     // Any file_change can shift the pending-suggestion set (story 008-001):
     // re-fetch (debounced) and reconcile the open doc's hunk decorations.
     refreshSuggestionsSoon();
+    // Content changes also move comment anchors (story 008-004): re-anchor,
+    // orphaning any thread whose quoted text the change removed.
+    refreshCommentsSoon();
     if (change.path.endsWith('.bib')) void refreshBib(projectId);
     if (change.path === currentDocumentPath()) {
       // 'proposed' moves no bytes — the decoration refresh above covers it.
@@ -199,6 +203,12 @@ async function switchToActiveProject(): Promise<void> {
       // alone is sufficient here; chat renders citation system lines itself.
       if (event.type === 'file_change' && event.path) {
         handleFileChange({ path: event.path, kind: event.kind, agent: event.agent });
+      }
+      // Comment mutations (story 008-004): refresh the open doc's threads and
+      // the file-tree unresolved badges (the tree refetch carries the counts).
+      if (event.type === 'comment' && event.path) {
+        if (event.path === currentDocumentPath()) refreshCommentsSoon();
+        refreshTreeSoon(projectId);
       }
     },
   });

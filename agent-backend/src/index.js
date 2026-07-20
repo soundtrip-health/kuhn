@@ -11,6 +11,7 @@ import healthRouter from './routes/health.js';
 import { authRouter, meRouter } from './routes/auth.js';
 import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
+import commentsRouter from './routes/comments.js';
 import filesRouter from './routes/files.js';
 import historyRouter from './routes/history.js';
 import orgsRouter from './routes/orgs.js';
@@ -23,6 +24,11 @@ import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 
 const app = express();
+// Deployed behind a TLS-terminating proxy/tunnel (cloudflared, nginx), the
+// forwarded proto/host must be trusted so magic links are minted as https://
+// on the public hostname (routes/auth.js builds them from req.protocol/host).
+// Harmless locally: no X-Forwarded-* headers, nothing changes.
+app.set('trust proxy', true);
 // credentials: the session cookie rides cross-origin fetches from the webapp
 // dev server (story 007-002); the allowlist above stays the gate.
 app.use(cors({ origin: config.cors.origin, credentials: true }));
@@ -34,6 +40,7 @@ app.use(session);
 app.use(meRouter);
 app.use(agentRouter);
 app.use(citationsRouter);
+app.use(commentsRouter);
 app.use(filesRouter);
 app.use(historyRouter);
 app.use(orgsRouter);
