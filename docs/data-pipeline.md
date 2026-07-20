@@ -38,7 +38,7 @@ Everything lives under one directory, `KUHN_DATA_DIR` (default: repo-root
 | Location | Contents |
 |---|---|
 | `data/db/kuhn.sqlite` (override: `KUHN_SQLITE_PATH`) | The database — see table below. In-process better-sqlite3, WAL mode; no DB server. |
-| `data/files/<projectId>/` (override: `PROJECTS_ROOT`) | Project workspaces: drafts, uploads, agent-written files, `references.bib`, rendered intermediates. |
+| `data/files/<projectId>/` (override: `PROJECTS_ROOT`) | Project workspaces: drafts, uploads, agent-written files, `references.bib`, rendered intermediates. Each workspace also carries a `.git` version-history repo (story 008-002) that is invisible to every application surface. |
 | `data/orgs/<orgId>/library/<docId>/<filename>` (override: `ORGS_ROOT`) | Org knowledge-library originals, one directory per document. |
 | `data/files/.render-tmp/` | Scratch dirs for render/export output, removed after each run. |
 
@@ -62,6 +62,13 @@ Everything lives under one directory, `KUHN_DATA_DIR` (default: repo-root
   delete: file and library deletions remove bytes and rows immediately;
   deleting a project cascades its conversations, messages, jobs, references,
   and activity log.
+- **Project files have point-in-time history** (story 008-002): a git repo
+  per project workspace, committed on explicit saves, coalesced autosaves
+  (default one commit per 2 minutes of activity, `KUHN_HISTORY_AUTOCOMMIT_MS`),
+  agent-job boundaries, and immediately before deletes/overwriting uploads.
+  Restore is append-only (a restore is itself a new version); history is
+  removed with the project. This covers *files* only — the database (chat
+  transcripts, references, library text) still has no versioning or backup.
 - Deleting a user removes their sessions; their past messages/files remain
   with the attribution nulled (schema `ON DELETE SET NULL`).
 - Expired auth tokens/sessions are pruned opportunistically; the activity log

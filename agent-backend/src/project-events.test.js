@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Keep this a pure hub test: persistence (005-002) is covered against real
-// SQLite in db/file-activity.test.js.
+// SQLite in db/file-activity.test.js, git mechanics (008-002) in
+// history.test.js — here we only assert the wiring.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
+vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
+
+import { commitNow, scheduleCommit } from './history.js';
 
 import { config } from './config.js';
 import {
@@ -63,6 +67,22 @@ describe('project event hub (story 005-001)', () => {
     sub(1, good);
     publishProjectEvent(1, { type: 'notice' });
     expect(good).toHaveBeenCalledTimes(1);
+  });
+
+  it('wires version history: file_change schedules, job boundaries commit (008-002)', () => {
+    vi.mocked(scheduleCommit).mockClear();
+    vi.mocked(commitNow).mockClear();
+
+    publishProjectEvent(1, { type: 'file_change', path: 'draft/a.md', kind: 'update', agent: 'writer' }, { userId: 7 });
+    expect(scheduleCommit).toHaveBeenCalledWith(1, { agent: 'writer', userId: 7 });
+
+    publishProjectEvent(1, { type: 'done', agent: 'writer', jobId: 42 });
+    expect(commitNow).toHaveBeenCalledWith(1, { agent: 'writer', label: 'writer finished (job 42)' });
+
+    // Sub-agent completions have no jobId at this hub; nothing to commit.
+    vi.mocked(commitNow).mockClear();
+    publishProjectEvent(1, { type: 'done', agent: 'ra' });
+    expect(commitNow).not.toHaveBeenCalled();
   });
 
   it('enforces the per-project subscriber cap and cleans up on unsubscribe', () => {

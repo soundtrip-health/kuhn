@@ -1,7 +1,10 @@
 # Epic 008: Trust & the Writing Loop
 
-**Status:** draft
+**Status:** in-progress
 **Created:** 2026-07-19
+**Updated:** 2026-07-19 (002 shipped — git-backed version history: coalesced
+auto-commits, labeled agent-job versions, snapshot-before-destroy, history
+panel with diff + append-only restore. Next: 001 suggestion mode.)
 **Priority:** #1 of the 2026-07 roadmap (008 → 009 → 010)
 
 ## Goal
@@ -33,7 +36,7 @@ product's core promise. Each story hardens one leg of it:
 | # | Story | Status | Size |
 |---|-------|--------|------|
 | 001 | [Suggestion mode for agent edits](stories/001-suggestion-mode.md) — agent writes to draft docs land as pending diffs with per-hunk accept/reject | draft | L |
-| 002 | [Document version history](stories/002-version-history.md) — snapshot on save + agent-job boundaries; timeline, diff, restore | draft | L |
+| 002 | [Document version history](stories/002-version-history.md) — snapshot on save + agent-job boundaries; timeline, diff, restore | done | L |
 | 003 | [Citation claim-checking](stories/003-citation-claim-check.md) — Reviewer verifies every `[@key]` against retrieved evidence | draft | L |
 | 004 | [Margin comments](stories/004-margin-comments.md) — anchored threads in the document; Reviewer files comments instead of chat walls | draft | L |
 

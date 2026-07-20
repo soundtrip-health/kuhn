@@ -31,6 +31,7 @@ import {
   setActiveFile,
   type FileChange,
 } from './files';
+import { initHistoryButton } from './history-panel';
 import { icon } from './icons';
 import { initAuth } from './login';
 import { initPreview, previewStoredFile } from './preview';
@@ -262,6 +263,10 @@ async function main(): Promise<void> {
   initAgentSelector();
   buildEditorHero();
   setSetupHandler((projectId) => openSetupWizard(projectId));
+  initHistoryButton(() => ({
+    projectId: workspace.activeProject()?.id ?? 0,
+    path: currentDocumentPath(),
+  }));
   initBreadcrumb();
   const sendBtn = document.querySelector('.send-btn');
   if (sendBtn) sendBtn.innerHTML = icon('send', { size: 15, stroke: 2 });
@@ -269,7 +274,7 @@ async function main(): Promise<void> {
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      void flushSave();
+      void flushSave({ checkpoint: true }); // explicit save = history version
     }
   });
   window.addEventListener('beforeunload', () => void closeDocument());

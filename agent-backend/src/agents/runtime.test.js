@@ -23,6 +23,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 // Pin the agent config so tests don't depend on .env / defaults drifting
 vi.mock('../config.js', () => ({
   config: {
+    // db.js loads at import via the history module (story 008-002); keep it
+    // in-memory and history itself inert in these tests.
+    db: { path: ':memory:' },
+    history: { enabled: false },
     agent: {
       tokenBudget: 250000,
       budgetGrace: 1.1,

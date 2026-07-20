@@ -1,6 +1,6 @@
 # Story 008-002: Document version history
 
-**Status:** draft
+**Status:** done
 **Epic:** [008 — Trust & the Writing Loop](../index.md)
 **Estimate:** L
 
@@ -32,17 +32,24 @@ disclose to evaluating orgs.
 
 ## Acceptance Criteria
 
-- [ ] Every save is reachable: continuous typing coalesces, but no committed
-      state is ever lost once the debounce window closes.
-- [ ] Agent job boundaries produce labeled versions ("Writer — draft full
-      body, job 42") distinct from user edit checkpoints.
-- [ ] Timeline + diff + restore in the UI for the open document; restore is
-      append-only (a new version, not a rewrite).
-- [ ] `.git` is invisible to the file tree, the storage API, and agent file
-      tools.
-- [ ] Works fully offline/local — no remote, no GitHub dependency.
-- [ ] `docs/data-pipeline.md` retention section updated: point-in-time
-      recovery now exists; state what it does and doesn't cover.
+- [x] Every save is reachable: continuous typing coalesces (trailing throttle,
+      `KUHN_HISTORY_AUTOCOMMIT_MS`, default 2 min), and destructive actions
+      (delete, overwriting upload, restore) snapshot the pre-state first so
+      the window never loses it.
+- [x] Agent job boundaries produce labeled versions ("writer finished
+      (job 42)") distinct from user edit checkpoints — hooked at the
+      `publishProjectEvent` choke point alongside the activity log.
+- [x] Timeline + diff (CodeMirror `unifiedMergeView`) + restore in the UI for
+      the open document; restore is append-only and live-updates a clean open
+      editor through the existing `file_change` path. (Verified live in
+      Chrome, 2026-07-19: two versions listed with authors, additions
+      highlighted, restore returned the doc to v1 with commit
+      "Restore hist-test.md to 5669808".)
+- [x] `.git` is invisible to the file tree, the storage API, and agent file
+      tools (`resolveWithin` rejects the segment; `walkTree` skips it).
+- [x] Works fully offline/local — system `git` binary, no remote.
+      `KUHN_HISTORY_ENABLED=false` for hosts without git.
+- [x] `docs/data-pipeline.md` layout + retention sections updated.
 
 ## Notes
 
@@ -53,3 +60,19 @@ disclose to evaluating orgs.
 - Interplay with Yjs: storage remains the persistence layer (story 013
   model); history commits what storage sees. Live CRDT state is 010-002's
   concern.
+- **Design fix found in verification:** Cmd/Ctrl+S on an already-autosaved
+  (clean) editor originally short-circuited before the request, so no
+  checkpoint version was cut; an explicit save now writes through with
+  `?checkpoint=1` regardless.
+- **Deliberate coalescing limits (accepted):** agent overwrites within one
+  auto-commit window collapse into that window's single commit (job-boundary
+  commits bound the loss), and the seeding pipeline's writes are captured by
+  the job-boundary commit, not per-file.
+- **Incident during verification, owned by Story 010-002:** with two tabs
+  holding the same doc across backend restarts (`node --watch`), the
+  memory-only Yjs rooms died and the tabs' independently-seeded CRDTs merged
+  on reconnect, duplicating the document (main.md doubled; repaired from the
+  identical halves and committed as "Save draft/main.md"). Concrete repro
+  recorded in 010-002 — server-side room persistence is the fix.
+- UI is per-document history; the API already supports a project-wide
+  timeline (`path` optional) if a later story wants a project view.
