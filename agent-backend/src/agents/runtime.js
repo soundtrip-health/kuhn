@@ -21,6 +21,7 @@ import {
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
 import { migrateSeenPaths } from '../db/file-activity.js';
+import { isSuggestionPath, proposeEdit, effectiveContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
@@ -54,11 +55,17 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {string} [task.sessionId] - Continue a prior SDK session
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
  *   tools so the agent returns text only and emits no file_change (the /write contract)
+ * @param {boolean} [task.seeding] - Seeding-pipeline bypass (story 008-001):
+ *   suggestion mode normally turns agent writes to draft/** into pending edits;
+ *   the seeding stages write the first draft directly (nothing to protect yet).
+ *   Sub-agent dispatches inherit it.
  * @param {object} [internal] - Used by dispatch_agent for sub-tasks; not part of the boundary
  * @returns {AsyncGenerator<AgentEvent>} Events:
  *   { type: 'text_delta', agent, content }   — token-level streaming (story 013)
  *   { type: 'text', agent, content }         — full text of the finished turn
- *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete' }
+ *   { type: 'file_change', agent, path, kind: 'create'|'update'|'delete'|'proposed' }
+ *     — 'proposed' (story 008-001): a suggestion-mode write landed as a pending
+ *       edit; the file's bytes are unchanged until the user accepts
  *   { type: 'citation', agent, key, bibtex, path } — add_citation upserted the bibliography (story 016)
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
@@ -213,7 +220,7 @@ export async function* reattach(run, signal) {
 const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'project_config']);
 
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null, compose = false, userId = null } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
@@ -254,7 +261,7 @@ async function runTask(task, internal, channel, state) {
   const projectDir = await resolveProjectDir(projectId);
 
   // In-process MCP tools, filtered by the role's DB allowlist
-  const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel, userId });
+  const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel, userId, seeding });
   const mcpServer = mcpTools.length > 0
     ? createSdkMcpServer({ name: 'kuhn', version: '1.0.0', tools: mcpTools })
     : null;
@@ -356,7 +363,7 @@ async function runTask(task, internal, channel, state) {
 
       if (text) channel.push({ type: 'text', agent: agent.slug, content: text });
       for (const call of toolCalls) {
-        const fileEvent = fileChangeEvent(agent.slug, call);
+        const fileEvent = fileChangeEvent(agent.slug, call, !seeding);
         if (fileEvent) channel.push(fileEvent);
       }
 
@@ -507,15 +514,24 @@ function buildPrompt(input, context) {
   return parts.join('\n\n');
 }
 
-function fileChangeEvent(agentSlug, toolCall) {
+// `suggesting` = suggestion mode is active for the task (i.e. not seeding);
+// scoped write_file/edit_file calls then land as pending edits, so their live
+// event is kind 'proposed' — badges update without an activity-log entry.
+function fileChangeEvent(agentSlug, toolCall, suggesting = false) {
   const path = toolCall.input?.path;
   if (!path) return null;
-  if (toolCall.name === 'mcp__kuhn__write_file') return { type: 'file_change', agent: agentSlug, path, kind: 'create' };
-  if (toolCall.name === 'mcp__kuhn__edit_file') return { type: 'file_change', agent: agentSlug, path, kind: 'update' };
+  if (toolCall.name === 'mcp__kuhn__write_file') {
+    const kind = suggesting && isSuggestionPath(path) ? 'proposed' : 'create';
+    return { type: 'file_change', agent: agentSlug, path, kind };
+  }
+  if (toolCall.name === 'mcp__kuhn__edit_file') {
+    const kind = suggesting && isSuggestionPath(path) ? 'proposed' : 'update';
+    return { type: 'file_change', agent: agentSlug, path, kind };
+  }
   return null;
 }
 
-function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId }) {
+function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId, seeding = false }) {
   const tools = [];
 
   // File tools (story 018): all project file access goes through the storage
@@ -585,6 +601,14 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         content: z.string().describe('Full file content'),
       },
       async ({ path, content }) => fileToolResult(async () => {
+        // Suggestion mode (story 008-001): writes to draft/** become pending
+        // edits the user reviews; the file's bytes do not change here. The
+        // seeding pipeline bypasses the gate — its first draft writes land
+        // directly (there is nothing to protect yet).
+        if (!seeding && isSuggestionPath(path)) {
+          await proposeEdit(projectId, { path, proposedContent: content, agentSlug: agent.slug, jobId: parentJob.id });
+          return `Proposed update to ${path} — awaiting user review; the file is unchanged until the user accepts.`;
+        }
         const { created } = await writeProjectFile(projectId, path, content);
         return `${created ? 'Created' : 'Updated'} ${path}`;
       }),
@@ -599,13 +623,24 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         replace_all: z.boolean().default(false).describe('Replace every occurrence'),
       },
       async ({ path, old_string, new_string, replace_all }) => fileToolResult(async () => {
-        const content = (await readProjectFile(projectId, path)).toString('utf-8');
+        const suggesting = !seeding && isSuggestionPath(path);
+        // In suggestion mode the "current content" is the EFFECTIVE content —
+        // an existing proposal if there is one, else the disk file — so a
+        // sequential write→edit on the same draft stays coherent (008-001).
+        const content = suggesting
+          ? await effectiveContent(projectId, path)
+          : (await readProjectFile(projectId, path)).toString('utf-8');
         const occurrences = content.split(old_string).length - 1;
         if (occurrences === 0) throw new Error(`old_string not found in ${path}`);
         if (occurrences > 1 && !replace_all) {
           throw new Error(`old_string occurs ${occurrences} times in ${path}; pass replace_all or a longer unique string`);
         }
-        await writeProjectFile(projectId, path, content.replaceAll(old_string, new_string));
+        const next = content.replaceAll(old_string, new_string);
+        if (suggesting) {
+          await proposeEdit(projectId, { path, proposedContent: next, agentSlug: agent.slug, jobId: parentJob.id });
+          return `Proposed update to ${path} — awaiting user review; the file is unchanged until the user accepts.`;
+        }
+        await writeProjectFile(projectId, path, next);
         return `Updated ${path} (${replace_all ? occurrences : 1} replacement${occurrences > 1 && replace_all ? 's' : ''})`;
       }),
     ));
@@ -836,8 +871,10 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         let finalText = '';
         let errorMessage = null;
         const child = runAgentTask(
-          // Sub-jobs inherit the dispatching user's attribution (story 007-001).
-          { role: agent_slug, projectId, input, userId },
+          // Sub-jobs inherit the dispatching user's attribution (story 007-001)
+          // and the seeding bypass (story 008-001): a sub-agent dispatched by a
+          // seeding stage writes the first draft directly too.
+          { role: agent_slug, projectId, input, userId, seeding },
           { depth: depth + 1, parentJobId: parentJob.id, budget },
         );
         for await (const event of child) {

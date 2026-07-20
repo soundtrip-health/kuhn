@@ -72,7 +72,9 @@ export interface AgentEvent {
   ts?: string;
   content?: string;
   path?: string;
-  kind?: 'create' | 'update' | 'delete';
+  // 'proposed' = the pending-suggestion set for a path changed without a real
+  // write (story 008-001) — re-fetch pending edits, no bytes moved.
+  kind?: 'create' | 'update' | 'delete' | 'proposed';
   // Citation upsert by an agent (story 016)
   key?: string;
   bibtex?: string | null;
@@ -318,6 +320,110 @@ export async function restoreVersion(projectId: number, path: string, ref: strin
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, ref }),
   }));
+}
+
+// ---- Pending edits — suggestion mode (story 008-001) ----
+
+/** One server-computed diff hunk of a pending edit (jsdiff structuredPatch). */
+export interface PendingHunk {
+  index: number;
+  /** sha256 hex of the hunk's joined lines — echoed on accept/reject so the
+   *  server can 409 if the hunk at that index no longer matches. */
+  hash: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  /** Unified-diff lines: ' ' context, '-' removal, '+' insertion prefixes. */
+  lines: string[];
+}
+
+/** A pending agent suggestion for one path (accepted/rejected server-side). */
+export interface PendingEdit {
+  id: number;
+  path: string;
+  /** Proposing agent slug, or null. */
+  agent: string | null;
+  jobId: number | null;
+  /** Server re-anchor failed — review side-by-side, never inline. */
+  stale: boolean;
+  /** The file did not exist when first proposed (accept = create). */
+  baseMissing: boolean;
+  createdAt: string;
+  updatedAt: string;
+  hunks: PendingHunk[];
+  /** Inline on stale rows (side-by-side review); optional on fresh rows. */
+  baseContent?: string;
+  proposedContent?: string;
+}
+
+/** Accept/reject response: hunks left on the row (0 = row deleted). */
+export interface PendingEditMutation {
+  remaining: number;
+  /** Refreshed edit when remaining > 0. */
+  edit?: PendingEdit;
+}
+
+/** The project's pending edits (staleness refreshed server-side on every GET). */
+export async function getPendingEdits(projectId: number, path?: string): Promise<PendingEdit[]> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/pending-edits${query}`),
+  );
+  return ((await res.json()) as { edits: PendingEdit[] }).edits;
+}
+
+/** Create/update a pending edit — the token-free check scripts' entry point
+ *  (agents propose through the runtime tool path). */
+export async function createPendingEdit(
+  projectId: number,
+  params: { path: string; proposedContent: string; agent?: string; jobId?: number },
+): Promise<PendingEdit> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/pending-edits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }),
+  );
+  const body = (await res.json()) as PendingEdit | { edit: PendingEdit };
+  return 'edit' in body ? body.edit : body;
+}
+
+/**
+ * Accept a pending edit server-side: whole row (no opts), a single hunk
+ * (`hunk`), or a stale row wholesale (`force`). The server writes the file and
+ * publishes the real file_change — never apply hunks client-side.
+ */
+export async function acceptPendingEdit(
+  projectId: number,
+  id: number,
+  opts: { hunk?: { index: number; hash: string }; force?: boolean } = {},
+): Promise<PendingEditMutation> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/pending-edits/${id}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    }),
+  );
+  return (await res.json()) as PendingEditMutation;
+}
+
+/** Reject a pending edit (whole row, or one hunk). No file write happens. */
+export async function rejectPendingEdit(
+  projectId: number,
+  id: number,
+  hunk?: { index: number; hash: string },
+): Promise<PendingEditMutation> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/pending-edits/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(hunk ? { hunk } : {}),
+    }),
+  );
+  return (await res.json()) as PendingEditMutation;
 }
 
 // ---- File manager (story 014) ----

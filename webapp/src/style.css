@@ -816,6 +816,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   color: var(--accent); background: var(--accent-soft); padding: 1px 5px; border-radius: var(--r-xs);
 }
 .file-badge.is-modified { background: none; padding: 0; }
+/* Pending agent suggestion (story 008-001) — the /write suggestion purple
+   family, distinct from the accent-blue new/ai badges. */
+.file-badge.is-suggested { color: var(--writer); background: var(--writer-soft); }
 .file-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .file-status-text { font-size: 11px; color: var(--role, var(--ink-3)); }
 .file-spinner { width: 14px; height: 14px; flex: none; border: 2px solid var(--role, var(--ink-3)); border-top-color: transparent; border-radius: 50%; animation: kuhn-spin .9s linear infinite; }
@@ -1085,6 +1088,57 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 
 /* Accept entrance on the inserted block */
 .ws-inserted { animation: kuhn-rise var(--dur) var(--ease) both; }
+
+/* ---- Suggestion-mode review (story 008-001) -------------------------- */
+/* Server-stored pending edits rendered as decorations: a header bar widget,
+   struck-through deletions inline, green insertion previews per hunk. --role
+   carries the proposing agent's color (write-suggestion convention). */
+.suggestion-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border-left: 2.5px solid var(--role, var(--writer));
+  background: var(--soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 10px 14px; margin: 0 0 18px;
+  font-family: var(--font-ui); user-select: none;
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+.sh-bar-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--role, var(--writer)); }
+.sh-bar-text { flex: 1; min-width: 0; font: var(--ui-small); font-weight: 500; color: var(--ink-2); }
+.sh-bar-sep { color: var(--ink-3); }
+.suggestion-bar .btn { padding: 4px 11px; font-size: 12px; }
+
+/* Deletions: struck-through in the document voice. */
+.sh-del {
+  text-decoration: line-through;
+  text-decoration-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 2px;
+}
+
+/* Insertion preview + per-hunk controls (widget after the struck text). */
+.suggestion-hunk { margin: 6px 0 14px; font-family: var(--font-ui); user-select: none; }
+.sh-ins {
+  font: var(--doc-body); color: var(--good); background: var(--good-soft);
+  border-left: 2.5px solid var(--good);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 8px 12px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.sh-hunk-actions { display: flex; gap: 6px; margin-top: 6px; }
+.sh-accept, .sh-reject {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--r-xs);
+  background: var(--chrome); cursor: pointer;
+}
+.sh-accept { color: var(--good); }
+.sh-accept:hover { background: var(--good-soft); border-color: var(--good); }
+.sh-reject { color: var(--ink-3); }
+.sh-reject:hover { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+
+/* Side-by-side fallback modal reuses the history-panel (hy-*) shell. */
+.sh-modal-actions { display: flex; align-items: center; gap: 8px; }
 
 /* ---- Responsive collapse (graceful to ~1100px) --------------------- */
 @media (max-width: 1240px) {

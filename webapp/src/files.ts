@@ -9,12 +9,14 @@
 import {
   deleteFile,
   getFileActivity,
+  getPendingEdits,
   getTree,
   markFileSeen,
   moveFile,
   promoteFileToLibrary,
   uploadFiles,
   type FileActivityEvent,
+  type PendingEdit,
   type TreeNode,
 } from './api';
 import { icon, iconEl, type IconName } from './icons';
@@ -39,11 +41,11 @@ export interface FilesHandlers {
 /** A file-tree change worth tracking for the status map. */
 export interface FileChange {
   path: string;
-  kind?: 'create' | 'update' | 'delete';
+  kind?: 'create' | 'update' | 'delete' | 'proposed';
   agent?: string;
 }
 
-type FileStatusKind = 'new' | 'modified' | 'generated' | 'ingesting' | 'done';
+type FileStatusKind = 'new' | 'modified' | 'generated' | 'ingesting' | 'done' | 'suggested';
 interface FileStatus {
   status: FileStatusKind;
   originAgent?: string;
@@ -59,6 +61,11 @@ const statusMap = new Map<string, FileStatus>();
  * from statusMap: it isn't unseen state, so tree re-hydration and mark-seen
  * must not clear it — only the ingestion outcome does. */
 const ingestMap = new Map<string, 'ingesting' | 'done'>();
+/** Paths with a pending agent suggestion (story 008-001): path → agent slug.
+ * Server truth from GET /pending-edits, re-fetched on every tree refresh (any
+ * file_change event debounces into one). Separate from statusMap: it isn't
+ * unseen state — opening the file must not clear it, only accept/reject do. */
+const suggestMap = new Map<string, string | null>();
 /** Recorded origin agent per path (from the activity log) — outlives badges,
  * so a seen file keeps its agent tint instead of the extension guess. */
 const originMap = new Map<string, string>();
@@ -86,6 +93,7 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   statusMap.clear();
   originMap.clear();
   ingestMap.clear();
+  suggestMap.clear();
   seenSentAt.clear();
   updateUnseenPill();
   activePath = '';
@@ -221,13 +229,20 @@ export async function refreshTree(activeProjectId: number): Promise<void> {
     // Tree carries per-user unseen flags; the activity log supplies each
     // path's latest kind + origin agent. Together they rebuild the status
     // map from server truth, so badges survive reload (story 005-003).
-    const [tree, activity] = await Promise.all([
+    // Pending suggestions ride along (story 008-001) — same server-truth rule.
+    const [tree, activity, pending] = await Promise.all([
       getTree(activeProjectId),
       getFileActivity(activeProjectId).catch(() => [] as FileActivityEvent[]),
+      getPendingEdits(activeProjectId).catch(() => [] as PendingEdit[]),
     ]);
     if (projectId !== activeProjectId) return; // superseded by a project switch
     lastTree = tree;
     hydrateStatus(tree, activity);
+    suggestMap.clear();
+    for (const edit of pending) {
+      suggestMap.set(edit.path, edit.agent);
+      if (edit.agent) originMap.set(edit.path, edit.agent);
+    }
     container.replaceChildren(lastTree.length > 0 ? renderNodes(lastTree) : emptyState());
     initRovingTabindex(container);
   } catch (err) {
@@ -298,9 +313,10 @@ export function markSeen(path: string): void {
     const entry = document
       .getElementById('file-tree')
       ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
-    // Spinner/check belong to the org-library ingest flow (ingestMap), which
-    // opening the file doesn't resolve — remove only the unseen badge.
-    entry?.querySelectorAll('.file-badge').forEach((el) => el.remove());
+    // Spinner/check belong to the org-library ingest flow (ingestMap), and the
+    // suggested badge to the pending-edit flow (suggestMap) — opening the file
+    // resolves neither. Remove only the unseen badge.
+    entry?.querySelectorAll('.file-badge:not(.is-suggested)').forEach((el) => el.remove());
     updateUnseenPill();
   }
   const last = seenSentAt.get(path) ?? 0;
@@ -316,9 +332,12 @@ function updateUnseenPill(): void {
   const toggle = document.getElementById('toggle-files');
   if (!toggle) return;
   let pill = toggle.querySelector<HTMLElement>('.toggle-pill');
-  const count = [...statusMap.values()]
-    .filter((s) => s.status === 'new' || s.status === 'generated' || s.status === 'modified')
-    .length;
+  const flagged = new Set<string>();
+  for (const [path, s] of statusMap) {
+    if (s.status === 'new' || s.status === 'generated' || s.status === 'modified') flagged.add(path);
+  }
+  for (const path of suggestMap.keys()) flagged.add(path); // pending review counts too
+  const count = flagged.size;
   if (count === 0) {
     pill?.remove();
     return;
@@ -379,8 +398,16 @@ export function revealFile(path: string): void {
 
 /** Record a `file_change` (or citation) event into the status map. */
 export function recordFileChange(change: FileChange): void {
+  if (change.kind === 'proposed') {
+    // The pending set changed (created, updated, or rejected — the event does
+    // not say which); the debounced tree refresh re-fetches server truth. Only
+    // the origin tint is worth recording eagerly.
+    if (change.agent) originMap.set(change.path, change.agent);
+    return;
+  }
   if (change.kind === 'delete') {
     statusMap.delete(change.path);
+    suggestMap.delete(change.path);
   } else {
     statusMap.set(change.path, {
       status: change.agent
@@ -405,6 +432,10 @@ function migrateStatus(from: string, to: string): void {
   const origin = originMap.get(from);
   originMap.delete(from);
   if (origin) originMap.set(to, origin);
+  if (suggestMap.has(from)) {
+    suggestMap.set(to, suggestMap.get(from) ?? null);
+    suggestMap.delete(from);
+  }
   seenSentAt.delete(from);
 }
 
@@ -448,6 +479,7 @@ async function deleteEntry(node: TreeNode): Promise<void> {
     return;
   }
   statusMap.delete(node.path);
+  suggestMap.delete(node.path);
   await refreshTree(projectId);
 }
 
@@ -652,6 +684,7 @@ const STATUS_TEXT: Record<FileStatusKind, string> = {
   modified: 'modified since last viewed',
   ingesting: 'processing',
   done: 'processed',
+  suggested: 'suggested changes awaiting review',
 };
 
 function renderFile(node: TreeNode): HTMLElement {
@@ -667,9 +700,14 @@ function renderFile(node: TreeNode): HTMLElement {
   button.setAttribute('aria-selected', String(node.path === activePath));
   if (node.path === activePath) button.classList.add('active');
 
-  // A live org-library ingest badge outranks unseen state (story 006-004).
+  // A live org-library ingest badge outranks unseen state (story 006-004);
+  // a pending suggestion outranks new/modified (story 008-001).
   const ingest = ingestMap.get(node.path);
-  const st: FileStatus | undefined = ingest ? { status: ingest } : statusMap.get(node.path);
+  const st: FileStatus | undefined = ingest
+    ? { status: ingest }
+    : suggestMap.has(node.path)
+      ? { status: 'suggested', originAgent: suggestMap.get(node.path) ?? undefined }
+      : statusMap.get(node.path);
   // Recorded origin (badge, then activity history) beats the extension guess.
   const originAgent = st?.originAgent ?? originMap.get(node.path);
   const origin = originAgent ? ORIGIN_CLASS[originAgent] ?? '' : originClass(node.name);
@@ -740,6 +778,11 @@ function statusBadge(st?: FileStatus): Element | null {
       return textBadge('new');
     case 'generated':
       return textBadge('ai');
+    case 'suggested': {
+      const badge = textBadge('suggested');
+      badge.classList.add('is-suggested');
+      return badge;
+    }
     case 'modified': {
       const badge = document.createElement('span');
       badge.className = 'file-badge is-modified';

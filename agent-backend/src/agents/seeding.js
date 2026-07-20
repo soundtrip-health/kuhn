@@ -47,9 +47,11 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask, user
 
   // --- Stage 1: RA + Advisor research in parallel ----------------------------
   yield { type: 'stage', stage: 'research', status: 'start' };
+  // seeding: true bypasses suggestion mode (story 008-001) — the pipeline
+  // writes the first draft directly; there is nothing to protect yet.
   const branchErrors = yield* forwardParallel([
-    runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' }, userId }),
-    runTask({ role: 'advisor', projectId, input: advisorInput(config), context: { seedStage: 'research' }, userId }),
+    runTask({ role: 'ra', projectId, input: raInput(config), context: { seedStage: 'research' }, userId, seeding: true }),
+    runTask({ role: 'advisor', projectId, input: advisorInput(config), context: { seedStage: 'research' }, userId, seeding: true }),
   ]);
   outcomes.ra = branchErrors[0] ?? 'ok';
   outcomes.advisor = branchErrors[1] ?? 'ok';
@@ -64,7 +66,7 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask, user
   // --- Stage 2: Writer skeleton ----------------------------------------------
   yield { type: 'stage', stage: 'skeleton', status: 'start' };
   const skeletonError = yield* forwardTask(
-    runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' }, userId }),
+    runTask({ role: 'writer', projectId, input: writerInput(config), context: { seedStage: 'skeleton' }, userId, seeding: true }),
   );
   outcomes.skeleton = skeletonError ?? 'ok';
   yield { type: 'stage', stage: 'skeleton', status: skeletonError ? 'error' : 'done', ...(skeletonError ? { detail: skeletonError } : {}) };

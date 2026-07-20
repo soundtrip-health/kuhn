@@ -2,7 +2,7 @@
 
 **Audience:** an organization (or its IT/security reviewer) evaluating Kuhn and
 asking: *where does our data go, how is it processed, and what is persisted?*
-**As of:** 2026-07-19 (story 040). File references point into `agent-backend/src/`
+**As of:** 2026-07-19 (story 008-001). File references point into `agent-backend/src/`
 unless noted. For system architecture see [architecture.md](architecture.md).
 
 Kuhn is self-hosted: one Node backend, one browser app, an in-process SQLite
@@ -85,7 +85,7 @@ absolute paths) and a per-file cap of 20 MB (`STORAGE_MAX_FILE_BYTES`).
 |---|---|---|
 | Project upload | `POST /api/projects/:id/files/upload` (`routes/files.js`) | Multipart, ≤20 files per batch, buffered in memory, any file type accepted. Logged to the activity feed. |
 | Editor autosave | `PUT /api/projects/:id/file` | Debounced writes from the editor (rich and source mode). Deliberately not activity-logged. |
-| Agent writes | `write_file` / `edit_file` / `move_file` tools (`agents/runtime.js`) | Same storage module, same limits; logged to the activity feed with the acting agent. |
+| Agent writes | `write_file` / `edit_file` / `move_file` tools (`agents/runtime.js`) | Same storage module, same limits; logged to the activity feed with the acting agent. Agent writes to `draft/**` do **not** touch the file: they land as pending suggestions (`pending_edits` table, story 008-001) the PI reviews per-hunk in the editor; only acceptance writes the file, activity-logged and version-committed under the originating agent/job — "an AI edited my manuscript" becomes "I approved these changes". The seeding pipeline's first draft is the deliberate exception (direct write). |
 | Org library upload / promote | `routes/org-library.js`, `routes/projects.js` | Deduplicated by sha256 within the org; triggers ingestion (§3). |
 
 Every route resolves the requesting user first and checks org membership;

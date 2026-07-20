@@ -316,3 +316,28 @@ END;
 CREATE TRIGGER IF NOT EXISTS org_chunks_ad AFTER DELETE ON org_document_chunks BEGIN
   INSERT INTO org_chunks_fts(org_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
+
+-- ============================================================
+-- Pending agent edits (story 008-001) — suggestion mode. One row per
+-- (project, path): agent writes to draft/** land here as proposals and the
+-- file's stored bytes change only on acceptance. base_content is the disk
+-- content when first proposed ('' with base_missing=1 for a new file);
+-- proposals to the same path coalesce by replacing proposed_content. Diff
+-- hunks are derived at read time (src/pending-edits.js), never stored.
+-- stale=1 marks a row whose base drifted and could not be re-anchored.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS pending_edits (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id        INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path              TEXT NOT NULL,
+  base_content      TEXT NOT NULL,
+  base_hash         TEXT NOT NULL,  -- sha256 hex of base_content
+  base_missing      INTEGER NOT NULL DEFAULT 0,
+  proposed_content  TEXT NOT NULL,
+  agent_slug        TEXT,   -- NULL = human/API-proposed edit
+  job_id            INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  stale             INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (project_id, path)
+);

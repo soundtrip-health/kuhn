@@ -53,6 +53,9 @@ describe('runSeedPipeline', () => {
     for (const task of calls) {
       expect(task.input).toContain(CONFIG.research_question);
       expect(task.projectId).toBe(1);
+      // Every stage bypasses suggestion mode (story 008-001): the pipeline
+      // writes the first draft directly — there is nothing to protect yet.
+      expect(task.seeding).toBe(true);
     }
     expect(calls.map((t) => t.context?.seedStage)).toEqual(['research', 'research', 'skeleton']);
 

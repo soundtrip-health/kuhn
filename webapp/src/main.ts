@@ -37,6 +37,7 @@ import { initAuth } from './login';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
 import { notify, setVersion } from './status';
+import { refreshSuggestionsSoon } from './suggestion-hunks';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
 
@@ -136,8 +137,13 @@ async function switchToActiveProject(): Promise<void> {
   const handleFileChange = (change: FileChange): void => {
     recordFileChange(change); // feed the files-panel status map (story 014)
     refreshTreeSoon(projectId);
+    // Any file_change can shift the pending-suggestion set (story 008-001):
+    // re-fetch (debounced) and reconcile the open doc's hunk decorations.
+    refreshSuggestionsSoon();
     if (change.path.endsWith('.bib')) void refreshBib(projectId);
     if (change.path === currentDocumentPath()) {
+      // 'proposed' moves no bytes — the decoration refresh above covers it.
+      if (change.kind === 'proposed') return;
       if (change.kind === 'delete') {
         // The open document was deleted remotely — another tab, a
         // collaborator, or an agent move (story 041). A clean editor closes
@@ -163,6 +169,9 @@ async function switchToActiveProject(): Promise<void> {
       void applyExternalChange(change.path).then((applied) => {
         if (applied) {
           markSeen(change.path); // the update is on screen — that's seen
+          // Re-anchor suggestion hunks against the freshly loaded content
+          // (accepting a hunk lands here via the server's real write).
+          refreshSuggestionsSoon();
         } else {
           notify(`${change.path} was changed by an agent — reload to pick up the new version`);
         }

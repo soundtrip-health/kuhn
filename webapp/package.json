@@ -12,7 +12,8 @@
     "parity-check": "node scripts/parity-sweep.mjs",
     "library-check": "node scripts/org-library-check.mjs",
     "smoke:chat": "node scripts/chat-check.mjs",
-    "write-check": "node scripts/write-check.mjs"
+    "write-check": "node scripts/write-check.mjs",
+    "suggestion-check": "node scripts/suggestion-check.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",

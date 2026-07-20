@@ -58,7 +58,11 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
   // break event delivery or the emitting run. `userId` attributes the event
   // (story 007-001): the acting user for UI mutations, the requesting user
   // for agent runs (supplied by the channel tee).
-  if (event.type === 'file_change' && event.path) {
+  // Proposed suggestions (story 008-001) are pending-review markers, not real
+  // writes: skip the activity log (kind CHECK constraint), the room eviction,
+  // and the version-history commit — SSE fan-out only, so open tabs re-fetch
+  // their pending-edit badges/decorations.
+  if (event.type === 'file_change' && event.path && event.kind !== 'proposed') {
     try {
       recordFileEvent(Number(projectId), {
         path: event.path,
