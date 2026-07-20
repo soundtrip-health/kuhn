@@ -21,11 +21,18 @@ import { placeholder } from '@milkdown/crepe/feature/placeholder';
 import { table } from '@milkdown/crepe/feature/table';
 import { toolbar } from '@milkdown/crepe/feature/toolbar';
 
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { markdown as cmMarkdown } from '@codemirror/lang-markdown';
+import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { EditorState } from '@codemirror/state';
+import { EditorView as CmEditorView, keymap as cmKeymap } from '@codemirror/view';
+
 import { type Editor, editorViewCtx } from '@milkdown/kit/core';
 import type { Ctx } from '@milkdown/kit/ctx';
 import { getMarkdown, markdownToSlice, replaceAll } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
+import * as decoding from 'lib0/decoding';
 import { Doc as YDoc } from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 
@@ -47,6 +54,15 @@ import { startWrite, writeSuggestionPlugin } from './write-suggestion';
 
 const SAVE_DEBOUNCE_MS = 1500;
 
+// Story 041 collab-lifecycle constants, mirroring the backend:
+// custom y-websocket message naming this connection the room's template
+// seeder (yjs-websocket.js MSG_SEED_GRANT), and the eviction close code.
+const MSG_SEED_GRANT = 64;
+const CLOSE_ROOM_EVICTED = 4001;
+// If the granted seeder dies before seeding, seed ourselves once the room
+// has stayed empty this long (re-checked at apply time).
+const SEED_FALLBACK_MS = 3000;
+
 const DEFAULT_TEMPLATE = `# Untitled draft
 
 Start writing, or ask an agent in the chat panel.
@@ -55,6 +71,10 @@ Start writing, or ask an agent in the chat panel.
 let crepe: CrepeBuilder | null = null;
 let provider: WebsocketProvider | null = null;
 let ydoc: YDoc | null = null;
+// Source (raw markdown) mode — story 039. When set, the document is open in a
+// CodeMirror view of the stored bytes instead of Crepe; rich collab is torn
+// down for the duration (single writer straight to storage).
+let sourceView: CmEditorView | null = null;
 
 let currentProjectId = 0;
 let currentPath = '';
@@ -68,6 +88,17 @@ export function currentDocumentPath(): string {
   return currentPath;
 }
 
+/** Local edits not yet persisted to storage? (Either mode; story 041.) */
+export function hasUnsavedChanges(): boolean {
+  if (saveTimer != null) return true;
+  const current = sourceView
+    ? sourceView.state.doc.toString()
+    : crepe
+      ? crepe.editor.action(getMarkdown())
+      : null;
+  return current != null && current !== lastSavedMarkdown;
+}
+
 /**
  * Live-update the open editor when an agent changes the file underneath it
  * (story 013 carry-over). If the editor is clean, the new content is loaded in
@@ -76,7 +107,19 @@ export function currentDocumentPath(): string {
  * to clobber them and return false so the caller keeps the reload prompt.
  */
 export async function applyExternalChange(path: string): Promise<boolean> {
-  if (!crepe || path !== currentPath) return false;
+  if (path !== currentPath) return false;
+  if (sourceView) {
+    // Source mode mirrors storage directly: clean view → swap in the new text.
+    const current = sourceView.state.doc.toString();
+    if (saveTimer != null || current !== lastSavedMarkdown) return false;
+    const stored = await readTextFile(currentProjectId, path);
+    if (stored == null || stored === current) return true;
+    lastSavedMarkdown = stored;
+    sourceView.dispatch({ changes: { from: 0, to: sourceView.state.doc.length, insert: stored } });
+    setSaveState('saved');
+    return true;
+  }
+  if (!crepe) return false;
   const current = crepe.editor.action(getMarkdown());
   const dirty = saveTimer != null || current !== lastSavedMarkdown;
   if (dirty) return false;
@@ -201,7 +244,11 @@ function insertCitation(view: EditorView, key: string): void {
 
 let tooltipsInstalled = false;
 
-export async function openDocument(projectId: number, path: string): Promise<void> {
+export async function openDocument(
+  projectId: number,
+  path: string,
+  opts: { preferStored?: boolean } = {},
+): Promise<void> {
   await closeDocument();
   currentProjectId = projectId;
   currentPath = path;
@@ -214,6 +261,8 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     installCitationTooltips(document.getElementById('editor')!);
     tooltipsInstalled = true;
   }
+  wireModeToggle();
+  setModeToggle('rich');
 
   const stored = await readTextFile(projectId, path);
   const template = stored ?? DEFAULT_TEMPLATE;
@@ -267,28 +316,157 @@ export async function openDocument(projectId: number, path: string): Promise<voi
     provider = new WebsocketProvider(`${BACKEND_WS_URL}/yjs-websocket`, roomName(projectId, path), ydoc);
     collabService.bindDoc(ydoc).setAwareness(provider.awareness);
     const boundProvider = provider;
+    const boundYdoc = ydoc;
+    // The server names exactly one connection per empty room as its seeder
+    // (story 041) — deciding client-side let two simultaneous openers both
+    // observe an empty room and both apply the template.
+    let seedGranted = false;
+    boundProvider.messageHandlers[MSG_SEED_GRANT] = (_encoder, decoder) => {
+      seedGranted = decoding.readVarUint(decoder) === 1;
+    };
+    // Close 4001 = the server evicted this room (file deleted/replaced,
+    // story 038). Auto-reconnecting would repopulate the fresh room from
+    // this client's local state — stop for good; the project feed delivers
+    // the delete to the UI (story 041).
+    boundProvider.on('connection-close', (event: CloseEvent | null) => {
+      if (event?.code === CLOSE_ROOM_EVICTED) boundProvider.disconnect();
+    });
     provider.once('sync', (isSynced: boolean) => {
       // Bail if the document was switched before sync arrived (story 024).
       if (!isSynced || provider !== boundProvider) return;
-      // Seed the shared doc from storage only when the room is empty;
-      // otherwise the live collaborative state wins.
-      collabService.applyTemplate(template).connect();
+      if (seedGranted) {
+        // Sole seeder: apply the storage template (its own empty-room
+        // condition still re-checks at apply time).
+        collabService.applyTemplate(template).connect();
+      } else {
+        collabService.connect();
+        // Seeder-death fallback: if nobody has seeded the room after a
+        // grace period, do it ourselves.
+        setTimeout(() => {
+          if (provider !== boundProvider || !crepe) return;
+          if (boundYdoc.getXmlFragment('prosemirror').length > 0) return;
+          collabService.disconnect();
+          collabService.applyTemplate(template).connect();
+        }, SEED_FALLBACK_MS);
+      }
+      if (!opts.preferStored) return;
+      // Returning from source mode (story 039): edits went straight to
+      // storage, which any still-warm room predates — force the stored text
+      // over whatever the room replayed (propagates to peers via collab).
+      setTimeout(() => {
+        if (provider !== boundProvider || !crepe) return;
+        if (crepe.editor.action(getMarkdown()) === template) return;
+        lastSavedMarkdown = template;
+        crepe.editor.action(replaceAll(template));
+        setSaveState('saved');
+      }, 0);
     });
   });
 }
 
 export async function closeDocument(): Promise<void> {
+  if (saveTimer) await flushSave();
+  await teardownRich();
+  destroySourceView();
+  setModeToggle(null);
+}
+
+/** Tear down Crepe + collab (used by close and by entering source mode). */
+async function teardownRich(): Promise<void> {
   // Detach the collab plugins before any teardown: late provider/awareness
   // events otherwise dispatch into the view after editor.destroy() has
   // removed the editorState ctx slice (story 024).
   crepe?.editor.action((ctx) => ctx.get(collabServiceCtx).disconnect());
-  if (saveTimer) await flushSave();
   provider?.destroy();
   provider = null;
   ydoc?.destroy();
   ydoc = null;
   if (crepe) await crepe.destroy();
   crepe = null;
+}
+
+function destroySourceView(): void {
+  sourceView?.destroy();
+  sourceView = null;
+  document.getElementById('editor')?.classList.remove('editor-source');
+}
+
+// ---- Source (raw markdown) mode — story 039 ---------------------------------
+
+/** Swap the rich editor for a CodeMirror view of the bytes in storage. */
+async function enterSourceMode(): Promise<void> {
+  if (!crepe || sourceView) return;
+  await flushSave();
+  const projectId = currentProjectId;
+  const path = currentPath;
+  // Show the stored bytes, not the rich serialization — source mode exists to
+  // reach syntax the WYSIWYG view hides or normalizes (broken links, raw HTML).
+  const stored = (await readTextFile(projectId, path)) ?? lastSavedMarkdown;
+  if (projectId !== currentProjectId || path !== currentPath || !crepe) return; // switched away
+  await teardownRich();
+  lastSavedMarkdown = stored;
+  const root = document.getElementById('editor')!;
+  root.classList.add('editor-source');
+  sourceView = new CmEditorView({
+    parent: root,
+    state: EditorState.create({
+      doc: stored,
+      extensions: [
+        history(),
+        cmKeymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+        cmMarkdown(),
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        CmEditorView.lineWrapping,
+        CmEditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          const text = update.state.doc.toString();
+          updateDocMeta(text);
+          scheduleSave(text); // same debounce + PUT as the rich editor
+        }),
+      ],
+    }),
+  });
+  updateDocMeta(stored);
+  setSaveState('saved');
+  setModeToggle('source');
+  sourceView.focus();
+}
+
+/** Persist the raw text, then reopen the rich editor on the stored bytes. */
+async function exitSourceMode(): Promise<void> {
+  if (!sourceView) return;
+  await flushSave();
+  const projectId = currentProjectId;
+  const path = currentPath;
+  destroySourceView();
+  await openDocument(projectId, path, { preferStored: true });
+}
+
+let modeToggleWired = false;
+
+function wireModeToggle(): void {
+  if (modeToggleWired) return;
+  modeToggleWired = true;
+  document.getElementById('editor-mode-toggle')?.addEventListener('click', () => {
+    void (sourceView ? exitSourceMode() : enterSourceMode());
+  });
+}
+
+/** Reflect the mode on the toggle button; null hides it (no document open). */
+function setModeToggle(mode: 'rich' | 'source' | null): void {
+  const btn = document.getElementById('editor-mode-toggle') as HTMLButtonElement | null;
+  if (!btn) return;
+  if (mode == null) {
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.setAttribute('aria-pressed', String(mode === 'source'));
+  btn.classList.toggle('is-active', mode === 'source');
+  btn.textContent = mode === 'source' ? 'Rich text' : 'Source';
+  btn.title = mode === 'source'
+    ? 'Back to the rich-text editor'
+    : 'Edit the raw markdown source';
 }
 
 function roomName(projectId: number, path: string): string {
@@ -326,8 +504,12 @@ export async function flushSave(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (!crepe) return;
-  const markdown = crepe.editor.action(getMarkdown());
+  const markdown = sourceView
+    ? sourceView.state.doc.toString()
+    : crepe
+      ? crepe.editor.action(getMarkdown())
+      : null;
+  if (markdown == null) return;
   await doSave(markdown);
 }
 

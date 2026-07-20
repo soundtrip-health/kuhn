@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-07-13 (031 shipped — the deterministic project setup wizard replaces the PM intake interview and the `ask_user` countdown; record written after the fact, see the story. 034 shipped — stray `# CLAUDE.md` preamble stripped from all six agent prompts. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work. 037 shipped — chat-panel flex widening fixed)
+**Updated:** 2026-07-19 (038 shipped — stale Yjs rooms evicted on delete/replace, fixing delete→re-upload showing the old version; 039 shipped — raw markdown "Source" mode toggle in the editor; 040 shipped — `docs/data-pipeline.md` operator doc; 041 shipped — remote delete closes clean editors in every tab, eviction close 4001 stops reconnect-repopulation, and a server-granted room seeder ends the template double-seed race. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work)
 
 ## Goal
 
@@ -111,6 +111,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 016 | [Slash commands in Milkdown](stories/016-milkdown-slash-commands.md) — command plugin, `/cite` port from TeXlyre | done | L |
 | 017 | [Writer agent + `/write`](stories/017-write-command.md) — streamed suggestion block with accept/reject (UI per the story 025 design spec; closes the 013 live-update issue) | done | XL |
 | 019 | [Render & export](stories/019-render-export.md) — Typst PDF preview, Pandoc docx/tex export (on the 018 sandbox helpers) | done | L |
+| 039 | [Raw markdown "Source" mode](stories/039-source-mode.md) — subheader toggle to a CodeMirror view of the stored bytes; fixes what WYSIWYG hides (broken links, HTML comments) | done | M |
 
 ### Phase 4: UI design
 
@@ -134,6 +135,9 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 024 | [Collab plugin reload race](stories/024-collab-reload-race.md) — `editorState` ctx error on reload with a warm Yjs room | done | S |
 | 026 | [Upload oversize error mapping](stories/026-upload-oversize-error-mapping.md) — backend `MulterError`→413 mapping; de-duplicate the size limit (surfaced by 014) | done | S |
 | 028 | [Question card collapses to a sliver during seeding](stories/028-question-card-collapse.md) — flex `overflow:hidden` min-size 0; `flex-shrink:0` + `pre-wrap` (the real root cause behind the invisible-question reports) | done | S |
+| 038 | [Stale collab room serves a deleted file's old content](stories/038-stale-collab-room-eviction.md) — evict in-memory Yjs rooms at the `file_change` choke point (delete → always; overwrite → only when idle) | done | S |
+| 040 | [Data & file pipeline documentation](stories/040-data-pipeline-doc.md) — operator-facing `docs/data-pipeline.md`: storage, processing, egress, retention, tenancy | done | S |
+| 041 | [Remote delete/replace with live collaborators](stories/041-collab-remote-delete-edges.md) — remote delete closes clean editors everywhere; 4001 stops reconnect-repopulation; server-granted room seeder kills the template race (038 follow-up) | done | M |
 | 029 | [Transient model-provider error resilience](stories/029-transient-model-error-resilience.md) — backoff on 529/429/5xx + visible "retrying…" status + actionable Try-again (surfaced by a 529 hang on 2026-06-21) | done | S–M |
 | 030 | [Marker syntax migration `[ ]` → `\x{}`](stories/030-marker-syntax-migration.md) — atomic switch across prompts + citation tooling + audit + render + editor to a backslash-command grammar (decided during the 2026-07-09 guidance ingestion) | draft | L |
 | 034 | [Strip the stray `# CLAUDE.md` preamble from all six agent prompts](stories/034-agent-prompt-preamble.md) — every agent was told it's Claude Code working on a repo before it was told its role; live since PR #19 | done | S |

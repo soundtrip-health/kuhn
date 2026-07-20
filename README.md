@@ -119,6 +119,10 @@ read-only and build commands without asking permission.
 See [docs/architecture.md](docs/architecture.md) for details and the 2026-06-11 decision
 revisions (Milkdown editor, Claude Agent SDK, multi-tenancy invariants).
 
+Evaluating Kuhn for your org? [docs/data-pipeline.md](docs/data-pipeline.md) lays out
+where all data is stored and processed, what is ephemeral, what leaves the machine
+(LLM provider, PubMed/arXiv, SMTP), and a production checklist.
+
 ### Agents
 
 The six agents' system prompts live in

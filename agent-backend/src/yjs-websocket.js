@@ -16,6 +16,12 @@ import * as decoding from 'lib0/decoding';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
+// Kuhn extension (story 041): sent once per connection, payload 1 if this
+// client is the room's designated seeder — i.e. it is the first connection
+// into a room with no content, so it (and only it) should apply the storage
+// template. Kills the race where two clients both observe an empty room and
+// both seed it. y-websocket reserves 0-3; 64 leaves headroom for upstream.
+const MSG_SEED_GRANT = 64;
 
 /**
  * @typedef {Object} DocEntry
@@ -74,6 +80,40 @@ function getOrCreateDoc(name) {
   return entry;
 }
 
+/**
+ * Evict a room so the next client to open it seeds fresh from storage
+ * (story 038). Rooms outlive their file: after the last client disconnects
+ * the empty room lingers for 30s (grace period below), and a file deleted
+ * and re-uploaded inside that window would reconnect to the stale state —
+ * which then wins over the new bytes and can even be autosaved back over
+ * them. With `closeConnections` (the file was deleted) live sockets are
+ * closed with 4001; without it the room is dropped only when idle, so live
+ * collaborators are never kicked by a mere overwrite — their open editor
+ * reconciles through the file_change feed instead.
+ * @returns {boolean} whether a room was evicted
+ */
+export function evictRoom(name, { closeConnections = false } = {}) {
+  const entry = docs.get(name);
+  if (!entry) return false;
+  if (entry.conns.size > 0 && !closeConnections) return false;
+  for (const ws of entry.conns) {
+    try {
+      ws.close(4001, 'Document removed');
+    } catch {
+      // a dying socket must not block eviction
+    }
+  }
+  entry.conns.clear();
+  docs.delete(name); // out of the map before destroy so no update rebroadcasts
+  entry.doc.destroy();
+  return true;
+}
+
+/** Test hook: does a room currently exist in memory? */
+export function hasRoom(name) {
+  return docs.has(name);
+}
+
 function sendSync(ws, doc) {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MSG_SYNC);
@@ -102,6 +142,17 @@ export function handleYjsConnection(ws, req) {
 
   const entry = getOrCreateDoc(roomName);
   entry.conns.add(ws);
+
+  // Seed grant (story 041): decided server-side, where connection order is
+  // sequential and unambiguous. `share.size === 0` means no update has ever
+  // been applied to this doc — a brand-new (or freshly evicted) room.
+  {
+    const granted = entry.conns.size === 1 && entry.doc.share.size === 0;
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MSG_SEED_GRANT);
+    encoding.writeVarUint(encoder, granted ? 1 : 0);
+    ws.send(encoding.toUint8Array(encoder));
+  }
 
   ws.on('message', (raw) => {
     const data = new Uint8Array(raw);

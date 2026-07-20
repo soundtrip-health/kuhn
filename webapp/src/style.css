@@ -368,9 +368,27 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   color: var(--ink-2);
 }
 
+/* Rich ⇄ source toggle (story 039) */
+#editor-mode-toggle { font-family: var(--font-mono); font-size: 11px; }
+#editor-mode-toggle.is-active { color: var(--accent); }
+
 #editor-scroll { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
 #editor { max-width: var(--doc-measure); margin: 0 auto; padding: 48px 32px 120px; }
 #editor .milkdown { outline: none; background: transparent; }
+
+/* Source (raw markdown) mode — story 039: CodeMirror styled to sit in the
+ * same measure as the document, monospace, chrome-free. */
+#editor.editor-source .cm-editor { background: transparent; outline: none; }
+#editor.editor-source .cm-editor.cm-focused { outline: none; }
+#editor.editor-source .cm-scroller {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--doc-ink);
+}
+#editor.editor-source .cm-content { padding: 0; caret-color: var(--ink); }
+#editor.editor-source .cm-line { padding: 0; }
+#editor.editor-source .cm-cursor { border-left-color: var(--ink); }
 
 /* Document typography — override the nord theme to the Source Serif 4 scale. */
 #editor .milkdown .ProseMirror {
