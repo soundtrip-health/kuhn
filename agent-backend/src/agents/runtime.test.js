@@ -75,8 +75,16 @@ vi.mock('../citations.js', () => ({
 // Keeps db.js (which needs a real config.db.path at import) out of this
 // mocked-config suite; the SQL is covered in db/file-activity.test.js.
 vi.mock('../db/file-activity.js', () => ({ migrateSeenPaths: vi.fn(), recordFileEvent: vi.fn() }));
+// Suggestion-mode service (story 008-001): the real scope rule, mocked IO —
+// the diff/apply/orchestration substance is covered in ../pending-edits.test.js.
+vi.mock('../pending-edits.js', () => ({
+  isSuggestionPath: (p) => typeof p === 'string' && p.split('/')[0] === 'draft',
+  proposeEdit: vi.fn(async (_projectId, { path }) => ({ id: 1, path })),
+  effectiveContent: vi.fn(async () => 'file body'),
+}));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { proposeEdit, effectiveContent } from '../pending-edits.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
@@ -183,8 +191,9 @@ describe('runAgentTask', () => {
 
     const { tools } = createSdkMcpServer.mock.calls[0][0];
     const writeTool = tools.find((t) => t.name === 'write_file');
-    const result = await writeTool.handler({ path: 'draft/main.md', content: 'hello' });
-    expect(writeProjectFile).toHaveBeenCalledWith(7, 'draft/main.md', 'hello');
+    // An agent-owned path (008-001: draft/** goes through suggestion mode instead)
+    const result = await writeTool.handler({ path: 'research/notes.md', content: 'hello' });
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'research/notes.md', 'hello');
     expect(result.isError).toBeUndefined();
   });
 
@@ -274,6 +283,131 @@ describe('runAgentTask', () => {
     expect(options.allowedTools).toContain('mcp__kuhn__write_file');
     expect(options.allowedTools).toContain('mcp__kuhn__edit_file');
     expect(options.allowedTools).toContain('mcp__kuhn__dispatch_agent');
+  });
+});
+
+// --- Story 008-001: suggestion mode for agent edits ---------------------------
+
+describe('suggestion mode (story 008-001)', () => {
+  const WRITER = { ...RA_AGENT, slug: 'writer', tools: ['file_write', 'spawn_agent'] };
+  const success = () => [
+    { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+
+  async function fileTools(task) {
+    getAgentWithTools.mockResolvedValue(WRITER);
+    sdkState.messages = success();
+    await collect(task);
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    return {
+      write: tools.find((t) => t.name === 'write_file'),
+      edit: tools.find((t) => t.name === 'edit_file'),
+      dispatch: tools.find((t) => t.name === 'dispatch_agent'),
+    };
+  }
+
+  it('write_file to draft/** proposes a pending edit instead of writing', async () => {
+    const { write } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const result = await write.handler({ path: 'draft/main.md', content: 'new draft' });
+    expect(proposeEdit).toHaveBeenCalledWith(7, {
+      path: 'draft/main.md', proposedContent: 'new draft', agentSlug: 'writer', jobId: 42,
+    });
+    expect(writeProjectFile).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/Proposed update to draft\/main\.md — awaiting user review/);
+    expect(result.content[0].text).toMatch(/unchanged until the user accepts/);
+  });
+
+  it('write_file outside the scope keeps direct writes (draft- prefix is not draft/)', async () => {
+    const { write } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    for (const path of ['research/summary.md', 'pm/status.md', 'draft-notes/x.md']) {
+      const result = await write.handler({ path, content: 'x' });
+      expect(result.content[0].text).toMatch(/^Created /);
+    }
+    expect(writeProjectFile).toHaveBeenCalledTimes(3);
+    expect(proposeEdit).not.toHaveBeenCalled();
+  });
+
+  it('the seeding flag bypasses the gate — the pipeline writes draft/** directly', async () => {
+    const { write } = await fileTools({ role: 'writer', projectId: 7, input: 'go', seeding: true });
+    const result = await write.handler({ path: 'draft/main.md', content: 'skeleton' });
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'draft/main.md', 'skeleton');
+    expect(proposeEdit).not.toHaveBeenCalled();
+    expect(result.content[0].text).toMatch(/^Created draft\/main\.md/);
+  });
+
+  it('edit_file on a scoped path edits the EFFECTIVE content and re-proposes', async () => {
+    effectiveContent.mockResolvedValueOnce('pending proposal body');
+    const { edit } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const result = await edit.handler({
+      path: 'draft/main.md', old_string: 'proposal', new_string: 'draft', replace_all: false,
+    });
+    expect(effectiveContent).toHaveBeenCalledWith(7, 'draft/main.md');
+    expect(proposeEdit).toHaveBeenCalledWith(7, {
+      path: 'draft/main.md', proposedContent: 'pending draft body', agentSlug: 'writer', jobId: 42,
+    });
+    expect(writeProjectFile).not.toHaveBeenCalled();
+    expect(result.content[0].text).toMatch(/awaiting user review/);
+  });
+
+  it('edit_file old_string misses are still validated against the effective content', async () => {
+    effectiveContent.mockResolvedValueOnce('pending proposal body');
+    const { edit } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const result = await edit.handler({
+      path: 'draft/main.md', old_string: 'nope', new_string: 'x', replace_all: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(proposeEdit).not.toHaveBeenCalled();
+  });
+
+  it('edit_file outside the scope still reads the disk file and writes directly', async () => {
+    const { edit } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const result = await edit.handler({
+      path: 'research/notes.md', old_string: 'file', new_string: 'disk', replace_all: false,
+    });
+    expect(effectiveContent).not.toHaveBeenCalled();
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'research/notes.md', 'disk body');
+    expect(result.content[0].text).toMatch(/^Updated research\/notes\.md/);
+  });
+
+  it("fileChangeEvent reports scoped writes as kind 'proposed' — but 'create' while seeding", async () => {
+    const turn = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 't1', name: 'mcp__kuhn__write_file', input: { path: 'draft/main.md', content: 'x' } },
+          { type: 'tool_use', id: 't2', name: 'mcp__kuhn__edit_file', input: { path: 'draft/main.md', old_string: 'a', new_string: 'b' } },
+          { type: 'tool_use', id: 't3', name: 'mcp__kuhn__write_file', input: { path: 'research/s.md', content: 'x' } },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    };
+    getAgentWithTools.mockResolvedValue(WRITER);
+    sdkState.messages = [turn, ...success()];
+    const events = await collect({ role: 'writer', projectId: 7, input: 'go' });
+    expect(events.filter((e) => e.type === 'file_change').map((e) => [e.path, e.kind])).toEqual([
+      ['draft/main.md', 'proposed'],
+      ['draft/main.md', 'proposed'],
+      ['research/s.md', 'create'],
+    ]);
+
+    sdkState.messages = [turn, ...success()];
+    const seeded = await collect({ role: 'writer', projectId: 7, input: 'go', seeding: true });
+    expect(seeded.filter((e) => e.type === 'file_change').map((e) => e.kind)).toEqual([
+      'create', 'update', 'create',
+    ]);
+  });
+
+  it('sub-agents dispatched by a seeding stage inherit the bypass', async () => {
+    const { dispatch } = await fileTools({ role: 'writer', projectId: 7, input: 'go', seeding: true });
+    sdkState.messages = success();
+    await dispatch.handler({ agent_slug: 'writer', task: 'flesh out methods' });
+
+    const childTools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const write = childTools.find((t) => t.name === 'write_file');
+    await write.handler({ path: 'draft/methods.md', content: 'methods' });
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'draft/methods.md', 'methods');
+    expect(proposeEdit).not.toHaveBeenCalled();
   });
 });
 

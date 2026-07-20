@@ -15,6 +15,7 @@ import filesRouter from './routes/files.js';
 import historyRouter from './routes/history.js';
 import orgsRouter from './routes/orgs.js';
 import orgLibraryRouter from './routes/org-library.js';
+import pendingEditsRouter from './routes/pending-edits.js';
 import projectsRouter from './routes/projects.js';
 import renderRouter from './routes/render.js';
 import { createUpgradeHandler } from './collab-auth.js';
@@ -37,6 +38,7 @@ app.use(filesRouter);
 app.use(historyRouter);
 app.use(orgsRouter);
 app.use(orgLibraryRouter);
+app.use(pendingEditsRouter);
 app.use(projectsRouter);
 app.use(renderRouter);
 

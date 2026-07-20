@@ -5,8 +5,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 // history.test.js — here we only assert the wiring.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
 vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
+vi.mock('./yjs-websocket.js', () => ({ evictRoom: vi.fn() }));
 
+import { recordFileEvent } from './db/file-activity.js';
 import { commitNow, scheduleCommit } from './history.js';
+import { evictRoom } from './yjs-websocket.js';
 
 import { config } from './config.js';
 import {
@@ -83,6 +86,27 @@ describe('project event hub (story 005-001)', () => {
     vi.mocked(commitNow).mockClear();
     publishProjectEvent(1, { type: 'done', agent: 'ra' });
     expect(commitNow).not.toHaveBeenCalled();
+  });
+
+  it("kind 'proposed' fans out to SSE only — no activity row, eviction, or commit (008-001)", () => {
+    vi.mocked(recordFileEvent).mockClear();
+    vi.mocked(scheduleCommit).mockClear();
+    vi.mocked(evictRoom).mockClear();
+    const a = vi.fn();
+    sub(1, a);
+
+    publishProjectEvent(1, { type: 'file_change', path: 'draft/main.md', kind: 'proposed', agent: 'writer' }, { userId: 7 });
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(a.mock.calls[0][0]).toMatchObject({ kind: 'proposed', path: 'draft/main.md' });
+    expect(recordFileEvent).not.toHaveBeenCalled();
+    expect(evictRoom).not.toHaveBeenCalled();
+    expect(scheduleCommit).not.toHaveBeenCalled();
+
+    // A real write still gets all three side effects.
+    publishProjectEvent(1, { type: 'file_change', path: 'draft/main.md', kind: 'update', agent: 'writer' }, { userId: 7 });
+    expect(recordFileEvent).toHaveBeenCalledTimes(1);
+    expect(evictRoom).toHaveBeenCalledTimes(1);
+    expect(scheduleCommit).toHaveBeenCalledTimes(1);
   });
 
   it('enforces the per-project subscriber cap and cleans up on unsubscribe', () => {

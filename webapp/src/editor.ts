@@ -47,6 +47,7 @@ import { openCitePicker } from './cite-picker';
 import { refreshTree } from './files';
 import { icon } from './icons';
 import { setDocument, setSaveState } from './status';
+import { attachSuggestions, detachSuggestions, suggestionHunksPlugin } from './suggestion-hunks';
 import { toast } from './toast';
 import { startWrite, writeSuggestionPlugin } from './write-suggestion';
 
@@ -295,7 +296,7 @@ export async function openDocument(
     // Custom Kuhn surface (story 003): citation chips, the `/write` suggestion
     // decoration, and the Yjs collab plugin all attach to the underlying editor.
     .addFeature((editor: Editor) => {
-      editor.use(citationPlugins).use(writeSuggestionPlugin).use(collab);
+      editor.use(citationPlugins).use(writeSuggestionPlugin).use(suggestionHunksPlugin).use(collab);
     });
 
   crepe.on((api) => {
@@ -362,6 +363,17 @@ export async function openDocument(
       }, 0);
     });
   });
+
+  // Pending agent suggestions for this doc (story 008-001): the module fetches
+  // GET /pending-edits itself and renders hunk decorations; accept/reject go
+  // through REST after flushing any local save.
+  crepe.editor.action((ctx) => {
+    attachSuggestions(ctx.get(editorViewCtx), {
+      projectId,
+      path,
+      flush: () => flushSave(),
+    });
+  });
 }
 
 export async function closeDocument(): Promise<void> {
@@ -373,6 +385,7 @@ export async function closeDocument(): Promise<void> {
 
 /** Tear down Crepe + collab (used by close and by entering source mode). */
 async function teardownRich(): Promise<void> {
+  detachSuggestions();
   // Detach the collab plugins before any teardown: late provider/awareness
   // events otherwise dispatch into the view after editor.destroy() has
   // removed the editorState ctx slice (story 024).
