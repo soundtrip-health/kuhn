@@ -265,14 +265,59 @@ export async function readTextFile(projectId: number, path: string): Promise<str
   return res.text();
 }
 
-export async function writeTextFile(projectId: number, path: string, content: string): Promise<void> {
+export async function writeTextFile(
+  projectId: number,
+  path: string,
+  content: string,
+  opts: { checkpoint?: boolean } = {},
+): Promise<void> {
+  // checkpoint=1 marks an explicit user save: the backend commits a history
+  // version immediately instead of coalescing it (story 008-002).
+  const url = fileUrl(projectId, path) + (opts.checkpoint ? '&checkpoint=1' : '');
   await expectOk(
-    await apiFetch(fileUrl(projectId, path), {
+    await apiFetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: content,
     }),
   );
+}
+
+// ---- Version history (story 008-002) ----
+
+export interface HistoryEntry {
+  hash: string;
+  shortHash: string;
+  authorName: string;
+  authorEmail: string;
+  date: string;
+  label: string;
+  /** Agent slug when the version was agent-authored, else null. */
+  agent: string | null;
+}
+
+export async function getHistory(projectId: number, path: string): Promise<HistoryEntry[]> {
+  const res = await expectOk(await apiFetch(
+    `${BACKEND_URL}/api/projects/${projectId}/history?path=${encodeURIComponent(path)}`,
+  ));
+  return ((await res.json()) as { history: HistoryEntry[] }).history;
+}
+
+/** A file's content at a specific version. */
+export async function getHistoryFile(projectId: number, path: string, ref: string): Promise<string> {
+  const res = await expectOk(await apiFetch(
+    `${BACKEND_URL}/api/projects/${projectId}/history/file?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(ref)}`,
+  ));
+  return res.text();
+}
+
+/** Restore a file to an old version (append-only — commits a new version). */
+export async function restoreVersion(projectId: number, path: string, ref: string): Promise<void> {
+  await expectOk(await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/history/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, ref }),
+  }));
 }
 
 // ---- File manager (story 014) ----

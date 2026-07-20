@@ -498,8 +498,11 @@ export async function discardDocument(): Promise<void> {
   setDocument('');
 }
 
-/** Explicit save (Cmd/Ctrl+S) — serializes the current doc and writes through. */
-export async function flushSave(): Promise<void> {
+/**
+ * Explicit save — serializes the current doc and writes through. `checkpoint`
+ * (Cmd/Ctrl+S) additionally commits a history version now (story 008-002).
+ */
+export async function flushSave(opts: { checkpoint?: boolean } = {}): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -510,18 +513,21 @@ export async function flushSave(): Promise<void> {
       ? crepe.editor.action(getMarkdown())
       : null;
   if (markdown == null) return;
-  await doSave(markdown);
+  await doSave(markdown, opts.checkpoint ?? false);
 }
 
-async function doSave(markdown: string): Promise<void> {
+async function doSave(markdown: string, checkpoint = false): Promise<void> {
   saveTimer = null;
-  if (markdown === lastSavedMarkdown) {
+  // A checkpoint (explicit Cmd/Ctrl+S) writes through even when the content
+  // is already saved: the debounced autosave may have stored the bytes, but
+  // the history version is cut by the checkpointed request (story 008-002).
+  if (markdown === lastSavedMarkdown && !checkpoint) {
     setSaveState('saved');
     return;
   }
   setSaveState('saving');
   try {
-    await writeTextFile(currentProjectId, currentPath, markdown);
+    await writeTextFile(currentProjectId, currentPath, markdown, { checkpoint });
     lastSavedMarkdown = markdown;
     setSaveState('saved');
   } catch (err) {

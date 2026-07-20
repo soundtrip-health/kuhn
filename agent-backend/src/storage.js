@@ -91,6 +91,11 @@ async function resolveWithin(root, relPath, what) {
   if (normalized === '..' || normalized.startsWith(`..${sep}`)) {
     throw new StorageError('outside_root', `Path escapes the ${what}`);
   }
+  // The version-history repo (story 008-002) is not user content: no surface
+  // of this API — routes, agent tools, tree, search — may see or touch it.
+  if (normalized.split(sep).includes('.git')) {
+    throw new StorageError('invalid_path', 'Reserved path segment: .git');
+  }
 
   const abs = resolve(root, normalized);
   if (abs !== root && !abs.startsWith(root + sep)) {
@@ -264,6 +269,7 @@ async function walkTree(dir, root) {
   const nodes = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.isSymbolicLink()) continue;
+    if (entry.name === '.git') continue; // version history repo (008-002)
     const abs = join(dir, entry.name);
     const path = abs.slice(root.length + 1);
     if (entry.isDirectory()) {

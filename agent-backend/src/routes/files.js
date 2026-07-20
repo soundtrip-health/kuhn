@@ -9,6 +9,7 @@ import { extname } from 'node:path';
 
 import { config } from '../config.js';
 import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
+import { commitNow, scheduleCommit } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import {
@@ -122,6 +123,13 @@ router.put(
       return;
     }
     const { created } = await writeProjectFile(projectId, path, req.body);
+    // Version history (008-002): autosaves coalesce into the throttled
+    // auto-commit; an explicit Cmd/Ctrl+S (?checkpoint=1) commits now.
+    if (req.query.checkpoint === '1') {
+      void commitNow(projectId, { userId: req.user?.id ?? null, label: `Save ${path}` });
+    } else {
+      scheduleCommit(projectId, { userId: req.user?.id ?? null });
+    }
     res.status(created ? 201 : 200).json({ path, created });
   }),
 );
@@ -130,6 +138,10 @@ router.put(
 router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res) => {
   const path = requirePath(req, res);
   if (path == null) return;
+  // Snapshot-before-destroy (008-002): a delete is the one mutation whose
+  // prior state is unrecoverable afterwards — commit any uncommitted window
+  // first so the deleted content is always reachable in history.
+  await commitNow(projectId, { userId: req.user?.id ?? null, label: `Snapshot before deleting ${path}` });
   await deleteProjectEntry(projectId, path);
   publishProjectEvent(projectId, { type: 'file_change', path, kind: 'delete' }, { userId: req.user?.id ?? null });
   res.json({ path, deleted: true });
@@ -173,6 +185,9 @@ router.post(
     const targetDir = typeof req.body?.path === 'string' && req.body.path.length > 0
       ? req.body.path.replace(/\/+$/, '')
       : null;
+    // Snapshot-before-destroy (008-002): an upload may overwrite existing
+    // files wholesale — commit the pre-upload state first (no-op when clean).
+    await commitNow(projectId, { userId: req.user?.id ?? null, label: 'Snapshot before upload' });
     const written = [];
     for (const file of files) {
       const relPath = targetDir ? `${targetDir}/${file.originalname}` : file.originalname;

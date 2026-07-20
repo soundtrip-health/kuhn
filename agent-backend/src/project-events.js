@@ -16,6 +16,7 @@
 
 import { config } from './config.js';
 import { recordFileEvent } from './db/file-activity.js';
+import { commitNow, scheduleCommit } from './history.js';
 import { evictRoom } from './yjs-websocket.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
@@ -81,6 +82,18 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
     } catch (err) {
       console.error('[project-events] Failed to evict collab room:', err);
     }
+    // Version history (story 008-002): coalesce this change into the
+    // project's next auto-commit. Same choke-point rationale as above;
+    // scheduleCommit never throws.
+    scheduleCommit(Number(projectId), { agent: event.agent ?? null, userId: userId ?? null });
+  }
+  // Agent job boundaries get their own labeled version (story 008-002): a
+  // top-level run finishing (or failing) commits whatever it left behind.
+  if ((event.type === 'done' || event.type === 'error') && event.jobId != null && event.agent) {
+    void commitNow(Number(projectId), {
+      agent: event.agent,
+      label: `${event.agent} ${event.type === 'done' ? 'finished' : 'stopped'} (job ${event.jobId})`,
+    });
   }
   const set = subscribers.get(Number(projectId));
   if (!set || set.size === 0) return;

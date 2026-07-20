@@ -12,6 +12,16 @@ can be added later" — this is later): a restart mid-edit loses un-autosaved
 CRDT state, and stories 038/041 had to build eviction, a seed-grant message,
 and a seeder-death fallback to keep client seeding honest.
 
+**Observed in the wild (2026-07-19, during 008-002 verification):** two tabs
+held the same document across several `node --watch` restarts; each restart
+destroyed the room, both clients auto-reconnected and re-pushed local CRDTs
+that had been seeded independently, and the merge **duplicated the entire
+document** (main.md doubled to exactly 2× and the doubled state was
+autosaved to storage; recovered by de-duplicating the identical halves).
+Server-persisted rooms make reconnection converge on stored truth and this
+class of corruption impossible — treat that repro as this story's
+regression test.
+
 ## Sketch
 
 - **Update log per room** in SQLite (`yjs_updates`: room, seq, update blob),

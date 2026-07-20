@@ -91,6 +91,15 @@ export const config = {
     // enforcement as project workspaces.
     orgsRoot: process.env.ORGS_ROOT || join(dataDir, 'orgs'),
   },
+  history: {
+    // Story 008-002: per-project git version history. Disabled only for
+    // environments without a git binary (KUHN_HISTORY_ENABLED=false).
+    enabled: (process.env.KUHN_HISTORY_ENABLED ?? 'true') !== 'false',
+    // Trailing-throttle window for coalescing autosave/agent-burst commits:
+    // the first change in a window schedules a commit, later changes ride
+    // along — at most one autosave commit per window, bounded latency.
+    autoCommitMs: parseInt(process.env.KUHN_HISTORY_AUTOCOMMIT_MS || '120000'),
+  },
   projectEvents: {
     // Cap on concurrent SSE subscribers per project (story 005-001) — a
     // runaway-tab backstop, not a scaling knob.

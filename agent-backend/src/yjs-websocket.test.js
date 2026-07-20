@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 // Keep this an eviction test: file_change persistence is covered in
 // db/file-activity.test.js, hub fan-out in project-events.test.js.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
+vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
 
 import * as decoding from 'lib0/decoding';
 
