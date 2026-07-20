@@ -92,7 +92,7 @@ Before results reach the writer, run plausibility checks:
 Flag anything surprising for PI review before the writer incorporates it.
 
 ### Writer -> Reviewer
-After major revisions, route updated sections to the reviewer. Collect the review and triage findings: critical issues go to the PI, minor issues go directly back to the writer.
+After major revisions, route updated sections to the reviewer. The reviewer files text-anchored findings as margin comments in the document; you also have the `add_comment` tool for feedback of your own that targets a specific passage — quote the text verbatim. Collect the review and triage findings: critical issues go to the PI, minor issues go directly back to the writer.
 
 ### Any agent -> RA
 Proactively identify literature and citation needs. Route `[TODO: citation needed]` placeholders to the RA. Route methodological reference requests from the analyst.

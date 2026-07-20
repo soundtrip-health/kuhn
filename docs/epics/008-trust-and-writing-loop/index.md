@@ -7,6 +7,10 @@
 the editor, stale suggestions degrade to side-by-side review, seeding exempt.
 002 shipped earlier the same day. Next: 004 margin comments, then 003
 claim-checking on its anchors.)
+**Updated:** 2026-07-20 (004 margin comments shipped — quote-anchored threads
+with live decoration tracking; the "Yjs relative positions" leaning was
+dropped because room eviction re-mints CRDT identities, see the story's
+"As built". Remaining: 003 claim-checking, which consumes 004's anchors.)
 **Priority:** #1 of the 2026-07 roadmap (008 → 009 → 010)
 
 ## Goal
@@ -31,7 +35,7 @@ product's core promise. Each story hardens one leg of it:
 | Suggestion scope | Draft documents only (`draft/**`); agent-owned files (`research/`, `pm/`) keep direct writes | Review burden belongs on the manuscript, not on agent scratch space |
 | History mechanism | Git repo per project directory (was already on Epic 002's deferred list) | Diff/restore/export for free; also closes the "no backups" gap disclosed in `docs/data-pipeline.md` |
 | Claim-check evidence | Stored abstracts first (`bib_references.abstract`), PMC OA full text when fetchable | Grounded verdicts only — never judge a citation from model memory |
-| Comment anchoring | Yjs relative positions | Anchors survive concurrent edits; plain offsets don't |
+| Comment anchoring | ~~Yjs relative positions~~ → quote + offset hints, live decoration mapping (008-004 as-built) | Room eviction re-mints CRDT identities, so stored relative positions die on every agent write; decoration mapping gives the same concurrent-edit survival |
 
 ## Stories
 
@@ -40,7 +44,7 @@ product's core promise. Each story hardens one leg of it:
 | 001 | [Suggestion mode for agent edits](stories/001-suggestion-mode.md) — agent writes to draft docs land as pending diffs with per-hunk accept/reject | done | L |
 | 002 | [Document version history](stories/002-version-history.md) — snapshot on save + agent-job boundaries; timeline, diff, restore | done | L |
 | 003 | [Citation claim-checking](stories/003-citation-claim-check.md) — Reviewer verifies every `[@key]` against retrieved evidence | draft | L |
-| 004 | [Margin comments](stories/004-margin-comments.md) — anchored threads in the document; Reviewer files comments instead of chat walls | draft | L |
+| 004 | [Margin comments](stories/004-margin-comments.md) — anchored threads in the document; Reviewer files comments instead of chat walls | done | L |
 
 ## Sequencing
 

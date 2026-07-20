@@ -57,6 +57,73 @@ SQLite DB on startup, applies the schema, and seeds agents, tools, and assignmen
 service to start. The DB and uploaded project files live under `KUHN_DATA_DIR` (default:
 repo-root `./data`) — `data/db/kuhn.sqlite` and `data/files/<projectId>/`.
 
+### Signing in
+
+Auth is controlled by `KUHN_AUTH_MODE` in `agent-backend/.env`:
+
+- **`dev` (default)** — no login. Requests resolve to a seeded dev user; the sign-in
+  screen never appears. Use this for local development and the token-free check scripts.
+- **`magic-link`** — passwordless email login (requires `KUHN_SESSION_SECRET` at startup).
+  Enter your email on the sign-in screen; with no `KUHN_SMTP_URL` configured the sign-in
+  link is **printed to the backend server console** (`[auth] Magic link for … : <url>`) —
+  open that URL to log in. Any email works: the first login creates the user in the
+  default org. Links are single-use and expire in 15 minutes. Set
+  `KUHN_SMTP_URL` (`smtp[s]://user:pass@host:port`) to send real email, and
+  `KUHN_APP_URL` to the webapp's public origin (default `http://localhost:5174`) so the
+  post-login redirect lands on the app.
+
+### Deploying a test server (cloudflared tunnel)
+
+The pitfall: the webapp bakes the backend address in **at build time**
+(`VITE_BACKEND_URL`, default `http://localhost:3002`). A stock build opened
+from another machine tries to call the *visitor's* localhost, every request
+fails, and the app drops to the sign-in screen with "Failed to fetch" — even
+when the server runs in dev auth mode. A deployed instance therefore needs a
+publicly reachable backend URL compiled into the webapp.
+
+The simplest shape is **one public hostname, path-routed** in the tunnel, so
+webapp and backend share an origin (no CORS or cookie complications):
+
+```yaml
+# ~/.cloudflared/config.yml — order matters; first match wins
+ingress:
+  - hostname: kuhn.example.com
+    path: ^/(api|health|yjs-websocket|yjs-signaling)(/.*)?$
+    service: http://localhost:3002
+  - hostname: kuhn.example.com
+    service: http://localhost:5174        # webapp (built, served statically)
+  - service: http_status:404
+```
+
+```bash
+# Backend — agent-backend/.env
+ANTHROPIC_API_KEY=...
+KUHN_AUTH_MODE=magic-link                # real login for invited users
+KUHN_SESSION_SECRET=$(openssl rand -hex 32)
+KUHN_APP_URL=https://kuhn.example.com    # post-login redirect + secure cookie
+CORS_ORIGIN=https://kuhn.example.com
+# KUHN_SMTP_URL=smtps://user:pass@host:465   # unset = links print to the log
+
+# Webapp — build with the public backend origin, then serve dist/
+cd webapp
+VITE_BACKEND_URL=https://kuhn.example.com npm run build
+npx serve -l 5174 dist
+```
+
+Notes:
+
+- With no `KUHN_SMTP_URL`, invite flow is manual: a test user requests a link,
+  and you copy it to them from the server log (`[auth] Magic link for …`).
+- WebSockets (Yjs collab) ride the same hostname — `wss://` is derived from
+  `VITE_BACKEND_URL` automatically, and cloudflared proxies WS fine.
+- The backend trusts `X-Forwarded-Proto`/`Host` (`trust proxy`), so magic
+  links come out as `https://kuhn.example.com/...` behind the tunnel.
+- Render/export still need the sandbox Docker images pulled on the server
+  (see Prerequisites); the DB and uploads live under `KUHN_DATA_DIR`.
+- Two-hostname setups (`app.` + `api.`) also work but reintroduce CORS and
+  cookie scope: both must sit under the same registrable domain, `CORS_ORIGIN`
+  must name the webapp origin, and `VITE_BACKEND_URL` the api origin.
+
 ### Running the packages individually
 
 Each package is independently installable and runnable; the root command above just wraps them.

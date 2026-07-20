@@ -341,3 +341,35 @@ CREATE TABLE IF NOT EXISTS pending_edits (
   updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   UNIQUE (project_id, path)
 );
+
+-- ============================================================
+-- Margin comments (story 008-004) — anchored threads on document text.
+-- Root rows carry the anchor: the exact quoted text plus character-offset
+-- hints into the stored markdown. The server never computes editor positions
+-- (the Yjs doc is opaque here and rooms are evicted on real writes): clients
+-- re-anchor by quote in the open editor, keep positions live via decoration
+-- mapping, and report drift back through the anchor endpoint; a quote that no
+-- longer exists degrades to orphaned=1 — visible, never dropped. Replies
+-- reference the root via parent_id and carry no anchor; resolving is a
+-- root-level act. Author is user_id (human) and/or agent_slug (agent-filed;
+-- user_id then attributes the requesting user, as in file_events).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS comments (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path          TEXT NOT NULL,
+  parent_id     INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  agent_slug    TEXT,   -- NULL = human-authored
+  job_id        INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  body          TEXT NOT NULL,
+  anchor_quote  TEXT,     -- exact quoted target text (root rows only)
+  anchor_start  INTEGER,  -- character-offset hint into the stored markdown
+  anchor_end    INTEGER,
+  orphaned      INTEGER NOT NULL DEFAULT 0,
+  resolved_at   TEXT,
+  resolved_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_comments_project_path ON comments (project_id, path, created_at);

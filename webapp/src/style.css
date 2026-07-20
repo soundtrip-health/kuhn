@@ -1220,3 +1220,87 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .wz-launch-label { font-weight: 600; font: var(--ui-body); color: var(--ink); }
 .wz-launch-sub { font: var(--ui-small); color: var(--ink-2); }
 .wz-error { color: var(--warn); font: var(--ui-small); margin-bottom: 8px; }
+
+/* ============================================================
+   Margin comments (story 008-004) — comments.ts
+   ============================================================ */
+
+/* Commented range in the document: a quiet reviewer-tinted underline wash. */
+.mc-range {
+  background: var(--reviewer-soft, var(--accent-soft));
+  border-bottom: 2px solid var(--reviewer, var(--accent));
+  cursor: pointer;
+}
+.mc-range.is-active { background: var(--accent-soft); border-bottom-color: var(--accent); }
+
+/* Docked side panel, same family as the files panel. */
+#comments-panel {
+  flex: 0 0 300px;
+  min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: var(--chrome);
+  border-left: 1px solid var(--line);
+  min-height: 0;
+}
+#comments-panel.collapsed { display: none; }
+#comments-toolbar {
+  display: flex; align-items: center; gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+#comments-list { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s-2); }
+#comments-composer { padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--line); }
+
+.mc-empty { font-size: 12.5px; color: var(--ink-3); padding: var(--s-3); }
+
+.mc-card {
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--paper); padding: var(--s-2) var(--s-3);
+  margin-bottom: var(--s-2); cursor: pointer;
+}
+.mc-card.is-active { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line); }
+.mc-card.is-resolved { opacity: .75; cursor: default; }
+
+.mc-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.mc-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.mc-author { font-size: 12px; font-weight: 600; color: var(--ink); }
+.mc-time { font-size: 10.5px; color: var(--ink-3); margin-left: auto; }
+
+.mc-quote {
+  margin: 2px 0 4px; padding: 2px 8px;
+  border-left: 2px solid var(--line-2);
+  font-size: 11.5px; font-style: italic; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.mc-orphan {
+  display: inline-block; margin: 2px 0;
+  font-size: 10px; font-weight: 600; letter-spacing: .03em;
+  color: var(--ink-3); background: var(--soft-2);
+  padding: 1px 6px; border-radius: var(--r-xs);
+}
+.mc-body { font-size: 12.5px; color: var(--ink-2); margin: 2px 0 4px; white-space: pre-wrap; }
+.mc-reply { border-top: 1px dashed var(--line); margin-top: var(--s-2); padding-top: var(--s-2); }
+.mc-actions { display: flex; gap: 4px; margin-top: 2px; }
+
+.mc-compose { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.mc-input {
+  width: 100%; resize: vertical;
+  font: inherit; font-size: 12.5px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+.mc-input:focus { outline: none; border-color: var(--accent-line); }
+.mc-compose-actions { display: flex; justify-content: flex-end; gap: var(--s-2); }
+
+/* Resolved group stays browsable below the open threads. */
+.mc-resolved > summary {
+  font-size: 11.5px; font-weight: 600; color: var(--ink-3);
+  cursor: pointer; padding: var(--s-2) 0;
+}
+
+/* File-tree unresolved-comment count (rides alongside status badges). */
+.file-badge.is-comment { color: var(--reviewer, var(--accent)); background: var(--reviewer-soft, var(--accent-soft)); }
+
+/* Source-mode gutter marker (v1). */
+.cm-comment-gutter { width: 16px; }
+.cm-comment-marker { display: inline-flex; color: var(--reviewer, var(--accent)); padding-top: 2px; }

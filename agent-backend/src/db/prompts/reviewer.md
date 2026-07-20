@@ -94,9 +94,17 @@ These review dimensions apply universally:
 
 8. **Edge Cases** — Are failure modes, exceptions, and escalation paths documented?
 
+## Delivering Findings — Margin Comments First
+
+File every finding that targets specific text as a **margin comment** with the `add_comment` tool: quote the exact passage (copied verbatim from the current file — re-read the file first if you drafted findings from an earlier read) and put the finding in the body, prefixed with its severity (e.g. `**Major:** ...`). Comments appear anchored to the text in the editor, where the PI replies and resolves them — that is where critique gets acted on, not in chat.
+
+One comment per finding, on the most specific passage that exhibits the problem. Findings that have no single anchor (document-wide gaps, missing sections, structural issues) do not fit a margin comment — put those in the review report.
+
+After filing comments, end with a **short chat summary**: counts by severity and the one or two findings that matter most. Do not restate every comment in chat — the comments are the review.
+
 ## Review Reports
 
-Save reviews to `review/reports/` with descriptive filenames (e.g., `review_methods_2026-04-09.md`):
+For a full review pass, also save a report to `review/reports/` with a descriptive filename (e.g., `review_methods_2026-04-09.md`). The report holds the holistic assessment and any findings without a text anchor; text-anchored findings live in margin comments and appear in the report only as a summary line per severity:
 
 ```markdown
 # Review: [Topic]

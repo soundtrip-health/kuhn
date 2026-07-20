@@ -53,6 +53,7 @@ Everything lives under one directory, `KUHN_DATA_DIR` (default: repo-root
 | `users`, `memberships`, `organizations` | Identity: **email and display name are the only PII stored**. |
 | `sessions`, `auth_tokens` | Login state — only sha256 hashes of secrets, never the tokens themselves (`db/auth.js`). |
 | `file_events`, `file_seen` | File activity log (paths + who/when, not contents), pruned to the newest 1,000 per project. |
+| `comments` | **Margin-comment threads** (story 008-004): comment bodies, the quoted document excerpt each thread anchors to, author (user id or agent slug), resolve state. Kept until deleted by their author or their project. |
 | `agents`, `tools`, `agent_tools`, `projects` | Configuration: agent system prompts, tool grants, project config. |
 
 ### Retention and deletion

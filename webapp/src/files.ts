@@ -8,6 +8,7 @@
 
 import {
   deleteFile,
+  getCommentCounts,
   getFileActivity,
   getPendingEdits,
   getTree,
@@ -66,6 +67,11 @@ const ingestMap = new Map<string, 'ingesting' | 'done'>();
  * file_change event debounces into one). Separate from statusMap: it isn't
  * unseen state — opening the file must not clear it, only accept/reject do. */
 const suggestMap = new Map<string, string | null>();
+/** Unresolved margin-comment threads per path (story 008-004): server truth
+ * from GET /comments/counts, re-fetched on every tree refresh. Like
+ * suggestMap, not unseen state — opening the file must not clear it, only
+ * resolving/deleting the threads does. */
+const commentMap = new Map<string, number>();
 /** Recorded origin agent per path (from the activity log) — outlives badges,
  * so a seen file keeps its agent tint instead of the extension guess. */
 const originMap = new Map<string, string>();
@@ -94,6 +100,7 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   originMap.clear();
   ingestMap.clear();
   suggestMap.clear();
+  commentMap.clear();
   seenSentAt.clear();
   updateUnseenPill();
   activePath = '';
@@ -230,10 +237,11 @@ export async function refreshTree(activeProjectId: number): Promise<void> {
     // path's latest kind + origin agent. Together they rebuild the status
     // map from server truth, so badges survive reload (story 005-003).
     // Pending suggestions ride along (story 008-001) — same server-truth rule.
-    const [tree, activity, pending] = await Promise.all([
+    const [tree, activity, pending, commentCounts] = await Promise.all([
       getTree(activeProjectId),
       getFileActivity(activeProjectId).catch(() => [] as FileActivityEvent[]),
       getPendingEdits(activeProjectId).catch(() => [] as PendingEdit[]),
+      getCommentCounts(activeProjectId).catch(() => ({}) as Record<string, number>),
     ]);
     if (projectId !== activeProjectId) return; // superseded by a project switch
     lastTree = tree;
@@ -243,6 +251,8 @@ export async function refreshTree(activeProjectId: number): Promise<void> {
       suggestMap.set(edit.path, edit.agent);
       if (edit.agent) originMap.set(edit.path, edit.agent);
     }
+    commentMap.clear();
+    for (const [path, n] of Object.entries(commentCounts)) commentMap.set(path, n);
     container.replaceChildren(lastTree.length > 0 ? renderNodes(lastTree) : emptyState());
     initRovingTabindex(container);
   } catch (err) {
@@ -313,10 +323,11 @@ export function markSeen(path: string): void {
     const entry = document
       .getElementById('file-tree')
       ?.querySelector(`.file-entry[data-path="${cssEscape(path)}"]`);
-    // Spinner/check belong to the org-library ingest flow (ingestMap), and the
-    // suggested badge to the pending-edit flow (suggestMap) — opening the file
-    // resolves neither. Remove only the unseen badge.
-    entry?.querySelectorAll('.file-badge:not(.is-suggested)').forEach((el) => el.remove());
+    // Spinner/check belong to the org-library ingest flow (ingestMap), the
+    // suggested badge to the pending-edit flow (suggestMap), and the comment
+    // count to open threads (commentMap) — opening the file resolves none of
+    // them. Remove only the unseen badge.
+    entry?.querySelectorAll('.file-badge:not(.is-suggested):not(.is-comment)').forEach((el) => el.remove());
     updateUnseenPill();
   }
   const last = seenSentAt.get(path) ?? 0;
@@ -723,11 +734,23 @@ function renderFile(node: TreeNode): HTMLElement {
   button.append(name);
   // Badge visuals are decorative here — the status is spoken via the
   // treeitem's accessible name, not the color/dot alone (story 005-004).
-  button.setAttribute('aria-label', st ? `${node.name}, ${STATUS_TEXT[st.status]}` : node.name);
+  const commentCount = commentMap.get(node.path) ?? 0;
+  const ariaStatus = [
+    st ? STATUS_TEXT[st.status] : '',
+    commentCount > 0 ? `${commentCount} open comment${commentCount === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(', ');
+  button.setAttribute('aria-label', ariaStatus ? `${node.name}, ${ariaStatus}` : node.name);
   const badge = statusBadge(st);
   if (badge) {
     badge.setAttribute('aria-hidden', 'true');
     button.append(badge);
+  }
+  // Unresolved margin comments ride alongside any status badge (story 008-004).
+  if (commentCount > 0) {
+    const cb = textBadge(String(commentCount));
+    cb.classList.add('is-comment');
+    cb.setAttribute('aria-hidden', 'true');
+    button.append(cb);
   }
 
   const isMarkdown = node.path.endsWith('.md');
