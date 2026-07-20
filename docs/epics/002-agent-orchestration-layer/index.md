@@ -2,7 +2,7 @@
 
 **Status:** in-progress
 **Created:** 2026-04-11
-**Updated:** 2026-07-19 (038 shipped — stale Yjs rooms evicted on delete/replace, fixing delete→re-upload showing the old version; 039 shipped — raw markdown "Source" mode toggle in the editor; 040 shipped — `docs/data-pipeline.md` operator doc; 041 filed for the remaining live-collaborator delete edges. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work, 041 collab delete edges)
+**Updated:** 2026-07-19 (038 shipped — stale Yjs rooms evicted on delete/replace, fixing delete→re-upload showing the old version; 039 shipped — raw markdown "Source" mode toggle in the editor; 040 shipped — `docs/data-pipeline.md` operator doc; 041 shipped — remote delete closes clean editors in every tab, eviction close 4001 stops reconnect-repopulation, and a server-granted room seeder ends the template double-seed race. Open work is 022 live seeding verification (parked), 030 marker-syntax migration, the 031 follow-ups 032–033, 035 dead CLI instructions in prompts, 036 user interrupt of agent work)
 
 ## Goal
 
@@ -137,7 +137,7 @@ behavior and seeding flow; its two-app/TeXlyre framing is superseded — see bel
 | 028 | [Question card collapses to a sliver during seeding](stories/028-question-card-collapse.md) — flex `overflow:hidden` min-size 0; `flex-shrink:0` + `pre-wrap` (the real root cause behind the invisible-question reports) | done | S |
 | 038 | [Stale collab room serves a deleted file's old content](stories/038-stale-collab-room-eviction.md) — evict in-memory Yjs rooms at the `file_change` choke point (delete → always; overwrite → only when idle) | done | S |
 | 040 | [Data & file pipeline documentation](stories/040-data-pipeline-doc.md) — operator-facing `docs/data-pipeline.md`: storage, processing, egress, retention, tenancy | done | S |
-| 041 | [Remote delete/replace with live collaborators](stories/041-collab-remote-delete-edges.md) — other tabs keep deleted docs open; evicted clients can repopulate a room; template-seed race (038 follow-up) | ready | M |
+| 041 | [Remote delete/replace with live collaborators](stories/041-collab-remote-delete-edges.md) — remote delete closes clean editors everywhere; 4001 stops reconnect-repopulation; server-granted room seeder kills the template race (038 follow-up) | done | M |
 | 029 | [Transient model-provider error resilience](stories/029-transient-model-error-resilience.md) — backoff on 529/429/5xx + visible "retrying…" status + actionable Try-again (surfaced by a 529 hang on 2026-06-21) | done | S–M |
 | 030 | [Marker syntax migration `[ ]` → `\x{}`](stories/030-marker-syntax-migration.md) — atomic switch across prompts + citation tooling + audit + render + editor to a backslash-command grammar (decided during the 2026-07-09 guidance ingestion) | draft | L |
 | 034 | [Strip the stray `# CLAUDE.md` preamble from all six agent prompts](stories/034-agent-prompt-preamble.md) — every agent was told it's Claude Code working on a repo before it was told its role; live since PR #19 | done | S |

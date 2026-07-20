@@ -1,45 +1,78 @@
 # Story 041: Remote delete/replace with live collaborators — remaining edges
 
-**Status:** ready
+**Status:** done
 **Epic:** [002 — Agent Orchestration Layer](../index.md)
 **Estimate:** M
 
 ## Goal
 
 Story 038 fixed the single-user stale-room bug (delete → re-upload same name).
-Three multi-client edges remain; this story owns them (038 is read-only).
+Three multi-client edges remained; this story closes them.
 
-1. **Remote delete leaves other tabs' editors open.** The deleting tab drops
+1. **Remote delete left other tabs' editors open.** The deleting tab dropped
    its own document (`dropOpenDoc`), but another tab with the same doc open
-   only runs `applyExternalChange`, which treats the 404 as "nothing to apply"
-   and leaves the dead document on screen. It should close/discard the editor
-   (or clearly mark the doc as deleted) when a `file_change` delete arrives
-   for the open path.
-2. **An evicted live client can repopulate the room from its local CRDT.**
+   only ran `applyExternalChange`, which treated the 404 as "nothing to
+   apply" and left the dead document on screen.
+2. **An evicted live client could repopulate the room from its local CRDT.**
    On `kind: 'delete'` the server closes live sockets (4001), but
-   y-websocket auto-reconnects and the client's local Y doc state re-seeds
-   the fresh room with the deleted content. Needs either a client that treats
-   close-code 4001 as "do not reconnect with state" (destroy provider + ydoc
-   on 4001), or a server-side rejection of sync-step-2 into a brand-new room
-   from a pre-eviction client.
-3. **Concurrent template-seed race.** Two clients opening the same empty room
-   simultaneously can both pass the "room is empty" check and both
-   `applyTemplate`, duplicating the document. Low likelihood; needs either a
-   server-seeded room or a deterministic client tiebreak.
+   y-websocket auto-reconnects, and the client's local Y doc state would
+   re-seed the fresh room with the deleted content.
+3. **Concurrent template-seed race.** Two clients opening the same unseeded
+   room simultaneously could both pass the client-side "room is empty" check
+   and both `applyTemplate`, duplicating the document.
+
+## Fix
+
+1. **Remote delete** (`main.ts` `handleFileChange`): a `file_change` delete
+   for the open document now closes it like the deleting tab does — discard,
+   notice, fall back to `draft/main.md` — but **only when the editor is
+   clean**. A dirty editor stays open with a notice ("your unsaved edits will
+   re-create it on save"): unsaved work is never clobbered, and its next save
+   re-creates the file. Dirtiness comes from a new `hasUnsavedChanges()`
+   export in `editor.ts` (covers both rich and source mode).
+2. **No reconnect after eviction** (`editor.ts`): the provider handles
+   `connection-close` and, on close code **4001** (`CLOSE_ROOM_EVICTED`,
+   mirrored from `yjs-websocket.js`), calls `disconnect()` — which clears
+   y-websocket's `shouldConnect` so no reconnect ever fires for that
+   document. The project feed owns the UI reaction.
+3. **Server-decided seeder** (`yjs-websocket.js` + `editor.ts`): the server
+   sends one custom protocol message per connection (type 64,
+   `MSG_SEED_GRANT`) — payload 1 iff this is the **first connection into a
+   room with no content** (`conns.size === 1 && doc.share.size === 0`).
+   Connection order is sequential server-side, so exactly one client is ever
+   granted. Only the granted client calls `applyTemplate`; others just
+   `connect()` and render the synced state. A seeder-death fallback seeds
+   after 3s if the room is still empty (milkdown's own empty-doc condition
+   re-checks at apply time, so the fallback can never clobber content).
 
 ## Acceptance Criteria
 
-- [ ] A `file_change` delete for the open document closes/discards it in
-      every connected tab, not just the deleting one.
-- [ ] After a server-side eviction (close 4001), a stale client cannot
-      repopulate the new room with pre-eviction content.
-- [ ] Two clients racing to open an unseeded document produce one copy of the
-      template, not two.
+- [x] A `file_change` delete for the open document closes/discards it in
+      every connected tab, not just the deleting one (clean editors; dirty
+      editors keep local work by design). — Verified live with two Chrome
+      tabs, 2026-07-19: tab B discarded, fell back to `draft/main.md`,
+      notice shown.
+- [x] After a server-side eviction (close 4001), the client cannot repopulate
+      the new room with pre-eviction content. — Verified live: a dirty tab
+      whose room was evicted made no reconnect attempts, and a subsequent
+      same-name upload opened with the new content in a fresh room.
+- [x] Two clients racing to open an unseeded document produce one copy of the
+      template. — Grant assignment is deterministic server-side (unit test
+      in `yjs-websocket.test.js`); the non-granted-client path (connect
+      without template, render synced content) verified live with two tabs.
 
 ## Notes
 
-- Origin: 038's fix review (2026-07-19). None of these are regressions — all
-  predate 038; the eviction work just made them visible.
-- The cleanest long-term shape is probably server-side seeding/persistence of
-  Yjs rooms (the "persistence can be added later" note in `yjs-websocket.js`),
-  which would collapse edges 2 and 3 into one mechanism.
+- Protection against repopulation is at the **shipped-client** level: a
+  hostile or non-webapp client could still write anything into a room — but
+  such a client is already authorized to write (org membership gates the
+  socket, story 007-003), so this is the same trust boundary as any file
+  write, not a new hole.
+- A **rename** publishes delete(old)+create(new); other tabs viewing the old
+  path now fall back to the main draft rather than following the rename
+  (there is no rename event kind to correlate the pair). Accepted behavior —
+  the doc under the old path genuinely no longer exists; file a follow-up if
+  follow-the-rename UX is wanted.
+- The long-term collapse of all of this remains server-side room
+  seeding/persistence (the "persistence can be added later" note in
+  `yjs-websocket.js`); the grant message would then become server-internal.

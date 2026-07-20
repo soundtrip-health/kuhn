@@ -18,6 +18,7 @@ import {
   currentDocumentPath,
   discardDocument,
   flushSave,
+  hasUnsavedChanges,
   openDocument,
 } from './editor';
 import {
@@ -136,6 +137,26 @@ async function switchToActiveProject(): Promise<void> {
     refreshTreeSoon(projectId);
     if (change.path.endsWith('.bib')) void refreshBib(projectId);
     if (change.path === currentDocumentPath()) {
+      if (change.kind === 'delete') {
+        // The open document was deleted remotely — another tab, a
+        // collaborator, or an agent move (story 041). A clean editor closes
+        // and falls back like the deleting tab does (dropOpenDoc); a dirty
+        // one stays open so unsaved work isn't lost — its next save
+        // re-creates the file.
+        if (hasUnsavedChanges()) {
+          notify(`${change.path} was deleted — your unsaved edits will re-create it on save`);
+        } else {
+          void discardDocument().then(() => {
+            notify(`${change.path} was deleted`);
+            if (change.path !== MAIN_DOCUMENT) {
+              openInEditor(projectId, MAIN_DOCUMENT);
+            } else {
+              workspace.setActiveDocument('');
+            }
+          });
+        }
+        return;
+      }
       // Live-update a clean editor in place (story 017); a dirty editor keeps
       // the reload prompt so unsaved local edits aren't clobbered.
       void applyExternalChange(change.path).then((applied) => {

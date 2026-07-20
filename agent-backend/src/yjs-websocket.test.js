@@ -4,6 +4,8 @@ import { describe, it, expect, vi } from 'vitest';
 // db/file-activity.test.js, hub fan-out in project-events.test.js.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
 
+import * as decoding from 'lib0/decoding';
+
 import { handleYjsConnection, evictRoom, hasRoom } from './yjs-websocket.js';
 import { publishProjectEvent } from './project-events.js';
 
@@ -35,6 +37,13 @@ function connect(room) {
   const ws = fakeWs();
   handleYjsConnection(ws, { url: `/yjs-websocket/${room}`, headers: { host: 'localhost' } });
   return ws;
+}
+
+/** Decode a seed-grant message (varUint type 64, varUint 0|1). */
+function decodeGrant(message) {
+  const dec = decoding.createDecoder(new Uint8Array(message));
+  expect(decoding.readVarUint(dec)).toBe(64);
+  return decoding.readVarUint(dec);
 }
 
 describe('collab room eviction (story 038)', () => {
@@ -82,6 +91,22 @@ describe('collab room eviction (story 038)', () => {
     expect(hasRoom(liveRoom)).toBe(true); // open editor reconciles via the feed
     expect(ws.closed).toBe(null);
     expect(hasRoom(idleRoom)).toBe(false); // stale orphan: next open seeds fresh
+  });
+
+  it('grants seeding to the first connection into an empty room only (story 041)', () => {
+    const room = 'project-905/draft/seed.md';
+    const first = connect(room);
+    const second = connect(room);
+    // The grant is the first message every connection receives.
+    expect(decodeGrant(first.sent[0])).toBe(1);
+    expect(decodeGrant(second.sent[0])).toBe(0);
+
+    // A fresh room after eviction grants again.
+    first.disconnect();
+    second.disconnect();
+    evictRoom(room);
+    const third = connect(room);
+    expect(decodeGrant(third.sent[0])).toBe(1);
   });
 
   it('a re-created room after eviction starts from empty state', () => {

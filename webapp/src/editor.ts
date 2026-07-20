@@ -32,6 +32,7 @@ import type { Ctx } from '@milkdown/kit/ctx';
 import { getMarkdown, markdownToSlice, replaceAll } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
+import * as decoding from 'lib0/decoding';
 import { Doc as YDoc } from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 
@@ -52,6 +53,15 @@ import { startWrite, writeSuggestionPlugin } from './write-suggestion';
 // On open, reflect the persisted state in the top-bar "Saved" affordance.
 
 const SAVE_DEBOUNCE_MS = 1500;
+
+// Story 041 collab-lifecycle constants, mirroring the backend:
+// custom y-websocket message naming this connection the room's template
+// seeder (yjs-websocket.js MSG_SEED_GRANT), and the eviction close code.
+const MSG_SEED_GRANT = 64;
+const CLOSE_ROOM_EVICTED = 4001;
+// If the granted seeder dies before seeding, seed ourselves once the room
+// has stayed empty this long (re-checked at apply time).
+const SEED_FALLBACK_MS = 3000;
 
 const DEFAULT_TEMPLATE = `# Untitled draft
 
@@ -76,6 +86,17 @@ let writerSession: string | undefined;
 
 export function currentDocumentPath(): string {
   return currentPath;
+}
+
+/** Local edits not yet persisted to storage? (Either mode; story 041.) */
+export function hasUnsavedChanges(): boolean {
+  if (saveTimer != null) return true;
+  const current = sourceView
+    ? sourceView.state.doc.toString()
+    : crepe
+      ? crepe.editor.action(getMarkdown())
+      : null;
+  return current != null && current !== lastSavedMarkdown;
 }
 
 /**
@@ -295,12 +316,39 @@ export async function openDocument(
     provider = new WebsocketProvider(`${BACKEND_WS_URL}/yjs-websocket`, roomName(projectId, path), ydoc);
     collabService.bindDoc(ydoc).setAwareness(provider.awareness);
     const boundProvider = provider;
+    const boundYdoc = ydoc;
+    // The server names exactly one connection per empty room as its seeder
+    // (story 041) — deciding client-side let two simultaneous openers both
+    // observe an empty room and both apply the template.
+    let seedGranted = false;
+    boundProvider.messageHandlers[MSG_SEED_GRANT] = (_encoder, decoder) => {
+      seedGranted = decoding.readVarUint(decoder) === 1;
+    };
+    // Close 4001 = the server evicted this room (file deleted/replaced,
+    // story 038). Auto-reconnecting would repopulate the fresh room from
+    // this client's local state — stop for good; the project feed delivers
+    // the delete to the UI (story 041).
+    boundProvider.on('connection-close', (event: CloseEvent | null) => {
+      if (event?.code === CLOSE_ROOM_EVICTED) boundProvider.disconnect();
+    });
     provider.once('sync', (isSynced: boolean) => {
       // Bail if the document was switched before sync arrived (story 024).
       if (!isSynced || provider !== boundProvider) return;
-      // Seed the shared doc from storage only when the room is empty;
-      // otherwise the live collaborative state wins.
-      collabService.applyTemplate(template).connect();
+      if (seedGranted) {
+        // Sole seeder: apply the storage template (its own empty-room
+        // condition still re-checks at apply time).
+        collabService.applyTemplate(template).connect();
+      } else {
+        collabService.connect();
+        // Seeder-death fallback: if nobody has seeded the room after a
+        // grace period, do it ourselves.
+        setTimeout(() => {
+          if (provider !== boundProvider || !crepe) return;
+          if (boundYdoc.getXmlFragment('prosemirror').length > 0) return;
+          collabService.disconnect();
+          collabService.applyTemplate(template).connect();
+        }, SEED_FALLBACK_MS);
+      }
       if (!opts.preferStored) return;
       // Returning from source mode (story 039): edits went straight to
       // storage, which any still-warm room predates — force the stored text
