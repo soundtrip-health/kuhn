@@ -16,6 +16,9 @@ const COLUMN_MIGRATIONS = [
   { table: 'jobs', column: 'user_id', ddl: 'INTEGER REFERENCES users(id) ON DELETE SET NULL' },
   { table: 'messages', column: 'user_id', ddl: 'INTEGER REFERENCES users(id) ON DELETE SET NULL' },
   { table: 'file_events', column: 'user_id', ddl: 'INTEGER REFERENCES users(id) ON DELETE SET NULL' },
+  // Issue #42: tool-result error flag for log audits. Nullable — non-tool rows
+  // and pre-migration history stay NULL.
+  { table: 'messages', column: 'is_error', ddl: 'INTEGER' },
 ];
 
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */

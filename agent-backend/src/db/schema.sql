@@ -184,6 +184,10 @@ CREATE TABLE IF NOT EXISTS messages (
   content           TEXT,
   tool_calls        TEXT,  -- JSON
   tool_call_id      TEXT,
+  -- Tool-result outcome (issue #42): 1 = the tool returned isError, 0 = ok,
+  -- NULL = not a tool result / pre-migration row. Lets log audits find
+  -- failing tool calls without parsing result text.
+  is_error          INTEGER,
   token_count       INTEGER,
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

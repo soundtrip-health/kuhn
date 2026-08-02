@@ -25,7 +25,22 @@ describe('user attribution (story 007-001)', () => {
     await logMessage({ conversationId: 1, role: 'assistant', content: 'hi', userId: 4 });
     const [sql, params] = query.mock.calls[0];
     expect(sql).toContain('user_id');
-    expect(params.at(-1)).toBe(4);
+    expect(params.at(-2)).toBe(4);
+  });
+});
+
+describe('tool-result error flag (issue #42)', () => {
+  beforeEach(() => {
+    query.mockResolvedValue({ rows: [{ id: 1 }] });
+  });
+
+  it('logMessage records is_error as 1/0 and NULL when not given', async () => {
+    await logMessage({ conversationId: 1, role: 'tool', content: 'boom', toolCallId: 't1', isError: true });
+    expect(query.mock.calls[0][1].at(-1)).toBe(1);
+    await logMessage({ conversationId: 1, role: 'tool', content: 'ok', toolCallId: 't2', isError: false });
+    expect(query.mock.calls[1][1].at(-1)).toBe(0);
+    await logMessage({ conversationId: 1, role: 'assistant', content: 'hi' });
+    expect(query.mock.calls[2][1].at(-1)).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { getHistory } from './conversation.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
@@ -96,6 +97,33 @@ export async function listJobs({ projectId = null, status = null, limit = 50 } =
     [projectId, status, limit],
   );
   return rows.map(parseJob);
+}
+
+/**
+ * Full account of a job for audit/debugging (issue #42): the job row, its
+ * conversation messages (tool calls, tool results with error flags), and
+ * recursively the sub-agent jobs it dispatched. maxDepth bounds recursion well
+ * above the runtime's dispatch-depth limit.
+ * @returns {Promise<object|undefined>} { ...job, messages, children: [trace] }
+ */
+export async function getJobTrace(jobId, { maxDepth = 5 } = {}) {
+  const job = await getJob(jobId);
+  if (!job) return undefined;
+  return buildTrace(job, maxDepth);
+}
+
+async function buildTrace(job, depth) {
+  const messages = job.conversation_id != null
+    ? await getHistory(job.conversation_id, { limit: 500 })
+    : [];
+  if (depth <= 0) return { ...job, messages, children: [] };
+  const { rows } = await query(
+    'SELECT * FROM jobs WHERE parent_job_id = $1 ORDER BY created_at ASC, id ASC',
+    [job.id],
+  );
+  const children = [];
+  for (const row of rows) children.push(await buildTrace(parseJob(row), depth - 1));
+  return { ...job, messages, children };
 }
 
 /**

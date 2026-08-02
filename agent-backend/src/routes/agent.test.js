@@ -3,6 +3,7 @@ import express from 'express';
 
 vi.mock('../db.js', () => ({ query: vi.fn(async () => ({ rows: [] })) }));
 
+import { query } from '../db.js';
 import { waitForReply, deliverReply } from '../agents/questions.js';
 import { EventChannel } from '../agents/events.js';
 import { registerRun, unregisterRun } from '../agents/runs.js';
@@ -44,6 +45,32 @@ describe('POST /api/agent/jobs/:id/reply', () => {
     const res = await reply(7, { reply: 'a manuscript' });
     expect(res.status).toBe(200);
     await expect(wait).resolves.toBe('a manuscript');
+  });
+});
+
+describe('GET /api/agent/jobs/:id/trace (issue #42)', () => {
+  it('404s for an unknown job', async () => {
+    const res = await fetch(`${base}/api/agent/jobs/123/trace`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns the job with its messages and children', async () => {
+    query.mockImplementation(async (sql, params) => {
+      if (sql.includes('FROM jobs WHERE id')) return { rows: [{ id: 123, conversation_id: 9, context: null }] };
+      if (sql.includes('parent_job_id')) return { rows: [] };
+      if (sql.includes('FROM messages')) return { rows: [{ role: 'tool', content: 'ok', is_error: 0 }] };
+      return { rows: [] };
+    });
+    try {
+      const res = await fetch(`${base}/api/agent/jobs/123/trace`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe(123);
+      expect(body.messages).toEqual([{ role: 'tool', content: 'ok', is_error: 0 }]);
+      expect(body.children).toEqual([]);
+    } finally {
+      query.mockImplementation(async () => ({ rows: [] }));
+    }
   });
 });
 

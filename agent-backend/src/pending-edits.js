@@ -175,6 +175,17 @@ export async function effectiveContent(projectId, path) {
 }
 
 /**
+ * The pending proposal's content for a path, or null if none is pending. Lets
+ * the agent's read_file reflect the agent's own suggestion-mode writes (issue
+ * #42): without this, a write→read-back verify loop sees the pre-proposal disk
+ * bytes and concludes the write was lost.
+ */
+export function pendingProposalContent(projectId, path) {
+  const row = getPendingEditByPath(projectId, posix.normalize(path));
+  return row ? row.proposed_content : null;
+}
+
+/**
  * All pending edits for a project (optionally one path), refreshed through
  * the staleness/re-anchor pass, in REST shape.
  */

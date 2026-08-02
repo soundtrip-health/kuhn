@@ -71,6 +71,7 @@ vi.mock('../citations.js', () => ({
   DEFAULT_BIB_PATH: 'draft/references.bib',
   upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
   addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+  isDerivedBibPath: vi.fn(async () => false),
 }));
 // Keeps db.js (which needs a real config.db.path at import) out of this
 // mocked-config suite; the SQL is covered in db/file-activity.test.js.
@@ -81,10 +82,12 @@ vi.mock('../pending-edits.js', () => ({
   isSuggestionPath: (p) => typeof p === 'string' && p.split('/')[0] === 'draft',
   proposeEdit: vi.fn(async (_projectId, { path }) => ({ id: 1, path })),
   effectiveContent: vi.fn(async () => 'file body'),
+  pendingProposalContent: vi.fn(() => null),
 }));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { proposeEdit, effectiveContent } from '../pending-edits.js';
+import { proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
+import { isDerivedBibPath } from '../citations.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
@@ -314,8 +317,9 @@ describe('suggestion mode (story 008-001)', () => {
     });
     expect(writeProjectFile).not.toHaveBeenCalled();
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toMatch(/Proposed update to draft\/main\.md — awaiting user review/);
-    expect(result.content[0].text).toMatch(/unchanged until the user accepts/);
+    expect(result.content[0].text).toMatch(/Successfully proposed update to draft\/main\.md/);
+    expect(result.content[0].text).toMatch(/COMPLETE — do not retry/);
+    expect(result.content[0].text).toMatch(/changes only when they accept/);
   });
 
   it('write_file outside the scope keeps direct writes (draft- prefix is not draft/)', async () => {
@@ -347,7 +351,7 @@ describe('suggestion mode (story 008-001)', () => {
       path: 'draft/main.md', proposedContent: 'pending draft body', agentSlug: 'writer', jobId: 42,
     });
     expect(writeProjectFile).not.toHaveBeenCalled();
-    expect(result.content[0].text).toMatch(/awaiting user review/);
+    expect(result.content[0].text).toMatch(/Successfully proposed update/);
   });
 
   it('edit_file old_string misses are still validated against the effective content', async () => {
@@ -396,6 +400,43 @@ describe('suggestion mode (story 008-001)', () => {
     expect(seeded.filter((e) => e.type === 'file_change').map((e) => e.kind)).toEqual([
       'create', 'update', 'create',
     ]);
+  });
+
+  it('read_file on a path with a pending proposal returns the PROPOSED content (issue #42)', async () => {
+    pendingProposalContent.mockReturnValueOnce('proposed body');
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['file_read'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go' });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const read = tools.find((t) => t.name === 'read_file');
+    const result = await read.handler({ path: 'draft/main.md' });
+    expect(result.content[0].text).toMatch(/pending proposed update awaiting user review/);
+    expect(result.content[0].text).toMatch(/proposed body$/);
+  });
+
+  it('read_file without a pending proposal (or while seeding) reads the disk file', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['file_read'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go', seeding: true });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const read = tools.find((t) => t.name === 'read_file');
+    const result = await read.handler({ path: 'draft/main.md' });
+    expect(pendingProposalContent).not.toHaveBeenCalled();
+    expect(result.content[0].text).toBe('file body');
+  });
+
+  it('write_file and edit_file refuse a derived bibliography path (issue #42)', async () => {
+    isDerivedBibPath.mockResolvedValue(true);
+    const { write, edit } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const w = await write.handler({ path: 'draft/references.bib', content: '@article{x}' });
+    expect(w.isError).toBe(true);
+    expect(w.content[0].text).toMatch(/generated from the project reference store/);
+    expect(w.content[0].text).toMatch(/add_citation/);
+    const e = await edit.handler({ path: 'draft/references.bib', old_string: 'a', new_string: 'b', replace_all: false });
+    expect(e.isError).toBe(true);
+    expect(writeProjectFile).not.toHaveBeenCalled();
+    expect(proposeEdit).not.toHaveBeenCalled();
+    isDerivedBibPath.mockResolvedValue(false);
   });
 
   it('sub-agents dispatched by a seeding stage inherit the bypass', async () => {
