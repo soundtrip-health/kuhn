@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
 import { runAgentTask, reattach } from '../agents/runtime.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
-import { getJob, listJobs } from '../db/jobs.js';
+import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
 import { streamEvents } from './sse.js';
 
 const router = Router();
@@ -41,6 +41,22 @@ router.get('/api/agent/jobs', async (req, res) => {
     limit: limit != null ? parseInt(limit) : 50,
   });
   res.json({ jobs });
+});
+
+/**
+ * GET /api/agent/jobs/:id/trace
+ * Full audit trace of a job (issue #42): the job row, its conversation
+ * messages (tool calls and tool results, with is_error flags), and recursively
+ * every sub-agent job it dispatched. Built for reviewing agent runs — both
+ * debugging a user-reported failure and proactively sampling logs.
+ */
+router.get('/api/agent/jobs/:id/trace', async (req, res) => {
+  const trace = await getJobTrace(parseInt(req.params.id));
+  if (!trace) {
+    res.status(404).json({ error: 'job not found' });
+    return;
+  }
+  res.json(trace);
 });
 
 /**

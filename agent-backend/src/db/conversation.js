@@ -36,12 +36,14 @@ export async function createConversation(agentSlug, projectId = null, userId = n
  * @param {number|null} msg.tokenCount
  * @param {number|null} msg.userId - Attribution (story 007-001): assistant/tool
  *   rows carry the user whose request ran the job
+ * @param {boolean|null} msg.isError - Tool-result outcome (issue #42): true if
+ *   the tool returned an error; null for non-tool rows
  * @returns {Promise<object>} The inserted message row
  */
-export async function logMessage({ conversationId, role, content = null, toolCalls = null, toolCallId = null, tokenCount = null, userId = null }) {
+export async function logMessage({ conversationId, role, content = null, toolCalls = null, toolCallId = null, tokenCount = null, userId = null, isError = null }) {
   const { rows } = await query(
-    `INSERT INTO messages (conversation_id, role, content, tool_calls, tool_call_id, token_count, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO messages (conversation_id, role, content, tool_calls, tool_call_id, token_count, user_id, is_error)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       conversationId,
@@ -51,6 +53,7 @@ export async function logMessage({ conversationId, role, content = null, toolCal
       toolCallId,
       tokenCount,
       userId,
+      isError == null ? null : (isError ? 1 : 0),
     ],
   );
   return parseMessage(rows[0]);

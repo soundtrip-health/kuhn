@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../db.js', () => ({ query: vi.fn() }));
 
 import { query } from '../db.js';
-import { createJob, updateJob, listJobs, markOrphanedJobsInterrupted } from './jobs.js';
+import { createJob, updateJob, listJobs, getJobTrace, markOrphanedJobsInterrupted } from './jobs.js';
 
 beforeEach(() => {
   query.mockReset();
@@ -54,6 +54,35 @@ describe('listJobs', () => {
     await listJobs();
     const [, params] = query.mock.calls[0];
     expect(params).toEqual([null, null, 50]);
+  });
+});
+
+describe('getJobTrace (issue #42)', () => {
+  it('assembles the job, its messages, and sub-job traces recursively', async () => {
+    const jobs = {
+      1: { id: 1, conversation_id: 10, parent_job_id: null, context: null },
+      2: { id: 2, conversation_id: 11, parent_job_id: 1, context: null },
+    };
+    query.mockImplementation(async (sql, params) => {
+      if (sql.includes('FROM jobs WHERE id')) return { rows: [jobs[params[0]]] };
+      if (sql.includes('parent_job_id = $1')) return { rows: params[0] === 1 ? [jobs[2]] : [] };
+      if (sql.includes('FROM messages')) {
+        return { rows: [{ conversation_id: params[0], role: 'tool', content: 'ok', is_error: 0 }] };
+      }
+      return { rows: [] };
+    });
+    const trace = await getJobTrace(1);
+    expect(trace.id).toBe(1);
+    expect(trace.messages).toHaveLength(1);
+    expect(trace.children).toHaveLength(1);
+    expect(trace.children[0].id).toBe(2);
+    expect(trace.children[0].messages).toHaveLength(1);
+    expect(trace.children[0].children).toEqual([]);
+  });
+
+  it('returns undefined for an unknown job', async () => {
+    query.mockResolvedValue({ rows: [] });
+    expect(await getJobTrace(99)).toBeUndefined();
   });
 });
 

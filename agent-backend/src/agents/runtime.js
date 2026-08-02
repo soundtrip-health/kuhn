@@ -19,10 +19,10 @@ import {
   searchProjectFiles,
   moveProjectEntry,
 } from '../storage.js';
-import { DEFAULT_BIB_PATH, upsertCitation, addReference } from '../citations.js';
+import { DEFAULT_BIB_PATH, upsertCitation, addReference, isDerivedBibPath } from '../citations.js';
 import { migrateSeenPaths } from '../db/file-activity.js';
 import { createThread, resolveQuote } from '../db/comments.js';
-import { isSuggestionPath, proposeEdit, effectiveContent } from '../pending-edits.js';
+import { isSuggestionPath, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
@@ -411,6 +411,7 @@ async function runTask(task, internal, channel, state) {
             content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
             toolCallId: block.tool_use_id,
             userId,
+            isError: block.is_error === true, // audit trail (issue #42)
           });
         }
       }
@@ -543,6 +544,16 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
       'Read a file from the project workspace. Path is relative to the workspace root.',
       { path: z.string().describe('Workspace-relative file path') },
       async ({ path }) => fileToolResult(async () => {
+        // Suggestion-mode coherence (issue #42): if this path has a pending
+        // proposal, show the proposed content — otherwise an agent that wrote
+        // and reads back to verify sees stale disk bytes and concludes its
+        // write was lost.
+        if (!seeding && isSuggestionPath(path)) {
+          const proposal = pendingProposalContent(projectId, path);
+          if (proposal != null) {
+            return `[${path} has a pending proposed update awaiting user review. The content below is the PROPOSED version; the file on disk keeps its previous content until the user accepts.]\n\n${proposal}`;
+          }
+        }
         const buf = await readProjectFile(projectId, path);
         return buf.toString('utf-8');
       }),
@@ -602,13 +613,14 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         content: z.string().describe('Full file content'),
       },
       async ({ path, content }) => fileToolResult(async () => {
+        await rejectDerivedBibWrite(projectId, path);
         // Suggestion mode (story 008-001): writes to draft/** become pending
         // edits the user reviews; the file's bytes do not change here. The
         // seeding pipeline bypasses the gate — its first draft writes land
         // directly (there is nothing to protect yet).
         if (!seeding && isSuggestionPath(path)) {
           await proposeEdit(projectId, { path, proposedContent: content, agentSlug: agent.slug, jobId: parentJob.id });
-          return `Proposed update to ${path} — awaiting user review; the file is unchanged until the user accepts.`;
+          return proposedResult(path);
         }
         const { created } = await writeProjectFile(projectId, path, content);
         return `${created ? 'Created' : 'Updated'} ${path}`;
@@ -624,6 +636,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         replace_all: z.boolean().default(false).describe('Replace every occurrence'),
       },
       async ({ path, old_string, new_string, replace_all }) => fileToolResult(async () => {
+        await rejectDerivedBibWrite(projectId, path);
         const suggesting = !seeding && isSuggestionPath(path);
         // In suggestion mode the "current content" is the EFFECTIVE content —
         // an existing proposal if there is one, else the disk file — so a
@@ -639,7 +652,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         const next = content.replaceAll(old_string, new_string);
         if (suggesting) {
           await proposeEdit(projectId, { path, proposedContent: next, agentSlug: agent.slug, jobId: parentJob.id });
-          return `Proposed update to ${path} — awaiting user review; the file is unchanged until the user accepts.`;
+          return proposedResult(path);
         }
         await writeProjectFile(projectId, path, next);
         return `Updated ${path} (${replace_all ? occurrences : 1} replacement${occurrences > 1 && replace_all ? 's' : ''})`;
@@ -948,6 +961,30 @@ async function searchToolResult(fn) {
     return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
   } catch (err) {
     return { content: [{ type: 'text', text: `Search failed: ${err.message}` }], isError: true };
+  }
+}
+
+// The suggestion-mode success message (issue #42): agents treated the old
+// "awaiting user review" phrasing as a failed/blocked write and thrashed —
+// retrying, rewriting whole files, or declaring the tool broken. Say outright
+// that the write succeeded and is complete.
+function proposedResult(path) {
+  return `Successfully proposed update to ${path}. The write is COMPLETE — do not retry or rewrite. `
+    + 'It is recorded as a pending suggestion the user reviews in the editor; the file on disk changes only when they accept. '
+    + 'Reading the file back will show your proposed version.';
+}
+
+// Refuse direct writes to a materialized bibliography (issue #42): the file is
+// derived from the reference store, so a hand edit is clobbered on the next
+// regeneration — and under suggestion mode it would sit as an invisible
+// pending edit. Steer to the deterministic reference tools instead.
+async function rejectDerivedBibWrite(projectId, path) {
+  if (await isDerivedBibPath(projectId, path)) {
+    throw new Error(
+      `${path} is generated from the project reference store; direct edits are overwritten the next time the bibliography is regenerated. `
+      + 'Use add_citation (PubMed works) or add_reference (everything else) to add entries. '
+      + 'To correct or remove an existing entry, tell the user exactly what needs to change instead of editing the file.',
+    );
   }
 }
 

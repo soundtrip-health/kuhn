@@ -6,7 +6,7 @@
 
 import { pubmedSearch } from './agents/search.js';
 import { StorageError } from './storage.js';
-import { insertReference, materializeBib, findByPmid } from './db/references.js';
+import { insertReference, materializeBib, findByPmid, listProjectReferences } from './db/references.js';
 
 export const DEFAULT_BIB_PATH = 'draft/references.bib';
 
@@ -199,6 +199,19 @@ function pubmedToRef(record) {
  * the same shape the /cite route and the add_citation agent tool expect.
  * @returns {Promise<{ key, created, bibtex, path }>}
  */
+/**
+ * Whether a path is a bibliography file the reference store materializes —
+ * i.e. one whose contents are DERIVED from SQLite and clobbered on the next
+ * regeneration. Agent file tools refuse direct writes to such paths (issue
+ * #42): the write would silently vanish; the deterministic add_citation /
+ * add_reference tools are the supported way to change the bibliography.
+ */
+export async function isDerivedBibPath(projectId, path) {
+  if (typeof path !== 'string' || !path.toLowerCase().endsWith('.bib')) return false;
+  const refs = await listProjectReferences(projectId);
+  return refs.length > 0;
+}
+
 export async function upsertCitation(projectId, pmid, bibPath = DEFAULT_BIB_PATH) {
   // Re-citing a work already stored never needs a PubMed round-trip.
   const existing = await findByPmid(projectId, pmid);
