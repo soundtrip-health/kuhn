@@ -71,6 +71,8 @@ vi.mock('../citations.js', () => ({
   DEFAULT_BIB_PATH: 'draft/references.bib',
   upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
   addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+  updateReference: vi.fn(async () => ({ key: 'k', bibtex: '@article{k, year = {2024}}', path: 'draft/references.bib' })),
+  removeReference: vi.fn(async () => ({ key: 'k', path: 'draft/references.bib' })),
   isDerivedBibPath: vi.fn(async () => false),
 }));
 // Keeps db.js (which needs a real config.db.path at import) out of this
@@ -87,7 +89,7 @@ vi.mock('../pending-edits.js', () => ({
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
-import { isDerivedBibPath } from '../citations.js';
+import { isDerivedBibPath, updateReference, removeReference } from '../citations.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile } from '../storage.js';
 import { getAgentWithTools } from '../db/agents.js';
@@ -449,6 +451,64 @@ describe('suggestion mode (story 008-001)', () => {
     await write.handler({ path: 'draft/methods.md', content: 'methods' });
     expect(writeProjectFile).toHaveBeenCalledWith(7, 'draft/methods.md', 'methods');
     expect(proposeEdit).not.toHaveBeenCalled();
+  });
+});
+
+// --- Issue #41: deterministic reference correction tools ----------------------
+
+describe('manage_references tools (issue #41)', () => {
+  const LIBRARIAN = { ...RA_AGENT, tools: ['manage_references'] };
+  const success = () => [
+    { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+
+  async function refTools() {
+    getAgentWithTools.mockResolvedValue(LIBRARIAN);
+    sdkState.messages = success();
+    const events = [];
+    for await (const ev of runAgentTask({ role: 'ra', projectId: 7, input: 'go' })) events.push(ev);
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    return {
+      update: tools.find((t) => t.name === 'update_reference'),
+      remove: tools.find((t) => t.name === 'remove_reference'),
+    };
+  }
+
+  it('is gated by the manage_references tool slug', async () => {
+    getAgentWithTools.mockResolvedValue(RA_AGENT); // no manage_references
+    sdkState.messages = success();
+    for await (const _ of runAgentTask({ role: 'ra', projectId: 7, input: 'go' })) { /* drain */ }
+    const names = createSdkMcpServer.mock.calls.at(-1)[0].tools.map((t) => t.name);
+    expect(names).not.toContain('update_reference');
+    expect(names).not.toContain('remove_reference');
+  });
+
+  it('update_reference maps snake_case params, emits citation + file_change, returns the entry', async () => {
+    const { update } = await refTools();
+    const result = await update.handler({
+      cite_key: 'k', year: 2024, entry_type: 'misc', source_type: 'preprint', path: 'draft/references.bib',
+    });
+    expect(updateReference).toHaveBeenCalledWith(
+      7, 'k', { year: 2024, entryType: 'misc', sourceType: 'preprint' }, 'draft/references.bib',
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/Updated reference "k"/);
+    expect(result.content[0].text).toContain('@article{k, year = {2024}}');
+  });
+
+  it('remove_reference deletes by cite key and emits file_change', async () => {
+    const { remove } = await refTools();
+    const result = await remove.handler({ cite_key: 'k', path: 'draft/references.bib' });
+    expect(removeReference).toHaveBeenCalledWith(7, 'k', 'draft/references.bib');
+    expect(result.content[0].text).toMatch(/Removed reference "k"/);
+  });
+
+  it('maps service errors (unknown cite key) to isError tool results', async () => {
+    updateReference.mockRejectedValueOnce(new Error('No reference with cite key "nope"'));
+    const { update } = await refTools();
+    const result = await update.handler({ cite_key: 'nope', year: 2020, path: 'draft/references.bib' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/update_reference failed: No reference/);
   });
 });
 

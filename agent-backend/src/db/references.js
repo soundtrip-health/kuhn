@@ -55,7 +55,7 @@ export async function listProjectReferences(projectId) {
 }
 
 /** Convert a stored row to the shape formatBibEntry expects. */
-function rowToBibRecord(row) {
+export function rowToBibRecord(row) {
   return {
     authors: typeof row.authors_json === 'string' ? JSON.parse(row.authors_json || '[]') : (row.authors ?? []),
     title: row.title,
@@ -123,6 +123,84 @@ export function insertReference(projectId, record) {
     );
     return { key, created: true, id: rows[0].id };
   });
+}
+
+/** One reference by cite key, with parsed authors, or null. */
+export async function getReferenceByKey(projectId, citeKey) {
+  const { rows } = await query(
+    'SELECT * FROM bib_references WHERE project_id = $1 AND cite_key = $2 LIMIT 1',
+    [projectId, citeKey],
+  );
+  return rows[0] ? parseRef(rows[0]) : null;
+}
+
+// Columns an update_reference correction may change (issue #41). cite_key is
+// deliberately immutable — in-text [@key] citations anchor to it.
+const UPDATABLE_COLUMNS = {
+  title: 'title', year: 'year', journal: 'journal', volume: 'volume',
+  issue: 'issue', pages: 'pages', publisher: 'publisher', url: 'url',
+  abstract: 'abstract', entryType: 'entry_type', sourceType: 'source_type',
+};
+
+/**
+ * Correct fields of a stored reference (issue #41: the deterministic
+ * alternative to hand-editing the derived .bib). Only provided keys change;
+ * `authors` (array), `doi`, and `pmid` get their normal normalization, and the
+ * weak-id hash / identity_status are recomputed from the merged record.
+ * @returns {object|null} the updated row (parsed), or null if no such cite key
+ */
+export function updateReferenceFields(projectId, citeKey, changes) {
+  return transaction(() => {
+    const row = querySync(
+      'SELECT * FROM bib_references WHERE project_id = $1 AND cite_key = $2 LIMIT 1',
+      [projectId, citeKey],
+    ).rows[0];
+    if (!row) return null;
+
+    const sets = [];
+    const params = [];
+    const push = (column, value) => {
+      params.push(value);
+      sets.push(`${column} = $${params.length}`);
+    };
+    for (const [key, column] of Object.entries(UPDATABLE_COLUMNS)) {
+      if (changes[key] !== undefined) push(column, changes[key]);
+    }
+    if (changes.authors !== undefined) push('authors_json', JSON.stringify(changes.authors ?? []));
+    if (changes.doi !== undefined) push('doi', normalizeDoi(changes.doi));
+    if (changes.pmid !== undefined) push('pmid', cleanPmid(changes.pmid));
+    if (sets.length === 0) return parseRef(row);
+
+    // Recompute derived identity fields from the merged record.
+    const merged = {
+      title: changes.title ?? row.title,
+      authors: changes.authors ?? JSON.parse(row.authors_json || '[]'),
+      year: changes.year ?? row.year,
+    };
+    push('weak_id_hash', weakIdHash(merged));
+    const doi = changes.doi !== undefined ? normalizeDoi(changes.doi) : row.doi;
+    const pmid = changes.pmid !== undefined ? cleanPmid(changes.pmid) : row.pmid;
+    push('identity_status', (doi || pmid) ? 'strong' : 'weak');
+
+    params.push(row.id);
+    const { rows } = querySync(
+      `UPDATE bib_references SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+      params,
+    );
+    return parseRef(rows[0]);
+  });
+}
+
+/**
+ * Delete a reference by cite key (issue #41).
+ * @returns {boolean} true if a row was deleted
+ */
+export function deleteReference(projectId, citeKey) {
+  const { rows } = querySync(
+    'DELETE FROM bib_references WHERE project_id = $1 AND cite_key = $2 RETURNING id',
+    [projectId, citeKey],
+  );
+  return rows.length > 0;
 }
 
 /** Render a project's references as BibTeX text (sorted by cite key). */

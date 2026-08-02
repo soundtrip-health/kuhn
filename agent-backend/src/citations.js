@@ -5,8 +5,11 @@
 // rule). The pure helpers are exported for tests.
 
 import { pubmedSearch } from './agents/search.js';
-import { StorageError } from './storage.js';
-import { insertReference, materializeBib, findByPmid, listProjectReferences } from './db/references.js';
+import { StorageError, writeProjectFile } from './storage.js';
+import {
+  insertReference, materializeBib, findByPmid, listProjectReferences,
+  updateReferenceFields, deleteReference, exportBibtex, rowToBibRecord,
+} from './db/references.js';
 
 export const DEFAULT_BIB_PATH = 'draft/references.bib';
 
@@ -252,4 +255,33 @@ export async function addReference(projectId, input, bibPath = DEFAULT_BIB_PATH)
   if (result.created) await materializeBib(projectId, bibPath);
   const bibtex = result.created ? formatBibEntry(ref, result.key, ref.entryType) : null;
   return { key: result.key, created: result.created, bibtex, path: bibPath };
+}
+
+/**
+ * Correct fields of a stored reference by cite key and regenerate the derived
+ * bibliography (issue #41: the deterministic alternative to hand-editing the
+ * .bib). The cite key itself never changes — in-text [@key] citations keep
+ * resolving.
+ * @returns {Promise<{ key, bibtex, path }>} bibtex is the corrected entry
+ */
+export async function updateReference(projectId, citeKey, changes, bibPath = DEFAULT_BIB_PATH) {
+  const row = updateReferenceFields(projectId, citeKey, changes);
+  if (!row) throw new StorageError('not_found', `No reference with cite key "${citeKey}" in this project`);
+  await materializeBib(projectId, bibPath);
+  const bibtex = formatBibEntry(rowToBibRecord(row), row.cite_key, row.entry_type || 'article');
+  return { key: row.cite_key, bibtex, path: bibPath };
+}
+
+/**
+ * Delete a stored reference by cite key and regenerate the derived
+ * bibliography (issue #41). Unlike materializeBib, removal writes the file
+ * even when it becomes empty — the last entry must actually disappear.
+ * @returns {Promise<{ key, path }>}
+ */
+export async function removeReference(projectId, citeKey, bibPath = DEFAULT_BIB_PATH) {
+  if (!deleteReference(projectId, citeKey)) {
+    throw new StorageError('not_found', `No reference with cite key "${citeKey}" in this project`);
+  }
+  await writeProjectFile(projectId, bibPath, await exportBibtex(projectId));
+  return { key: citeKey, path: bibPath };
 }

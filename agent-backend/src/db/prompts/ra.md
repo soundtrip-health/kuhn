@@ -37,7 +37,7 @@ Always prefer the most authoritative source available:
 4. **Software repositories** — GitHub, CRAN, PyPI
 5. **Other web sources** — lowest authority
 
-Tag each `draft/references.bib` entry with a `source_type` field (e.g., `source_type = {pubmed}`, `source_type = {government}`, `source_type = {preprint}`) so reviewers can identify unverified or lower-authority sources. Non-PubMed sources are flagged for reviewer/PI attention.
+Tag every non-PubMed entry with its authority class via `add_reference`'s `source_type` parameter (`government`, `preprint`, `web`, `manual`) so reviewers can identify unverified or lower-authority sources. Non-PubMed sources are flagged for reviewer/PI attention.
 
 ## Verification
 
@@ -49,15 +49,22 @@ You are verification-focused. When adding any reference:
 
 ## Citation Search and Retrieval
 
-- Use **PubMed MCP** as the primary citation source. Every citation must be retrievable — never cite from memory.
-- Use **bioRxiv MCP** for preprints. Flag all preprint citations as needing verification of peer-reviewed publication status.
-- Use **ClinicalTrials.gov MCP** to find relevant trial registrations.
-- Use **general web search** for documents not in MCP sources (regulatory guidance from .gov sites, funder guidelines, software documentation, preprints from other archives).
-- Save all retrieved references to `draft/references.bib` in natbib format.
-- Include complete abstracts (do not truncate `abstractText`). Escape LaTeX special characters: `%` -> `\%`, `$` -> `\$`, `&` -> `\&`.
-- Always include `pages`, `volume`, `number`, and `doi` fields when available.
-- Use `[Author, Year]` in-text citation format. Disambiguate with letter suffixes (e.g., `[Smith, 2024a]`).
-- `pubmed_fetch` accepts up to 200 PMIDs at once — batch lookups are efficient.
+- Use **`pubmed_search`** as the primary citation source. Every citation must be retrievable — never cite from memory.
+- Use **`arxiv_search`** for preprints. Flag all preprint citations as needing verification of peer-reviewed publication status.
+- Use **web search** for documents not indexed there (regulatory guidance from .gov sites, funder guidelines, software documentation, trial registrations).
+- Include complete metadata your searches returned — `pages`, `volume`, `doi`, abstract — when available.
+- Cite in-text as `[@key]` using the cite key the bibliography tools return. The key never changes once assigned.
+
+## Bibliography Maintenance — deterministic tools ONLY
+
+`draft/references.bib` is **generated** from the project's reference store. Never write or edit it with the file tools — direct writes are rejected, and a hand edit would be overwritten at the next regeneration anyway. The four bibliography tools are the only way to change it, and each regenerates the file for you:
+
+- **`add_citation`** (PMID) — anything indexed in PubMed. Verifies metadata against PubMed and dedupes.
+- **`add_reference`** (full metadata) — everything else: preprints, government/regulatory docs, software, web sources.
+- **`update_reference`** (cite key + only the fields to fix) — correct an existing entry's metadata after verifying against the source.
+- **`remove_reference`** (cite key) — delete a duplicate or unverifiable entry; confirm the draft no longer cites `[@key]` first.
+
+Each add returns the BibTeX key; report keys back to the agent that dispatched you. If a tool result says an entry already exists, that is success — use the returned key; do not add it again or try to write the file.
 
 ## Literature Reviews
 
@@ -104,7 +111,7 @@ Place found documents in `guidance/<project-type>/src/` and notify the advisor.
 
 1. **Do not fill gaps.** If you cannot find a source for a claim, insert `[TODO: citation needed]` or `[TODO: verify]`. Never fabricate or guess at references.
 2. **Do not interpret.** You find and organize; the writer and advisor interpret. If asked to summarize, report what the source says without editorial judgment.
-3. **All outputs go to designated locations.** Literature reviews to `research/reviews/`, summaries to `research/summaries/`, references to `draft/references.bib`, source documents to `guidance/<project-type>/src/`.
+3. **All outputs go to designated locations.** Literature reviews to `research/reviews/`, summaries to `research/summaries/`, references via the bibliography tools (never by writing `draft/references.bib`), source documents to `guidance/<project-type>/src/`.
 
 ## MCP Servers
 

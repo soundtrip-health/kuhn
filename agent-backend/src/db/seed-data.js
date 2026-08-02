@@ -54,6 +54,13 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { title: { type: 'string', description: 'Title of the work' }, authors: { type: 'array', items: { type: 'string' }, description: 'Author names, e.g. "Smith, Jane"' }, year: { type: 'integer', description: 'Publication year' }, entry_type: { type: 'string', description: 'BibTeX entry type', default: 'article' }, journal: { type: 'string', description: 'Journal or venue' }, doi: { type: 'string', description: 'DOI if available' }, url: { type: 'string', description: 'URL if available' }, source_type: { type: 'string', enum: ['preprint', 'web', 'manual', 'government'], description: 'Source authority class' }, abstract: { type: 'string', description: 'Abstract or summary' }, path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' } }, required: ['title', 'authors', 'year'] },
   },
   {
+    // Issue #41: deterministic corrections to the reference store — grants the
+    // update_reference and remove_reference runtime tools. The derived .bib
+    // refuses direct file writes, so this is the only way to fix an entry.
+    slug: 'manage_references', name: 'Manage References', description: 'Correct or delete existing bibliography entries by cite key (the derived .bib file is regenerated automatically)',
+    parameterSchema: { type: 'object', properties: { cite_key: { type: 'string', description: 'Cite key of the entry' } }, required: ['cite_key'] },
+  },
+  {
     slug: 'add_comment', name: 'Add Comment', description: 'File a margin comment anchored to quoted text in a project document',
     parameterSchema: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path of the document' }, quote: { type: 'string', description: 'Exact target text copied verbatim from the current file' }, body: { type: 'string', description: 'The comment body' } }, required: ['path', 'quote', 'body'] },
   },
@@ -86,7 +93,7 @@ export const ASSIGNMENTS = [
   ['pm', 'file_list'], ['writer', 'file_list'], ['ra', 'file_list'], ['advisor', 'file_list'], ['reviewer', 'file_list'], ['analyst', 'file_list'],
   ['pm', 'file_move'],
   ['ra', 'pubmed_search'], ['ra', 'arxiv_search'],
-  ['ra', 'add_citation'], ['writer', 'add_citation'], ['ra', 'add_reference'],
+  ['ra', 'add_citation'], ['writer', 'add_citation'], ['ra', 'add_reference'], ['ra', 'manage_references'],
   ['ra', 'web_search'], ['advisor', 'web_search'],
   // Org knowledge library (story 006-003): the four roles that consume
   // guidance content. pm/analyst excluded by design — see the story's Notes.
