@@ -10,11 +10,15 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let exec; let querySync; let insertReference; let exportBibtex; let listProjectReferences;
+let updateReferenceFields; let deleteReference; let getReferenceByKey;
 let PROJECT_ID;
 
 beforeAll(async () => {
   ({ exec, querySync } = await import('../db.js'));
-  ({ insertReference, exportBibtex, listProjectReferences } = await import('./references.js'));
+  ({
+    insertReference, exportBibtex, listProjectReferences,
+    updateReferenceFields, deleteReference, getReferenceByKey,
+  } = await import('./references.js'));
   exec(readFileSync(resolve(__dirname, 'schema.sql'), 'utf-8'));
 });
 
@@ -96,5 +100,61 @@ describe('exportBibtex', () => {
 
   it('returns an empty string for a project with no references', async () => {
     expect(await exportBibtex(PROJECT_ID)).toBe('');
+  });
+});
+
+describe('updateReferenceFields / deleteReference (issue #41)', () => {
+  it('updates only the provided fields and keeps the cite key', async () => {
+    insertReference(PROJECT_ID, lincoff());
+    const row = updateReferenceFields(PROJECT_ID, 'lincoff2024', {
+      pages: '2221-2232', journal: 'N Engl J Med.', sourceType: 'pubmed',
+    });
+    expect(row.cite_key).toBe('lincoff2024');
+    expect(row.pages).toBe('2221-2232');
+    expect(row.journal).toBe('N Engl J Med.');
+    expect(row.title).toBe(lincoff().title); // untouched
+    const bib = await exportBibtex(PROJECT_ID);
+    expect(bib).toContain('@article{lincoff2024,');
+    expect(bib).toContain('2221--2232');
+  });
+
+  it('normalizes DOI/PMID corrections and recomputes identity_status', async () => {
+    insertReference(PROJECT_ID, { title: 'Weak entry', authors: ['Jones, Ann'], year: 2021 });
+    const before = await getReferenceByKey(PROJECT_ID, 'jones2021');
+    expect(before.identity_status).toBe('weak');
+    const row = updateReferenceFields(PROJECT_ID, 'jones2021', { doi: '10.1000/XYZ.,' });
+    expect(row.doi).toBe('10.1000/xyz');
+    expect(row.identity_status).toBe('strong');
+  });
+
+  it('recomputes the weak-id hash when title/authors/year change', () => {
+    insertReference(PROJECT_ID, { title: 'Old title', authors: ['Lee, Bo'], year: 2020 });
+    const before = querySync(
+      'SELECT weak_id_hash FROM bib_references WHERE project_id = $1', [PROJECT_ID],
+    ).rows[0].weak_id_hash;
+    updateReferenceFields(PROJECT_ID, 'lee2020', { title: 'Corrected title' });
+    const after = querySync(
+      'SELECT weak_id_hash FROM bib_references WHERE project_id = $1', [PROJECT_ID],
+    ).rows[0].weak_id_hash;
+    expect(after).not.toBe(before);
+  });
+
+  it('parses corrected authors back out of authors_json', () => {
+    insertReference(PROJECT_ID, lincoff());
+    const row = updateReferenceFields(PROJECT_ID, 'lincoff2024', {
+      authors: ['Lincoff, A Michael', 'Brown-Frandsen, Kirstine', 'Kahn, Steven E'],
+    });
+    expect(row.authors).toHaveLength(3);
+  });
+
+  it('returns null for an unknown cite key', () => {
+    expect(updateReferenceFields(PROJECT_ID, 'nope2020', { year: 2021 })).toBeNull();
+  });
+
+  it('deleteReference removes the row and reports whether one existed', async () => {
+    insertReference(PROJECT_ID, lincoff());
+    expect(deleteReference(PROJECT_ID, 'lincoff2024')).toBe(true);
+    expect(await listProjectReferences(PROJECT_ID)).toHaveLength(0);
+    expect(deleteReference(PROJECT_ID, 'lincoff2024')).toBe(false);
   });
 });

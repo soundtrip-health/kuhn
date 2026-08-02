@@ -19,7 +19,7 @@ import {
   searchProjectFiles,
   moveProjectEntry,
 } from '../storage.js';
-import { DEFAULT_BIB_PATH, upsertCitation, addReference, isDerivedBibPath } from '../citations.js';
+import { DEFAULT_BIB_PATH, upsertCitation, addReference, updateReference, removeReference, isDerivedBibPath } from '../citations.js';
 import { migrateSeenPaths } from '../db/file-activity.js';
 import { createThread, resolveQuote } from '../db/comments.js';
 import { isSuggestionPath, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
@@ -743,6 +743,64 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
     ));
   }
 
+  if (agent.tools.includes('manage_references')) {
+    // Deterministic corrections to the reference store (issue #41): the RA's
+    // alternative to hand-editing the derived .bib, which the file tools
+    // refuse. Both regenerate the bibliography file after changing the store.
+    tools.push(tool(
+      'update_reference',
+      'Correct fields of an existing bibliography entry by its cite key (metadata fixes: title, authors, year, journal, DOI, pages, ...). Only the fields you pass change; the cite key never changes, so in-text [@key] citations keep working. The bibliography file is regenerated automatically. Never fabricate metadata — only apply corrections you verified against the source.',
+      {
+        cite_key: z.string().describe('Cite key of the entry to correct (as returned by add_citation/add_reference)'),
+        title: z.string().optional().describe('Corrected title'),
+        authors: z.array(z.string()).optional().describe('Corrected author list, e.g. "Smith, Jane"'),
+        year: z.number().int().optional().describe('Corrected publication year'),
+        journal: z.string().optional().describe('Corrected journal or venue'),
+        volume: z.string().optional().describe('Corrected volume'),
+        issue: z.string().optional().describe('Corrected issue'),
+        pages: z.string().optional().describe('Corrected page range'),
+        publisher: z.string().optional().describe('Corrected publisher'),
+        doi: z.string().optional().describe('Corrected DOI'),
+        pmid: z.string().optional().describe('Corrected PubMed ID'),
+        url: z.string().optional().describe('Corrected URL'),
+        entry_type: z.string().optional().describe('Corrected BibTeX entry type (article, misc, techreport, ...)'),
+        source_type: z.enum(['pubmed', 'preprint', 'web', 'manual', 'government']).optional().describe('Corrected source authority class'),
+        abstract: z.string().optional().describe('Corrected abstract'),
+        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
+      },
+      async ({ cite_key, path, entry_type, source_type, ...rest }) => {
+        try {
+          const changes = { ...rest };
+          if (entry_type !== undefined) changes.entryType = entry_type;
+          if (source_type !== undefined) changes.sourceType = source_type;
+          const { key, bibtex } = await updateReference(projectId, cite_key, changes, path);
+          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
+          channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
+          return { content: [{ type: 'text', text: `Updated reference "${key}" and regenerated ${path}. Corrected entry:\n${bibtex}` }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `update_reference failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+    tools.push(tool(
+      'remove_reference',
+      'Delete a bibliography entry by its cite key (e.g. a duplicate or a reference that could not be verified). The bibliography file is regenerated automatically. Check that the draft no longer cites [@key] before removing.',
+      {
+        cite_key: z.string().describe('Cite key of the entry to delete'),
+        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
+      },
+      async ({ cite_key, path }) => {
+        try {
+          const { key } = await removeReference(projectId, cite_key, path);
+          channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
+          return { content: [{ type: 'text', text: `Removed reference "${key}" and regenerated ${path}.` }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `remove_reference failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+  }
+
   if (agent.tools.includes('add_comment')) {
     tools.push(tool(
       'add_comment',
@@ -982,8 +1040,9 @@ async function rejectDerivedBibWrite(projectId, path) {
   if (await isDerivedBibPath(projectId, path)) {
     throw new Error(
       `${path} is generated from the project reference store; direct edits are overwritten the next time the bibliography is regenerated. `
-      + 'Use add_citation (PubMed works) or add_reference (everything else) to add entries. '
-      + 'To correct or remove an existing entry, tell the user exactly what needs to change instead of editing the file.',
+      + 'Use add_citation (PubMed works) or add_reference (everything else) to add entries, and '
+      + 'update_reference / remove_reference to correct or delete existing ones. If you lack those '
+      + 'tools, dispatch the ra agent or tell the user exactly what needs to change.',
     );
   }
 }
