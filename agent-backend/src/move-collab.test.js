@@ -38,7 +38,7 @@ vi.mock('./db/move-paths.js', () => ({ applyMove: vi.fn((_projectId, from, to) =
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn(), migrateSeenPaths: vi.fn() }));
 vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
 
-import { handleYjsConnection, hasRoom } from './yjs-websocket.js';
+import { handleYjsConnection, hasRoom, plantMoveTombstone } from './yjs-websocket.js';
 import { publishProjectEvent } from './project-events.js';
 
 const MSG_SYNC = 0;
@@ -300,13 +300,12 @@ describe('collab rooms across a move (story 012-002, AC 3)', () => {
     await roundTrip(decoyA, decoyB, ' — still live');
   });
 
-  it('KNOWN GAP: a client that ignores 4002 resurrects the old room, but cannot reach the new one', async () => {
-    // The server has no tombstone for a moved room: handleYjsConnection's
-    // getOrCreateDoc recreates any name on demand, so a tab that predates this
-    // story (y-websocket reconnects on ANY close code unless disconnect() is
-    // called) comes back to the old room and re-uploads its state. This test
-    // characterises that rather than asserting a guarantee the code does not
-    // make — see the handoff on the story record.
+  it('a client that ignores 4002 is bounced by the tombstone, never given a live room (story 012-004)', async () => {
+    // Formerly the KNOWN GAP characterisation: getOrCreateDoc recreates any
+    // name on demand, so a tab that ignores 4002 (any pre-012 tab —
+    // y-websocket reconnects on every close unless disconnect() is called)
+    // used to come straight back into the old name and edit a ghost. The
+    // tombstone turns that reconnect into a replay of the eviction verdict.
     const STORAGE = '# Discussion\n\nEffect size held.\n';
     const oldRoom = 'project-925/draft/main.md';
     const newRoom = 'project-925/archive/main.md';
@@ -326,22 +325,71 @@ describe('collab rooms across a move (story 012-002, AC 3)', () => {
     seedFromStorage([compliant], STORAGE);
     await waitFor(() => text(compliant) === STORAGE, 'the new room to seed');
 
-    // Non-compliant client: same doc, same room name, straight back in.
+    // Non-compliant client: same doc, same room name, straight back at the
+    // old name — refused with the same verdict the eviction gave, and no
+    // room comes into being behind it.
     const stubborn = join(oldRoom, b.doc);
     await stubborn.ready;
-    type(stubborn, 'STALE EDIT');
-    const witness = join(oldRoom);
-    await witness.ready;
-    expect(witness.grant).toBe(false); // the old room is back, with stubborn in it
-    await waitFor(() => text(witness).includes('STALE EDIT'), 'the resurrected room to sync');
-    expect(hasRoom(oldRoom)).toBe(true);
+    expect(stubborn.closed).toEqual({ code: 4002, reason: 'archive/main.md' });
+    expect(stubborn.grant).toBe(null); // never admitted, no seed grant sent
+    expect(hasRoom(oldRoom)).toBe(false);
 
-    // The containment that DOES hold: the resurrected room is a separate room.
-    // Nothing written there can reach — or duplicate into — the moved document.
+    // The moved document never sees any of it.
     const second = join(newRoom);
     await second.ready;
     await roundTrip(compliant, second, 'live');
     expect(text(compliant)).toBe(`${STORAGE}live`);
-    expect(text(compliant)).not.toContain('STALE EDIT');
+  });
+
+  it('bounces a descendant room that was idle at eviction time (story 012-004)', async () => {
+    // A folder move can re-key paths whose rooms are not live, so eviction
+    // never sees them — the prefix tombstone is what covers the difference.
+    // No room exists anywhere in this test until the final join.
+    publishMove(926, 'sources', 'archive/sources');
+
+    const late = join('project-926/sources/protocol.md');
+    await late.ready;
+    expect(late.closed).toEqual({ code: 4002, reason: 'archive/sources/protocol.md' });
+    expect(hasRoom('project-926/sources/protocol.md')).toBe(false);
+  });
+
+  it('a move back inside the window makes the returned-to name joinable again (story 012-004)', async () => {
+    publishMove(927, 'draft/main.md', 'archive/main.md');
+    const bounced = join('project-927/draft/main.md');
+    await bounced.ready;
+    expect(bounced.closed?.code).toBe(4002);
+
+    publishMove(927, 'archive/main.md', 'draft/main.md');
+    const back = join('project-927/draft/main.md');
+    await back.ready;
+    expect(back.closed).toBe(null);
+    expect(back.grant).toBe(true); // a fresh room, seeded from storage as usual
+    // …and the vacated name now bounces toward the returned document.
+    const stale = join('project-927/archive/main.md');
+    await stale.ready;
+    expect(stale.closed).toEqual({ code: 4002, reason: 'draft/main.md' });
+  });
+
+  it('a new file created at the old name clears the tombstone (story 012-004)', async () => {
+    publishMove(928, 'draft/notes.md', 'archive/notes.md');
+    publishProjectEvent(928, { type: 'file_change', kind: 'create', path: 'draft/notes.md' });
+
+    const fresh = join('project-928/draft/notes.md');
+    await fresh.ready;
+    expect(fresh.closed).toBe(null);
+    expect(fresh.grant).toBe(true);
+  });
+
+  it('an expired tombstone stops bouncing (story 012-004)', async () => {
+    publishMove(929, 'draft/old.md', 'archive/old.md');
+    // Overwrite the entry the move planted with an already-short TTL — the
+    // production TTL is minutes, which a real-time test cannot wait out.
+    plantMoveTombstone('project-929/draft/old.md', 'archive/old.md', 1);
+    await new Promise((ok) => { setTimeout(ok, 10); });
+
+    const late = join('project-929/draft/old.md');
+    await late.ready;
+    expect(late.closed).toBe(null);
+    expect(late.grant).toBe(true);
   });
 });

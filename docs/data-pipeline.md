@@ -119,6 +119,12 @@ non-members get 404s (existence is not leaked).
   of treating the document as deleted (story 012-002). The reason is computed
   per room, and blanked when the path exceeds the 123-byte WebSocket close
   limit; a client that gets a blank reason parks the tab rather than guessing.
+  A moved room name is also **tombstoned** (story 012-004): joins at or under
+  the moved prefix are bounced with the same 4002 + new-path verdict instead
+  of recreating an empty room, so a client that ignores the close (any
+  pre-012 tab) cannot resurrect the old path and edit a ghost. Tombstones are
+  in-memory and cleared the moment the path is live again (a move back, or
+  any file event at it); a 5-minute TTL reaps the rest.
   Clients always build a **fresh `Y.Doc` per room join** — reusing one, or
   mutating `provider.roomname`, reintroduces the duplicate-doc merge hazard.
 - **Event feeds**: project/org SSE hubs are in-memory pub/sub; only

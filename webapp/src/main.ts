@@ -32,6 +32,7 @@ import {
   setActiveFile,
   type FileChange,
 } from './files';
+import { movedDocAction } from './move-follow';
 import { findMarkdownPath, isUnder, movedPath } from './tree-state';
 import { refreshCommentsSoon } from './comments';
 import { initHistoryButton } from './history-panel';
@@ -185,16 +186,11 @@ async function switchToActiveProject(): Promise<void> {
     // is the NEW path, which by definition never matches the open one.
     if (change.kind === 'moved') {
       const open = openTarget || currentDocumentPath();
-      if (!open) return;
-      if (!change.from) {
-        // Defensive: a lossy channel can deliver 'moved' without the old path.
-        // Computing a target from a missing `from` would be a guess, so fall
-        // back to inspecting the tree instead.
-        void followMoveBlind(projectId, open, change.path);
-        return;
-      }
-      const next = movedPath(open, change.from, change.path);
-      if (next != null) retargetOpenDoc(next);
+      // The decision (incl. the missing-`from` lossy-channel fallback) is
+      // pure and unit-tested in move-follow.ts (story 012-004).
+      const action = movedDocAction(open, change);
+      if (action.kind === 'follow-blind') void followMoveBlind(projectId, open, change.path);
+      else if (action.kind === 'retarget') retargetOpenDoc(action.to);
       return;
     }
     if (change.kind === 'delete') {

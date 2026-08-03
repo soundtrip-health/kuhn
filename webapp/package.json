@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs && node scripts/collab-check.mjs",
     "editor-check": "node scripts/editor-check.mjs",
@@ -23,7 +25,8 @@
   "devDependencies": {
     "playwright": "^1.60.0",
     "typescript": "~6.0.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",

@@ -23,7 +23,10 @@ import { config } from './config.js';
 import { recordFileEvent } from './db/file-activity.js';
 import { applyMove } from './db/move-paths.js';
 import { commitNow, scheduleCommit } from './history.js';
-import { CLOSE_ROOM_MOVED, evictRoom, evictRoomsUnder } from './yjs-websocket.js';
+import {
+  CLOSE_ROOM_MOVED, evictRoom, evictRoomsUnder,
+  plantMoveTombstone, clearMoveTombstonesUnder,
+} from './yjs-websocket.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
 const subscribers = new Map();
@@ -151,10 +154,19 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
           closeCode: CLOSE_ROOM_MOVED,
           closeReason: movedTo,
         });
+        // Story 012-004: eviction only reaches rooms that are live right now.
+        // The tombstone catches the rest — a non-compliant reconnect, or a
+        // descendant room that was idle at eviction time — and bounces them
+        // with the same 4002 + new-path verdict. (It also un-tombstones the
+        // destination, which makes a move back inside the window joinable.)
+        plantMoveTombstone(oldPrefix, movedTo);
       } else {
         evictRoom(`project-${pid}/${event.path}`, {
           closeConnections: event.kind === 'delete',
         });
+        // A fresh file event at a tombstoned path proves the path is live
+        // again (a new file created at the old name): stop bouncing joins.
+        clearMoveTombstonesUnder(`project-${pid}/${event.path}`);
       }
     } catch (err) {
       console.error('[project-events] Failed to evict collab room:', err);

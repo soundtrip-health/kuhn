@@ -53,6 +53,7 @@ import {
 } from './comments';
 import { refreshTree } from './files';
 import { icon } from './icons';
+import { performRetarget, resolveMovedRoom } from './move-follow';
 import { notify, setDocument, setSaveState } from './status';
 import { attachSuggestions, detachSuggestions, suggestionHunksPlugin } from './suggestion-hunks';
 import { toast } from './toast';
@@ -641,74 +642,54 @@ export function cancelPendingSave(): void {
 // ---- Moved documents — story 012-002 ---------------------------------------
 
 /**
- * Resolve a 4002 (room moved) close into a retarget. The close reason is the
- * only retarget signal that survives a dropped project feed, so we act on it —
- * but never blindly: a target we cannot read back (a folder's path, a stale or
- * blanked reason) would otherwise be conjured into existence by the next save,
- * so it parks the tab instead. Returning to rich mode is deliberate: a moved
- * document reopens through openDocument, which owns the mode.
+ * Resolve a 4002 (room moved) close into a retarget or a parked tab — the
+ * decision rules and their rationale are in move-follow.ts resolveMovedRoom.
+ * Returning to rich mode is deliberate: a moved document reopens through
+ * openDocument, which owns the mode.
  */
 async function followMovedRoom(reason: string): Promise<void> {
-  const projectId = currentProjectId;
-  const from = currentPath;
-  // Stop the debounce now — until the new path is known, a save could only
-  // land on the path that just went away. Dirtiness is also content-based, so
-  // cancelling here does not hide the buffer from retargetDocument.
-  cancelPendingSave();
-  const next = reason.trim();
-  if (!next || next === from) {
-    strandMovedDocument();
-    return;
-  }
-  let exists = false;
-  try {
-    exists = (await readTextFile(projectId, next)) != null;
-  } catch {
-    exists = false;
-  }
-  if (currentProjectId !== projectId || currentPath !== from) return; // the feed got there first
-  if (!exists) {
-    strandMovedDocument();
-    return;
-  }
-  // Through main.ts, not straight to retargetDocument: the tree's active row
-  // and the workspace's active document would otherwise stay on the dead path.
-  if (onRetarget) onRetarget(next);
-  else await retargetDocument(next); // no host wired (tests) — editor-only
+  // The decision logic (and its rationale) lives in move-follow.ts, where it
+  // is unit-tested (story 012-004); this is the host adapter over editor state.
+  await resolveMovedRoom({
+    projectId: () => currentProjectId,
+    currentPath: () => currentPath,
+    readTextFile,
+    // Dirtiness is content-based, so cancelling the debounce here does not
+    // hide the buffer from retargetDocument.
+    cancelPendingSave,
+    strand: strandMovedDocument,
+    // Through main.ts, not straight to retargetDocument: the tree's active row
+    // and the workspace's active document would otherwise stay on the dead path.
+    retarget: (next) => (onRetarget ? onRetarget(next) : retargetDocument(next)),
+  }, reason);
 }
 
 /**
- * Follow the open document to `path` after it moved out from under us. Two
- * rules, both load-bearing:
- *
- * 1. Retarget FIRST, decide clean/dirty SECOND. The autosave debounce can fire
- *    between the fs rename and this signal arriving, so `currentPath` moves
- *    before anything else is evaluated — an in-flight save then lands on the
- *    new path instead of resurrecting the old one.
- * 2. Never leave the tab offline. The 4002 handler disconnected the provider
- *    for good and `openDocument` is the only site that builds one, so anything
- *    short of a full reopen leaves a second, room-less writer autosaving the
- *    same path against its collaborators. The reopen is also what gives us a
- *    FRESH Y.Doc for the new room: mutating provider.roomname would leave the
- *    BroadcastChannel pinned to the dead room (it is frozen at construction)
- *    and carry the stale lineage across — the 2× duplicate-doc merge hazard.
- *
- * Unsaved edits ride across twice over: written to the new path up front (the
- * reopen below is a no-op if another retarget for the same path is already in
- * flight) and re-applied over the room's replay once it syncs.
+ * Follow the open document to `path` after it moved out from under us. The
+ * two load-bearing rules (retarget FIRST so a racing autosave lands on the
+ * new path; full reopen so the new room gets a FRESH Y.Doc and provider) are
+ * specified and tested in move-follow.ts performRetarget — this adapter
+ * supplies the editor state. One host-specific note: openDocument is the only
+ * site that builds a provider, and mutating provider.roomname instead would
+ * leave the BroadcastChannel pinned to the dead room (frozen at construction).
  */
 export async function retargetDocument(path: string): Promise<void> {
   if (!currentPath || path === currentPath) return;
   const projectId = currentProjectId;
-  currentPath = path; // rule 1 — before anything reads it
-  setDocument(path);
-  const pathEl = document.getElementById('editor-path');
-  if (pathEl) pathEl.textContent = path.replace(/\//g, ' / ');
-  const pending = hasUnsavedChanges() ? currentMarkdown() : null;
-  cancelPendingSave();
-  movedAway = false; // we know where the document went
-  if (pending != null) await flushSave();
-  await openDocument(projectId, path, pending == null ? {} : { restore: pending });
+  await performRetarget({
+    setCurrentPath: (p) => { currentPath = p; },
+    announce: (p) => {
+      setDocument(p);
+      const pathEl = document.getElementById('editor-path');
+      if (pathEl) pathEl.textContent = p.replace(/\//g, ' / ');
+    },
+    pendingMarkdown: () => (hasUnsavedChanges() ? currentMarkdown() : null),
+    cancelPendingSave,
+    clearMovedAway: () => { movedAway = false; }, // we know where the document went
+    flushSave: () => flushSave(),
+    reopen: (p, restore) =>
+      openDocument(projectId, p, restore == null ? {} : { restore }),
+  }, path);
 }
 
 /**
