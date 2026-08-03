@@ -23,6 +23,28 @@ const MSG_AWARENESS = 1;
 // both seed it. y-websocket reserves 0-3; 64 leaves headroom for upstream.
 const MSG_SEED_GRANT = 64;
 
+/** The room's file was removed (story 038). Clients stop reconnecting. */
+export const CLOSE_ROOM_EVICTED = 4001;
+/**
+ * The room's file was moved (story 012-002). Clients stop reconnecting and
+ * re-open at the new path, which the close reason carries when it fits —
+ * mirrored in webapp/src/editor.ts.
+ */
+export const CLOSE_ROOM_MOVED = 4002;
+
+// A WebSocket close frame caps the reason at 123 UTF-8 BYTES and ws.close()
+// throws RangeError past it. Project paths can be long and non-ASCII, so
+// measure bytes, not characters, and drop the reason rather than let one
+// oversized path abort the eviction loop for every other connection. The
+// reason is a hint only: the SSE 'moved' event is the authoritative carrier
+// of the new path (story 012-002).
+const MAX_CLOSE_REASON_BYTES = 123;
+
+function safeReason(reason) {
+  if (typeof reason !== 'string' || reason === '') return '';
+  return Buffer.byteLength(reason, 'utf8') > MAX_CLOSE_REASON_BYTES ? '' : reason;
+}
+
 /**
  * @typedef {Object} DocEntry
  * @property {Y.Doc} doc
@@ -32,6 +54,72 @@ const MSG_SEED_GRANT = 64;
 
 /** @type {Map<string, DocEntry>} */
 const docs = new Map();
+
+// --- Move tombstones (story 012-004) ----------------------------------------
+// getOrCreateDoc recreates any room name on demand, so a client that ignores
+// close code 4002 (any pre-012 tab: y-websocket reconnects on every close
+// unless disconnect() is called) would rejoin the old name and silently edit a
+// ghost. A tombstone remembers, for a grace window, that a room-name PREFIX
+// was moved, and bounces joins with 4002 + the room's own new path — the same
+// verdict the eviction gave, so the compliant path is identical either way.
+//
+// Prefix-based (not per-room) because a folder move re-keys descendants that
+// may have no live room to enumerate at eviction time. In-memory on purpose:
+// a restart drops every room anyway, so there is no stale client state a
+// persisted tombstone would protect against (see story 038).
+//
+// The TTL is memory hygiene, not the correctness boundary — a path made
+// legitimately live again is cleared immediately (a move back via
+// plantMoveTombstone, any other file event via clearMoveTombstonesUnder).
+const TOMBSTONE_TTL_MS = 5 * 60_000;
+
+/** @type {Map<string, { to: string, expires: number }>} — old room-name prefix → workspace-relative destination */
+const moveTombstones = new Map();
+
+/**
+ * Drop every tombstone at or under `prefix` (same `+ '/'` predicate as
+ * evictRoomsUnder). Called when the path is live again: a file event at it,
+ * or a move whose destination lands on it.
+ */
+export function clearMoveTombstonesUnder(prefix) {
+  for (const key of [...moveTombstones.keys()]) {
+    if (key === prefix || key.startsWith(`${prefix}/`)) moveTombstones.delete(key);
+  }
+}
+
+/**
+ * Remember that the room-name prefix `oldPrefix` (e.g. `project-7/draft`)
+ * moved to the workspace-relative path `to` (e.g. `archive/draft`). Joins at
+ * or under the prefix are bounced with 4002 + their own new path until the
+ * tombstone expires or the old path becomes live again.
+ *
+ * A chain of moves within the window (a→b, b→c) resolves by hopping: the
+ * client bounced from a re-opens at b and is bounced again to c.
+ */
+export function plantMoveTombstone(oldPrefix, to, ttlMs = TOMBSTONE_TTL_MS) {
+  moveTombstones.set(oldPrefix, { to, expires: Date.now() + ttlMs });
+  // The destination is live by definition — a move back inside the window
+  // must not leave the returned-to name refusing joins.
+  const projectPart = oldPrefix.slice(0, oldPrefix.indexOf('/') + 1);
+  clearMoveTombstonesUnder(projectPart + to);
+}
+
+/**
+ * The workspace-relative redirect for a room name covered by a live
+ * tombstone, or null. Expired tombstones are reaped as they are met.
+ */
+function matchMoveTombstone(roomName) {
+  const now = Date.now();
+  for (const [prefix, t] of moveTombstones) {
+    if (t.expires <= now) {
+      moveTombstones.delete(prefix);
+      continue;
+    }
+    if (roomName === prefix) return t.to;
+    if (roomName.startsWith(`${prefix}/`)) return t.to + roomName.slice(prefix.length);
+  }
+  return null;
+}
 
 function getOrCreateDoc(name) {
   if (docs.has(name)) return docs.get(name);
@@ -90,15 +178,23 @@ function getOrCreateDoc(name) {
  * closed with 4001; without it the room is dropped only when idle, so live
  * collaborators are never kicked by a mere overwrite — their open editor
  * reconciles through the file_change feed instead.
+ *
+ * A move (story 012-002) is the same eviction with a different verdict for
+ * the client: `closeCode` 4002 plus the new path as `closeReason` tells it
+ * to re-open there rather than treat the document as gone.
  * @returns {boolean} whether a room was evicted
  */
-export function evictRoom(name, { closeConnections = false } = {}) {
+export function evictRoom(
+  name,
+  { closeConnections = false, closeCode = CLOSE_ROOM_EVICTED, closeReason = 'Document removed' } = {},
+) {
   const entry = docs.get(name);
   if (!entry) return false;
   if (entry.conns.size > 0 && !closeConnections) return false;
+  const reason = safeReason(closeReason);
   for (const ws of entry.conns) {
     try {
-      ws.close(4001, 'Document removed');
+      ws.close(closeCode, reason);
     } catch {
       // a dying socket must not block eviction
     }
@@ -107,6 +203,36 @@ export function evictRoom(name, { closeConnections = false } = {}) {
   docs.delete(name); // out of the map before destroy so no update rebroadcasts
   entry.doc.destroy();
   return true;
+}
+
+/**
+ * Evict a room subtree: the room named `prefix` itself plus every room under
+ * `prefix + '/'` (story 012-002 — a folder move re-keys every descendant, and
+ * a room named for a path that no longer exists must not survive).
+ *
+ * The `+ '/'` is load-bearing: a bare startsWith would also match
+ * 'project-7/directive.md' when evicting 'project-7/dir'. Same predicate as
+ * the SQL prefix idiom in db/file-activity.js.
+ *
+ * `closeReason` may be a function of the room name. It has to be for a folder
+ * move: every descendant room needs its OWN new path in the close frame, not
+ * the folder's. Passing the folder's destination to all of them would tell the
+ * client holding `project-7/dir/a.md` that its document is now the directory
+ * `archive/dir`, and it would follow that to a path that is not a file.
+ * @returns {number} how many rooms were evicted
+ */
+export function evictRoomsUnder(prefix, opts = {}) {
+  let evicted = 0;
+  const { closeReason } = opts;
+  // Snapshot the keys: evictRoom mutates `docs` as we go.
+  for (const name of [...docs.keys()]) {
+    if (name !== prefix && !name.startsWith(`${prefix}/`)) continue;
+    const perRoom = typeof closeReason === 'function'
+      ? { ...opts, closeReason: closeReason(name) }
+      : opts;
+    if (evictRoom(name, perRoom)) evicted += 1;
+  }
+  return evicted;
 }
 
 /** Test hook: does a room currently exist in memory? */
@@ -137,6 +263,15 @@ export function handleYjsConnection(ws, req) {
 
   if (!roomName) {
     ws.close(4000, 'Missing room name');
+    return;
+  }
+
+  // Story 012-004: a moved room name is not recreated on demand — the join is
+  // refused with the same 4002 + new-path verdict the eviction gave, so a
+  // non-compliant reconnect cannot resurrect the old room and edit a ghost.
+  const redirect = matchMoveTombstone(roomName);
+  if (redirect !== null) {
+    ws.close(CLOSE_ROOM_MOVED, safeReason(redirect));
     return;
   }
 

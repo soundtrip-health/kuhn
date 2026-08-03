@@ -17,7 +17,7 @@ Each epic is a directory containing an `index.md` (overview) and a `stories/` su
 | 009 | [Agent Depth & Cost Control](009-agent-depth-and-cost/index.md) | Draft — roadmap priority #2 |
 | 010 | [Collaboration & Org Readiness](010-collab-and-org-readiness/index.md) | Draft — roadmap priority #3 |
 | 011 | [Multi-Tenant Orgs & Administration](011-multi-tenant-orgs/index.md) | Ready — issue #46; builds on 010-003 |
-| 012 | [Folders & File Organization](012-folders-and-file-organization/index.md) | Ready — issue #47 |
+| 012 | [Folders & File Organization](012-folders-and-file-organization/index.md) | **In progress** — issue #47; branch `epic-012-folders` |
 | 013 | [External Review via Magic Links](013-external-review/index.md) | Ready — issue #48; builds on 010-003 + 008-004 |
 
 ## Delivery plan — issues #46/#47/#48 track (2026-08-02)
@@ -30,6 +30,12 @@ of epic 010 because #46–#48 are direct user asks.
 (`moved` event + path-consumer updates) → 012-001 tree UI shipping move
 against it → 012-003 verification sweep. Doing 002 first avoids shipping a
 move UI that orphans comments.
+
+> **Status 2026-08-03:** 012-002 done, 012-001 code-complete but still
+> `in-progress` (its browser check has never been run). Review added 012-004
+> and 012-005. Branch `epic-012-folders` is 2 commits ahead of `main`,
+> unpushed, no PR. Resume instructions are in the
+> [epic index](012-folders-and-file-organization/index.md#current-state--picking-this-up-fresh-2026-08-03).
 
 **Phase 2 — Story 010-003 (roles & permissions), the keystone.** Pulled ahead
 of the rest of epic 010: it defines owner/editor/viewer, the enforcement

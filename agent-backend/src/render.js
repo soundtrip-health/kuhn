@@ -2,14 +2,17 @@
 // markdown → Typst (Pandoc) → PDF (Typst), exports are straight Pandoc runs.
 // Everything executes through the story-018 sandbox helpers — never
 // Typst/Pandoc in the backend process. Citations resolve via Pandoc citeproc
-// against the bibliography sitting next to the source file.
+// against the project's one canonical bibliography (DEFAULT_BIB_PATH),
+// materialized from the reference DB — never a bib "next to the source",
+// which would scatter derived copies into every folder rendered from
+// (story 012-003).
 
 import { createHash } from 'node:crypto';
 import { dirname, basename } from 'node:path';
 
 import { pandocConvert, renderTypstPdf } from './sandbox.js';
 import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } from './storage.js';
-import { materializeBib } from './db/references.js';
+import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
 
 export const EXPORT_FORMATS = {
   docx: { outputName: 'export.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
@@ -24,12 +27,6 @@ const PDF_CACHE_MAX = 20;
 // Concurrent renders of identical content share one run: the temp .typ name
 // is derived from the hash, so parallel runs would clobber each other's file.
 const inFlight = new Map();
-
-/** Bibliography convention: references.bib next to the source document. */
-function bibPathFor(sourcePath) {
-  const dir = dirname(sourcePath);
-  return dir === '.' ? 'references.bib' : `${dir}/references.bib`;
-}
 
 async function readIfExists(projectId, relPath) {
   try {
@@ -57,9 +54,11 @@ function pandocArgs(bibPath, hasBib) {
  */
 export async function renderPdf(projectId, sourcePath) {
   const source = await readProjectFile(projectId, sourcePath); // throws not_found early
-  const bibPath = bibPathFor(sourcePath);
+  const bibPath = DEFAULT_BIB_PATH;
   // References live in the DB; regenerate the .bib Pandoc reads so it always
-  // reflects the canonical store (a no-op when the project has no references).
+  // reflects the canonical store (a no-op when the project has no references —
+  // a hand-authored bib at the canonical path is then read as-is, and one
+  // anywhere else is ignored by design: users are steered to the RA/DB).
   await materializeBib(projectId, bibPath).catch(() => {});
   const bib = await readIfExists(projectId, bibPath);
 
@@ -112,7 +111,7 @@ export async function exportDocument(projectId, sourcePath, format) {
     throw new RangeError(`Unsupported export format: ${format}`);
   }
   await readProjectFile(projectId, sourcePath); // throws not_found early
-  const bibPath = bibPathFor(sourcePath);
+  const bibPath = DEFAULT_BIB_PATH;
   await materializeBib(projectId, bibPath).catch(() => {});
   const hasBib = (await readIfExists(projectId, bibPath)) != null;
 

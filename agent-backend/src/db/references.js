@@ -203,6 +203,24 @@ export function deleteReference(projectId, citeKey) {
   return rows.length > 0;
 }
 
+/**
+ * Where the project's derived references.bib lives. One canonical path,
+ * shared by the citation tools (which default to it) and render/export
+ * (which materialize and read it here regardless of where the source
+ * document sits) — the DB is the source of truth and this file is its
+ * readout, so there is exactly one of it. (Story 012-003.)
+ */
+export const DEFAULT_BIB_PATH = 'draft/references.bib';
+
+// Shown at the top of the materialized .bib — the file opens read-write in
+// the editor's text view, so the provenance warning has to live in the file.
+const BIB_HEADER = `% Generated from this project's reference database — do not edit by hand.
+% This file is refreshed on every render and export, so direct edits are
+% overwritten. To add, change, or remove references, ask the Research
+% Assistant (RA) agent.
+
+`;
+
 /** Render a project's references as BibTeX text (sorted by cite key). */
 export async function exportBibtex(projectId) {
   const refs = await listProjectReferences(projectId);
@@ -216,10 +234,10 @@ export async function exportBibtex(projectId) {
  * artifact; this is the single place that regenerates it.
  * @returns {Promise<boolean>} true if any references were written
  */
-export async function materializeBib(projectId, bibPath) {
+export async function materializeBib(projectId, bibPath = DEFAULT_BIB_PATH) {
   const text = await exportBibtex(projectId);
   if (!text.trim()) return false;
-  await writeProjectFile(projectId, bibPath, text);
+  await writeProjectFile(projectId, bibPath, BIB_HEADER + text);
   return true;
 }
 

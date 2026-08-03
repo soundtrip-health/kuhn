@@ -54,6 +54,15 @@ or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
 (`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002).
 
+**The local data directory is disposable.** There is no production data in a
+dev checkout: every project under `data/` is a test project. Delete
+`data/db/kuhn.sqlite` and `data/files/` whenever it is convenient — the backend
+reapplies `schema.sql` and re-seeds agents/tools on startup — and create,
+modify or delete projects freely. The token-free check scripts write into
+`projects[0]` by design (override with `PROJECT_ID`); that needs no permission
+and no warning. They still purge their own fixtures, only so that repeated runs
+stay readable.
+
 ### Webapp (`webapp/`) — port 5174 (pinned)
 
 ```bash

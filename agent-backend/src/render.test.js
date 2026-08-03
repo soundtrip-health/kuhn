@@ -5,13 +5,14 @@ import { join } from 'node:path';
 
 vi.mock('./db.js', () => ({
   query: vi.fn(async (_sql, [id]) => ({
-    rows: Number(id) === 1 ? [{ root_path: null }] : [],
+    rows: [1, 2].includes(Number(id)) ? [{ root_path: null }] : [],
   })),
 }));
 
 // References live in the DB; render materializes the .bib from it. These tests
 // drive the .bib via on-disk fixtures, so stub materialization to a no-op.
 vi.mock('./db/references.js', () => ({
+  DEFAULT_BIB_PATH: 'draft/references.bib',
   materializeBib: vi.fn(async () => false),
 }));
 
@@ -38,7 +39,13 @@ beforeAll(async () => {
   await mkdir(join(root, '1', 'draft'), { recursive: true });
   await writeFile(join(root, '1', 'draft', 'main.md'), '# Hello [@key]\n');
   await writeFile(join(root, '1', 'draft', 'references.bib'), '@article{key, title={T}}\n');
-  await writeFile(join(root, '1', 'nobib.md'), '# Plain\n');
+  // A document nested away from draft/ — must still cite against the one
+  // canonical bib (story 012-003), with the temp .typ staged next to itself.
+  await mkdir(join(root, '1', 'notes', 'sub'), { recursive: true });
+  await writeFile(join(root, '1', 'notes', 'sub', 'deep.md'), '# Deep [@key]\n');
+  // Project 2 has no bibliography anywhere.
+  await mkdir(join(root, '2'), { recursive: true });
+  await writeFile(join(root, '2', 'nobib.md'), '# Plain\n');
 });
 
 afterAll(async () => {
@@ -81,8 +88,21 @@ describe('renderPdf', () => {
     expect(third.cached).toBe(false);
   });
 
-  it('omits citeproc when there is no bibliography next to the source', async () => {
-    await renderPdf(1, 'nobib.md');
+  it('cites a nested document against the canonical bibliography (012-003)', async () => {
+    await renderPdf(1, 'notes/sub/deep.md');
+    const [, , , pandocArgs] = pandocConvert.mock.calls[0];
+    expect(pandocArgs).toContain('--citeproc');
+    expect(pandocArgs).toContain('--bibliography=/work/draft/references.bib');
+    // The temp .typ stays next to its source so relative sibling paths resolve.
+    const [, typPath] = renderTypstPdf.mock.calls[0];
+    expect(typPath).toMatch(/^notes\/sub\/\.preview-[0-9a-f]{12}\.typ$/);
+    // No bib copy is scattered into the rendered-from folder.
+    const scattered = await readdir(join(root, '1', 'notes', 'sub'));
+    expect(scattered).not.toContain('references.bib');
+  });
+
+  it('omits citeproc when the project has no bibliography', async () => {
+    await renderPdf(2, 'nobib.md');
     const [, , , pandocArgs] = pandocConvert.mock.calls[0];
     expect(pandocArgs).not.toContain('--citeproc');
   });

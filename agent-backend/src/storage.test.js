@@ -15,6 +15,7 @@ import { config } from './config.js';
 import {
   StorageError,
   resolveProjectDir,
+  createProjectDir,
   readProjectFile,
   writeProjectFile,
   deleteProjectEntry,
@@ -132,6 +133,40 @@ describe('file operations', () => {
     await expectStorageError(moveProjectEntry(1, 'a.md', 'b.md'), 'conflict');
   });
 
+  // Story 012-002: every path-keyed consumer is re-keyed from what this
+  // returns, so it must be the canonical form, not the caller's spelling.
+  it('returns the canonical relative paths it operated on', async () => {
+    expect(await moveProjectEntry(1, './draft/main.md', 'archive//v1.md')).toEqual({
+      from: 'draft/main.md',
+      to: 'archive/v1.md',
+    });
+    // Trailing slashes on a folder move: normalize() keeps them, resolve() does not.
+    expect(await moveProjectEntry(1, 'archive/', 'old/archive/')).toEqual({
+      from: 'archive',
+      to: 'old/archive',
+    });
+    expect((await readProjectFile(1, 'old/archive/v1.md')).toString()).toContain('Hello kuhn');
+  });
+
+  it('refuses a self-move however it is spelled', async () => {
+    await expectStorageError(moveProjectEntry(1, 'draft/main.md', 'draft/main.md'), 'invalid_path');
+    await expectStorageError(moveProjectEntry(1, 'draft/main.md', './draft//main.md'), 'invalid_path');
+    // Untouched, not silently renamed onto itself.
+    expect((await readProjectFile(1, 'draft/main.md')).toString()).toContain('Hello kuhn');
+  });
+
+  it('refuses to move a folder into its own descendant, leaving no directories behind', async () => {
+    await expectStorageError(moveProjectEntry(1, 'draft', 'draft/sub/draft'), 'invalid_path');
+    const tree = await listProjectTree(1, 'draft');
+    expect(tree.map((n) => n.name)).toEqual(['main.md']);
+    // A sibling whose name merely shares the prefix is still movable.
+    await writeProjectFile(1, 'draftive.md', 'x');
+    expect(await moveProjectEntry(1, 'draftive.md', 'draft/draftive.md')).toEqual({
+      from: 'draftive.md',
+      to: 'draft/draftive.md',
+    });
+  });
+
   it('lists the tree and omits symlinks', async () => {
     await symlink(join(root, 'outside.txt'), join(root, '1', 'sneaky'));
     const tree = await listProjectTree(1);
@@ -154,6 +189,103 @@ describe('file operations', () => {
         expect.objectContaining({ path: join('draft', 'main.md'), line: 3 }),
       ]),
     );
+  });
+});
+
+// Story 012-001: the file manager can create folders, so storage needs an
+// exported directory-create. The canonical-path contract is the same one
+// moveProjectEntry established — the webapp keys tree state by path.
+describe('ancestor-is-a-file paths (story 012-005)', () => {
+  // `draft/main.md/sub` — a plausible typo, reachable from the folder UI —
+  // used to rethrow ENOTDIR bare, which the routes mapped to a 500.
+  const expectConflictNaming = async (promise, blocker) => {
+    const err = await promise.then(() => null, (e) => e);
+    expect(err, 'expected a rejection').toBeInstanceOf(StorageError);
+    expect(err.code).toBe('conflict');
+    expect(err.message).toContain(blocker);
+  };
+
+  it('mkdir under a file is a conflict naming the blocking file', async () => {
+    await expectConflictNaming(createProjectDir(1, 'draft/main.md/sub'), 'draft/main.md');
+  });
+
+  it('read through a file ancestor is a conflict naming the blocking file', async () => {
+    await expectConflictNaming(readProjectFile(1, 'draft/main.md/sub/x.md'), 'draft/main.md');
+  });
+
+  it('write through a file ancestor is a conflict, deep or shallow', async () => {
+    await expectConflictNaming(writeProjectFile(1, 'draft/main.md/x.md', 'x'), 'draft/main.md');
+    await expectConflictNaming(
+      writeProjectFile(1, 'draft/main.md/a/b/c.md', 'x'),
+      'draft/main.md',
+    );
+  });
+
+  it('does not loosen containment: traversal and symlink escapes still map as before', async () => {
+    await expectStorageError(readProjectFile(1, '../outside.txt'), 'outside_root');
+    await symlink(join(root, '2'), join(root, '1', 'sneaky'));
+    await expectStorageError(readProjectFile(1, 'sneaky/secret.md'), 'outside_root');
+  });
+});
+
+describe('createProjectDir (story 012-001)', () => {
+  it('creates nested directories in one call', async () => {
+    expect(await createProjectDir(1, 'figures/panels')).toEqual({
+      path: 'figures/panels',
+      created: true,
+    });
+    const tree = await listProjectTree(1, 'figures');
+    expect(tree).toEqual([
+      expect.objectContaining({ name: 'panels', type: 'dir', children: [] }),
+    ]);
+  });
+
+  it('returns the canonical relative path, not the caller\'s spelling', async () => {
+    expect(await createProjectDir(1, './x//y/')).toEqual({ path: 'x/y', created: true });
+  });
+
+  it('is idempotent: an existing directory is created:false, not a conflict', async () => {
+    expect((await createProjectDir(1, 'notes')).created).toBe(true);
+    expect(await createProjectDir(1, 'notes')).toEqual({ path: 'notes', created: false });
+    // An existing directory that predates the call behaves the same.
+    expect(await createProjectDir(1, 'draft')).toEqual({ path: 'draft', created: false });
+  });
+
+  it('empty directories survive a re-list (no .keep sentinel needed)', async () => {
+    await createProjectDir(1, 'empty');
+    const names = (await listProjectTree(1)).map((n) => n.name);
+    expect(names).toContain('empty');
+    const empty = (await listProjectTree(1)).find((n) => n.name === 'empty');
+    expect(empty).toMatchObject({ type: 'dir', children: [] });
+  });
+
+  it('refuses to clobber a file that already holds the path', async () => {
+    await expectStorageError(createProjectDir(1, 'draft/main.md'), 'conflict');
+    // The file is untouched.
+    expect((await readProjectFile(1, 'draft/main.md')).toString()).toContain('Hello kuhn');
+  });
+
+  it('refuses the project root however it is spelled', async () => {
+    await expectStorageError(createProjectDir(1, '.'), 'invalid_path');
+    await expectStorageError(createProjectDir(1, 'a/..'), 'invalid_path');
+  });
+
+  it('applies the same containment guarantees as its neighbours', async () => {
+    await expectStorageError(createProjectDir(1, '../escape'), 'outside_root');
+    await expectStorageError(createProjectDir(1, '/etc/kuhn'), 'outside_root');
+    await expectStorageError(createProjectDir(1, '../2/injected'), 'outside_root');
+    await expectStorageError(createProjectDir(1, '.git/hooks'), 'invalid_path');
+    await expectStorageError(createProjectDir(1, 'a\0b'), 'invalid_path');
+    await expectStorageError(createProjectDir(1, ''), 'invalid_path');
+    await expectStorageError(createProjectDir(99, 'anything'), 'not_found');
+  });
+
+  it('makes a fresh folder a legal move destination', async () => {
+    await createProjectDir(1, 'archive');
+    expect(await moveProjectEntry(1, 'draft/main.md', 'archive/main.md')).toEqual({
+      from: 'draft/main.md',
+      to: 'archive/main.md',
+    });
   });
 });
 

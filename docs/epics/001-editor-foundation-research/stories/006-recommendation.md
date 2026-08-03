@@ -192,5 +192,5 @@ Epic 003 (TeXlyre Citation Assistant) served as both an extensibility spike and 
 ## Notes
 
 - The "build from primitives" path remains a valid fallback if the open-core posture proves untenable.
-- See [AGPL commercialization strategy](../../strategy.md) for the architectural boundary guidelines.
+- See [AGPL commercialization strategy](../../../../strategy.md) for the architectural boundary guidelines.
 - See `docs/architecture.md` for the updated system architecture.

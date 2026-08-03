@@ -1,15 +1,22 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 // Keep this a pure hub test: persistence (005-002) is covered against real
 // SQLite in db/file-activity.test.js, git mechanics (008-002) in
 // history.test.js — here we only assert the wiring.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
+vi.mock('./db/move-paths.js', () => ({ applyMove: vi.fn() }));
 vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
-vi.mock('./yjs-websocket.js', () => ({ evictRoom: vi.fn() }));
+vi.mock('./yjs-websocket.js', () => ({
+  evictRoom: vi.fn(),
+  evictRoomsUnder: vi.fn(),
+  CLOSE_ROOM_EVICTED: 4001,
+  CLOSE_ROOM_MOVED: 4002,
+}));
 
 import { recordFileEvent } from './db/file-activity.js';
+import { applyMove } from './db/move-paths.js';
 import { commitNow, scheduleCommit } from './history.js';
-import { evictRoom } from './yjs-websocket.js';
+import { evictRoom, evictRoomsUnder } from './yjs-websocket.js';
 
 import { config } from './config.js';
 import {
@@ -162,5 +169,128 @@ describe('project event hub (story 005-001)', () => {
     const events = [];
     for await (const e of channel) events.push(e);
     expect(events).toEqual([{ type: 'text', content: 'still delivered' }]);
+  });
+});
+
+describe("kind 'moved' (story 012-002)", () => {
+  const moved = (over = {}) => ({
+    type: 'file_change',
+    kind: 'moved',
+    path: 'archive/main.md',
+    meta: { from: 'draft/main.md' },
+    ...over,
+  });
+
+  beforeEach(() => {
+    for (const mock of [recordFileEvent, applyMove, evictRoom, evictRoomsUnder, scheduleCommit]) {
+      vi.mocked(mock).mockReset();
+    }
+  });
+
+  it('re-keys through applyMove with the event attribution, never recordFileEvent', () => {
+    publishProjectEvent(1, moved({ agent: 'writer' }), { jobId: 42, userId: 9 });
+
+    expect(applyMove).toHaveBeenCalledTimes(1);
+    expect(applyMove).toHaveBeenCalledWith(1, 'draft/main.md', 'archive/main.md', {
+      agentSlug: 'writer', jobId: 42, userId: 9,
+    });
+    // applyMove owns the file_events row too — a second writer here would
+    // announce a move whose rewrite could still roll back.
+    expect(recordFileEvent).not.toHaveBeenCalled();
+    expect(scheduleCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it('evicts the old subtree AND the destination with 4002 + the new path', () => {
+    publishProjectEvent(1, moved({ path: 'archive/dir', meta: { from: 'dir' } }));
+
+    const calls = vi.mocked(evictRoomsUnder).mock.calls;
+    expect(calls.map(([name]) => name)).toEqual([
+      'project-1/dir',
+      // Destination too, and NOT idle-only: a live room can sit on a path with
+      // no file behind it and would otherwise autosave its stale seed over the
+      // bytes just moved in.
+      'project-1/archive/dir',
+    ]);
+    for (const [, opts] of calls) {
+      expect(opts).toMatchObject({ closeConnections: true, closeCode: 4002 });
+    }
+    // The source reason is per-room: a folder move must tell each descendant
+    // ITS own new path, not the folder's, or the client follows a directory.
+    const [, sourceOpts] = calls[0];
+    expect(typeof sourceOpts.closeReason).toBe('function');
+    expect(sourceOpts.closeReason('project-1/dir')).toBe('archive/dir');
+    expect(sourceOpts.closeReason('project-1/dir/a.md')).toBe('archive/dir/a.md');
+    expect(sourceOpts.closeReason('project-1/dir/sub/b.md')).toBe('archive/dir/sub/b.md');
+    expect(evictRoom).not.toHaveBeenCalled();
+  });
+
+  it('evicts the canonical paths applyMove reports, not the raw ones', () => {
+    vi.mocked(applyMove).mockReturnValue({ from: 'dir', to: 'archive/dir' });
+    publishProjectEvent(1, moved({ path: 'archive/dir/', meta: { from: './dir//' } }));
+
+    expect(vi.mocked(evictRoomsUnder).mock.calls.map(([name]) => name))
+      .toEqual(['project-1/dir', 'project-1/archive/dir']);
+  });
+
+  it('fans out exactly one envelope, after the transaction and the eviction', () => {
+    const order = [];
+    const a = vi.fn(() => order.push([
+      vi.mocked(applyMove).mock.calls.length,
+      vi.mocked(evictRoomsUnder).mock.calls.length,
+    ]));
+    sub(1, a);
+
+    publishProjectEvent(1, moved(), { userId: 9 });
+
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(a.mock.calls[0][0]).toMatchObject({
+      kind: 'moved', path: 'archive/main.md', meta: { from: 'draft/main.md' },
+    });
+    expect(typeof a.mock.calls[0][0].ts).toBe('string');
+    // Subscribers must never see a move whose DB rewrite or eviction is still
+    // pending — they would re-read the old room / the old rows.
+    expect(order).toEqual([[1, 2]]);
+  });
+
+  it('propagates an applyMove failure (other kinds keep swallowing theirs)', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const a = vi.fn();
+      sub(1, a);
+      vi.mocked(applyMove).mockImplementation(() => { throw new Error('SQLITE_CONSTRAINT'); });
+
+      const event = moved();
+      // The fs rename already happened; only the producer can compensate, so
+      // the failure has to reach it.
+      expect(() => publishProjectEvent(1, event)).toThrow('SQLITE_CONSTRAINT');
+      expect(a).not.toHaveBeenCalled();
+      expect(evictRoomsUnder).not.toHaveBeenCalled();
+      expect(scheduleCommit).not.toHaveBeenCalled();
+
+      // Nothing was persisted or delivered, so the same event object is still
+      // publishable — the dedupe set must not have swallowed the retry.
+      vi.mocked(applyMove).mockReturnValue({ from: 'draft/main.md', to: 'archive/main.md' });
+      publishProjectEvent(1, event);
+      expect(applyMove).toHaveBeenCalledTimes(2);
+      expect(a).toHaveBeenCalledTimes(1);
+
+      // A lost activity row for a plain write is still non-fatal by design.
+      vi.mocked(recordFileEvent).mockImplementation(() => { throw new Error('db down'); });
+      expect(() => publishProjectEvent(1, { type: 'file_change', path: 'x.md', kind: 'update' }))
+        .not.toThrow();
+      expect(a).toHaveBeenCalledTimes(2);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("refuses a 'moved' event with no meta.from rather than logging a bare row", () => {
+    const a = vi.fn();
+    sub(1, a);
+    expect(() => publishProjectEvent(1, { type: 'file_change', kind: 'moved', path: 'archive/main.md' }))
+      .toThrow(/meta\.from/);
+    expect(applyMove).not.toHaveBeenCalled();
+    expect(recordFileEvent).not.toHaveBeenCalled();
+    expect(a).not.toHaveBeenCalled();
   });
 });

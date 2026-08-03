@@ -53,7 +53,8 @@ import {
 } from './comments';
 import { refreshTree } from './files';
 import { icon } from './icons';
-import { setDocument, setSaveState } from './status';
+import { performRetarget, resolveMovedRoom } from './move-follow';
+import { notify, setDocument, setSaveState } from './status';
 import { attachSuggestions, detachSuggestions, suggestionHunksPlugin } from './suggestion-hunks';
 import { toast } from './toast';
 import { startWrite, writeSuggestionPlugin } from './write-suggestion';
@@ -67,6 +68,14 @@ const SAVE_DEBOUNCE_MS = 1500;
 // seeder (yjs-websocket.js MSG_SEED_GRANT), and the eviction close code.
 const MSG_SEED_GRANT = 64;
 const CLOSE_ROOM_EVICTED = 4001;
+// Story 012-002: the room's document was MOVED. The close reason carries the
+// new path, and is blank when that would exceed the 123-UTF-8-byte close-frame
+// cap — then we must not guess (see strandMovedDocument). It is a hint, not
+// gospel: followMovedRoom reads the target back before following it, so a
+// reason that isn't this room's own document (a folder move currently sends
+// the FOLDER's new path to every descendant room) parks the tab rather than
+// retargeting it onto the wrong path.
+const CLOSE_ROOM_MOVED = 4002;
 // If the granted seeder dies before seeding, seed ourselves once the room
 // has stayed empty this long (re-checked at apply time).
 const SEED_FALLBACK_MS = 3000;
@@ -88,6 +97,21 @@ let currentProjectId = 0;
 let currentPath = '';
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSavedMarkdown = '';
+// Story 012-002: the open document moved and we could not learn where to. The
+// tab is parked — no autosave, no write-through — until it is retargeted or
+// reloaded, because writing to `currentPath` would resurrect a dead path.
+let movedAway = false;
+/** Set by main.ts. A 4002 room-moved close is the one retarget signal that
+ * survives a dropped SSE feed, but the editor alone cannot complete a retarget:
+ * `retargetDocument` owns only editor state, while the file tree's active row
+ * (files.ts `activePath`) and the workspace's active document live behind
+ * main.ts. Calling back through it keeps the 4002 leg and the SSE leg on the
+ * SAME path — both are re-entrancy guarded, so the doubled arrival is a no-op. */
+let onRetarget: ((path: string) => void) | null = null;
+
+export function setRetargetHandler(fn: (path: string) => void): void {
+  onRetarget = fn;
+}
 // Writer SDK session for in-editor `/write` follow-ups ("make it shorter").
 // In-session only — chat restore (story 020) owns cross-reload continuity.
 let writerSession: string | undefined;
@@ -96,14 +120,19 @@ export function currentDocumentPath(): string {
   return currentPath;
 }
 
-/** Local edits not yet persisted to storage? (Either mode; story 041.) */
-export function hasUnsavedChanges(): boolean {
-  if (saveTimer != null) return true;
-  const current = sourceView
+/** The live buffer in whichever mode is open, or null if no document is. */
+function currentMarkdown(): string | null {
+  return sourceView
     ? sourceView.state.doc.toString()
     : crepe
       ? crepe.editor.action(getMarkdown())
       : null;
+}
+
+/** Local edits not yet persisted to storage? (Either mode; story 041.) */
+export function hasUnsavedChanges(): boolean {
+  if (saveTimer != null) return true;
+  const current = currentMarkdown();
   return current != null && current !== lastSavedMarkdown;
 }
 
@@ -177,12 +206,14 @@ function agentCommands(): AgentCommand[] {
         openCitePicker({
           projectId: currentProjectId,
           anchor: { x: coords.left, y: coords.bottom },
-          onPick: (key) => {
+          onPick: (key, bibPath) => {
             insertCitation(view, key);
-            // The backend already updated references.bib — refresh dependents
-            void refreshBib(currentProjectId);
+            // The backend already wrote the bibliography and told us where
+            // (story 012-001: it need not be draft/references.bib) — reload
+            // exactly that file rather than re-resolving from a stale tree.
+            void refreshBib(currentProjectId, bibPath);
             void refreshTree(currentProjectId);
-            toast('Citation inserted · references.bib updated');
+            toast(`Citation inserted · ${bibPath} updated`);
           },
           onClose: () => view.focus(),
         });
@@ -253,14 +284,45 @@ function insertCitation(view: EditorView, key: string): void {
 
 let tooltipsInstalled = false;
 
+// Re-entrancy guard (story 012-002). A move retargets the open document at the
+// same moment the mover's own tab reopens it, so openDocument can legitimately
+// be called twice for the same path within one tick. Without this, both calls
+// mount a Crepe view and assign the module singletons: the first provider is
+// orphaned but stays connected to the new room, and two editors autosave the
+// same path with divergent content. A call for the path already being opened
+// is a no-op; a superseded call bails before it touches crepe/provider/ydoc.
+let openSeq = 0;
+let openingPath: string | null = null;
+
 export async function openDocument(
   projectId: number,
   path: string,
-  opts: { preferStored?: boolean } = {},
+  // `preferStored` forces the stored bytes over whatever the room replays
+  // (story 039); `restore` does the same with an explicit buffer carried in
+  // from a moved document (story 012-002) and persists it to the new path.
+  opts: { preferStored?: boolean; restore?: string } = {},
+): Promise<void> {
+  if (openingPath === path && currentProjectId === projectId) return;
+  const seq = ++openSeq;
+  openingPath = path;
+  try {
+    await openDocumentInner(projectId, path, seq, opts);
+  } finally {
+    if (seq === openSeq) openingPath = null;
+  }
+}
+
+async function openDocumentInner(
+  projectId: number,
+  path: string,
+  seq: number,
+  opts: { preferStored?: boolean; restore?: string },
 ): Promise<void> {
   await closeDocument();
+  if (seq !== openSeq) return; // a newer open superseded this one
   currentProjectId = projectId;
   currentPath = path;
+  movedAway = false;
   writerSession = undefined; // a new document starts a fresh writer thread
   setDocument(path);
   const pathEl = document.getElementById('editor-path');
@@ -277,17 +339,26 @@ export async function openDocument(
   // toggle to and no Yjs room (single writer, like source mode).
   if (!path.endsWith('.md')) {
     const stored = (await readTextFile(projectId, path)) ?? '';
-    if (projectId !== currentProjectId || path !== currentPath) return; // switched away
+    if (seq !== openSeq) return; // switched away
     lastSavedMarkdown = stored;
     createSourceView(stored, [], { markdown: false });
     setModeToggle(null);
     updateDocMeta(stored);
     setSaveState('saved');
+    // Unsaved bytes carried in from the old path (story 012-002) — raw-text
+    // files have no room to seed, so apply and persist them here.
+    if (opts.restore != null && opts.restore !== stored) {
+      sourceView!.dispatch({
+        changes: { from: 0, to: sourceView!.state.doc.length, insert: opts.restore },
+      });
+      void flushSave();
+    }
     return;
   }
   setModeToggle('rich');
 
   const stored = await readTextFile(projectId, path);
+  if (seq !== openSeq) return; // switched away before we touched the singletons
   const template = stored ?? DEFAULT_TEMPLATE;
   lastSavedMarkdown = stored ?? '';
 
@@ -361,11 +432,19 @@ export async function openDocument(
       seedGranted = decoding.readVarUint(decoder) === 1;
     };
     // Close 4001 = the server evicted this room (file deleted/replaced,
-    // story 038). Auto-reconnecting would repopulate the fresh room from
-    // this client's local state — stop for good; the project feed delivers
-    // the delete to the UI (story 041).
+    // story 038); 4002 = its document moved (story 012-002). Either way,
+    // auto-reconnecting would repopulate the fresh room from this client's
+    // local state — stop for good. On a delete the project feed delivers the
+    // news to the UI (story 041); on a move the close reason carries the new
+    // path, which is the only retarget signal that survives a dropped SSE
+    // feed. y-websocket re-enters this handler with a null event when
+    // disconnect() closes the socket, so everything below must be idempotent.
     boundProvider.on('connection-close', (event: CloseEvent | null) => {
-      if (event?.code === CLOSE_ROOM_EVICTED) boundProvider.disconnect();
+      if (event?.code !== CLOSE_ROOM_EVICTED && event?.code !== CLOSE_ROOM_MOVED) return;
+      boundProvider.disconnect();
+      if (event.code !== CLOSE_ROOM_MOVED) return;
+      if (provider !== boundProvider) return; // a newer document already took over
+      void followMovedRoom(event.reason ?? '');
     });
     provider.once('sync', (isSynced: boolean) => {
       // Bail if the document was switched before sync arrived (story 024).
@@ -385,16 +464,22 @@ export async function openDocument(
           collabService.applyTemplate(template).connect();
         }, SEED_FALLBACK_MS);
       }
-      if (!opts.preferStored) return;
-      // Returning from source mode (story 039): edits went straight to
-      // storage, which any still-warm room predates — force the stored text
-      // over whatever the room replayed (propagates to peers via collab).
+      // Force local text over whatever the room replayed (it propagates to
+      // peers via collab). Two callers: returning from source mode (story
+      // 039 — edits went straight to storage, which any still-warm room
+      // predates), and a move retarget (story 012-002 — the unsaved buffer
+      // rides into the new room, then persists to the new path).
+      const override = opts.restore ?? (opts.preferStored ? template : null);
+      if (override == null) return;
       setTimeout(() => {
         if (provider !== boundProvider || !crepe) return;
-        if (crepe.editor.action(getMarkdown()) === template) return;
-        lastSavedMarkdown = template;
-        crepe.editor.action(replaceAll(template));
-        setSaveState('saved');
+        const same = crepe.editor.action(getMarkdown()) === override;
+        if (!same) {
+          lastSavedMarkdown = template;
+          crepe.editor.action(replaceAll(override));
+        }
+        if (opts.restore != null) void flushSave();
+        else if (!same) setSaveState('saved');
       }, 0);
     });
   });
@@ -539,7 +624,7 @@ function roomName(projectId: number, path: string): string {
 }
 
 function scheduleSave(markdown: string): void {
-  if (markdown === lastSavedMarkdown) return;
+  if (markdown === lastSavedMarkdown || movedAway) return;
   setSaveState('dirty');
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => void doSave(markdown), SAVE_DEBOUNCE_MS);
@@ -554,10 +639,80 @@ export function cancelPendingSave(): void {
   }
 }
 
+// ---- Moved documents — story 012-002 ---------------------------------------
+
+/**
+ * Resolve a 4002 (room moved) close into a retarget or a parked tab — the
+ * decision rules and their rationale are in move-follow.ts resolveMovedRoom.
+ * Returning to rich mode is deliberate: a moved document reopens through
+ * openDocument, which owns the mode.
+ */
+async function followMovedRoom(reason: string): Promise<void> {
+  // The decision logic (and its rationale) lives in move-follow.ts, where it
+  // is unit-tested (story 012-004); this is the host adapter over editor state.
+  await resolveMovedRoom({
+    projectId: () => currentProjectId,
+    currentPath: () => currentPath,
+    readTextFile,
+    // Dirtiness is content-based, so cancelling the debounce here does not
+    // hide the buffer from retargetDocument.
+    cancelPendingSave,
+    strand: strandMovedDocument,
+    // Through main.ts, not straight to retargetDocument: the tree's active row
+    // and the workspace's active document would otherwise stay on the dead path.
+    retarget: (next) => (onRetarget ? onRetarget(next) : retargetDocument(next)),
+  }, reason);
+}
+
+/**
+ * Follow the open document to `path` after it moved out from under us. The
+ * two load-bearing rules (retarget FIRST so a racing autosave lands on the
+ * new path; full reopen so the new room gets a FRESH Y.Doc and provider) are
+ * specified and tested in move-follow.ts performRetarget — this adapter
+ * supplies the editor state. One host-specific note: openDocument is the only
+ * site that builds a provider, and mutating provider.roomname instead would
+ * leave the BroadcastChannel pinned to the dead room (frozen at construction).
+ */
+export async function retargetDocument(path: string): Promise<void> {
+  if (!currentPath || path === currentPath) return;
+  const projectId = currentProjectId;
+  await performRetarget({
+    setCurrentPath: (p) => { currentPath = p; },
+    announce: (p) => {
+      setDocument(p);
+      const pathEl = document.getElementById('editor-path');
+      if (pathEl) pathEl.textContent = p.replace(/\//g, ' / ');
+    },
+    pendingMarkdown: () => (hasUnsavedChanges() ? currentMarkdown() : null),
+    cancelPendingSave,
+    clearMovedAway: () => { movedAway = false; }, // we know where the document went
+    flushSave: () => flushSave(),
+    reopen: (p, restore) =>
+      openDocument(projectId, p, restore == null ? {} : { restore }),
+  }, path);
+}
+
+/**
+ * The document moved and we could not learn where to (the server had to blank
+ * an over-long close reason, and the project feed has not delivered the move).
+ * Guessing is worse than stopping: park the tab in an explicit moved state
+ * with autosave cancelled and writes refused, so it cannot resurrect the old
+ * path. A later feed event retargets us; a reload always recovers.
+ */
+function strandMovedDocument(): void {
+  if (movedAway) return;
+  movedAway = true;
+  cancelPendingSave();
+  setSaveState('error', 'this document moved — reload to continue');
+  notify(`${currentPath} moved — reload to continue editing`);
+  toast('This document moved — reload to continue editing');
+}
+
 /** Tear down the open document without persisting it (e.g. it was just deleted
  * out from under the editor). Leaves no current path. */
 export async function discardDocument(): Promise<void> {
   cancelPendingSave();
+  movedAway = false;
   await closeDocument(); // saveTimer is null now, so this won't write back
   currentPath = '';
   setDocument('');
@@ -572,17 +727,16 @@ export async function flushSave(opts: { checkpoint?: boolean } = {}): Promise<vo
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const markdown = sourceView
-    ? sourceView.state.doc.toString()
-    : crepe
-      ? crepe.editor.action(getMarkdown())
-      : null;
+  const markdown = currentMarkdown();
   if (markdown == null) return;
   await doSave(markdown, opts.checkpoint ?? false);
 }
 
 async function doSave(markdown: string, checkpoint = false): Promise<void> {
   saveTimer = null;
+  // The document moved and we don't know where (story 012-002): writing to
+  // currentPath would mkdir-p the dead path back into existence.
+  if (movedAway) return;
   // A checkpoint (explicit Cmd/Ctrl+S) writes through even when the content
   // is already saved: the debounced autosave may have stored the bytes, but
   // the history version is cut by the checkpointed request (story 008-002).

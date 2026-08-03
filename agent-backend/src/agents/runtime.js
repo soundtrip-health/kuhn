@@ -20,7 +20,7 @@ import {
   moveProjectEntry,
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference, updateReference, removeReference, isDerivedBibPath } from '../citations.js';
-import { migrateSeenPaths } from '../db/file-activity.js';
+import { findPendingEditConflicts } from '../db/move-paths.js';
 import { createThread, resolveQuote } from '../db/comments.js';
 import { isSuggestionPath, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
@@ -513,6 +513,11 @@ function buildPrompt(input, context) {
   if (context.selection) parts.push(`<selection>\n${context.selection}\n</selection>`);
   if (context.cursor?.line != null) parts.push(`The user's cursor is at line ${context.cursor.line}.`);
   if (context.files?.length) parts.push(`Relevant files: ${context.files.join(', ')}`);
+  // `dir` (story 012-001) is the folder selected in the file panel. A default,
+  // not a constraint: the agent still puts a file somewhere else when it plainly
+  // belongs there. The client only ever sends a folder inside draft/ — see
+  // webapp/src/chat.ts `draftTargetContext` for why that restriction exists.
+  if (context.dir) parts.push(`Unless a file clearly belongs elsewhere, create new files in ${context.dir}/.`);
   return parts.join('\n\n');
 }
 
@@ -594,12 +599,63 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         to: z.string().describe('Workspace-relative destination path (including the new filename)'),
       },
       async ({ from, to }) => fileToolResult(async () => {
-        await moveProjectEntry(projectId, from, to);
-        migrateSeenPaths(projectId, from, to); // seen state follows the file (005-002)
-        // Mirror the change into the live file tree (delete old row, add new).
-        channel.push({ type: 'file_change', agent: agent.slug, path: from, kind: 'delete' });
-        channel.push({ type: 'file_change', agent: agent.slug, path: to, kind: 'create' });
-        return `Moved ${from} → ${to}`;
+        // Story 012-002: a move is an identity change, not a delete plus a
+        // create. One 'moved' event carries the file's identity to the new
+        // path and the hub re-keys every path-keyed consumer (seen state,
+        // comments, pending edits, activeDocument) in the same transaction
+        // that appends the activity row — so nothing is left orphaned at a
+        // path that no longer exists.
+        //
+        // Pre-check the one collision the rewrite refuses, while the file is
+        // still in place: a pending proposal at the destination exists only in
+        // the DB (no bytes on disk), so storage cannot 409 on it and the
+        // rewrite must not silently replace it.
+        const clashes = findPendingEditConflicts(projectId, from, to);
+        if (clashes.length > 0) {
+          throw new Error(
+            `Cannot move ${from} → ${to}: a pending proposed edit is already waiting at `
+            + `${clashes.join(', ')}. Ask the user to accept or reject it first.`,
+          );
+        }
+        // moveProjectEntry reports the CANONICAL paths it actually renamed;
+        // publishing those (not the model's raw arguments) is what keeps the
+        // prefix rewrite from matching zero rows on './a.md' or 'dir/'.
+        const moved = await moveProjectEntry(projectId, from, to);
+        const event = {
+          type: 'file_change',
+          agent: agent.slug,
+          path: moved.to,
+          kind: 'moved',
+          meta: { from: moved.from },
+        };
+        // Published directly rather than only through the channel tee, because
+        // 'moved' is the one kind whose persistence failure propagates and
+        // EventChannel.push swallows tee throws (events.js:22-27) — a
+        // push-only move would report success over a half-applied state. The
+        // hub's WeakSet dedupe makes the tee's re-offer of this same object a
+        // no-op, so the feed still sees exactly one envelope; it also means a
+        // sub-agent run (depth > 0, untee'd) rewrites the DB too, where the
+        // old push-only path depended on dispatch_agent forwarding.
+        try {
+          publishProjectEvent(projectId, event, { jobId: parentJob.id, userId });
+        } catch (err) {
+          // The rename already committed on disk. Put the bytes back so the
+          // tool never reports a move whose consumers were not carried with it.
+          let restored = true;
+          try {
+            await moveProjectEntry(projectId, moved.to, moved.from);
+          } catch {
+            restored = false;
+          }
+          throw new Error(
+            `Move failed: ${err.message}. `
+            + (restored
+              ? `${moved.from} was left in place.`
+              : `${moved.from} could NOT be restored and is now at ${moved.to} — tell the user.`),
+          );
+        }
+        channel.push(event); // mirror into the live client stream (deduped above)
+        return `Moved ${moved.from} → ${moved.to}`;
       }),
     ));
   }

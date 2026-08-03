@@ -8,12 +8,14 @@ import express from 'express';
 import { extname } from 'node:path';
 
 import { config } from '../config.js';
-import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
+import { unseenPaths } from '../db/file-activity.js';
+import { findPendingEditConflicts } from '../db/move-paths.js';
 import { commitNow, scheduleCommit } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import {
   StorageError,
+  createProjectDir,
   readProjectFile,
   writeProjectFile,
   deleteProjectEntry,
@@ -147,6 +149,32 @@ router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res
   res.json({ path, deleted: true });
 }));
 
+/**
+ * POST /api/projects/:projectId/files/mkdir — body { path }. Creates an empty
+ * folder; 201 when it was created, 200 { created: false } when it was already
+ * there. The response echoes the CANONICAL path storage operated on.
+ *
+ * Deliberately publishes NO project event and schedules no commit (012-001):
+ *  - git cannot track an empty directory, so `git status --porcelain` stays
+ *    empty and commitNow short-circuits (history.js) — the commit would be a
+ *    pure no-op;
+ *  - `file_change` is file-shaped everywhere downstream (annotateUnseen above
+ *    walks files only; the activity log renders per-file rows), so announcing
+ *    a directory would insert a bogus activity row and mark a directory unseen.
+ * Consequence, accepted: a second tab or a collaborator sees a new EMPTY
+ * folder only on its next tree refresh. Live visibility needs a non-file event
+ * kind and is deferred to story 012-004.
+ */
+router.post('/api/projects/:projectId/files/mkdir', handle(async (projectId, req, res) => {
+  const { path } = req.body ?? {};
+  if (typeof path !== 'string' || path.length === 0) {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  const { path: canonicalPath, created } = await createProjectDir(projectId, path);
+  res.status(created ? 201 : 200).json({ path: canonicalPath, created });
+}));
+
 /** POST /api/projects/:projectId/files/move — body { from, to } */
 router.post('/api/projects/:projectId/files/move', handle(async (projectId, req, res) => {
   const { from, to } = req.body ?? {};
@@ -154,13 +182,56 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
     res.status(400).json({ error: 'from and to are required' });
     return;
   }
-  await moveProjectEntry(projectId, from, to);
-  // Seen state follows the file (005-002); the move surfaces on the feed as
-  // the same delete+create pair the agent move_file tool emits.
-  migrateSeenPaths(projectId, from, to);
-  publishProjectEvent(projectId, { type: 'file_change', path: from, kind: 'delete' }, { userId: req.user?.id ?? null });
-  publishProjectEvent(projectId, { type: 'file_change', path: to, kind: 'create' }, { userId: req.user?.id ?? null });
-  res.json({ from, to, moved: true });
+  // Story 012-002: a pending edit already sitting at the destination is the
+  // only copy of an agent's proposed document (pending edits never touch
+  // disk), and the re-key would have to drop it to satisfy
+  // UNIQUE(project_id, path). Check BEFORE the rename, so the request 409s
+  // like any other destination conflict while the file is still in place.
+  const clashes = findPendingEditConflicts(projectId, from, to);
+  if (clashes.length > 0) {
+    res.status(409).json({
+      error: `A pending edit already exists at ${clashes[0]}`,
+      code: 'conflict',
+      paths: clashes,
+    });
+    return;
+  }
+  // Publish the CANONICAL paths storage reports back, never the request body:
+  // './a.md', 'a//b' and 'dir/' all rename fine on disk but would key the DB
+  // rewrite to a path that matches no row (story 012-002).
+  const { from: fromPath, to: toPath } = await moveProjectEntry(projectId, from, to);
+  // One identity-preserving event, not the delete+create pair that orphaned
+  // every path-keyed consumer. The hub owns seen state, comments, pending
+  // edits and the activity row — all in one transaction — so this route no
+  // longer calls migrateSeenPaths itself. A folder move publishes exactly this
+  // one event for the folder; descendants are implied by prefix.
+  try {
+    publishProjectEvent(projectId, {
+      type: 'file_change', path: toPath, kind: 'moved', meta: { from: fromPath },
+    }, { userId: req.user?.id ?? null });
+  } catch (err) {
+    // `moved` is the one kind whose persistence failure is not swallowed. The
+    // rename has already committed, so the two systems now disagree: rename
+    // back before surfacing the error, or the file sits at the new path while
+    // every consumer still points at the old one.
+    try {
+      await moveProjectEntry(projectId, toPath, fromPath);
+    } catch (undoErr) {
+      console.error(
+        `[files] Move rollback FAILED for project ${projectId}: content is on disk at ` +
+        `${toPath} but comments/pending edits/seen markers still point at ${fromPath}.`,
+        undoErr,
+      );
+      res.status(500).json({
+        error: `Move failed and could not be undone: ${toPath} holds the content but ${fromPath} `
+          + 'is still referenced by comments, pending edits and seen markers. Move it back by hand.',
+        code: 'inconsistent_state',
+      });
+      return;
+    }
+    throw err;
+  }
+  res.json({ from: fromPath, to: toPath, moved: true });
 }));
 
 /**

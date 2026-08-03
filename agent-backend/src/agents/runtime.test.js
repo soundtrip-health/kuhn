@@ -37,6 +37,9 @@ vi.mock('../config.js', () => ({
       // Zero delays so the backoff retry path (story 029) runs instantly in tests.
       retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
     },
+    // The real project-events hub runs in these tests (the channel tee
+    // publishes into it); subscribing to it needs this cap (story 012-002).
+    projectEvents: { maxSubscribers: 25 },
   },
 }));
 
@@ -78,6 +81,13 @@ vi.mock('../citations.js', () => ({
 // Keeps db.js (which needs a real config.db.path at import) out of this
 // mocked-config suite; the SQL is covered in db/file-activity.test.js.
 vi.mock('../db/file-activity.js', () => ({ migrateSeenPaths: vi.fn(), recordFileEvent: vi.fn() }));
+// Same reason: the move seam's transactional rewrite is real SQL, covered in
+// db/move-paths.test.js. project-events.js (deliberately NOT mocked here) is
+// the module that calls applyMove (story 012-002).
+vi.mock('../db/move-paths.js', () => ({
+  applyMove: vi.fn((_projectId, from, to) => ({ from, to })),
+  findPendingEditConflicts: vi.fn(() => []),
+}));
 // Suggestion-mode service (story 008-001): the real scope rule, mocked IO —
 // the diff/apply/orchestration substance is covered in ../pending-edits.test.js.
 vi.mock('../pending-edits.js', () => ({
@@ -91,7 +101,10 @@ import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agen
 import { proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { isDerivedBibPath, updateReference, removeReference } from '../citations.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
-import { writeProjectFile } from '../storage.js';
+import { writeProjectFile, moveProjectEntry } from '../storage.js';
+import { recordFileEvent } from '../db/file-activity.js';
+import { applyMove, findPendingEditConflicts } from '../db/move-paths.js';
+import { subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
@@ -1036,5 +1049,111 @@ describe('search_org_knowledge (story 006-003)', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/fts index corrupt/);
+  });
+});
+
+// --- Story 012-002: move_file emits one identity-preserving 'moved' event -----
+
+describe('move_file tool (story 012-002)', () => {
+  const ORGANIZER = { ...RA_AGENT, tools: ['file_move'] };
+
+  // Drives the tool from INSIDE a live run: the channel is still open, so both
+  // the agent event stream and the project feed see what the move emits.
+  async function runMove(args) {
+    getAgentWithTools.mockResolvedValue(ORGANIZER);
+    let result;
+    sdkState.generator = async function* () {
+      const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+      const move = tools.find((t) => t.name === 'move_file');
+      result = await move.handler(args);
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    const feed = [];
+    const unsubscribe = subscribeProjectEvents(7, (e) => feed.push(e));
+    const events = await collect({ role: 'ra', projectId: 7, input: 'organize' });
+    unsubscribe();
+    return {
+      result,
+      changes: events.filter((e) => e.type === 'file_change'),
+      feedChanges: feed.filter((e) => e.type === 'file_change'),
+    };
+  }
+
+  it('pushes ONE moved event with the canonical paths, never a delete+create pair', async () => {
+    // The model's raw arguments are not canonical; storage reports what it
+    // actually renamed, and that is what has to be published.
+    moveProjectEntry.mockResolvedValueOnce({ from: 'sources/protocol.pdf', to: 'seed_docs/protocol.pdf' });
+
+    const { result, changes, feedChanges } = await runMove({ from: './sources/protocol.pdf', to: 'seed_docs/protocol.pdf' });
+
+    expect(moveProjectEntry).toHaveBeenCalledWith(7, './sources/protocol.pdf', 'seed_docs/protocol.pdf');
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe('Moved sources/protocol.pdf → seed_docs/protocol.pdf');
+
+    const moved = {
+      type: 'file_change',
+      agent: 'ra',
+      path: 'seed_docs/protocol.pdf',
+      kind: 'moved',
+      meta: { from: 'sources/protocol.pdf' },
+    };
+    expect(changes).toEqual([moved]);
+    // Deduped by the hub's WeakSet: the direct publish and the channel tee
+    // offer the same object, and the feed still sees exactly one envelope.
+    expect(feedChanges).toHaveLength(1);
+    expect(feedChanges[0]).toMatchObject(moved);
+  });
+
+  it('routes the rewrite through applyMove with job/user attribution, not a bare activity row', async () => {
+    moveProjectEntry.mockResolvedValueOnce({ from: 'a.md', to: 'dir/a.md' });
+
+    await runMove({ from: 'a.md', to: 'dir/a.md' });
+
+    expect(applyMove).toHaveBeenCalledTimes(1);
+    expect(applyMove).toHaveBeenCalledWith(7, 'a.md', 'dir/a.md', {
+      agentSlug: 'ra', jobId: 42, userId: null,
+    });
+    // No delete/create rows: applyMove owns the single 'moved' row.
+    expect(recordFileEvent).not.toHaveBeenCalled();
+  });
+
+  it('refuses the move when a pending proposal already sits at the destination', async () => {
+    findPendingEditConflicts.mockReturnValueOnce(['draft/methods.md']);
+
+    const { result, changes } = await runMove({ from: 'draft/notes.md', to: 'draft/methods.md' });
+
+    // Checked BEFORE the rename, so the file is still where it was.
+    expect(moveProjectEntry).not.toHaveBeenCalled();
+    expect(applyMove).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/pending proposed edit is already waiting at draft\/methods\.md/);
+    expect(changes).toEqual([]);
+  });
+
+  it('compensates with a rename-back when the rewrite fails, and reports it as a tool error', async () => {
+    moveProjectEntry.mockResolvedValueOnce({ from: 'a.md', to: 'dir/a.md' });
+    applyMove.mockImplementationOnce(() => { throw new Error('database is locked'); });
+
+    const { result, changes, feedChanges } = await runMove({ from: 'a.md', to: 'dir/a.md' });
+
+    expect(moveProjectEntry).toHaveBeenNthCalledWith(1, 7, 'a.md', 'dir/a.md');
+    expect(moveProjectEntry).toHaveBeenNthCalledWith(2, 7, 'dir/a.md', 'a.md');
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Move failed: database is locked\. a\.md was left in place\./);
+    // Nobody is told a move happened when the rewrite did not commit.
+    expect(changes).toEqual([]);
+    expect(feedChanges).toEqual([]);
+  });
+
+  it('says so when the compensating rename-back also fails', async () => {
+    moveProjectEntry
+      .mockResolvedValueOnce({ from: 'a.md', to: 'dir/a.md' })
+      .mockRejectedValueOnce(new Error('EIO'));
+    applyMove.mockImplementationOnce(() => { throw new Error('database is locked'); });
+
+    const { result } = await runMove({ from: 'a.md', to: 'dir/a.md' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/a\.md could NOT be restored and is now at dir\/a\.md/);
   });
 });

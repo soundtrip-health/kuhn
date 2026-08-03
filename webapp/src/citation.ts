@@ -9,7 +9,7 @@
 
 import { $nodeSchema, $remark } from '@milkdown/kit/utils';
 
-import { bibTooltip } from './bib';
+import { bibTooltip, currentBibPath } from './bib';
 
 const CITATION_RE = /\[@([A-Za-z0-9_][A-Za-z0-9_:.+-]*)\]/g;
 
@@ -106,6 +106,8 @@ export function installCitationTooltips(container: HTMLElement): void {
     const chip = (event.target as HTMLElement).closest?.('.citation-chip');
     if (!(chip instanceof HTMLElement)) return;
     const key = chip.getAttribute('data-citation-key') ?? '';
-    chip.title = bibTooltip(key) ?? `@${key} — not found in references.bib`;
+    // Name the bibliography the project actually uses — it is no longer fixed
+    // at draft/references.bib (story 012-001).
+    chip.title = bibTooltip(key) ?? `@${key} — not found in ${currentBibPath()}`;
   });
 }

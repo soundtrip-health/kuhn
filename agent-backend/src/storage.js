@@ -8,7 +8,7 @@
 import {
   mkdir, readFile, writeFile, rm, rename, readdir, lstat, realpath,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 
 import { config } from './config.js';
 import { query as dbQuery } from './db.js';
@@ -121,6 +121,14 @@ async function realpathDeepestExisting(abs, stopAt) {
       const real = await realpath(current);
       return suffix ? join(real, suffix) : real;
     } catch (err) {
+      // ENOTDIR: an ANCESTOR of the path is a file (`draft/main.md/sub` — a
+      // plausible typo, reachable from the folder UI since story 012-001).
+      // Map it to a 409 naming the blocking file instead of rethrowing bare,
+      // which the routes turned into a generic 500 (story 012-005). Error
+      // mapping only — the containment verdict below is unchanged.
+      if (err.code === 'ENOTDIR') {
+        throw new StorageError('conflict', `A file is in the way: ${await blockingFile(current, stopAt)}`);
+      }
       if (err.code !== 'ENOENT' || current === stopAt || current === dirname(current)) {
         throw err;
       }
@@ -129,6 +137,26 @@ async function realpathDeepestExisting(abs, stopAt) {
       current = dirname(current);
     }
   }
+}
+
+/**
+ * The deepest existing ancestor of `abs` that is a file — the component an
+ * ENOTDIR came from. Peels segments until lstat stops failing; falls back to
+ * the whole path if the walk cannot pin one down (a race with a concurrent
+ * delete), because the 409 must not turn back into a 500.
+ */
+async function blockingFile(abs, root) {
+  let probe = abs;
+  while (probe !== root && probe !== dirname(probe)) {
+    try {
+      const stats = await lstat(probe);
+      if (!stats.isDirectory()) return relative(root, probe);
+      break;
+    } catch {
+      probe = dirname(probe);
+    }
+  }
+  return relative(root, abs);
 }
 
 /** Read a file. Returns a Buffer (callers decide on encoding). */
@@ -176,12 +204,38 @@ export async function deleteProjectEntry(projectId, relPath) {
   await rm(abs, { recursive: true });
 }
 
-/** Move/rename a file or directory within the project. */
+/**
+ * Root-relative posix path for an absolute path already contained by root.
+ * This is the canonical form every path-keyed consumer is keyed by: it is
+ * derived from the resolved absolute path, so `./dir/a.md`, `dir//a.md` and
+ * `dir/a.md` all collapse to the same string and a trailing slash is gone.
+ * (story 012-002)
+ */
+function relativeToRoot(root, abs) {
+  return abs.slice(root.length + 1).split(sep).join('/');
+}
+
+/**
+ * Move/rename a file or directory within the project.
+ * Returns the CANONICAL relative paths it actually operated on — callers
+ * publish THESE, never the raw request body, or the DB rewrite keyed on the
+ * old path matches nothing (story 012-002).
+ */
 export async function moveProjectEntry(projectId, fromPath, toPath) {
   const { root, abs: from } = await resolveSafe(projectId, fromPath);
   const { abs: to } = await resolveSafe(projectId, toPath);
   if (from === root || to === root) {
     throw new StorageError('invalid_path', 'Cannot move the project root');
+  }
+  // Both of these reach rename(2) otherwise: a self-move succeeds as a no-op
+  // that still publishes a move, and a folder into its own descendant fails
+  // EINVAL — not a StorageError, so a 500 instead of a 400, after mkdir has
+  // already left the destination directories behind. (story 012-002)
+  if (to === from) {
+    throw new StorageError('invalid_path', 'Source and destination are the same path');
+  }
+  if (to.startsWith(from + sep)) {
+    throw new StorageError('invalid_path', 'Cannot move a folder into itself');
   }
   try {
     await lstat(from);
@@ -197,6 +251,47 @@ export async function moveProjectEntry(projectId, fromPath, toPath) {
   if (destinationExists) throw new StorageError('conflict', `Destination exists: ${toPath}`);
   await mkdir(dirname(to), { recursive: true });
   await rename(from, to);
+  return { from: relativeToRoot(root, from), to: relativeToRoot(root, to) };
+}
+
+/**
+ * Create an empty directory (with any missing parents) inside the project.
+ * Returns `{ path, created }` where `path` is the CANONICAL relative path —
+ * same contract as moveProjectEntry, and for the same reason: the webapp keys
+ * expansion and selection state by path, so `'a//b/'` must not become a second
+ * key for the folder the tree reports as `a/b`. (story 012-001)
+ *
+ * Idempotent: an existing directory returns `created: false` rather than
+ * throwing, so a double-submit is harmless. Anything that is NOT a directory
+ * occupying the path is a `conflict` — this API never clobbers.
+ */
+export async function createProjectDir(projectId, relPath) {
+  const { root, abs } = await resolveSafe(projectId, relPath);
+  if (abs === root) throw new StorageError('invalid_path', 'Cannot create the project root');
+  const path = relativeToRoot(root, abs);
+  let stats = null;
+  try {
+    stats = await lstat(abs);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  if (stats) {
+    if (!stats.isDirectory()) {
+      throw new StorageError('conflict', `A file already exists at ${path}`);
+    }
+    return { path, created: false };
+  }
+  try {
+    await mkdir(abs, { recursive: true });
+  } catch (err) {
+    // Lost a race with a concurrent write that put a FILE here (or on an
+    // ancestor) between the lstat above and now: still a conflict, not a 500.
+    if (err.code === 'EEXIST' || err.code === 'ENOTDIR') {
+      throw new StorageError('conflict', `A file already exists at ${path}`);
+    }
+    throw err;
+  }
+  return { path, created: true };
 }
 
 // ---- Org library scope (story 006-001) --------------------------------------

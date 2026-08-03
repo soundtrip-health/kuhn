@@ -9,9 +9,12 @@ import { StorageError, writeProjectFile } from './storage.js';
 import {
   insertReference, materializeBib, findByPmid, listProjectReferences,
   updateReferenceFields, deleteReference, exportBibtex, rowToBibRecord,
+  DEFAULT_BIB_PATH,
 } from './db/references.js';
 
-export const DEFAULT_BIB_PATH = 'draft/references.bib';
+// Re-exported from db/references.js (its true home since 012-003, so
+// render.js can share it without pulling this module's PubMed machinery).
+export { DEFAULT_BIB_PATH };
 
 const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 

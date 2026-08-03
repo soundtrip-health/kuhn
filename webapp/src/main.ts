@@ -10,7 +10,7 @@ import './style.css';
 import { initAgentSelector } from './agent-selector';
 import { subscribeProjectEvents, writeTextFile } from './api';
 import { initBreadcrumb } from './breadcrumb';
-import { refreshBib } from './bib';
+import { currentBibPath, refreshBib } from './bib';
 import { initChat, setSetupHandler } from './chat';
 import {
   applyExternalChange,
@@ -20,9 +20,10 @@ import {
   flushSave,
   hasUnsavedChanges,
   openDocument,
+  retargetDocument,
+  setRetargetHandler,
 } from './editor';
 import {
-  findMarkdownPath,
   initFiles,
   markSeen,
   recordFileChange,
@@ -31,6 +32,8 @@ import {
   setActiveFile,
   type FileChange,
 } from './files';
+import { movedDocAction } from './move-follow';
+import { findMarkdownPath, isUnder, movedPath } from './tree-state';
 import { refreshCommentsSoon } from './comments';
 import { initHistoryButton } from './history-panel';
 import { icon } from './icons';
@@ -42,6 +45,10 @@ import { refreshSuggestionsSoon } from './suggestion-hunks';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
 
+// The document a brand-new project is bootstrapped with, and the *preferred*
+// fallback when the open one goes away. Never open it blind — go through
+// fallbackDocument(), which checks the tree first (story 012-002: a move can
+// carry draft/main.md, or the whole draft/ folder, somewhere else).
 const MAIN_DOCUMENT = 'draft/main.md';
 
 function wirePanelToggles(): void {
@@ -104,6 +111,13 @@ function buildEditorHero(): void {
 // so racing switches can't cross-wire one project's document into another.
 let switchSeq = 0;
 
+// The path the editor is open on *or on its way to* (story 012-002). Set
+// synchronously at every open site, because openDocument only assigns its own
+// currentPath after `await closeDocument()` — an event landing in that window
+// would otherwise read the previous document's path and retarget the wrong
+// file. It is also the re-entrancy guard for the moved handler below.
+let openTarget = '';
+
 // Always-on project event feed (story 005-003): one subscription per active
 // project, torn down on switch. While it is open, the job-scoped chat stream's
 // file_change side-effects stand down so the same event isn't applied twice;
@@ -124,6 +138,7 @@ async function switchToActiveProject(): Promise<void> {
   if (!project) {
     // No project in this org — close the editor and invite the user to create one.
     await closeDocument();
+    openTarget = '';
     setActiveFile('');
     document.getElementById('editor-path')!.textContent = '';
     openProjectBrowser();
@@ -144,30 +159,65 @@ async function switchToActiveProject(): Promise<void> {
     // Content changes also move comment anchors (story 008-004): re-anchor,
     // orphaning any thread whose quoted text the change removed.
     refreshCommentsSoon();
-    if (change.path.endsWith('.bib')) void refreshBib(projectId);
+    // Keep the citation cache pointing at the right file (story 012-001).
+    // A path is ADOPTED only when the event actually carried the current
+    // bibliography somewhere else — that is the one case where the event knows
+    // more than the tree does (refreshTreeSoon is debounced 250 ms, so the
+    // snapshot is still pre-move at this point). Everything else refreshes with
+    // no path so bib.ts re-resolves from the tree: adopting on any `.bib` event
+    // would make an uploaded `sources/smith-refs.bib` the project bibliography,
+    // splitting the app's reads from the `/cite` writes that still land in the
+    // real one. Note the move test is NOT a `.bib` suffix test — moving the
+    // whole `draft/` folder carries the bib with it and names neither end `.bib`.
+    if (change.kind === 'moved' && change.from) {
+      const nextBib = movedPath(currentBibPath(), change.from, change.path);
+      if (nextBib != null) void refreshBib(projectId, nextBib);
+      else if (change.path.endsWith('.bib') || change.from.endsWith('.bib')) void refreshBib(projectId);
+    } else if (change.path.endsWith('.bib')) {
+      void refreshBib(projectId);
+    }
+    // A move preserves the document's identity (story 012-002), so the open
+    // tab FOLLOWS it instead of falling back like a delete. This is the ONE
+    // retarget path in the webapp — files.ts deliberately stopped reopening
+    // after its own rename, because the server fans this event out
+    // synchronously *before* the move response returns, so both sites would
+    // race two concurrent opens of the same document. It must also sit outside
+    // the `change.path === currentDocumentPath()` guard below: `change.path`
+    // is the NEW path, which by definition never matches the open one.
+    if (change.kind === 'moved') {
+      const open = openTarget || currentDocumentPath();
+      // The decision (incl. the missing-`from` lossy-channel fallback) is
+      // pure and unit-tested in move-follow.ts (story 012-004).
+      const action = movedDocAction(open, change);
+      if (action.kind === 'follow-blind') void followMoveBlind(projectId, open, change.path);
+      else if (action.kind === 'retarget') retargetOpenDoc(action.to);
+      return;
+    }
+    if (change.kind === 'delete') {
+      // The open document was deleted remotely — another tab, a collaborator,
+      // or an agent move (story 041). Matched by PREFIX, not equality (story
+      // 012-001): deleting a folder publishes exactly ONE event carrying the
+      // FOLDER path (routes/files.js), so an equality test leaves this tab
+      // open on a descendant that no longer exists, autosaving it — and the
+      // parent directory with it — back into being.
+      const open = currentDocumentPath();
+      if (!open || !isUnder(open, change.path)) return;
+      // A clean editor closes and falls back like the deleting tab does
+      // (dropOpenDoc); a dirty one stays open so unsaved work isn't lost — its
+      // next save re-creates the file.
+      if (hasUnsavedChanges()) {
+        notify(`${open} was deleted — your unsaved edits will re-create it on save`);
+      } else {
+        void discardDocument().then(() => {
+          notify(`${open} was deleted`);
+          fallBackAfterDelete(projectId, change.path);
+        });
+      }
+      return;
+    }
     if (change.path === currentDocumentPath()) {
       // 'proposed' moves no bytes — the decoration refresh above covers it.
       if (change.kind === 'proposed') return;
-      if (change.kind === 'delete') {
-        // The open document was deleted remotely — another tab, a
-        // collaborator, or an agent move (story 041). A clean editor closes
-        // and falls back like the deleting tab does (dropOpenDoc); a dirty
-        // one stays open so unsaved work isn't lost — its next save
-        // re-creates the file.
-        if (hasUnsavedChanges()) {
-          notify(`${change.path} was deleted — your unsaved edits will re-create it on save`);
-        } else {
-          void discardDocument().then(() => {
-            notify(`${change.path} was deleted`);
-            if (change.path !== MAIN_DOCUMENT) {
-              openInEditor(projectId, MAIN_DOCUMENT);
-            } else {
-              workspace.setActiveDocument('');
-            }
-          });
-        }
-        return;
-      }
       // Live-update a clean editor in place (story 017); a dirty editor keeps
       // the reload prompt so unsaved local edits aren't clobbered.
       void applyExternalChange(change.path).then((applied) => {
@@ -202,7 +252,14 @@ async function switchToActiveProject(): Promise<void> {
       // Citation events arrive alongside their own file_change — file_change
       // alone is sufficient here; chat renders citation system lines itself.
       if (event.type === 'file_change' && event.path) {
-        handleFileChange({ path: event.path, kind: event.kind, agent: event.agent });
+        handleFileChange({
+          path: event.path,
+          kind: event.kind,
+          agent: event.agent,
+          // On kind 'moved' (story 012-002) `path` is the NEW path and this is
+          // the old one — without it nothing downstream can follow the move.
+          from: event.meta?.from,
+        });
       }
       // Comment mutations (story 008-004): refresh the open doc's threads and
       // the file-tree unresolved badges (the tree refetch carries the counts).
@@ -217,17 +274,10 @@ async function switchToActiveProject(): Promise<void> {
     onOpenMarkdown: (path) => openInEditor(projectId, path),
     onPreviewFile: (path) => void previewStoredFile(path),
     flushOpenDoc: () => flushSave(),
-    reopenOpenDoc: (to) => openInEditor(projectId, to),
     dropOpenDoc: (deletedPath) => {
       // Drop the deleted doc without re-saving, then fall back to the main draft
       // (unless that's what was deleted) so the editor isn't left stranded.
-      void discardDocument().then(() => {
-        if (deletedPath !== MAIN_DOCUMENT) {
-          openInEditor(projectId, MAIN_DOCUMENT);
-        } else {
-          workspace.setActiveDocument('');
-        }
-      });
+      void discardDocument().then(() => fallBackAfterDelete(projectId, deletedPath));
     },
   });
   initPreview(projectId);
@@ -248,6 +298,7 @@ async function switchToActiveProject(): Promise<void> {
   }
 
   setActiveFile(doc);
+  openTarget = doc; // synchronously, before the await — see openTarget above
   await openDocument(projectId, doc);
   if (seq !== switchSeq) return;
   workspace.setActiveDocument(doc);
@@ -266,9 +317,101 @@ function maybeOpenSetupWizard(
 
 /** Open a text file in the editor and record it as the active document. */
 function openInEditor(projectId: number, path: string): void {
+  openTarget = path;
   setActiveFile(path);
   workspace.setActiveDocument(path);
   void openDocument(projectId, path);
+}
+
+/**
+ * Where the editor lands when the open document goes away: draft/main.md if it
+ * is still in the tree, else whatever markdown the project actually has, else
+ * nothing. Resolved through the tree rather than off the MAIN_DOCUMENT constant
+ * because a move (story 012-002) can carry draft/main.md — or the whole draft/
+ * folder — elsewhere, and opening a path that no longer exists seeds an empty
+ * room from the template and re-creates the file on the first save.
+ */
+function fallbackDocument(): string | null {
+  return findMarkdownPath(MAIN_DOCUMENT);
+}
+
+/**
+ * Land the editor somewhere sane after `deletedPath` went away — a file, or
+ * (story 012-001, now that folders have a delete button) a whole folder.
+ *
+ * The prefix test is the point. `deletedPath` can be an ANCESTOR of the open
+ * document and of the fallback, and re-opening a document inside a folder that
+ * was just deleted is not a cosmetic bug: openDocument seeds an empty Yjs room
+ * from the template and the first autosave writes it back to disk, re-creating
+ * the parent directory recursively. Closing the editor is the correct outcome
+ * when nothing survives.
+ *
+ * Caveat, deliberate: on the local delete leg `files.ts` calls `dropOpenDoc`
+ * BEFORE its `await deleteFile`, so `fallbackDocument()` reads a PRE-delete tree
+ * snapshot. The prefix test makes that safe rather than correct — if the only
+ * surviving markdown sorts after a doomed one, we close instead of opening it,
+ * and the user re-opens from the tree. Refreshing here instead would race the
+ * in-flight delete (and files.ts's own post-delete refresh) for no guarantee.
+ */
+function fallBackAfterDelete(projectId: number, deletedPath: string): void {
+  const fallback = fallbackDocument();
+  if (fallback && !isUnder(fallback, deletedPath)) {
+    openInEditor(projectId, fallback);
+  } else {
+    openTarget = '';
+    workspace.setActiveDocument('');
+  }
+}
+
+/**
+ * Follow the open document to `next` after a move (story 012-002). Retarget,
+ * never reopen: editor.retargetDocument sets the path FIRST and only then
+ * decides clean vs dirty, so an autosave firing in the window between the fs
+ * rename and this event can only land on the new path instead of resurrecting
+ * the old one. Reopening is its job too — a tab left out of the new Yjs room
+ * would be a silent second writer.
+ *
+ * `openTarget` makes this re-entrant. The mover's own tab receives the event
+ * while its own move request is still in flight (the hub fans out before the
+ * route responds), and a 4002 room close can retarget the editor independently,
+ * so the same move legitimately arrives twice.
+ */
+// The 4002 room-moved close retargets through here too, not straight into
+// editor.retargetDocument, so the tree row and workspace follow on that leg as
+// well (it is the leg that exists precisely for when the SSE feed is down).
+setRetargetHandler((next) => retargetOpenDoc(next));
+
+function retargetOpenDoc(next: string): void {
+  if (!next || next === openTarget) return;
+  openTarget = next;
+  setActiveFile(next);
+  workspace.setActiveDocument(next);
+  void retargetDocument(next);
+}
+
+/**
+ * A 'moved' event arrived without its old path (a lossy channel — the job
+ * stream carries file_change only while the project feed is down). Guessing the
+ * new path is impossible, and doing nothing leaves the tab autosaving to a path
+ * that no longer exists, so re-read the tree and decide by inspection: if the
+ * open document is still there the move wasn't ours; if it is gone and the
+ * event names a file that now exists, follow it; otherwise say so out loud.
+ */
+async function followMoveBlind(projectId: number, open: string, to: string): Promise<void> {
+  // This is the one place that awaits refreshTree for its DATA. A deferred
+  // refresh (inline input open) leaves the snapshot stale, and deciding from a
+  // stale tree would silently conclude "still on disk — not our document" for a
+  // file that just moved, leaving the tab autosaving to a dead path.
+  if (!(await refreshTree(projectId))) {
+    notify(`${open} moved — reload to continue editing`);
+    return;
+  }
+  if (findMarkdownPath(open) === open) return; // still on disk — not our document
+  if (findMarkdownPath(to) === to) {
+    retargetOpenDoc(to);
+    return;
+  }
+  notify(`${open} moved — reload to continue editing`);
 }
 
 async function main(): Promise<void> {

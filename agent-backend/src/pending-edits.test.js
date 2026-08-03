@@ -239,6 +239,20 @@ describe('acceptEdit', () => {
     });
   });
 
+  it('refuses a row whose file was moved out of draft/ (story 012-002)', async () => {
+    // proposeEdit gates on isSuggestionPath, but a move re-keys pending_edits
+    // (db/move-paths.js), so a row's path can leave draft/ after the fact.
+    // Accepting it would write outside the suggestion scope — a path the agent
+    // could never have proposed into directly.
+    const edit = await propose();
+    querySync('UPDATE pending_edits SET path = $2 WHERE id = $1', [edit.id, 'archive/main.md']);
+    await expect(acceptEdit(PROJECT_ID, edit.id, { userId: USER_ID }))
+      .rejects.toMatchObject({ code: 'invalid_path' });
+    // Nothing written, and the untouched original is still on disk.
+    expect(await diskContent()).toBe(BASE);
+    await expect(diskContent('archive/main.md')).rejects.toThrow();
+  });
+
   it("a base-missing accept publishes kind 'create'", async () => {
     const edit = await propose({ path: 'draft/new.md', proposedContent: 'fresh\n' });
     await acceptEdit(PROJECT_ID, edit.id, { userId: USER_ID });

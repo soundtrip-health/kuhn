@@ -1,6 +1,7 @@
 // /cite picker (story 016): a floating panel at the caret that searches
 // PubMed through the backend citation service and inserts the chosen work as
-// a citation chip, upserting it into draft/references.bib. Every candidate
+// a citation chip, upserting it into the project bibliography (the server
+// chooses the path and echoes it back — see onPick). Every candidate
 // shown comes from PubMed metadata — grounding rule from Epic 003.
 
 import { addCitation, searchCitations, type CitationCandidate } from './api';
@@ -10,8 +11,13 @@ const SEARCH_DEBOUNCE_MS = 350;
 export interface CitePickerOptions {
   projectId: number;
   anchor: { x: number; y: number };
-  /** Called with the BibTeX key after the bibliography upsert succeeds */
-  onPick: (key: string) => void;
+  /**
+   * Called after the bibliography upsert succeeds, with the BibTeX key and the
+   * path of the bibliography the server actually wrote (story 012-001: the bib
+   * is no longer guaranteed to be at `draft/references.bib`, so the caller must
+   * be told which file to reload rather than assuming).
+   */
+  onPick: (key: string, bibPath: string) => void;
   onClose: () => void;
 }
 
@@ -107,8 +113,8 @@ export function openCitePicker(options: CitePickerOptions): void {
     adding = true;
     setStatus('Adding to bibliography…');
     try {
-      const { key } = await addCitation(options.projectId, candidate.pmid);
-      options.onPick(key);
+      const { key, path } = await addCitation(options.projectId, candidate.pmid);
+      options.onPick(key, path);
       close();
     } catch (err) {
       adding = false;

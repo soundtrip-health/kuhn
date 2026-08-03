@@ -7,7 +7,7 @@ vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }))
 
 import * as decoding from 'lib0/decoding';
 
-import { handleYjsConnection, evictRoom, hasRoom } from './yjs-websocket.js';
+import { handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom } from './yjs-websocket.js';
 import { publishProjectEvent } from './project-events.js';
 
 /** Minimal ws double: enough surface for handleYjsConnection + evictRoom. */
@@ -24,6 +24,11 @@ function fakeWs() {
       this.sent.push(message);
     },
     close(code, reason) {
+      // The real ws throws here past the close-frame limit; emulate it so the
+      // safeReason guard is actually exercised (story 012-002).
+      if (Buffer.byteLength(reason ?? '', 'utf8') > 123) {
+        throw new RangeError('The message must not be greater than 123 bytes');
+      }
       this.closed = { code, reason };
       handlers.get('close')?.();
     },
@@ -108,6 +113,68 @@ describe('collab room eviction (story 038)', () => {
     evictRoom(room);
     const third = connect(room);
     expect(decodeGrant(third.sent[0])).toBe(1);
+  });
+
+  it('closes with the caller\'s code and reason when a move redirects the room (story 012-002)', () => {
+    const room = 'project-906/draft/main.md';
+    const ws = connect(room);
+    expect(
+      evictRoom(room, { closeConnections: true, closeCode: 4002, closeReason: 'archive/main.md' }),
+    ).toBe(true);
+    expect(hasRoom(room)).toBe(false);
+    expect(ws.closed).toEqual({ code: 4002, reason: 'archive/main.md' });
+  });
+
+  it('drops an over-long close reason instead of throwing mid-eviction', () => {
+    const room = 'project-907/draft/main.md';
+    const first = connect(room);
+    const second = connect(room);
+    // 124 UTF-8 bytes: one past the close-frame cap. The SSE 'moved' event,
+    // not the reason string, is what tells clients where the file went.
+    const longPath = `${'a'.repeat(120)}/x.md`;
+    expect(Buffer.byteLength(longPath, 'utf8')).toBeGreaterThan(123);
+
+    expect(
+      evictRoom(room, { closeConnections: true, closeCode: 4002, closeReason: longPath }),
+    ).toBe(true);
+    expect(hasRoom(room)).toBe(false);
+    // Every connection is closed — the first oversized reason must not abort
+    // the loop and strand the rest.
+    expect(first.closed).toEqual({ code: 4002, reason: '' });
+    expect(second.closed).toEqual({ code: 4002, reason: '' });
+  });
+
+  it('evictRoomsUnder evicts a folder and its descendants but not a prefix look-alike', () => {
+    const folder = 'project-908/dir';
+    const child = 'project-908/dir/a.md';
+    const grandchild = 'project-908/dir/sub/b.md';
+    const lookAlike = 'project-908/directive.md';
+    const otherProject = 'project-9080/dir/a.md';
+    const rooms = [folder, child, grandchild, lookAlike, otherProject].map((r) => [r, connect(r)]);
+
+    expect(
+      evictRoomsUnder(folder, { closeConnections: true, closeCode: 4002, closeReason: 'archive/dir' }),
+    ).toBe(3);
+
+    for (const [room, ws] of rooms) {
+      const evicted = room === folder || room === child || room === grandchild;
+      expect([room, hasRoom(room)]).toEqual([room, !evicted]);
+      expect([room, ws.closed]).toEqual([room, evicted ? { code: 4002, reason: 'archive/dir' } : null]);
+    }
+  });
+
+  it('evictRoomsUnder honours idle-only semantics and returns 0 when nothing matches', () => {
+    const live = 'project-909/dir/live.md';
+    const idle = 'project-909/dir/idle.md';
+    const ws = connect(live);
+    connect(idle).disconnect();
+
+    expect(evictRoomsUnder('project-909/dir')).toBe(1); // idle only
+    expect(hasRoom(idle)).toBe(false);
+    expect(hasRoom(live)).toBe(true);
+    expect(ws.closed).toBe(null);
+
+    expect(evictRoomsUnder('project-909/never-opened')).toBe(0);
   });
 
   it('a re-created room after eviction starts from empty state', () => {
