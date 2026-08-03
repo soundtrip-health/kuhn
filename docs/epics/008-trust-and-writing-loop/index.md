@@ -11,6 +11,11 @@ claim-checking on its anchors.)
 with live decoration tracking; the "Yjs relative positions" leaning was
 dropped because room eviction re-mints CRDT identities, see the story's
 "As built". Remaining: 003 claim-checking, which consumes 004's anchors.)
+**Updated:** 2026-08-02 (005 shipped — agent write coherence: read_file
+reflects pending proposals, derived-.bib writes refused, `manage_references`
+tools (update/remove by cite key) for the RA, `messages.is_error` +
+`GET /api/agent/jobs/:id/trace` audit trail; closes issues #41/#42.
+Remaining: 003 claim-checking.)
 **Priority:** #1 of the 2026-07 roadmap (008 → 009 → 010)
 
 ## Goal
@@ -45,6 +50,7 @@ product's core promise. Each story hardens one leg of it:
 | 002 | [Document version history](stories/002-version-history.md) — snapshot on save + agent-job boundaries; timeline, diff, restore | done | L |
 | 003 | [Citation claim-checking](stories/003-citation-claim-check.md) — Reviewer verifies every `[@key]` against retrieved evidence | draft | L |
 | 004 | [Margin comments](stories/004-margin-comments.md) — anchored threads in the document; Reviewer files comments instead of chat walls | done | L |
+| 005 | [Agent write coherence & deterministic reference tools](stories/005-agent-write-coherence.md) — suggestion-mode read-back coherence, derived-.bib guard, update/remove_reference, job trace audit (issues #41/#42) | done | M |
 
 ## Sequencing
 
