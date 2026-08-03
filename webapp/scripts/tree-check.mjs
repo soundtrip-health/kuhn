@@ -57,6 +57,8 @@ const RENAMED = `${DIR}/renamed.md`;
 const MOVED = `${DEST}/move-me.md`;
 const DRAG_DST = `${DEST}/${DRAGGED}`;
 const NEW_FOLDER = 'tree-check-new';
+const SUB_MOVED = `${DEST}/sub`;
+const SUB_MOVED_DEEP = `${SUB_MOVED}/deep.md`;
 
 const OWNED = [DIR, DEST, EMPTY, DRAGGED, NEW_FOLDER];
 const owned = (path) =>
@@ -78,8 +80,11 @@ const postJson = (url, body) =>
 const mkdir = (path) => postJson(api('/files/mkdir'), { path });
 const uploadInto = (dir, name, text) => {
   const form = new FormData();
+  // `path` (the route's field name), and BEFORE `files` — multer only exposes
+  // fields that arrive ahead of the file parts, which is also why api.ts
+  // appends it first.
+  if (dir) form.append('path', dir);
   form.append('files', new Blob([text], { type: 'text/markdown' }), name);
-  if (dir) form.append('dir', dir);
   return fetch(api('/files/upload'), { method: 'POST', body: form });
 };
 
@@ -239,6 +244,10 @@ try {
       !(await page.locator(entrySel(DIR_A)).isVisible()),
       'the collapsed folder still hides its children after a reload',
     );
+    check(
+      (await page.locator(summarySel(EMPTY)).count()) === 1,
+      'the empty folder still renders after a reload (AC 2)',
+    );
     // Re-expand for the rest of the run; the rollup badges must go away.
     await page.locator(summarySel(DIR)).click();
     await page.waitForTimeout(150);
@@ -274,7 +283,9 @@ try {
     await page.locator(entrySel(DIR_RENAME)).focus();
     await page.keyboard.press('r');
     await page.waitForSelector('#file-tree .file-name-input', { timeout: 5000 });
-    await page.keyboard.press('Control+a');
+    // ControlOrMeta: plain Control+a is not select-all on macOS Chromium (it is
+    // an Emacs move-to-start binding), and the app pre-selects only the stem.
+    await page.keyboard.press('ControlOrMeta+a');
     await page.keyboard.type('renamed.md');
     await page.keyboard.press('Enter');
     await waitForPath(page, entrySel(RENAMED));
@@ -333,6 +344,68 @@ try {
     check(
       afterIllegal.includes(SUB) && afterIllegal.includes(SUB_DEEP),
       'dropping a folder into its own descendant is refused, with nothing moved',
+    );
+
+    // ---------------------------------------------------------------- 7b --
+    // AC 1's "including folders with contents": move a FOLDER via the dialog
+    // and its children must arrive with it.
+    // ----------------------------------------------------------------------
+    await page.locator(summarySel(SUB)).focus();
+    await page.keyboard.press('m');
+    await page.waitForSelector('#move-dialog:not([hidden])', { timeout: 5000 });
+    await page.keyboard.type(DEST);
+    await page.waitForTimeout(100);
+    await page.keyboard.press('Enter');
+    await waitForPath(page, summarySel(SUB_MOVED));
+    const afterDirMove = await allPaths();
+    check(
+      afterDirMove.includes(SUB_MOVED) &&
+        afterDirMove.includes(SUB_MOVED_DEEP) &&
+        !afterDirMove.includes(SUB),
+      'moving a folder via the dialog carries its contents',
+    );
+
+    // ---------------------------------------------------------------- 8b --
+    // Drop onto a COLLAPSED folder row — the destination must accept the drop
+    // without needing to be expanded first.
+    // ----------------------------------------------------------------------
+    await page.locator(summarySel(DEST)).click(); // collapse it
+    await page.waitForTimeout(150);
+    check(
+      (await page.locator(summarySel(DEST)).getAttribute('aria-expanded')) === 'false',
+      'the drop target folder is collapsed',
+    );
+    await dragTo(page, entrySel(RENAMED), summarySel(DEST));
+    await waitForPath(page, entrySel(`${DEST}/renamed.md`));
+    const afterCollapsedDrop = await allPaths();
+    check(
+      afterCollapsedDrop.includes(`${DEST}/renamed.md`) && !afterCollapsedDrop.includes(RENAMED),
+      'dropping a file onto a collapsed folder moves it',
+    );
+
+    // ------------------------------------------------------------------ 9 --
+    // Delete a folder CONTAINING THE OPEN DOCUMENT — the confirm() is
+    // accepted, the folder goes, and the editor retargets off the dead path
+    // instead of resurrecting it (an open-then-recreate would re-seed the
+    // file from the Yjs room on the next autosave).
+    // ----------------------------------------------------------------------
+    page.on('dialog', (d) => void d.accept());
+    const DOOMED_DOC = `${DEST}/renamed.md`;
+    await page.locator(entrySel(DOOMED_DOC)).click();
+    await page.waitForSelector(`${entrySel(DOOMED_DOC)}[aria-selected="true"]`, { timeout: 10000 });
+    await page.locator(summarySel(DEST)).focus();
+    await page.keyboard.press('Delete');
+    await waitForPath(page, summarySel(DEST), false);
+    check(!(await allPaths()).includes(DEST), 'deleting the folder is reflected on the server');
+    await page.waitForTimeout(600); // let the editor settle on its fallback
+    const openAfterDelete = await page.evaluate(
+      () => document.querySelector('#file-tree [aria-selected="true"]')?.getAttribute('data-path') ?? null,
+    );
+    check(openAfterDelete !== DOOMED_DOC, 'the editor no longer points at the deleted document');
+    const afterSettle = await allPaths();
+    check(
+      !afterSettle.includes(DOOMED_DOC),
+      'the deleted document is not resurrected by the editor',
     );
 
     // Leave no trace in the headless profile's storage either.

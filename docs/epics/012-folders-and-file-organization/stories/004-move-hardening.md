@@ -55,6 +55,12 @@ Standing up the harness is most of the work; the tests are small.
 - [ ] `webapp/` has a vitest setup with the `moved` handler covered: clean
       retarget, dirty retarget (flush → fresh Y.Doc → rejoin), 4002 with an
       empty reason → "moved — reload" state, and a missing `meta.from`.
+- [ ] Deferred from [012-001](001-folder-tree-ui.md): a **rename racing an
+      agent write** — the one folder-UI interaction `tree-check` could not
+      demonstrate token-free. Cover the interleaving in the vitest suite (an
+      agent `file_change`/proposal event arriving between the rename request
+      and its `moved` event must not resurrect the old path or mis-target the
+      proposal badge).
 
 ## Notes
 

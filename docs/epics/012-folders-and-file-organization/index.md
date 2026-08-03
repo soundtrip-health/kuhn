@@ -1,6 +1,6 @@
 # Epic 012: Folders & File Organization
 
-**Status:** ready
+**Status:** in-progress
 **Created:** 2026-08-02
 **Issue:** [#47](https://github.com/rfdougherty/kuhn/issues/47)
 
@@ -32,64 +32,47 @@ that keeps the storage-as-truth model.
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | in-progress | M |
+| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | **done** | M |
 | 002 | [Move-aware path consumers](stories/002-move-aware-consumers.md) — a `moved` event kind; comments, Yjs rooms, pending edits, badges follow `from → to` | **done** | L |
 | 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs | ready | S |
 | 004 | [Move hardening](stories/004-move-hardening.md) — tombstone a moved Yjs room so a non-compliant client cannot resurrect it; stand up vitest in the webapp and cover the `moved` handler | ready | S |
 | 005 | [Badge divergence & path errors](stories/005-badge-count-divergence.md) — folder rollup vs. the unseen pill disagree on file-less proposals; ancestor-is-a-file paths 500 instead of 409 | ready | S |
 
-## Current state — picking this up fresh (2026-08-03)
+## Current state (2026-08-03)
 
-Branch **`epic-012-folders`**, two commits ahead of `main`, nothing pushed and
-no PR opened yet:
+Branch **`epic-012-folders`**, nothing pushed and no PR opened yet. 012-002
+and 012-001 are both **done** — 001 closed on 2026-08-03 when `tree-check.mjs`
+finally ran against the live stack (green, 45 checks, repeatable; the two
+failures it surfaced were script bugs, recorded in the story's verification
+record). Remaining: 003 (verification sweep), 004, 005.
 
-| Commit | Story |
-|---|---|
-| `5a455ed` | 012-002 — move is a first-class, identity-preserving event |
-| `63f2755` | 012-001 — folder tree UI (code complete, browser check pending) |
+Judgment calls reviewed at the 2026-08-03 pickup and settled as follows —
+reopen only with a reason:
 
-Green as of that commit: `agent-backend` 396 tests pass (35 files), and
-`webapp` `npx tsc --noEmit` + `npm run build` are both clean.
-
-**The one thing blocking 012-001 from `done`** is that `tree-check.mjs` has
-never been run. It needs the backend and webapp both up, and writes into
-`projects[0]` (override with `PROJECT_ID`). That is fine — the local data
-directory is disposable, every project in it is a test project, and
-`data/db/kuhn.sqlite` + `data/files/` can be deleted at any time (the backend
-recreates the schema and re-seeds on startup). The script still purges its own
-fixtures on start and in a `finally`, so repeated runs stay readable:
-
-```bash
-cd agent-backend && npm run dev     # terminal 1, port 3002
-cd webapp && npm run dev            # terminal 2, port 5174 (pinned)
-cd webapp && npm run tree-check     # terminal 3
-```
-
-Until that passes, three of 012-001's acceptance criteria are built but not
-demonstrated, and the story record says so explicitly.
-
-**If you are refining specs, start here** — these are the places where the
-build made a judgment call that a fresh reading might want to revisit:
-
-- **012-001 AC 4 was restated, not met as written.** The folder rollup and the
-  header pill count genuinely different things and cannot agree; the divergence
-  is 012-005. Decide which is the truth before building more badge behaviour.
-- **012-001's "agent-created files land in the selected folder"** shipped as a
-  *prompt hint*, restricted to `draft/`, not as enforcement. If the intent was
-  enforcement, that is a runtime change to the agent file tools and belongs in
-  its own story.
+- **Badge semantics (012-001 AC 4 / 012-005):** the rollup and the pill count
+  different things by construction. 012-005's recommendation stands — roll
+  file-less proposals up to their would-be parent folder, so a proposed new
+  file cannot hide behind a collapsed folder. Decided there, recorded here.
+- **Agent-created files land in the selected folder as a prompt *hint*,
+  `draft/`-only — this is the intended behaviour, not a compromise.**
+  Enforcement would let a selected folder outside `draft/` silently convert a
+  reviewable proposal into a direct write (`isSuggestionPath` gates the review
+  loop on the first path segment). No enforcement story is planned.
 - **012-002 deliberately kept `path` as identity** and added no file-id column.
   Every later feature that wants a stable handle for a file (external links,
   for instance) reopens that decision — the reasoning is in that story's Notes.
-- **012-004 and 012-005 were both filed from review findings**, not from
-  product intent. Confirm they are worth doing before scheduling them.
+- **012-004 and 012-005 are confirmed worth doing.** 004's tombstone closes a
+  real stale-tab hazard and its webapp-vitest harness is where 001's deferred
+  rename-vs-agent-write race gets covered; 005's two items are user-visible
+  correctness (disagreeing counts on one screen; a 500 for a plausible typo).
 
 ## Sequencing
 
 **Decided at kickoff:** 002 ships first, so 001 can enable move with no
-orphaning caveat and no warning banner to remove later. 002 is the substance
-and is now done. 001 is next; 003 is a verification sweep more than a build.
-004 collects the two client-side gaps 002 shipped with.
+orphaning caveat and no warning banner to remove later. 002 and 001 are done.
+**003 is next** — a verification sweep more than a build, with the render.js
+bibliography break as its confirmed starting point. Then 004 (which also
+inherits 001's deferred rename-vs-agent-write race), then 005.
 
 ## Risks
 

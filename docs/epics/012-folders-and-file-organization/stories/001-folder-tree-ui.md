@@ -1,6 +1,6 @@
 # Story 012-001: Folder tree UI
 
-**Status:** in-progress
+**Status:** done
 **Epic:** [012 — Folders & File Organization](../index.md)
 **Estimate:** M
 
@@ -30,11 +30,13 @@ plus the two small routes it's missing.
 
 ## Acceptance Criteria
 
-- [ ] Create folder, rename, and move (drag and dialog) all work from the
+- [x] Create folder, rename, and move (drag and dialog) all work from the
       file manager, including folders with contents.
-- [ ] Empty folders persist and render across reloads.
+- [x] Empty folders persist and render across reloads.
 - [x] Moving a folder into its own descendant is refused server-side.
-- [ ] Collapsed folders roll up child badges (unseen/unresolved counts).
+- [x] Collapsed folders roll up child badges (unseen/unresolved counts) —
+      met in the restated form below; the pill divergence is
+      [012-005](005-badge-count-divergence.md).
 - [x] `files-check` script extended to cover mkdir/move/rename token-free.
 
 ## Notes
@@ -49,13 +51,13 @@ plus the two small routes it's missing.
     `rename(2)`, fail `EINVAL` and return a 500 with stray directories left
     behind);
   - `renameEntry` already flushes a prefix-matched open document before moving.
-- Inherited from 012-002, to pick up here:
-  - `bib.ts:8` hard-codes `draft/references.bib` and `main.ts:51` hard-codes
-    `draft/main.md`. Both silently break once those files — or `draft/` itself
-    — move, which this story is what makes reachable from the UI. They need
-    tree-resolution or a `moved`-aware setter.
-  - `FilesHandlers.reopenOpenDoc` (`files.ts:42`) is dead: zero call sites, the
-    SSE `moved` event is the single retarget path. Delete the field.
+- Inherited from 012-002, **both resolved in this story's commit**:
+  - the hard-coded `draft/references.bib` / `draft/main.md` are now defaults,
+    not assumptions: `bib.ts` tracks the path the loaded bibliography actually
+    came from, and `main.ts` resolves its fallback document through the tree
+    (`fallbackDocument()`) instead of opening `draft/main.md` blind.
+  - the dead `FilesHandlers.reopenOpenDoc` field was deleted (zero references
+    remain).
 - The move route has a second 409 case beyond destination-exists: a **pending
   edit** already waiting at the destination (proposals live only in the DB, so
   storage cannot detect them). Surface it distinctly — the response carries
@@ -67,10 +69,9 @@ The file manager is a real tree: persisted expand/collapse, folder selection as
 the upload/create target, create folder, rename, and move by both drag-and-drop
 and a keyboard-accessible "Move to…" dialog.
 
-**Status is `in-progress`, not `done`** — the code is built, typechecks, builds
-and passes the backend suite (396 tests), but `tree-check.mjs` has **not been
-run against a live app**, so no acceptance criterion that says "works from the
-file manager" has been demonstrated in a browser. See "Remaining" below.
+Verified 2026-08-03: `tree-check.mjs` runs green against the live stack —
+45 checks, repeatable (two consecutive clean runs). See "Verification record"
+below for what the first run found.
 
 ### Structure — what was NOT done, deliberately
 
@@ -123,13 +124,29 @@ every `suggestMap` key including `base_missing` proposals that have no file on
 disk and therefore no tree node. The two numbers legitimately differ; the
 divergence is filed as [012-005](005-badge-count-divergence.md).
 
-## Remaining before this is `done`
+## Verification record (2026-08-03)
 
-- [ ] Run `npm run tree-check` against a live backend + webapp and fix what it
-      finds. Until then AC 1, 2 and 4 are built but not demonstrated.
-- [ ] Manual pass on the interactions a script covers poorly: drag onto a
-      collapsed folder, delete a folder containing the open document, and a
-      rename racing an agent write.
+`npm run tree-check` was run against the live stack and came back green
+(45 checks) after two fixes — both in the **script**, not the app:
+
+- the upload helper sent the target directory as form field `dir`; the route
+  reads **`path`** (and multer only sees fields that precede the file parts),
+  so every nested fixture silently landed at the project root. Fixed, and the
+  files the failed run leaked at root were cleaned up.
+- the rename step pressed `Control+a` for select-all, which on macOS Chromium
+  is an Emacs move-to-start binding; now `ControlOrMeta+a`.
+
+Coverage added while closing the ACs: a folder-with-contents move via the
+dialog (AC 1's folder case was previously only the refused illegal drop),
+drop onto a **collapsed** folder row, empty-folder render after reload, and
+deleting the folder **containing the open document** (confirm() accepted;
+asserts the editor retargets and the dead path is not resurrected by a
+subsequent autosave).
+
+The one interaction not demonstrated token-free is **a rename racing an agent
+write** — deferred to [012-004](004-move-hardening.md), whose webapp-vitest
+acceptance criteria already own exactly these interleavings (autosave debounce
+between rename and event, SSE vs. WS-close ordering).
 
 ## Known gaps (owned by open stories)
 
