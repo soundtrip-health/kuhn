@@ -264,7 +264,7 @@ function maybeOpenSetupWizard(
   openSetupWizard(project.id, { auto: true });
 }
 
-/** Open a markdown file in the editor and record it as the active document. */
+/** Open a text file in the editor and record it as the active document. */
 function openInEditor(projectId: number, path: string): void {
   setActiveFile(path);
   workspace.setActiveDocument(path);

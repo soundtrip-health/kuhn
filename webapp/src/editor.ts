@@ -24,7 +24,7 @@ import { toolbar } from '@milkdown/crepe/feature/toolbar';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown as cmMarkdown } from '@codemirror/lang-markdown';
 import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView as CmEditorView, keymap as cmKeymap } from '@codemirror/view';
 
 import { type Editor, editorViewCtx } from '@milkdown/kit/core';
@@ -240,8 +240,9 @@ function updateDocMeta(markdown: string): void {
   const words = (markdown.trim().match(/\S+/g) ?? []).length;
   const wc = document.getElementById('editor-wordcount');
   if (wc) wc.textContent = `${words.toLocaleString()} word${words === 1 ? '' : 's'}`;
+  // The seeding hero belongs to the rich draft view — never over raw text.
   const hero = document.getElementById('editor-hero');
-  if (hero) hero.hidden = markdown.trim().length > 0;
+  if (hero) hero.hidden = sourceView != null || markdown.trim().length > 0;
 }
 
 /** Insert a citation chip atom at the current selection. */
@@ -270,6 +271,20 @@ export async function openDocument(
     tooltipsInstalled = true;
   }
   wireModeToggle();
+
+  // Non-markdown text files (issue #44: .bib, .json, .txt, …) open as raw
+  // text — a plain CodeMirror view straight on storage, no rich mode to
+  // toggle to and no Yjs room (single writer, like source mode).
+  if (!path.endsWith('.md')) {
+    const stored = (await readTextFile(projectId, path)) ?? '';
+    if (projectId !== currentProjectId || path !== currentPath) return; // switched away
+    lastSavedMarkdown = stored;
+    createSourceView(stored, [], { markdown: false });
+    setModeToggle(null);
+    updateDocMeta(stored);
+    setSaveState('saved');
+    return;
+  }
   setModeToggle('rich');
 
   const stored = await readTextFile(projectId, path);
@@ -442,20 +457,33 @@ async function enterSourceMode(): Promise<void> {
   if (projectId !== currentProjectId || path !== currentPath || !crepe) return; // switched away
   await teardownRich();
   lastSavedMarkdown = stored;
-  const root = document.getElementById('editor')!;
-  root.classList.add('editor-source');
   // Gutter markers for commented lines (story 008-004, source-mode v1).
   const commentGutter = await sourceCommentGutter(projectId, path, stored);
   if (projectId !== currentProjectId || path !== currentPath || sourceView) return;
+  createSourceView(stored, [commentGutter], { markdown: true });
+  updateDocMeta(stored);
+  setSaveState('saved');
+  setModeToggle('source');
+  sourceView!.focus();
+}
+
+/** Build the raw-text CodeMirror view (source mode, and non-md files). */
+function createSourceView(
+  doc: string,
+  extra: Extension[],
+  opts: { markdown: boolean },
+): void {
+  const root = document.getElementById('editor')!;
+  root.classList.add('editor-source');
   sourceView = new CmEditorView({
     parent: root,
     state: EditorState.create({
-      doc: stored,
+      doc,
       extensions: [
-        commentGutter,
+        ...extra,
         history(),
         cmKeymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-        cmMarkdown(),
+        ...(opts.markdown ? [cmMarkdown()] : []),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         CmEditorView.lineWrapping,
         CmEditorView.updateListener.of((update) => {
@@ -467,10 +495,6 @@ async function enterSourceMode(): Promise<void> {
       ],
     }),
   });
-  updateDocMeta(stored);
-  setSaveState('saved');
-  setModeToggle('source');
-  sourceView.focus();
 }
 
 /** Persist the raw text, then reopen the rich editor on the stored bytes. */
