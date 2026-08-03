@@ -245,6 +245,18 @@ describe('applyMove — pending_edits collisions and scope', () => {
     expect(findPendingEditConflicts(PROJECT_ID, 'draft/x', 'draft/z')).toEqual([]);
   });
 
+  it('a CLEAN source moving onto a waiting proposal clashes too (story 012-005)', () => {
+    // The source carries no pending edit, so the source-side walk sees
+    // nothing — this leg was missing until files-check caught it live. The
+    // arriving bytes would silently become the proposal's base.
+    pending('draft/methods.md', 'the agent only copy');
+    expect(findPendingEditConflicts(PROJECT_ID, 'draft/notes.md', 'draft/methods.md'))
+      .toEqual(['draft/methods.md']);
+    // A folder move landing ON or OVER proposals reports them all.
+    pending('draft/y/a.md');
+    expect(findPendingEditConflicts(PROJECT_ID, 'draft/x', 'draft/y')).toEqual(['draft/y/a.md']);
+  });
+
   it('moves a pending edit that leaves draft/ instead of dropping it, and counts it', () => {
     // proposed_content is the only copy (proposals never hit disk), so the row
     // follows its file; the scope gate belongs at acceptance time.

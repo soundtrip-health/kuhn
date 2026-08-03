@@ -84,6 +84,17 @@ Live: `npm run phantom-check` (new token-free script) seeds a real
 `base_missing` pending edit and asserts pill, open-folder phantom badge,
 collapsed rollup, agreement, and no double-badging.
 
+### Bonus: a latent 012-002 gap, caught by the final sweep
+
+Running `files-check` live for the first time (it was written in 012-001 but
+only `tree-check` had been run) exposed a missing leg in the move pre-flight:
+`findPendingEditConflicts` walked pending edits under the *source* and
+checked their re-keyed paths, so a **clean source moving onto a waiting
+proposal** sailed through with a 200 — the arriving bytes would silently
+become the proposal's base. The destination-side walk is now included (rows
+being re-keyed by the same move excluded), with a colocated test
+(`move-paths.test.js`) and `files-check` green end-to-end.
+
 ### 2. `ENOTDIR` → 409 naming the blocking file
 
 `realpathDeepestExisting` (storage.js) maps `ENOTDIR` to a `conflict`

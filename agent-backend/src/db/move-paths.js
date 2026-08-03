@@ -231,14 +231,22 @@ export function findPendingEditConflicts(projectId, from, to) {
   const dst = canonical(to, 'destination');
   const sources = subtreeRows('pending_edits', projectId, src);
   const moving = new Set(sources.map((r) => r.id));
-  const clashes = [];
+  const clashes = new Set();
   for (const row of sources) {
     const path = dst + row.path.slice(src.length);
     const { rows } = querySync(
       'SELECT id FROM pending_edits WHERE project_id = $1 AND path = $2',
       [projectId, path],
     );
-    if (rows[0] && !moving.has(rows[0].id)) clashes.push(path);
+    if (rows[0] && !moving.has(rows[0].id)) clashes.add(path);
   }
-  return clashes;
+  // A CLEAN source moving onto a waiting proposal clashes too (story 012-005:
+  // files-check caught this leg missing). The destination cannot exist on
+  // disk — storage 409s that first — so any pending edit at or under it is a
+  // base_missing proposal, and the arriving bytes would silently become that
+  // proposal's base. Rows being re-keyed by this very move are not clashes.
+  for (const row of subtreeRows('pending_edits', projectId, dst)) {
+    if (!moving.has(row.id)) clashes.add(row.path);
+  }
+  return [...clashes];
 }
