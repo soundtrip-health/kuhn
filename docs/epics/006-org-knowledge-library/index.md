@@ -50,7 +50,8 @@ corpus" (deferred from Epic 004).
 
 - Embedding/vector retrieval (only if FTS relevance falls short)
 - Cross-org shared Kuhn-curated corpus served centrally (per-org import first)
-- Library versioning/approval workflow for regulated-doc control
+- Library versioning/approval workflow for regulated-doc control — approval
+  half now owned by Story 011-004 (guidance promotion approval)
 - Org admin beyond library management (invites, roles, quotas — Epic 007+)
 
 ## Stories

@@ -29,8 +29,9 @@ pilot will accept.
   viewer sockets), not just in UI.
 - Webapp: role-aware UI (hide edit affordances for viewers; the editor opens
   in a read-only mode — Crepe `editable: false` + source mode read-only).
-- Invitations: owner invites by email → membership with chosen role
-  (magic-link flow already gets them in the door).
+- Invitations: out of scope here — the full invite flow is Story 011-002;
+  this story only ensures role is a parameter wherever memberships are
+  created.
 
 ## Acceptance Criteria
 
@@ -49,3 +50,7 @@ pilot will accept.
 
 - Deliberately org-level roles only; per-project overrides are a follow-up
   if a pilot demands them (keep the check helper signature ready for it).
+- Downstream consumers: Epic 011 maps issue #46's "org admin / regular
+  user" onto owner/editor (no new roles), and Epic 013 reuses the
+  message-level read-only room guard for external view/comment reviewers —
+  keep that guard reusable, not inlined into member auth.

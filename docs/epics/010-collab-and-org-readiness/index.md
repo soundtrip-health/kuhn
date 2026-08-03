@@ -28,6 +28,12 @@ auth, everyone-is-an-editor), and closes the last ingestion gap (scanned PDFs).
 001 and 006 are independent quick wins. 003 before 004 (roles give SSO users
 something to be mapped into) and before 005 (the admin view needs an "admin").
 002 is independent but should precede any serious multi-org pilot — it removes
-the biggest data-durability caveat. OCR (006) is filed here rather than in
+the biggest data-durability caveat.
+
+Two later epics build directly on 003: **Epic 011** (multi-tenant org
+administration, issue #46) consumes the role model and owns the invitation
+flow 003's sketch mentions in passing, and **Epic 013** (external review,
+issue #48) reuses 003's message-level read-only room enforcement for guest
+reviewers. That raises 003's priority within this epic. OCR (006) is filed here rather than in
 Epic 006 because that epic is closed; its index's deferred-items note still
 points forward correctly.
