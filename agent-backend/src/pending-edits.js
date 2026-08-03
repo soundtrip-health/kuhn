@@ -232,6 +232,18 @@ export async function acceptEdit(projectId, id, { hunk = null, force = false, us
   if (!stored) throw new StorageError('not_found', `No pending edit ${id}`);
   const row = await refreshRow(projectId, stored);
   if (!row) return { applied: true, remaining: 0 }; // resolved itself: file already matches
+  // proposeEdit gates on isSuggestionPath, but a row's path is no longer fixed
+  // for its lifetime: story 012-002 lets a move re-key pending_edits, so a
+  // proposal for draft/main.md follows the file to archive/main.md and would
+  // otherwise be written outside draft/** here — a scope the agent could never
+  // have proposed into directly. Re-check at the point of the write.
+  if (!isSuggestionPath(row.path)) {
+    throw new StorageError(
+      'invalid_path',
+      `Pending edit ${id} now points at ${row.path}, outside the draft/ suggestion scope — `
+      + 'its file was moved. Reject it and ask the agent to re-propose.',
+    );
+  }
   const kind = row.base_missing ? 'create' : 'update';
 
   if (row.stale && !force) {

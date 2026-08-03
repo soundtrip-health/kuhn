@@ -33,8 +33,13 @@ export interface FilesHandlers {
   onPreviewFile: (path: string) => void;
   /** Persist the open document before it is renamed (so edits aren't lost). */
   flushOpenDoc: () => Promise<void> | void;
-  /** Re-open the document at its new path after a rename. */
-  reopenOpenDoc: (to: string) => void;
+  /**
+   * @deprecated Story 012-002: no longer called from here. The `moved` feed
+   * event is the ONE retarget path — the server fans it out synchronously
+   * before the move response returns, so reopening from both sites
+   * double-opens the document.
+   */
+  reopenOpenDoc?: (to: string) => void;
   /** The open document was deleted — drop it without re-saving. */
   dropOpenDoc: (deletedPath: string) => void;
 }
@@ -42,8 +47,11 @@ export interface FilesHandlers {
 /** A file-tree change worth tracking for the status map. */
 export interface FileChange {
   path: string;
-  kind?: 'create' | 'update' | 'delete' | 'proposed';
+  kind?: 'create' | 'update' | 'delete' | 'proposed' | 'moved';
   agent?: string;
+  /** On kind 'moved' (story 012-002): the OLD path. `path` is always the NEW
+   * one, so every other consumer of `path` keeps working unchanged. */
+  from?: string;
 }
 
 type FileStatusKind = 'new' | 'modified' | 'generated' | 'ingesting' | 'done' | 'suggested';
@@ -418,6 +426,16 @@ export function recordFileChange(change: FileChange): void {
     if (change.agent) originMap.set(change.path, change.agent);
     return;
   }
+  if (change.kind === 'moved' && change.from) {
+    // A move preserves identity (story 012-002), so re-key every path-keyed
+    // map instead of dropping the old path and inventing a new entry. The
+    // debounced refresh re-hydrates most of them from server truth moments
+    // later; this keeps badges off the wrong row in the meantime and is the
+    // only thing that carries the client-only ingestMap across a move.
+    migrateStatus(change.from, change.path);
+    updateUnseenPill();
+    return;
+  }
   if (change.kind === 'delete') {
     statusMap.delete(change.path);
     suggestMap.delete(change.path);
@@ -438,18 +456,34 @@ function recordUpload(path: string): void {
   updateUnseenPill();
 }
 
+/**
+ * Re-key every path-keyed client map through a move of `from` → `to` (story
+ * 012-002). Prefix-aware, so a FOLDER move carries all of its descendants —
+ * the client mirror of the server's one transactional rewrite. Each map is
+ * iterated over a snapshot of its keys so rewritten entries aren't revisited.
+ */
 function migrateStatus(from: string, to: string): void {
-  const st = statusMap.get(from);
-  statusMap.delete(from);
-  if (st) statusMap.set(to, st);
-  const origin = originMap.get(from);
-  originMap.delete(from);
-  if (origin) originMap.set(to, origin);
-  if (suggestMap.has(from)) {
-    suggestMap.set(to, suggestMap.get(from) ?? null);
-    suggestMap.delete(from);
+  const rekey = <V>(map: Map<string, V>): void => {
+    for (const key of [...map.keys()]) {
+      const next = movedPath(key, from, to);
+      if (next == null) continue;
+      const value = map.get(key) as V;
+      map.delete(key);
+      map.set(next, value);
+    }
+  };
+  rekey(statusMap);
+  rekey(originMap);
+  rekey(suggestMap);
+  rekey(commentMap);
+  rekey(ingestMap);
+  // Seen-throttle stamps are worthless at the new path — drop them so the
+  // first open there re-POSTs mark-seen rather than being throttled out.
+  for (const key of [...seenSentAt.keys()]) {
+    if (movedPath(key, from, to) != null) seenSentAt.delete(key);
   }
-  seenSentAt.delete(from);
+  const nextActive = movedPath(activePath, from, to);
+  if (nextActive != null) activePath = nextActive;
 }
 
 // ---- Upload -----------------------------------------------------------------
@@ -536,8 +570,11 @@ function beginRename(node: TreeNode): void {
 
 async function renameEntry(node: TreeNode, newName: string): Promise<void> {
   const to = joinName(node.path, newName);
-  const isOpen = node.path === activePath;
-  if (isOpen) await handlers?.flushOpenDoc(); // persist edits to the old path first
+  // Prefix-aware (story 012-002): renaming a FOLDER must flush an open
+  // DESCENDANT too, not just an exact match. The server evicts every Yjs room
+  // under the old path on a move, and rooms are memory-only — unflushed
+  // keystrokes exist nowhere else and would die with the room.
+  if (movedPath(activePath, node.path, to) != null) await handlers?.flushOpenDoc();
   try {
     await moveFile(projectId, node.path, to);
   } catch (err) {
@@ -545,11 +582,11 @@ async function renameEntry(node: TreeNode, newName: string): Promise<void> {
     await refreshTree(projectId);
     return;
   }
+  // Re-keys the maps and `activePath`. Deliberately no reopen here: the
+  // `moved` feed event is the ONE retarget path (story 012-002) — the server
+  // fans it out synchronously before this response returns, so reopening from
+  // both sites would race two concurrent opens of the same document.
   migrateStatus(node.path, to);
-  if (isOpen) {
-    activePath = to;
-    handlers?.reopenOpenDoc(to);
-  }
   await refreshTree(projectId);
 }
 
@@ -916,6 +953,19 @@ export function isEditableText(path: string): boolean {
 function joinName(path: string, name: string): string {
   const slash = path.lastIndexOf('/');
   return slash === -1 ? name : `${path.slice(0, slash)}/${name}`;
+}
+
+/**
+ * Map `path` through a move of `from` → `to`, or null if it isn't affected
+ * (story 012-002). Client mirror of the server's subtree predicate: exact
+ * match, or a descendant matched on `from + '/'` — the trailing slash is what
+ * stops a move of `dir` from dragging `directive.md` along with it.
+ */
+export function movedPath(path: string, from: string, to: string): string | null {
+  if (!path || !from || !to) return null;
+  if (path === from) return to;
+  if (path.startsWith(`${from}/`)) return to + path.slice(from.length);
+  return null;
 }
 
 // Platform CSS.escape (story 005-004) — replaces a hand-rolled escaper that

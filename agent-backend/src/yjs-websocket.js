@@ -23,6 +23,28 @@ const MSG_AWARENESS = 1;
 // both seed it. y-websocket reserves 0-3; 64 leaves headroom for upstream.
 const MSG_SEED_GRANT = 64;
 
+/** The room's file was removed (story 038). Clients stop reconnecting. */
+export const CLOSE_ROOM_EVICTED = 4001;
+/**
+ * The room's file was moved (story 012-002). Clients stop reconnecting and
+ * re-open at the new path, which the close reason carries when it fits —
+ * mirrored in webapp/src/editor.ts.
+ */
+export const CLOSE_ROOM_MOVED = 4002;
+
+// A WebSocket close frame caps the reason at 123 UTF-8 BYTES and ws.close()
+// throws RangeError past it. Project paths can be long and non-ASCII, so
+// measure bytes, not characters, and drop the reason rather than let one
+// oversized path abort the eviction loop for every other connection. The
+// reason is a hint only: the SSE 'moved' event is the authoritative carrier
+// of the new path (story 012-002).
+const MAX_CLOSE_REASON_BYTES = 123;
+
+function safeReason(reason) {
+  if (typeof reason !== 'string' || reason === '') return '';
+  return Buffer.byteLength(reason, 'utf8') > MAX_CLOSE_REASON_BYTES ? '' : reason;
+}
+
 /**
  * @typedef {Object} DocEntry
  * @property {Y.Doc} doc
@@ -90,15 +112,23 @@ function getOrCreateDoc(name) {
  * closed with 4001; without it the room is dropped only when idle, so live
  * collaborators are never kicked by a mere overwrite — their open editor
  * reconciles through the file_change feed instead.
+ *
+ * A move (story 012-002) is the same eviction with a different verdict for
+ * the client: `closeCode` 4002 plus the new path as `closeReason` tells it
+ * to re-open there rather than treat the document as gone.
  * @returns {boolean} whether a room was evicted
  */
-export function evictRoom(name, { closeConnections = false } = {}) {
+export function evictRoom(
+  name,
+  { closeConnections = false, closeCode = CLOSE_ROOM_EVICTED, closeReason = 'Document removed' } = {},
+) {
   const entry = docs.get(name);
   if (!entry) return false;
   if (entry.conns.size > 0 && !closeConnections) return false;
+  const reason = safeReason(closeReason);
   for (const ws of entry.conns) {
     try {
-      ws.close(4001, 'Document removed');
+      ws.close(closeCode, reason);
     } catch {
       // a dying socket must not block eviction
     }
@@ -107,6 +137,36 @@ export function evictRoom(name, { closeConnections = false } = {}) {
   docs.delete(name); // out of the map before destroy so no update rebroadcasts
   entry.doc.destroy();
   return true;
+}
+
+/**
+ * Evict a room subtree: the room named `prefix` itself plus every room under
+ * `prefix + '/'` (story 012-002 — a folder move re-keys every descendant, and
+ * a room named for a path that no longer exists must not survive).
+ *
+ * The `+ '/'` is load-bearing: a bare startsWith would also match
+ * 'project-7/directive.md' when evicting 'project-7/dir'. Same predicate as
+ * the SQL prefix idiom in db/file-activity.js.
+ *
+ * `closeReason` may be a function of the room name. It has to be for a folder
+ * move: every descendant room needs its OWN new path in the close frame, not
+ * the folder's. Passing the folder's destination to all of them would tell the
+ * client holding `project-7/dir/a.md` that its document is now the directory
+ * `archive/dir`, and it would follow that to a path that is not a file.
+ * @returns {number} how many rooms were evicted
+ */
+export function evictRoomsUnder(prefix, opts = {}) {
+  let evicted = 0;
+  const { closeReason } = opts;
+  // Snapshot the keys: evictRoom mutates `docs` as we go.
+  for (const name of [...docs.keys()]) {
+    if (name !== prefix && !name.startsWith(`${prefix}/`)) continue;
+    const perRoom = typeof closeReason === 'function'
+      ? { ...opts, closeReason: closeReason(name) }
+      : opts;
+    if (evictRoom(name, perRoom)) evicted += 1;
+  }
+  return evicted;
 }
 
 /** Test hook: does a room currently exist in memory? */

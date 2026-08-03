@@ -132,6 +132,40 @@ describe('file operations', () => {
     await expectStorageError(moveProjectEntry(1, 'a.md', 'b.md'), 'conflict');
   });
 
+  // Story 012-002: every path-keyed consumer is re-keyed from what this
+  // returns, so it must be the canonical form, not the caller's spelling.
+  it('returns the canonical relative paths it operated on', async () => {
+    expect(await moveProjectEntry(1, './draft/main.md', 'archive//v1.md')).toEqual({
+      from: 'draft/main.md',
+      to: 'archive/v1.md',
+    });
+    // Trailing slashes on a folder move: normalize() keeps them, resolve() does not.
+    expect(await moveProjectEntry(1, 'archive/', 'old/archive/')).toEqual({
+      from: 'archive',
+      to: 'old/archive',
+    });
+    expect((await readProjectFile(1, 'old/archive/v1.md')).toString()).toContain('Hello kuhn');
+  });
+
+  it('refuses a self-move however it is spelled', async () => {
+    await expectStorageError(moveProjectEntry(1, 'draft/main.md', 'draft/main.md'), 'invalid_path');
+    await expectStorageError(moveProjectEntry(1, 'draft/main.md', './draft//main.md'), 'invalid_path');
+    // Untouched, not silently renamed onto itself.
+    expect((await readProjectFile(1, 'draft/main.md')).toString()).toContain('Hello kuhn');
+  });
+
+  it('refuses to move a folder into its own descendant, leaving no directories behind', async () => {
+    await expectStorageError(moveProjectEntry(1, 'draft', 'draft/sub/draft'), 'invalid_path');
+    const tree = await listProjectTree(1, 'draft');
+    expect(tree.map((n) => n.name)).toEqual(['main.md']);
+    // A sibling whose name merely shares the prefix is still movable.
+    await writeProjectFile(1, 'draftive.md', 'x');
+    expect(await moveProjectEntry(1, 'draftive.md', 'draft/draftive.md')).toEqual({
+      from: 'draftive.md',
+      to: 'draft/draftive.md',
+    });
+  });
+
   it('lists the tree and omits symlinks', async () => {
     await symlink(join(root, 'outside.txt'), join(root, '1', 'sneaky'));
     const tree = await listProjectTree(1);

@@ -92,6 +92,32 @@ describe('file activity store (story 005-002)', () => {
     expect(unseenPaths(PROJECT_ID, null).size).toBe(0);
   });
 
+  it("round-trips a 'moved' event's meta and leaves other kinds' meta null (story 012-002)", () => {
+    recordFileEvent(PROJECT_ID, { path: 'a.md', kind: 'create' });
+    recordFileEvent(PROJECT_ID, {
+      path: 'archive/a.md', kind: 'moved', meta: { from: 'a.md' }, agentSlug: 'writer',
+    });
+    const events = listFileActivity(PROJECT_ID);
+    // path is always the NEW path; meta.from carries the old one.
+    expect(events[0]).toMatchObject({
+      path: 'archive/a.md', kind: 'moved', meta: { from: 'a.md' }, agent_slug: 'writer',
+    });
+    expect(events[1].meta).toBeNull();
+  });
+
+  it('degrades unparseable meta to null rather than throwing', () => {
+    recordFileEvent(PROJECT_ID, { path: 'a.md', kind: 'update' });
+    querySync("UPDATE file_events SET meta = '{not json' WHERE project_id = $1", [PROJECT_ID]);
+    expect(listFileActivity(PROJECT_ID)[0].meta).toBeNull();
+  });
+
+  it("a 'moved' event marks the new path unseen (renamed = changed)", () => {
+    markSeen(USER_ID, PROJECT_ID, 'archive/a.md');
+    ageSeenRow('archive/a.md');
+    recordFileEvent(PROJECT_ID, { path: 'archive/a.md', kind: 'moved', meta: { from: 'a.md' } });
+    expect(unseenPaths(PROJECT_ID, USER_ID).has('archive/a.md')).toBe(true);
+  });
+
   it('migrates seen paths on rename, including directory subtrees', () => {
     markSeen(USER_ID, PROJECT_ID, 'a.md');
     markSeen(USER_ID, PROJECT_ID, 'dir/b.md');

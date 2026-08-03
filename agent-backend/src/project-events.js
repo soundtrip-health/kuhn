@@ -13,11 +13,17 @@
 //     pipeline's own stage markers / status-file event (routes/projects.js).
 // The WeakSet dedupe below makes overlapping sites safe: an event object is
 // published at most once no matter how many paths carry it.
+//
+// The hub is also the move seam (story 012-002): a `moved` file_change routes
+// to applyMove() instead of recordFileEvent, so re-keying every path-keyed
+// consumer and announcing the move share one transaction. It is the only kind
+// whose persistence failure is NOT swallowed — see the branch below.
 
 import { config } from './config.js';
 import { recordFileEvent } from './db/file-activity.js';
+import { applyMove } from './db/move-paths.js';
 import { commitNow, scheduleCommit } from './history.js';
-import { evictRoom } from './yjs-websocket.js';
+import { CLOSE_ROOM_MOVED, evictRoom, evictRoomsUnder } from './yjs-websocket.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
 const subscribers = new Map();
@@ -63,33 +69,100 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
   // and the version-history commit — SSE fan-out only, so open tabs re-fetch
   // their pending-edit badges/decorations.
   if (event.type === 'file_change' && event.path && event.kind !== 'proposed') {
-    try {
-      recordFileEvent(Number(projectId), {
-        path: event.path,
-        kind: event.kind,
-        agentSlug: event.agent ?? null,
-        jobId: event.jobId ?? jobId ?? null,
-        userId: userId ?? null,
-      });
-    } catch (err) {
-      console.error('[project-events] Failed to persist file event:', err);
+    const pid = Number(projectId);
+    // Story 012-002: a move is an identity change, not a write. Its whole DB
+    // side is applyMove(), which re-keys every path-keyed consumer AND appends
+    // the file_events row in one transaction — so this branch must never also
+    // call recordFileEvent, or the announcement would outlive its rewrite.
+    // `moved` is the ONE kind whose persistence failure is not swallowed: the
+    // fs rename has already committed by the time we get here, so a silently
+    // rolled-back applyMove leaves comments/pending edits/seen markers stranded
+    // at a path that no longer exists while the feed reports success. The throw
+    // propagates to the producer (REST route / agent move_file), the only place
+    // that can compensate by renaming back. Every other kind keeps the
+    // deliberate swallow: a lost activity row must not break event delivery.
+    let movedFrom = null;
+    let movedTo = event.path;
+    if (event.kind === 'moved') {
+      if (typeof event.meta?.from !== 'string' || event.meta.from === '') {
+        seen.delete(event);
+        throw new Error("[project-events] a 'moved' event requires meta.from (the old path)");
+      }
+      let applied;
+      try {
+        applied = applyMove(pid, event.meta.from, event.path, {
+          agentSlug: event.agent ?? null,
+          jobId: event.jobId ?? jobId ?? null,
+          userId: userId ?? null,
+        });
+      } catch (err) {
+        // Nothing was persisted, nothing was evicted, nobody was told: take the
+        // event back out of the dedupe set so the producer can retry it.
+        seen.delete(event);
+        throw err;
+      }
+      // Prefer the canonical paths the transaction actually operated on over
+      // the ones the producer sent (applyMove normalizes './a', 'a//b', 'a/').
+      movedFrom = applied?.from ?? event.meta.from;
+      movedTo = applied?.to ?? event.path;
+    } else {
+      try {
+        recordFileEvent(pid, {
+          path: event.path,
+          kind: event.kind,
+          agentSlug: event.agent ?? null,
+          jobId: event.jobId ?? jobId ?? null,
+          userId: userId ?? null,
+        });
+      } catch (err) {
+        console.error('[project-events] Failed to persist file event:', err);
+      }
     }
     // Evict any in-memory collab room for this path (story 038): a stale room
     // inside its empty-room grace window would otherwise win over the bytes
     // just written to storage when the file is next opened. This is the same
     // single choke point as the activity log — every delete/upload/agent write
     // crosses it; the editor's own autosave PUT deliberately does not.
+    // Always AFTER the DB write and BEFORE the fan-out below, so no client can
+    // act on the event while its old room is still joinable.
     try {
-      evictRoom(`project-${Number(projectId)}/${event.path}`, {
-        closeConnections: event.kind === 'delete',
-      });
+      if (movedFrom !== null) {
+        // Story 012-002: the old room — and, for a folder move, every room
+        // under it — is named for a path that no longer exists, so it dies
+        // WITH its clients: 4002 plus the new path tells them to re-open there
+        // instead of treating the document as deleted.
+        // The reason is computed PER ROOM: on a folder move each descendant
+        // must be told its own new path, not the folder's. `project-7/dir/a.md`
+        // evicted under prefix `project-7/dir` moving to `archive/dir` gets
+        // `archive/dir/a.md` — the same prefix arithmetic the SQL rewrite does.
+        const oldPrefix = `project-${pid}/${movedFrom}`;
+        evictRoomsUnder(oldPrefix, {
+          closeConnections: true,
+          closeCode: CLOSE_ROOM_MOVED,
+          closeReason: (name) => movedTo + name.slice(oldPrefix.length),
+        });
+        // The destination is evicted the same way, NOT idle-only: a room can be
+        // live at a path with no file behind it (the editor seeds a template
+        // when the read 404s), and that client would keep its stale content and
+        // autosave it over the bytes just moved in — story 038's hazard in
+        // reverse. Kicking it makes it re-seed from storage.
+        evictRoomsUnder(`project-${pid}/${movedTo}`, {
+          closeConnections: true,
+          closeCode: CLOSE_ROOM_MOVED,
+          closeReason: movedTo,
+        });
+      } else {
+        evictRoom(`project-${pid}/${event.path}`, {
+          closeConnections: event.kind === 'delete',
+        });
+      }
     } catch (err) {
       console.error('[project-events] Failed to evict collab room:', err);
     }
     // Version history (story 008-002): coalesce this change into the
     // project's next auto-commit. Same choke-point rationale as above;
     // scheduleCommit never throws.
-    scheduleCommit(Number(projectId), { agent: event.agent ?? null, userId: userId ?? null });
+    scheduleCommit(pid, { agent: event.agent ?? null, userId: userId ?? null });
   }
   // Agent job boundaries get their own labeled version (story 008-002): a
   // top-level run finishing (or failing) commits whatever it left behind.

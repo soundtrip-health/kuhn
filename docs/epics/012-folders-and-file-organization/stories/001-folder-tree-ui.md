@@ -39,6 +39,24 @@ plus the two small routes it's missing.
 
 ## Notes
 
-- If this ships before 012-002, moving a file with comment threads or an
-  open collab session has known orphaning issues — either gate move UI on
-  002 or ship with a visible warning; decide at kickoff and record here.
+- **Kickoff decision (recorded):** 012-002 ships **first**, so this story can
+  enable move with no orphaning caveat and no warning banner to remove later.
+  [012-002](002-move-aware-consumers.md) is now `done`.
+- Two acceptance criteria are **already met** by 012-002 and just need covering
+  from the UI side:
+  - moving a folder into its own descendant is refused server-side —
+    `moveProjectEntry` now throws `invalid_path` (a 400, where it used to reach
+    `rename(2)`, fail `EINVAL` and return a 500 with stray directories left
+    behind);
+  - `renameEntry` already flushes a prefix-matched open document before moving.
+- Inherited from 012-002, to pick up here:
+  - `bib.ts:8` hard-codes `draft/references.bib` and `main.ts:51` hard-codes
+    `draft/main.md`. Both silently break once those files — or `draft/` itself
+    — move, which this story is what makes reachable from the UI. They need
+    tree-resolution or a `moved`-aware setter.
+  - `FilesHandlers.reopenOpenDoc` (`files.ts:42`) is dead: zero call sites, the
+    SSE `moved` event is the single retarget path. Delete the field.
+- The move route has a second 409 case beyond destination-exists: a **pending
+  edit** already waiting at the destination (proposals live only in the DB, so
+  storage cannot detect them). Surface it distinctly — the response carries
+  `code:'conflict'` and a `paths` array.

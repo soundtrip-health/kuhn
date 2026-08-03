@@ -74,7 +74,12 @@ export interface AgentEvent {
   path?: string;
   // 'proposed' = the pending-suggestion set for a path changed without a real
   // write (story 008-001) — re-fetch pending edits, no bytes moved.
-  kind?: 'create' | 'update' | 'delete' | 'proposed';
+  // 'moved' = an identity-preserving move/rename (story 012-002); `path` is the
+  // NEW canonical path and `meta.from` the old one. A folder move emits exactly
+  // one event for the folder itself — descendants are implied by prefix.
+  kind?: 'create' | 'update' | 'delete' | 'proposed' | 'moved';
+  // Event sidecar; carries `from` on kind 'moved' (story 012-002).
+  meta?: { from?: string };
   // Citation upsert by an agent (story 016)
   key?: string;
   bibtex?: string | null;
@@ -732,7 +737,11 @@ export function subscribeOrgEvents(orgId: number, handlers: OrgFeedHandlers): ()
 export interface FileActivityEvent {
   id: number;
   path: string;
-  kind: 'create' | 'update' | 'delete' | 'rename';
+  // 'moved' (story 012-002): `path` is the new path, `meta.from` the old one.
+  // 'rename' is dormant — kept so historical rows stay typed.
+  kind: 'create' | 'update' | 'delete' | 'rename' | 'moved';
+  /** Parsed JSON sidecar; `{ from }` on a 'moved' row (story 012-002). */
+  meta?: { from?: string } | null;
   agent_slug: string | null; // null = user action
   job_id: number | null;
   created_at: string;

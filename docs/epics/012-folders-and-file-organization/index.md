@@ -32,16 +32,17 @@ that keeps the storage-as-truth model.
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | draft | M |
-| 002 | [Move-aware path consumers](stories/002-move-aware-consumers.md) — a `moved` event kind; comments, Yjs rooms, pending edits, badges follow `from → to` | draft | L |
-| 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs | draft | S |
+| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | ready | M |
+| 002 | [Move-aware path consumers](stories/002-move-aware-consumers.md) — a `moved` event kind; comments, Yjs rooms, pending edits, badges follow `from → to` | **done** | L |
+| 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs | ready | S |
+| 004 | [Move hardening](stories/004-move-hardening.md) — tombstone a moved Yjs room so a non-compliant client cannot resurrect it; stand up vitest in the webapp and cover the `moved` handler | ready | S |
 
 ## Sequencing
 
-001 can ship first behind the existing move route (accepting that moved
-files temporarily shed comments — or 001 simply excludes move until 002
-lands; decide at kickoff). 002 is the substance. 003 is a verification
-sweep more than a build.
+**Decided at kickoff:** 002 ships first, so 001 can enable move with no
+orphaning caveat and no warning banner to remove later. 002 is the substance
+and is now done. 001 is next; 003 is a verification sweep more than a build.
+004 collects the two client-side gaps 002 shipped with.
 
 ## Risks
 

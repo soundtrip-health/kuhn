@@ -238,7 +238,11 @@ CREATE TABLE IF NOT EXISTS file_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   path        TEXT NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('create', 'update', 'delete', 'rename')),
+  -- 'moved' is story 012-002's identity-preserving move (path = the NEW path,
+  -- meta = {"from":"<old path>"}); one row per move, folder descendants implied
+  -- by prefix. 'rename' is dormant — kept so no historical row is invalidated.
+  kind        TEXT NOT NULL CHECK (kind IN ('create', 'update', 'delete', 'rename', 'moved')),
+  meta        TEXT,   -- JSON sidecar, kind-specific; NULL for kinds that carry none
   agent_slug  TEXT,   -- NULL = user action (upload / delete / rename via the UI)
   -- Who acted (story 007-001): the uploading/deleting user, or for agent
   -- events the user whose request ran the job. Epic 005 shipped without this.

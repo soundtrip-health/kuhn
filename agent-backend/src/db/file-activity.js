@@ -7,15 +7,30 @@
 import { querySync } from '../db.js';
 import { config } from '../config.js';
 
+/** Kind-specific JSON sidecar; a corrupt value degrades to null, never throws. */
+function parseMeta(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Append one file event and prune the project's log to the configured cap.
- * @param {{ path: string, kind: string, agentSlug?: string|null, jobId?: number|null, userId?: number|null }} event
+ * `meta` is a plain object (story 012-002: a 'moved' row stores
+ * `{ from: <old path> }`; `path` is always the NEW path) stored as JSON.
+ * @param {{ path: string, kind: string, agentSlug?: string|null, jobId?: number|null, userId?: number|null, meta?: object|null }} event
  */
-export function recordFileEvent(projectId, { path, kind, agentSlug = null, jobId = null, userId = null }) {
+export function recordFileEvent(
+  projectId,
+  { path, kind, agentSlug = null, jobId = null, userId = null, meta = null },
+) {
   querySync(
-    `INSERT INTO file_events (project_id, path, kind, agent_slug, job_id, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [projectId, path, kind, agentSlug, jobId, userId],
+    `INSERT INTO file_events (project_id, path, kind, agent_slug, job_id, user_id, meta)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [projectId, path, kind, agentSlug, jobId, userId, meta == null ? null : JSON.stringify(meta)],
   );
   querySync(
     `DELETE FROM file_events
@@ -33,14 +48,14 @@ export function recordFileEvent(projectId, { path, kind, agentSlug = null, jobId
 export function listFileActivity(projectId, { since = null, limit = 200 } = {}) {
   const cap = Math.min(Math.max(parseInt(limit) || 200, 1), 1000);
   const { rows } = querySync(
-    `SELECT id, path, kind, agent_slug, job_id, user_id, created_at
+    `SELECT id, path, kind, meta, agent_slug, job_id, user_id, created_at
      FROM file_events
      WHERE project_id = $1 AND ($2 IS NULL OR created_at > $2)
      ORDER BY created_at DESC, id DESC
      LIMIT ${cap}`,
     [projectId, since],
   );
-  return rows;
+  return rows.map((r) => ({ ...r, meta: parseMeta(r.meta) }));
 }
 
 /** Upsert the user's seen marker for a path (idempotent; refreshes seen_at). */

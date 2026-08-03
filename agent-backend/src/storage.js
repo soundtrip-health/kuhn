@@ -176,12 +176,38 @@ export async function deleteProjectEntry(projectId, relPath) {
   await rm(abs, { recursive: true });
 }
 
-/** Move/rename a file or directory within the project. */
+/**
+ * Root-relative posix path for an absolute path already contained by root.
+ * This is the canonical form every path-keyed consumer is keyed by: it is
+ * derived from the resolved absolute path, so `./dir/a.md`, `dir//a.md` and
+ * `dir/a.md` all collapse to the same string and a trailing slash is gone.
+ * (story 012-002)
+ */
+function relativeToRoot(root, abs) {
+  return abs.slice(root.length + 1).split(sep).join('/');
+}
+
+/**
+ * Move/rename a file or directory within the project.
+ * Returns the CANONICAL relative paths it actually operated on — callers
+ * publish THESE, never the raw request body, or the DB rewrite keyed on the
+ * old path matches nothing (story 012-002).
+ */
 export async function moveProjectEntry(projectId, fromPath, toPath) {
   const { root, abs: from } = await resolveSafe(projectId, fromPath);
   const { abs: to } = await resolveSafe(projectId, toPath);
   if (from === root || to === root) {
     throw new StorageError('invalid_path', 'Cannot move the project root');
+  }
+  // Both of these reach rename(2) otherwise: a self-move succeeds as a no-op
+  // that still publishes a move, and a folder into its own descendant fails
+  // EINVAL — not a StorageError, so a 500 instead of a 400, after mkdir has
+  // already left the destination directories behind. (story 012-002)
+  if (to === from) {
+    throw new StorageError('invalid_path', 'Source and destination are the same path');
+  }
+  if (to.startsWith(from + sep)) {
+    throw new StorageError('invalid_path', 'Cannot move a folder into itself');
   }
   try {
     await lstat(from);
@@ -197,6 +223,7 @@ export async function moveProjectEntry(projectId, fromPath, toPath) {
   if (destinationExists) throw new StorageError('conflict', `Destination exists: ${toPath}`);
   await mkdir(dirname(to), { recursive: true });
   await rename(from, to);
+  return { from: relativeToRoot(root, from), to: relativeToRoot(root, to) };
 }
 
 // ---- Org library scope (story 006-001) --------------------------------------

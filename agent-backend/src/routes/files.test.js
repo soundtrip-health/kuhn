@@ -13,11 +13,14 @@ vi.mock('../db/file-activity.js', () => ({
   unseenPaths: vi.fn(() => new Set()),
   migrateSeenPaths: vi.fn(),
 }));
+vi.mock('../db/move-paths.js', () => ({ findPendingEditConflicts: vi.fn(() => []) }));
 vi.mock('../project-events.js', () => ({ publishProjectEvent: vi.fn() }));
 
 import { config } from '../config.js';
 import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
+import { findPendingEditConflicts } from '../db/move-paths.js';
 import { publishProjectEvent } from '../project-events.js';
+import { StorageError } from '../storage.js';
 import filesRouter from './files.js';
 
 let server;
@@ -84,32 +87,127 @@ describe('file routes', () => {
     expect(await read.text()).toBe('fresh content');
   });
 
-  it('moves and deletes files, publishing activity (story 005-002)', async () => {
-    await fetch(url('/api/projects/1/file', { path: 'tmp.md' }), {
-      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: 'x',
-    });
-    vi.clearAllMocks();
-    const move = await fetch(url('/api/projects/1/files/move'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: 'tmp.md', to: 'archive/tmp.md' }),
-    });
-    expect(move.status).toBe(200);
-    expect(migrateSeenPaths).toHaveBeenCalledWith(1, 'tmp.md', 'archive/tmp.md');
-    expect(publishProjectEvent.mock.calls.map(([, e]) => [e.kind, e.path])).toEqual([
-      ['delete', 'tmp.md'],
-      ['create', 'archive/tmp.md'],
-    ]);
-    // User actions carry the session user's attribution (story 007-001).
-    expect(publishProjectEvent.mock.calls.every(([, , opts]) => opts.userId === 9)).toBe(true);
+  const move = (body) => fetch(url('/api/projects/1/files/move'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 
-    const del = await fetch(url('/api/projects/1/file', { path: 'archive/tmp.md' }), { method: 'DELETE' });
+  const put = (path, body) => fetch(url('/api/projects/1/file', { path }), {
+    method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body,
+  });
+
+  it('deletes files, publishing activity (story 005-002)', async () => {
+    await put('doomed.md', 'x');
+    vi.clearAllMocks();
+    const del = await fetch(url('/api/projects/1/file', { path: 'doomed.md' }), { method: 'DELETE' });
     expect(del.status).toBe(200);
     expect(publishProjectEvent).toHaveBeenLastCalledWith(1, {
-      type: 'file_change', path: 'archive/tmp.md', kind: 'delete',
+      type: 'file_change', path: 'doomed.md', kind: 'delete',
     }, { userId: 9 });
-    const gone = await fetch(url('/api/projects/1/file', { path: 'archive/tmp.md' }));
+    const gone = await fetch(url('/api/projects/1/file', { path: 'doomed.md' }));
     expect(gone.status).toBe(404);
+  });
+
+  describe('move (story 012-002)', () => {
+    it('publishes one "moved" event, never a delete+create pair', async () => {
+      await put('tmp.md', 'x');
+      vi.clearAllMocks();
+      const res = await move({ from: 'tmp.md', to: 'archive/tmp.md' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ from: 'tmp.md', to: 'archive/tmp.md', moved: true });
+      expect(publishProjectEvent.mock.calls.map(([, e]) => [e.kind, e.path, e.meta?.from])).toEqual([
+        ['moved', 'archive/tmp.md', 'tmp.md'],
+      ]);
+      // User actions carry the session user's attribution (story 007-001).
+      expect(publishProjectEvent.mock.calls.every(([, , opts]) => opts.userId === 9)).toBe(true);
+      // Seen state is re-keyed inside the hub's transaction now, not here.
+      expect(migrateSeenPaths).not.toHaveBeenCalled();
+    });
+
+    it('leaves the old path 404ing and the new path serving the bytes (AC 5)', async () => {
+      await put('ac5.md', 'bytes');
+      expect((await move({ from: 'ac5.md', to: 'archive/ac5.md' })).status).toBe(200);
+      expect((await fetch(url('/api/projects/1/file', { path: 'ac5.md' }))).status).toBe(404);
+      const moved = await fetch(url('/api/projects/1/file', { path: 'archive/ac5.md' }));
+      expect(moved.status).toBe(200);
+      expect(await moved.text()).toBe('bytes');
+    });
+
+    it('publishes the canonical paths storage operated on, not the request body', async () => {
+      await put('canon.md', 'x');
+      vi.clearAllMocks();
+      // './a' and 'a//b' rename fine on disk but would key the DB rewrite to a
+      // path that matches no row.
+      const res = await move({ from: './canon.md', to: 'archive//canon.md' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ from: 'canon.md', to: 'archive/canon.md' });
+      expect(publishProjectEvent.mock.calls.map(([, e]) => [e.path, e.meta?.from])).toEqual([
+        ['archive/canon.md', 'canon.md'],
+      ]);
+    });
+
+    it('publishes ONE event for a moved folder, not one per descendant', async () => {
+      await put('dir/a.md', 'a');
+      await put('dir/sub/b.md', 'b');
+      await put('directive.md', 'decoy');
+      vi.clearAllMocks();
+      const res = await move({ from: 'dir', to: 'archive/dir' });
+      expect(res.status).toBe(200);
+      expect(publishProjectEvent.mock.calls.map(([, e]) => [e.kind, e.path, e.meta?.from])).toEqual([
+        ['moved', 'archive/dir', 'dir'],
+      ]);
+      expect((await fetch(url('/api/projects/1/file', { path: 'archive/dir/sub/b.md' }))).status).toBe(200);
+      // The prefix look-alike is untouched.
+      expect((await fetch(url('/api/projects/1/file', { path: 'directive.md' }))).status).toBe(200);
+    });
+
+    it('maps a degenerate move to 400, not 500', async () => {
+      await put('self.md', 'x');
+      for (const body of [
+        { from: 'self.md', to: 'self.md' },
+        { from: 'nest', to: 'nest/sub/nest' },
+      ]) {
+        const res = await move(body);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect((await res.json()).code).toBe('invalid_path');
+      }
+    });
+
+    it('409s before the rename when a pending edit holds the destination', async () => {
+      await put('clash.md', 'x');
+      vi.clearAllMocks();
+      findPendingEditConflicts.mockReturnValueOnce(['archive/clash.md']);
+      const res = await move({ from: 'clash.md', to: 'archive/clash.md' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('conflict');
+      // Pre-flight: the file never moved and nothing was announced.
+      expect((await fetch(url('/api/projects/1/file', { path: 'clash.md' }))).status).toBe(200);
+      expect(publishProjectEvent).not.toHaveBeenCalled();
+    });
+
+    it('renames back when the DB rewrite fails, so the two systems cannot disagree', async () => {
+      await put('rollback.md', 'keep me');
+      vi.clearAllMocks();
+      publishProjectEvent.mockImplementationOnce(() => { throw new Error('applyMove exploded'); });
+      const res = await move({ from: 'rollback.md', to: 'archive/rollback.md' });
+      expect(res.status).toBe(500);
+      const src = await fetch(url('/api/projects/1/file', { path: 'rollback.md' }));
+      expect(src.status).toBe(200);
+      expect(await src.text()).toBe('keep me');
+      expect((await fetch(url('/api/projects/1/file', { path: 'archive/rollback.md' }))).status).toBe(404);
+    });
+
+    it('surfaces a StorageError from the rewrite with its own status, after the rollback', async () => {
+      await put('conflict.md', 'x');
+      vi.clearAllMocks();
+      publishProjectEvent.mockImplementationOnce(() => {
+        throw new StorageError('conflict', 'Pending edit at the destination');
+      });
+      const res = await move({ from: 'conflict.md', to: 'archive/conflict.md' });
+      expect(res.status).toBe(409);
+      expect((await fetch(url('/api/projects/1/file', { path: 'conflict.md' }))).status).toBe(200);
+    });
   });
 
   it('uploads files via multipart and publishes create events', async () => {

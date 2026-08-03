@@ -390,8 +390,18 @@ function createEventHandler(): (event: AgentEvent) => void {
         break;
       }
       case 'file_change': {
-        appendSystemLine(`${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
-        if (event.path) onFileChange({ path: event.path, kind: event.kind, agent: event.agent });
+        // A move is one line, "moved A → B" (story 012-002) — never a
+        // delete+create pair. `from` must ride along on the change too: this
+        // channel is live exactly when the project feed is down, and without
+        // it the open editor can't retarget and its next autosave resurrects
+        // the old path.
+        const from = event.kind === 'moved' ? event.meta?.from : undefined;
+        appendSystemLine(from
+          ? `${event.agent} moved ${from} → ${event.path}`
+          : `${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
+        if (event.path) {
+          onFileChange({ path: event.path, kind: event.kind, agent: event.agent, from });
+        }
         break;
       }
       case 'citation': {
