@@ -57,6 +57,18 @@ let onFileChange: (change: FileChange) => void = () => {};
 let setupHandler: (projectId: number) => void = () => {};
 export function setSetupHandler(fn: (projectId: number) => void): void { setupHandler = fn; }
 
+// Conversation filter (issue #45): by default the log shows only the selected
+// agent's conversation — agents don't share chat context, so seeing exactly
+// what the selected agent saw removes the switch-and-assume confusion. A
+// toggle above the log shows the full tagged history instead; the choice
+// persists across reloads.
+const SHOW_ALL_KEY = 'kuhn-chat-show-all';
+let showAllAgents = localStorage.getItem(SHOW_ALL_KEY) === '1';
+// The role the in-flight run is addressed to. Everything appended during the
+// run — including subagent bubbles and file-change lines — belongs to that
+// conversation, not to the event's author agent.
+let conversationAgent: string | null = null;
+
 export function initChat(
   projectId: number,
   fileChangeHandler: (change: FileChange) => void,
@@ -75,10 +87,20 @@ export function initChat(
   document.getElementById('chat-log')!.replaceChildren();
   const seedingPanel = document.getElementById('seeding-panel');
   if (seedingPanel) seedingPanel.hidden = true;
+  applyChatFilter(); // refresh the filter bar for the (possibly new) project
   void restore();
 
   if (listenersWired) return; // the form/input listeners bind once for the page
   listenersWired = true;
+
+  document.getElementById('chat-filter-toggle')?.addEventListener('click', () => {
+    showAllAgents = !showAllAgents;
+    localStorage.setItem(SHOW_ALL_KEY, showAllAgents ? '1' : '0');
+    applyChatFilter();
+  });
+  // The agent-selector pill mirrors picks into the hidden select and fires
+  // change — re-filter the log for the newly addressed agent.
+  document.getElementById('chat-role')?.addEventListener('change', () => applyChatFilter());
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
@@ -102,12 +124,67 @@ function autoGrow(input: HTMLTextAreaElement): void {
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 }
 
+// ---- Conversation filter (issue #45) ---------------------------------------
+
+function selectedAgent(): string {
+  return (document.getElementById('chat-role') as HTMLSelectElement).value;
+}
+
+/**
+ * Tag a log element with its owning conversation and hide it immediately if
+ * the filter excludes it. During a run the addressed role wins over the
+ * event's author agent; untagged elements (dividers, out-of-run errors) show
+ * in every view.
+ */
+function tagConversation(el: HTMLElement, agent?: string): void {
+  const owner = conversationAgent ?? agent;
+  if (!owner) return;
+  el.dataset.agent = owner;
+  if (!showAllAgents && owner !== selectedAgent()) el.classList.add('chat-filtered-out');
+}
+
+/** Re-apply the filter to the whole log and refresh the bar above it. */
+function applyChatFilter(): void {
+  const log = document.getElementById('chat-log');
+  if (!log) return;
+  const agent = selectedAgent();
+  let ownCount = 0;
+  for (const el of Array.from(log.children) as HTMLElement[]) {
+    const owner = el.dataset.agent;
+    if (owner === agent) ownCount++;
+    el.classList.toggle('chat-filtered-out', !showAllAgents && !!owner && owner !== agent);
+  }
+
+  // Filtered view with nothing to show: say why, so an inadvertent switch
+  // reads as "this agent hasn't seen anything" rather than a wiped chat.
+  document.getElementById('chat-filter-empty')?.remove();
+  if (!showAllAgents && ownCount === 0) {
+    const hint = document.createElement('div');
+    hint.id = 'chat-filter-empty';
+    hint.className = 'chat-system chat-system-info';
+    hint.textContent =
+      `No conversation with ${agentLabel(agent)} yet — agents only see messages sent to them. `
+      + 'Use “All agents” above to review the full history.';
+    log.append(hint);
+  }
+
+  const label = document.getElementById('chat-filter-label');
+  const toggle = document.getElementById('chat-filter-toggle');
+  if (label) label.textContent = showAllAgents ? 'Showing all agents' : `Showing ${agentLabel(agent)} only`;
+  if (toggle) {
+    toggle.textContent = showAllAgents ? `${agentLabel(agent)} only` : 'All agents';
+    toggle.setAttribute('aria-pressed', String(showAllAgents));
+  }
+  scrollLog();
+}
+
 // Restore prior state on page load (story 020): render the recent transcript
 // from the conversation log, and seed the per-agent session map from recorded
 // jobs so each agent continues its prior SDK session instead of starting fresh.
 async function restore(): Promise<void> {
   try {
     await restoreTranscript();
+    applyChatFilter(); // restored messages carry mixed conversation tags
     const jobs = await listJobs(activeProjectId);
     for (const job of jobs) {
       // Jobs are newest first; keep the most recent session per role
@@ -134,6 +211,7 @@ async function reconnectPendingQuestion(): Promise<void> {
   const p = pending[0]; // one parked top-level run at a time in practice
   if (!p) return;
   running = true;
+  conversationAgent = p.agent;
   setAgentActivity(`${agentLabel(p.agent)} is waiting for your answer…`);
   try {
     await reconnectAgent(p.jobId, createEventHandler());
@@ -162,7 +240,7 @@ async function restoreTranscript(): Promise<void> {
   appendDivider('session restored', messages[0].created_at);
   for (const message of messages) {
     if (message.role === 'user') {
-      appendUserMessage(message.content);
+      appendUserMessage(message.content, message.agent);
     } else {
       const { body } = appendAgentMessage(message.agent, message.created_at);
       renderAgentBody(body, message.agent, message.content);
@@ -231,6 +309,7 @@ function createEventHandler(): (event: AgentEvent) => void {
         // and switch the input box into answer mode.
         finalize();
         activeQuestionCard = new QuestionCard(event.agent, event.content ?? '');
+        tagConversation(activeQuestionCard.element, event.agent);
         document.getElementById('chat-log')!.append(activeQuestionCard.element);
         pendingQuestionJobId = event.jobId ?? null;
         setAgentActivity(`${agentLabel(event.agent)} is waiting for your answer…`);
@@ -320,7 +399,7 @@ async function send(): Promise<void> {
     exitAnswerMode();
     input.value = '';
     autoGrow(input);
-    appendUserMessage(text);
+    appendUserMessage(text, role);
     activeQuestionCard?.markAnswered(text);
     activeQuestionCard = null;
     setAgentActivity(`${agentLabel(role)} is working…`);
@@ -343,7 +422,7 @@ async function send(): Promise<void> {
   input.value = '';
   autoGrow(input);
 
-  appendUserMessage(text);
+  appendUserMessage(text, role);
   retryAction = () => dispatchTask(role, text);
   await dispatchTask(role, text);
 }
@@ -356,6 +435,7 @@ async function send(): Promise<void> {
 async function dispatchTask(role: string, text: string): Promise<void> {
   if (running) return;
   running = true;
+  conversationAgent = role;
   setAgentActivity(`${agentLabel(role)} is working…`);
 
   try {
@@ -377,6 +457,7 @@ export async function startSeeding(): Promise<void> {
   // the correct retry for a new-doc request, which is not a resumable chat turn.
   retryAction = () => startSeeding();
   running = true;
+  conversationAgent = 'pm'; // seeding is the PM-led interview conversation
   // The interview is starting — drop the empty-state greeting card so its
   // "Start project interview" CTA doesn't linger alongside the live pipeline.
   document.querySelector('#chat-log .chat-msg.is-greeting')?.remove();
@@ -395,6 +476,7 @@ export async function startSeeding(): Promise<void> {
 
 function finishRun(): void {
   running = false;
+  conversationAgent = null;
   // The task is over — an unanswered question can no longer be replied to
   if (pendingQuestionJobId != null) {
     activeQuestionCard?.markExpired();
@@ -429,6 +511,7 @@ function appendAgentMessage(slug: string, isoTime: string): AgentBubble {
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-agent';
   wrapper.style.setProperty('--role', `var(${id.colorVar})`);
+  tagConversation(wrapper, slug);
 
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
@@ -457,10 +540,11 @@ function appendAgentMessage(slug: string, isoTime: string): AgentBubble {
   return { wrapper, head, body };
 }
 
-function appendUserMessage(text: string): void {
+function appendUserMessage(text: string, agent?: string): void {
   const log = document.getElementById('chat-log')!;
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-user';
+  tagConversation(wrapper, agent);
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
   avatar.textContent = 'You';
@@ -539,6 +623,7 @@ function appendGreeting(): void {
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-agent is-greeting';
   wrapper.style.setProperty('--role', `var(${id.colorVar})`);
+  tagConversation(wrapper, 'pm');
 
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
@@ -582,6 +667,7 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
   const line = document.createElement('div');
   line.className = `chat-system chat-system-${variant}`;
   line.textContent = text;
+  tagConversation(line); // owned by the in-flight conversation, if any
   log.append(line);
   scrollLog();
 }
@@ -596,6 +682,7 @@ function appendBudgetNotice(agent: string): void {
   const label = agentLabel(agent);
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-budget';
+  tagConversation(card, agent);
   card.innerHTML =
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Token budget reached — task paused</div>` +
     `<p>Nothing is lost. Any files ${label} already wrote are saved (check the Files panel), and ` +
@@ -625,6 +712,7 @@ function appendOverloadNotice(): void {
   const log = document.getElementById('chat-log')!;
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-overload';
+  tagConversation(card);
   card.innerHTML =
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Model provider is overloaded — task paused</div>` +
     `<p>This is a temporary capacity issue upstream (a 529 from the model provider), ` +
@@ -659,8 +747,9 @@ async function continueAfterBudget(agent: string): Promise<void> {
   const prompt =
     'Continue the previous task from where you left off. First, briefly note what you '
     + 'completed and what still remains, then keep going.';
-  appendUserMessage(prompt);
+  appendUserMessage(prompt, agent);
   running = true;
+  conversationAgent = agent;
   setAgentActivity(`${agentLabel(agent)} is working…`);
   try {
     await runAgentTask(

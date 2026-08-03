@@ -45,6 +45,12 @@
       <!-- ---------- LEFT: CHAT ---------- -->
       <aside id="chat-panel">
         <div id="seeding-panel" hidden></div>
+        <!-- Conversation filter (issue #45): chat.ts fills label + toggle -->
+        <div id="chat-filter-bar">
+          <span id="chat-filter-label"></span>
+          <button id="chat-filter-toggle" type="button" class="btn btn-quiet btn-sm" aria-pressed="false"
+            title="Toggle between the selected agent's conversation and the full history"></button>
+        </div>
         <div id="chat-log"></div>
         <form id="chat-form">
           <div class="chat-field">

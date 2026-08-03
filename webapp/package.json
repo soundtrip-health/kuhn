@@ -12,6 +12,7 @@
     "parity-check": "node scripts/parity-sweep.mjs",
     "library-check": "node scripts/org-library-check.mjs",
     "smoke:chat": "node scripts/chat-check.mjs",
+    "chat-filter-check": "node scripts/chat-filter-check.mjs",
     "write-check": "node scripts/write-check.mjs",
     "suggestion-check": "node scripts/suggestion-check.mjs",
     "comments-check": "node scripts/comments-check.mjs"
