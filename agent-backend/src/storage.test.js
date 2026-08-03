@@ -195,6 +195,39 @@ describe('file operations', () => {
 // Story 012-001: the file manager can create folders, so storage needs an
 // exported directory-create. The canonical-path contract is the same one
 // moveProjectEntry established — the webapp keys tree state by path.
+describe('ancestor-is-a-file paths (story 012-005)', () => {
+  // `draft/main.md/sub` — a plausible typo, reachable from the folder UI —
+  // used to rethrow ENOTDIR bare, which the routes mapped to a 500.
+  const expectConflictNaming = async (promise, blocker) => {
+    const err = await promise.then(() => null, (e) => e);
+    expect(err, 'expected a rejection').toBeInstanceOf(StorageError);
+    expect(err.code).toBe('conflict');
+    expect(err.message).toContain(blocker);
+  };
+
+  it('mkdir under a file is a conflict naming the blocking file', async () => {
+    await expectConflictNaming(createProjectDir(1, 'draft/main.md/sub'), 'draft/main.md');
+  });
+
+  it('read through a file ancestor is a conflict naming the blocking file', async () => {
+    await expectConflictNaming(readProjectFile(1, 'draft/main.md/sub/x.md'), 'draft/main.md');
+  });
+
+  it('write through a file ancestor is a conflict, deep or shallow', async () => {
+    await expectConflictNaming(writeProjectFile(1, 'draft/main.md/x.md', 'x'), 'draft/main.md');
+    await expectConflictNaming(
+      writeProjectFile(1, 'draft/main.md/a/b/c.md', 'x'),
+      'draft/main.md',
+    );
+  });
+
+  it('does not loosen containment: traversal and symlink escapes still map as before', async () => {
+    await expectStorageError(readProjectFile(1, '../outside.txt'), 'outside_root');
+    await symlink(join(root, '2'), join(root, '1', 'sneaky'));
+    await expectStorageError(readProjectFile(1, 'sneaky/secret.md'), 'outside_root');
+  });
+});
+
 describe('createProjectDir (story 012-001)', () => {
   it('creates nested directories in one call', async () => {
     expect(await createProjectDir(1, 'figures/panels')).toEqual({

@@ -835,6 +835,10 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 /* Pending agent suggestion (story 008-001) — the /write suggestion purple
    family, distinct from the accent-blue new/ai badges. */
 .file-badge.is-suggested { color: var(--writer); background: var(--writer-soft); }
+/* Story 012-005: a proposal for a file not on disk has no row of its own, so
+   its badge on the OPEN folder is its only representation — tinted like the
+   suggest badge it stands in for. (Collapsed, it is inside the rollup badge.) */
+.file-badge.is-phantom { color: var(--writer); background: var(--writer-soft); }
 .file-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .file-status-text { font-size: 11px; color: var(--role, var(--ink-3)); }
 .file-spinner { width: 14px; height: 14px; flex: none; border: 2px solid var(--role, var(--ink-3)); border-top-color: transparent; border-radius: 50%; animation: kuhn-spin .9s linear infinite; }

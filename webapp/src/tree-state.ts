@@ -397,12 +397,19 @@ export function purgeTreeState(prefix: string): void {
 
 /** Aggregate counts for a subtree. */
 export interface Rollup {
-  /** Descendant FILES (not folders). */
+  /** Descendant FILES (not folders). Phantoms are NOT files — a proposal is
+   * not on disk, so it must not inflate the "N items" count. */
   files: number;
-  /** Descendant files flagged unseen/suggested by the caller's predicate. */
+  /** Descendant files flagged unseen/suggested by the caller's predicate,
+   * PLUS phantom proposals beneath this folder. */
   unseen: number;
   /** Summed unresolved comment threads over descendant files. */
   comments: number;
+  /** Phantom proposals beneath this folder (also counted in `unseen`).
+   * Reported separately because they have no row of their own: an OPEN
+   * folder's children display their own badges, but a phantom's badge on the
+   * folder is its only representation in the tree. */
+  phantoms: number;
 }
 
 /** The caller supplies the two path-keyed lookups so this module stays free of
@@ -416,14 +423,16 @@ export interface RollupProbe {
 
 /**
  * Sum a subtree's flagged descendants so nothing is invisible while a folder is
- * collapsed (AC 4). Counts TREE NODES only: a pending edit proposing a file
- * that doesn't exist on disk yet has no tree node, so it is counted by the
- * `#toggle-files` pill (which iterates map keys) but not here. That divergence
- * is known and owned by a follow-up story — do not "fix" it by making `flagged`
- * lie.
+ * collapsed (012-001 AC 4). The walk covers tree nodes; `phantoms` covers what
+ * the tree cannot — proposals for files that do not exist on disk yet
+ * (`pending_edits.base_missing`) have no node, and before story 012-005 they
+ * were counted by the `#toggle-files` pill (which iterates map keys) but by no
+ * folder, so the two numbers visibly disagreed on one screen. A proposed new
+ * file is exactly the thing a user must not miss behind a collapsed folder,
+ * so the rollup takes those paths separately and counts the ones beneath it.
  */
-export function rollup(node: TreeNode, probe: RollupProbe): Rollup {
-  const out: Rollup = { files: 0, unseen: 0, comments: 0 };
+export function rollup(node: TreeNode, probe: RollupProbe, phantoms: Iterable<string> = []): Rollup {
+  const out: Rollup = { files: 0, unseen: 0, comments: 0, phantoms: 0 };
   const walk = (n: TreeNode): void => {
     if (n.type === 'dir') {
       for (const child of n.children ?? []) walk(child);
@@ -434,5 +443,12 @@ export function rollup(node: TreeNode, probe: RollupProbe): Rollup {
     out.comments += probe.comments(n.path) || 0;
   };
   walk(node);
+  const prefix = node.path ? `${node.path}/` : '';
+  for (const p of phantoms) {
+    if (p.startsWith(prefix)) {
+      out.unseen += 1;
+      out.phantoms += 1;
+    }
+  }
   return out;
 }

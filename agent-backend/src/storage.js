@@ -8,7 +8,7 @@
 import {
   mkdir, readFile, writeFile, rm, rename, readdir, lstat, realpath,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 
 import { config } from './config.js';
 import { query as dbQuery } from './db.js';
@@ -121,6 +121,14 @@ async function realpathDeepestExisting(abs, stopAt) {
       const real = await realpath(current);
       return suffix ? join(real, suffix) : real;
     } catch (err) {
+      // ENOTDIR: an ANCESTOR of the path is a file (`draft/main.md/sub` — a
+      // plausible typo, reachable from the folder UI since story 012-001).
+      // Map it to a 409 naming the blocking file instead of rethrowing bare,
+      // which the routes turned into a generic 500 (story 012-005). Error
+      // mapping only — the containment verdict below is unchanged.
+      if (err.code === 'ENOTDIR') {
+        throw new StorageError('conflict', `A file is in the way: ${await blockingFile(current, stopAt)}`);
+      }
       if (err.code !== 'ENOENT' || current === stopAt || current === dirname(current)) {
         throw err;
       }
@@ -129,6 +137,26 @@ async function realpathDeepestExisting(abs, stopAt) {
       current = dirname(current);
     }
   }
+}
+
+/**
+ * The deepest existing ancestor of `abs` that is a file — the component an
+ * ENOTDIR came from. Peels segments until lstat stops failing; falls back to
+ * the whole path if the walk cannot pin one down (a race with a concurrent
+ * delete), because the 409 must not turn back into a 500.
+ */
+async function blockingFile(abs, root) {
+  let probe = abs;
+  while (probe !== root && probe !== dirname(probe)) {
+    try {
+      const stats = await lstat(probe);
+      if (!stats.isDirectory()) return relative(root, probe);
+      break;
+    } catch {
+      probe = dirname(probe);
+    }
+  }
+  return relative(root, abs);
 }
 
 /** Read a file. Returns a Buffer (callers decide on encoding). */

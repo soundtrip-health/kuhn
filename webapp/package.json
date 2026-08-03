@@ -20,7 +20,8 @@
     "comments-check": "node scripts/comments-check.mjs",
     "move-check": "node scripts/move-check.mjs",
     "files-check": "node scripts/files-check.mjs",
-    "tree-check": "node scripts/tree-check.mjs"
+    "tree-check": "node scripts/tree-check.mjs",
+    "phantom-check": "node scripts/phantom-check.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",

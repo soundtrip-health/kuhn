@@ -496,10 +496,10 @@ export function markSeen(path: string): void {
  * The single "this path wants attention" predicate. The topbar pill and the
  * folder rollups MUST share it or the two numbers drift.
  *
- * Known divergence, owned by a follow-up story: the pill iterates MAP KEYS
- * while a rollup walks TREE NODES, and a pending edit may propose a file that
- * does not exist on disk yet (`base_missing`). Such a proposal is counted by
- * the pill and by no folder.
+ * The pill iterates MAP KEYS while a rollup walks TREE NODES; the gap between
+ * the two — a pending edit proposing a file that does not exist on disk yet
+ * (`base_missing`), which has no tree node — is closed by feeding the rollup
+ * `phantomProposals()` (story 012-005).
  */
 function flaggedPath(path: string): boolean {
   const st = statusMap.get(path);
@@ -511,6 +511,14 @@ const ROLLUP_PROBE: RollupProbe = {
   flagged: flaggedPath,
   comments: (path) => commentMap.get(path) ?? 0,
 };
+
+/** Proposal paths with no file behind them (`pending_edits.base_missing` — a
+ * proposal to CREATE a file). No tree node, so the rollup walk cannot see
+ * them; passed to rollup() separately so a proposed new file is never
+ * invisible behind (or inside) its would-be parent folder (story 012-005). */
+function phantomProposals(): string[] {
+  return [...suggestMap.keys()].filter((path) => !findNode(path));
+}
 
 /** Unseen-count pill on the topbar Files toggle (story 005-003). */
 function updateUnseenPill(): void {
@@ -1443,7 +1451,7 @@ function renderFolder(
 function updateFolderMeta(summary: HTMLElement, node: TreeNode, open: boolean): void {
   const wrap = summary.querySelector<HTMLElement>('.file-rollup');
   if (!wrap) return;
-  const total = rollup(node, ROLLUP_PROBE);
+  const total = rollup(node, ROLLUP_PROBE, phantomProposals());
   const direct = (node.children ?? []).filter((c) => c.type === 'file').length;
   const shown = open ? direct : total.files;
   const parts: HTMLElement[] = [];
@@ -1457,6 +1465,16 @@ function updateFolderMeta(summary: HTMLElement, node: TreeNode, open: boolean): 
   if (total.unseen > 0) {
     const badge = textBadge(String(total.unseen));
     badge.classList.add('is-rollup');
+    badge.setAttribute('aria-hidden', 'true');
+    parts.push(badge);
+  }
+  // Phantom proposals have no row of their own, so an OPEN folder — whose
+  // children otherwise carry the badges — still shows this one (story
+  // 012-005). Collapsed, they are already inside the rollup badge above;
+  // `is-rollup` display is state-gated in CSS, so both never show at once.
+  if (open && total.phantoms > 0) {
+    const badge = textBadge(String(total.phantoms));
+    badge.classList.add('is-phantom');
     badge.setAttribute('aria-hidden', 'true');
     parts.push(badge);
   }
@@ -1474,6 +1492,8 @@ function updateFolderMeta(summary: HTMLElement, node: TreeNode, open: boolean): 
     if (total.comments > 0) {
       bits.push(`${total.comments} open comment${total.comments === 1 ? '' : 's'}`);
     }
+  } else if (total.phantoms > 0) {
+    bits.push(`${total.phantoms} proposed new file${total.phantoms === 1 ? '' : 's'}`);
   }
   if (summary.classList.contains('is-target')) bits.push('upload target');
   summary.setAttribute('aria-label', bits.join(', '));
