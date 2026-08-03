@@ -77,13 +77,15 @@ try {
 }
 await fetch(fileApi(MIXED_OK), { method: 'DELETE' }).catch(() => {});
 
-// --- Browser: click the file → it previews in the pane ---
+// --- Browser: click the .txt → it opens in the editor as raw text (issue #44) ---
 const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on('pageerror', (err) => fail(`pageerror: ${err.message}`));
 
 await page.goto(WEBAPP);
-await page.waitForSelector('#editor .milkdown [contenteditable]', { timeout: 15000 });
+// The recorded active document may itself be a raw-text file (issue #44) —
+// accept either editor as the booted state.
+await page.waitForSelector('#editor .milkdown [contenteditable], #editor.editor-source .cm-content', { timeout: 15000 });
 await page.waitForTimeout(1000);
 
 const entry = `.file-entry[data-path="${UPLOADED}"]`;
@@ -95,17 +97,32 @@ check((await page.locator('#toggle-files .toggle-pill').count()) === 1, 'Files t
 await page.click(entry).catch(() => {});
 await page
   .waitForFunction(
-    (text) => document.querySelector('#preview-alt .preview-text')?.textContent?.includes(text) ?? false,
+    (text) =>
+      document.querySelector('#editor.editor-source .cm-content')?.textContent?.includes(text) ?? false,
     CONTENT,
     { timeout: 10000 },
   )
-  .catch(() => fail('clicking the file did not show its content in the preview pane'));
+  .catch(() => fail('clicking the .txt did not open its content in the raw-text editor'));
 check(
-  (await page.locator('#preview-panel:not(.collapsed)').count()) === 1,
-  'preview panel opens when a file is previewed',
+  (await page.locator('#preview-panel.collapsed').count()) === 1,
+  'preview panel stays closed for a text file',
+);
+check(
+  await page.locator('#editor-mode-toggle').evaluate((el) => el.hidden).catch(() => false),
+  'rich/source mode toggle is hidden for a non-markdown file',
 );
 check((await page.locator(`${entry} .file-badge`).count()) === 0, 'opening the file clears its badge');
-await page.waitForTimeout(400); // let the fire-and-forget mark-seen POST land
+
+// Edits round-trip: type into the raw view, the debounced save PUTs the bytes.
+const MARKER = 'files-check-edited-marker';
+await page.click('#editor.editor-source .cm-content');
+await page.keyboard.type(`${MARKER} `);
+let persisted = false;
+for (let i = 0; i < 20 && !persisted; i++) {
+  await page.waitForTimeout(500);
+  persisted = (await (await fetch(fileApi(UPLOADED))).text()).includes(MARKER);
+}
+check(persisted, 'editing the text file persists through the storage API');
 await browser.close();
 
 check((await findNode(UPLOADED))?.unseen !== true, 'seen state persisted server-side after the click');

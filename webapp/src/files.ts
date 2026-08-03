@@ -27,7 +27,7 @@ import * as workspace from './workspace';
 
 /** Handlers wired by main.ts (it owns the editor + preview pane). */
 export interface FilesHandlers {
-  /** Open a markdown file in the editor. */
+  /** Open an editable text file (markdown or plain) in the editor. */
   onOpenMarkdown: (path: string) => void;
   /** Preview a non-markdown file in the preview pane. */
   onPreviewFile: (path: string) => void;
@@ -364,7 +364,8 @@ function updateUnseenPill(): void {
 
 /**
  * Resolve which document to open for the current project (story 006). Returns
- * `preferred` if it's an existing `.md` in the tree, else the first `.md` found
+ * `preferred` if it's an existing editor-openable file in the tree (the active
+ * document can be any text file — issue #44), else the first `.md` found
  * (depth-first), else null. Call after `refreshTree` so `lastTree` is current.
  */
 export function findMarkdownPath(preferred?: string): string | null {
@@ -372,10 +373,11 @@ export function findMarkdownPath(preferred?: string): string | null {
   let preferredExists = false;
   const walk = (nodes: TreeNode[]): void => {
     for (const node of nodes) {
-      if (node.type === 'dir') walk(node.children ?? []);
-      else if (node.path.endsWith('.md')) {
-        if (first == null) first = node.path;
-        if (node.path === preferred) preferredExists = true;
+      if (node.type === 'dir') {
+        walk(node.children ?? []);
+      } else {
+        if (node.path.endsWith('.md') && first == null) first = node.path;
+        if (node.path === preferred && isEditableText(node.path)) preferredExists = true;
       }
     }
   };
@@ -753,11 +755,13 @@ function renderFile(node: TreeNode): HTMLElement {
     button.append(cb);
   }
 
-  const isMarkdown = node.path.endsWith('.md');
-  button.title = isMarkdown ? `Open ${node.path} in the editor` : `Preview ${node.path}`;
+  // Any text-format file opens in the editor (issue #44); only binaries
+  // (pdf, images, docx, …) go to the preview pane.
+  const isEditable = isEditableText(node.path);
+  button.title = isEditable ? `Open ${node.path} in the editor` : `Preview ${node.path}`;
   if (node.mtime) button.title += `\nModified ${new Date(node.mtime).toLocaleString()}`;
   button.addEventListener('click', () => {
-    if (isMarkdown) {
+    if (isEditable) {
       handlers?.onOpenMarkdown(node.path); // marks seen via setActiveFile
     } else {
       markSeen(node.path); // previews don't go through setActiveFile
@@ -899,6 +903,15 @@ function onTreeKeydown(e: KeyboardEvent): void {
 }
 
 // ---- Path helpers -----------------------------------------------------------
+
+/** Text formats that open in the editor as raw text (issue #44); `.md` opens
+ * rich. Everything else is treated as binary and previews instead. */
+const TEXT_EXTS = ['md', 'txt', 'bib', 'csv', 'tsv', 'json', 'typ', 'tex', 'yaml', 'yml', 'toml', 'xml', 'log'];
+
+export function isEditableText(path: string): boolean {
+  const dot = path.lastIndexOf('.');
+  return dot !== -1 && TEXT_EXTS.includes(path.slice(dot + 1).toLowerCase());
+}
 
 function joinName(path: string, name: string): string {
   const slash = path.lastIndexOf('/');
