@@ -1,6 +1,6 @@
 # Story 012-003: Agent & render awareness of folders
 
-**Status:** ready
+**Status:** done
 **Epic:** [012 — Folders & File Organization](../index.md)
 **Estimate:** S
 
@@ -31,18 +31,68 @@ it and closes any gaps.
 
 ## Acceptance Criteria
 
-- [ ] Agents can list, read, write, and move files in nested folders in a
+- [x] Agents can list, read, write, and move files in nested folders in a
       real session (smoke-level check), and `list_files` output shows
       structure.
-- [ ] Render and export succeed for a document inside a folder, including a
+- [x] Render and export succeed for a document inside a folder, including a
       relative reference to a sibling file.
-- [ ] `/cite` and `.bib` export work from a nested document.
-- [ ] The two bibliography behaviours in the recon notes are decided and
+- [x] `/cite` and `.bib` export work from a nested document.
+- [x] The two bibliography behaviours in the recon notes are decided and
       tested: render-time bib-scatter into rendered-from folders (accept it
       or materialize to one canonical path), and a citation op recreating a
       renamed-away `draft/`.
-- [ ] Every gap found is either fixed here or has a filed owner (rule 2 of
+- [x] Every gap found is either fixed here or has a filed owner (rule 2 of
       the story-hygiene rules).
+
+## What shipped (2026-08-03)
+
+### Decision: one canonical bibliography (user ruling)
+
+The bibliography questions from the recon were settled by a product ruling:
+**the reference DB is the source of truth, the `.bib` file is a readout for
+the user to check, and changes go through the RA agent.** Concretely:
+
+- `DEFAULT_BIB_PATH` (`draft/references.bib`) moved to `db/references.js`
+  (its true home; `citations.js` re-exports it) and **render/export now
+  materialize and read the bib at that one canonical path** instead of
+  "next to the source document". This ends bib-scatter — the old behaviour
+  had already left a stray `pm/references.bib` in the seed project, which
+  was removed.
+- The materialized bib now opens with a `%` **provenance header** ("generated
+  from the reference database — ask the RA to change references; direct edits
+  are overwritten"), which is the user guidance delivered at the point of
+  use, since the .bib opens read-write in the editor's text view. The webapp
+  bib parser skips non-`@` chunks, so the header is invisible to tooltips.
+- **The silent-drop case is accepted** (user ruling): a hand-authored `.bib`
+  anywhere other than the canonical path is ignored by render/export. A
+  hand-authored bib *at* the canonical path in a project with no DB
+  references is still read as-is (materializeBib no-ops on an empty export).
+- The `draft/`-recreation behaviour is **chosen and characterised**: the bib
+  is pinned to one path by design, so a citation op or render after `draft/`
+  was renamed away recreates it. Test: `references.test.js`.
+
+### Verification record
+
+- **Unit:** suite green at 400 tests (+4): nested doc cites against the
+  canonical bib with the temp `.typ` staged next to the source and no bib
+  scattered (`render.test.js`); provenance header, empty-project no-op, and
+  `draft/` recreation (`references.test.js`). Storage already covered nested
+  trees, recursive mkdir and empty dirs.
+- **Live render/export** (real Typst/Pandoc sandbox): a doc at
+  `r012-notes/sub/deep.md` with a citation and a **sibling image** rendered
+  to PDF (200; a broken relative path would abort the Typst compile), and
+  exported to `.tex`/`.docx` with the citation resolved from the canonical
+  bib — no raw `[@key]` leaked, no bib copy written next to the doc.
+- **Real agent session** (pm): one job did `list_files` (structured JSON
+  tree) → `read_file` of the nested path → `move_file` to a folder that did
+  not exist yet (parent auto-created) → `list_files` confirming — and the
+  move arrived as one `moved` event with `meta.from`, per 012-002.
+- **`/cite`:** PubMed search → cite wrote the DB and materialized the
+  canonical bib (path-independent of the open document by construction).
+- **Promote-to-library:** already reduces to `basename()` with dedupe
+  (org-library.js:49-51) — no change needed.
+- **Prompts:** unchanged; the smoke showed no write-to-root habit (the
+  sketch's condition for a prompt nudge).
 
 ## Notes
 

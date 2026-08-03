@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 // Use a real in-memory SQLite DB so identity resolution is exercised against
 // actual SQL/constraints, not mocks. Must be set before db.js is imported.
@@ -11,15 +13,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let exec; let querySync; let insertReference; let exportBibtex; let listProjectReferences;
 let updateReferenceFields; let deleteReference; let getReferenceByKey;
+let materializeBib; let DEFAULT_BIB_PATH;
 let PROJECT_ID;
+let projectsRoot; let savedProjectsRoot; let config;
 
 beforeAll(async () => {
   ({ exec, querySync } = await import('../db.js'));
   ({
     insertReference, exportBibtex, listProjectReferences,
     updateReferenceFields, deleteReference, getReferenceByKey,
+    materializeBib, DEFAULT_BIB_PATH,
   } = await import('./references.js'));
   exec(readFileSync(resolve(__dirname, 'schema.sql'), 'utf-8'));
+  ({ config } = await import('../config.js'));
+  savedProjectsRoot = config.agent.projectsRoot;
+  projectsRoot = await mkdtemp(join(tmpdir(), 'kuhn-refs-'));
+  config.agent.projectsRoot = projectsRoot;
+});
+
+afterAll(async () => {
+  config.agent.projectsRoot = savedProjectsRoot;
+  await rm(projectsRoot, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -100,6 +114,36 @@ describe('exportBibtex', () => {
 
   it('returns an empty string for a project with no references', async () => {
     expect(await exportBibtex(PROJECT_ID)).toBe('');
+  });
+});
+
+describe('materializeBib (story 012-003)', () => {
+  const bibOnDisk = () =>
+    readFile(join(projectsRoot, String(PROJECT_ID), DEFAULT_BIB_PATH), 'utf-8');
+
+  it('writes the canonical bib with the do-not-edit provenance header', async () => {
+    insertReference(PROJECT_ID, lincoff());
+    expect(await materializeBib(PROJECT_ID)).toBe(true);
+    const text = await bibOnDisk();
+    expect(text.startsWith('% Generated from')).toBe(true);
+    expect(text).toContain('ask the Research');
+    expect(text).toContain('@article{lincoff2024,');
+  });
+
+  it('writes nothing for a project with no references', async () => {
+    expect(await materializeBib(PROJECT_ID)).toBe(false);
+    await expect(bibOnDisk()).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('recreates draft/ after it was renamed away (chosen 012-003 behaviour)', async () => {
+    insertReference(PROJECT_ID, lincoff());
+    await materializeBib(PROJECT_ID);
+    // Simulate the user renaming draft/ from the folder UI: the canonical
+    // path is gone. The next citation op / render regenerates it — the bib
+    // is a derived readout of the DB, pinned to one path by design.
+    await rm(join(projectsRoot, String(PROJECT_ID), 'draft'), { recursive: true });
+    expect(await materializeBib(PROJECT_ID)).toBe(true);
+    expect(await bibOnDisk()).toContain('@article{lincoff2024,');
   });
 });
 

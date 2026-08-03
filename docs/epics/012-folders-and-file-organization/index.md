@@ -34,17 +34,19 @@ that keeps the storage-as-truth model.
 |---|-------|--------|------|
 | 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | **done** | M |
 | 002 | [Move-aware path consumers](stories/002-move-aware-consumers.md) — a `moved` event kind; comments, Yjs rooms, pending edits, badges follow `from → to` | **done** | L |
-| 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs | ready | S |
+| 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs; bibliography canonicalized to one path | **done** | S |
 | 004 | [Move hardening](stories/004-move-hardening.md) — tombstone a moved Yjs room so a non-compliant client cannot resurrect it; stand up vitest in the webapp and cover the `moved` handler | ready | S |
 | 005 | [Badge divergence & path errors](stories/005-badge-count-divergence.md) — folder rollup vs. the unseen pill disagree on file-less proposals; ancestor-is-a-file paths 500 instead of 409 | ready | S |
 
 ## Current state (2026-08-03)
 
-Branch **`epic-012-folders`**, nothing pushed and no PR opened yet. 012-002
-and 012-001 are both **done** — 001 closed on 2026-08-03 when `tree-check.mjs`
-finally ran against the live stack (green, 45 checks, repeatable; the two
-failures it surfaced were script bugs, recorded in the story's verification
-record). Remaining: 003 (verification sweep), 004, 005.
+Branch **`epic-012-folders`**, nothing pushed and no PR opened yet — one PR
+ships the whole epic when it finishes (decided 2026-08-03). 001, 002 and 003
+are **done**; remaining: 004 (move hardening + webapp vitest), 005 (badge
+divergence + path-error mapping). 003 settled the bibliography model by user
+ruling: the reference DB is the truth, `draft/references.bib` is its one
+canonical readout (render/export no longer resolve a bib next to the source),
+and users are steered to the RA by a provenance header in the file itself.
 
 Judgment calls reviewed at the 2026-08-03 pickup and settled as follows —
 reopen only with a reason:
@@ -69,11 +71,9 @@ reopen only with a reason:
 ## Sequencing
 
 **Decided at kickoff:** 002 ships first, so 001 can enable move with no
-orphaning caveat and no warning banner to remove later. 002 and 001 are done.
-**003 is next** — a verification sweep more than a build; its recon notes
-(2026-08-03) already pin the bibliography behaviours to decide and verify in
-code, so start there. Then 004 (which also inherits 001's deferred
-rename-vs-agent-write race), then 005.
+orphaning caveat and no warning banner to remove later. 001–003 are done.
+**004 is next** (it also inherits 001's deferred rename-vs-agent-write race),
+then 005; one PR for the whole epic at the end.
 
 ## Risks
 
