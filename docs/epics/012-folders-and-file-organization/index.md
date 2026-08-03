@@ -38,6 +38,50 @@ that keeps the storage-as-truth model.
 | 004 | [Move hardening](stories/004-move-hardening.md) — tombstone a moved Yjs room so a non-compliant client cannot resurrect it; stand up vitest in the webapp and cover the `moved` handler | ready | S |
 | 005 | [Badge divergence & path errors](stories/005-badge-count-divergence.md) — folder rollup vs. the unseen pill disagree on file-less proposals; ancestor-is-a-file paths 500 instead of 409 | ready | S |
 
+## Current state — picking this up fresh (2026-08-03)
+
+Branch **`epic-012-folders`**, two commits ahead of `main`, nothing pushed and
+no PR opened yet:
+
+| Commit | Story |
+|---|---|
+| `5a455ed` | 012-002 — move is a first-class, identity-preserving event |
+| `63f2755` | 012-001 — folder tree UI (code complete, browser check pending) |
+
+Green as of that commit: `agent-backend` 396 tests pass (35 files), and
+`webapp` `npx tsc --noEmit` + `npm run build` are both clean.
+
+**The one thing blocking 012-001 from `done`** is that `tree-check.mjs` has
+never been run. It needs the backend and webapp both up, and it writes into a
+real project (it takes `projects[0]` unless `PROJECT_ID` is set), so it has
+purge-on-startup and try/finally cleanup — but check the diff before trusting
+it with a workspace you care about:
+
+```bash
+cd agent-backend && npm run dev     # terminal 1, port 3002
+cd webapp && npm run dev            # terminal 2, port 5174 (pinned)
+cd webapp && npm run tree-check     # terminal 3
+```
+
+Until that passes, three of 012-001's acceptance criteria are built but not
+demonstrated, and the story record says so explicitly.
+
+**If you are refining specs, start here** — these are the places where the
+build made a judgment call that a fresh reading might want to revisit:
+
+- **012-001 AC 4 was restated, not met as written.** The folder rollup and the
+  header pill count genuinely different things and cannot agree; the divergence
+  is 012-005. Decide which is the truth before building more badge behaviour.
+- **012-001's "agent-created files land in the selected folder"** shipped as a
+  *prompt hint*, restricted to `draft/`, not as enforcement. If the intent was
+  enforcement, that is a runtime change to the agent file tools and belongs in
+  its own story.
+- **012-002 deliberately kept `path` as identity** and added no file-id column.
+  Every later feature that wants a stable handle for a file (external links,
+  for instance) reopens that decision — the reasoning is in that story's Notes.
+- **012-004 and 012-005 were both filed from review findings**, not from
+  product intent. Confirm they are worth doing before scheduling them.
+
 ## Sequencing
 
 **Decided at kickoff:** 002 ships first, so 001 can enable move with no

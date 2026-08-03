@@ -52,7 +52,7 @@ Everything lives under one directory, `KUHN_DATA_DIR` (default: repo-root
 | `org_documents` | Library doc metadata: filename, size, sha256, status, uploader. |
 | `users`, `memberships`, `organizations` | Identity: **email and display name are the only PII stored**. |
 | `sessions`, `auth_tokens` | Login state — only sha256 hashes of secrets, never the tokens themselves (`db/auth.js`). |
-| `file_events`, `file_seen` | File activity log (paths + who/when, not contents), pruned to the newest 1,000 per project. |
+| `file_events`, `file_seen` | File activity log (paths + who/when, not contents), pruned to the newest 1,000 per project. `file_events.meta` is a JSON sidecar; a `moved` row stores `{"from": <old path>}` and its `path` is the NEW path. The log is append-only — a move never rewrites history at the old path. |
 | `comments` | **Margin-comment threads** (story 008-004): comment bodies, the quoted document excerpt each thread anchors to, author (user id or agent slug), resolve state. Kept until deleted by their author or their project. |
 | `agents`, `tools`, `agent_tools`, `projects` | Configuration: agent system prompts, tool grants, project config. |
 
@@ -113,7 +113,14 @@ non-members get 404s (existence is not leaked).
   (`yjs-websocket.js`). Durability comes from the editor's autosave writing
   to storage; a crash loses only not-yet-autosaved keystrokes. Rooms are
   destroyed 30s after the last client leaves, and evicted immediately when
-  their file is deleted or replaced (story 038).
+  their file is deleted or replaced (story 038). A **move** evicts the old
+  room — and, for a folder move, every room beneath it — with close code
+  **4002 carrying the new path**, so connected clients re-open there instead
+  of treating the document as deleted (story 012-002). The reason is computed
+  per room, and blanked when the path exceeds the 123-byte WebSocket close
+  limit; a client that gets a blank reason parks the tab rather than guessing.
+  Clients always build a **fresh `Y.Doc` per room join** — reusing one, or
+  mutating `provider.roomname`, reintroduces the duplicate-doc merge hazard.
 - **Event feeds**: project/org SSE hubs are in-memory pub/sub; only
   `file_change` events are persisted (to `file_events`).
 - **Running agent state**: the live run registry is in-memory; jobs orphaned

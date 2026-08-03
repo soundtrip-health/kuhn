@@ -202,6 +202,20 @@ Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
 - Projects are directories on disk (git-trackable), accessed only via the Storage API
 - Documents are markdown (`.md`); references canonically in SQLite, with `.bib` derived for rendering
 - Figures and tables in `figures/` and `tables/`
+- **Path is identity.** Files have no id column, deliberately — storage is the
+  source of truth and every DB row that refers to a file is keyed by its path
+  (`comments`, `pending_edits`, `file_seen`, `file_events`, and
+  `projects.config.activeDocument`). A move is therefore not a delete plus a
+  create: it is a tracked, identity-preserving `moved` event whose consumers
+  are all re-keyed in one transaction (`db/move-paths.js`, story 012-002).
+  Anything new that keys off a path must be added to that rewrite — the
+  header comment there carries the authoritative audit of path columns.
+  Path matching is **byte-exact**, so a case-only rename on a
+  case-insensitive filesystem is not treated as a no-op.
+- **Folders are just directories.** Nesting has always been allowed by the
+  storage layer; story 012-001 exposes it in the UI. An empty folder is
+  working-tree-only state — git cannot track it, so it survives reloads and
+  the per-file restore, but it is invisible to version history.
 - Agent prompts, conversations, jobs, references, and project metadata in SQLite (project/tenant-scoped)
 - Tenant KB under the tenant's storage; shared guidance corpus in a separate global store
 
