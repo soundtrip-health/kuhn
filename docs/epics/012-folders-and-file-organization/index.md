@@ -52,10 +52,12 @@ Green as of that commit: `agent-backend` 396 tests pass (35 files), and
 `webapp` `npx tsc --noEmit` + `npm run build` are both clean.
 
 **The one thing blocking 012-001 from `done`** is that `tree-check.mjs` has
-never been run. It needs the backend and webapp both up, and it writes into a
-real project (it takes `projects[0]` unless `PROJECT_ID` is set), so it has
-purge-on-startup and try/finally cleanup — but check the diff before trusting
-it with a workspace you care about:
+never been run. It needs the backend and webapp both up, and writes into
+`projects[0]` (override with `PROJECT_ID`). That is fine — the local data
+directory is disposable, every project in it is a test project, and
+`data/db/kuhn.sqlite` + `data/files/` can be deleted at any time (the backend
+recreates the schema and re-seeds on startup). The script still purges its own
+fixtures on start and in a `finally`, so repeated runs stay readable:
 
 ```bash
 cd agent-backend && npm run dev     # terminal 1, port 3002

@@ -14,11 +14,10 @@
 // with a `paths` array); a same-parent move renames the folder and carries its
 // descendants; a recursive delete removes it.
 //
-// HAZARD: like move-check.mjs this runs against projects[0] — a REAL project
-// in the developer's workspace. Every path it touches is `files-check`-prefixed
-// and purge() removes all of them, at startup AND from a finally block, so a
-// failed assertion mid-run cannot leave residue. Set PROJECT_ID to aim it
-// elsewhere.
+// Runs against projects[0] (override with PROJECT_ID). The local data
+// directory is disposable — every project in it is a test project — so no
+// ceremony is needed. Paths are still `files-check`-prefixed and purge()d at
+// startup and from a finally block, purely so repeated runs stay readable.
 import { chromium } from 'playwright';
 
 const WEBAPP = process.env.WEBAPP_URL ?? 'http://localhost:5174';
@@ -322,7 +321,7 @@ try {
     'the folder and every descendant are gone from the tree',
   );
 } finally {
-  // Always — a failed assertion above must not leave residue in a real project.
+  // Always — leftover fixtures make the next run's output confusing.
   await purge();
   const leftovers = (await allNodes()).map((n) => n.path).filter(owned);
   check(leftovers.length === 0, `cleanup left nothing behind (${JSON.stringify(leftovers)})`);

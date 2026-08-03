@@ -20,11 +20,11 @@
 //   8. drag-and-drop moves a row onto a folder, and a folder dropped into its
 //      OWN DESCENDANT is refused by the UI with nothing moved
 //
-// HAZARD: like move-check.mjs and files-check.mjs this runs against
-// projects[0] — a REAL project in the developer's workspace. Every path it
-// touches is `tree-check`-prefixed and purge() removes all of them, at startup
-// AND from a finally block, so a failed assertion mid-run cannot leave
-// residue. Set PROJECT_ID to aim it elsewhere.
+// Runs against projects[0] (override with PROJECT_ID). The local data
+// directory is disposable — every project in it is a test project and the DB
+// and files can be dropped at any time — so this needs no ceremony. Paths are
+// still `tree-check`-prefixed and purge()d at startup and from a finally
+// block, purely so repeated runs stay readable.
 import { chromium } from 'playwright';
 
 const WEBAPP = process.env.WEBAPP_URL ?? 'http://localhost:5174';
@@ -342,7 +342,7 @@ try {
     await browser.close();
   }
 } finally {
-  // Always — a failed assertion above must not leave residue in a real project.
+  // Always — leftover fixtures make the next run's output confusing.
   await purge();
   const leftovers = (await allPaths()).filter(owned);
   check(leftovers.length === 0, `cleanup left nothing behind (${JSON.stringify(leftovers)})`);

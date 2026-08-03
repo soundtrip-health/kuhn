@@ -14,10 +14,10 @@
 //      meta.from — never the delete+create pair that used to orphan
 //      everything, and never one entry per descendant
 //
-// HAZARD: like files-check.mjs this runs against projects[0] — a REAL project
-// in the developer's workspace. Every path it touches is `move-check`-prefixed
-// and purge() removes all of them, at startup AND from a finally block, so a
-// failure mid-run cannot leave residue. Set PROJECT_ID to aim it elsewhere.
+// Runs against projects[0] (override with PROJECT_ID). The local data
+// directory is disposable — every project in it is a test project — so no
+// ceremony is needed. Paths are still `move-check`-prefixed and purge()d at
+// startup and from a finally block, purely so repeated runs stay readable.
 
 const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3002';
 
@@ -236,7 +236,7 @@ try {
     `the row is the folder's own 'moved' entry (got ${JSON.stringify(dirEvents[0]?.meta)})`,
   );
 } finally {
-  // Always — a failed assertion above must not leave residue in a real project.
+  // Always — leftover fixtures make the next run's output confusing.
   await purge();
   const leftovers = (await treePaths()).filter(owned);
   check(leftovers.length === 0, `cleanup left nothing behind (${JSON.stringify(leftovers)})`);
