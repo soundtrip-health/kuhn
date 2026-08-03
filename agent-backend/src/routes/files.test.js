@@ -162,6 +162,23 @@ describe('file routes', () => {
       expect((await fetch(url('/api/projects/1/file', { path: 'directive.md' }))).status).toBe(200);
     });
 
+    // AC 3 of story 012-001: the folder-into-own-descendant refusal is
+    // server-side, not a UI courtesy. The storage guard lands as a plain 400.
+    it('refuses to move a folder into its own descendant (400 invalid_path)', async () => {
+      await put('nest-real/a.md', 'a');
+      await put('nest-real/sub/b.md', 'b');
+      vi.clearAllMocks();
+      const res = await move({ from: 'nest-real', to: 'nest-real/sub/nest-real' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('invalid_path');
+      // Nothing was announced and nothing moved: the descendants are still there
+      // and no stray destination directory was left behind.
+      expect(publishProjectEvent).not.toHaveBeenCalled();
+      expect((await fetch(url('/api/projects/1/file', { path: 'nest-real/sub/b.md' }))).status).toBe(200);
+      const sub = (await (await fetch(url('/api/projects/1/files', { path: 'nest-real/sub' }))).json()).tree;
+      expect(sub.map((n) => n.name)).toEqual(['b.md']);
+    });
+
     it('maps a degenerate move to 400, not 500', async () => {
       await put('self.md', 'x');
       for (const body of [
@@ -207,6 +224,69 @@ describe('file routes', () => {
       const res = await move({ from: 'conflict.md', to: 'archive/conflict.md' });
       expect(res.status).toBe(409);
       expect((await fetch(url('/api/projects/1/file', { path: 'conflict.md' }))).status).toBe(200);
+    });
+  });
+
+  describe('mkdir (story 012-001)', () => {
+    const mkdirReq = (body) => fetch(url('/api/projects/1/files/mkdir'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    it('creates an empty folder and 201s with the canonical path', async () => {
+      vi.clearAllMocks();
+      // './x//y/' spellings must not become a second key for the folder the
+      // tree reports as 'mk/deep'.
+      const res = await mkdirReq({ path: './mk//deep/' });
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ path: 'mk/deep', created: true });
+
+      const { tree } = await (await fetch(url('/api/projects/1/files'))).json();
+      const mk = tree.find((n) => n.name === 'mk');
+      expect(mk).toMatchObject({ type: 'dir' });
+      expect(mk.children).toEqual([
+        expect.objectContaining({ name: 'deep', type: 'dir', children: [] }),
+      ]);
+      // No event, no activity row: git cannot track an empty directory and
+      // file_change is file-shaped. Collaborators see it on their next refresh.
+      expect(publishProjectEvent).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent: a repeat is 200 { created: false }', async () => {
+      expect((await mkdirReq({ path: 'mk/again' })).status).toBe(201);
+      const res = await mkdirReq({ path: 'mk/again' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ path: 'mk/again', created: false });
+    });
+
+    it('400s on a missing or non-string path', async () => {
+      for (const body of [{}, { path: '' }, { path: 42 }, { path: null }, { path: ['a'] }]) {
+        const res = await mkdirReq(body);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect(typeof (await res.json()).error).toBe('string');
+      }
+    });
+
+    it('409s when a FILE already holds the path, and never clobbers it', async () => {
+      await put('mk-file.md', 'precious');
+      const res = await mkdirReq({ path: 'mk-file.md' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('conflict');
+      const still = await fetch(url('/api/projects/1/file', { path: 'mk-file.md' }));
+      expect(await still.text()).toBe('precious');
+    });
+
+    it('maps containment violations the same way every other route does', async () => {
+      expect((await mkdirReq({ path: '../2/injected' })).status).toBe(403);
+      expect((await mkdirReq({ path: '/etc/kuhn' })).status).toBe(403);
+      expect((await mkdirReq({ path: '.git/hooks' })).status).toBe(400);
+      expect((await mkdirReq({ path: '.' })).status).toBe(400);
+      expect((await fetch(url('/api/projects/99/files/mkdir'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: 'x' }),
+      })).status).toBe(404);
     });
   });
 

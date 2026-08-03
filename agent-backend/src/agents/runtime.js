@@ -513,6 +513,11 @@ function buildPrompt(input, context) {
   if (context.selection) parts.push(`<selection>\n${context.selection}\n</selection>`);
   if (context.cursor?.line != null) parts.push(`The user's cursor is at line ${context.cursor.line}.`);
   if (context.files?.length) parts.push(`Relevant files: ${context.files.join(', ')}`);
+  // `dir` (story 012-001) is the folder selected in the file panel. A default,
+  // not a constraint: the agent still puts a file somewhere else when it plainly
+  // belongs there. The client only ever sends a folder inside draft/ — see
+  // webapp/src/chat.ts `draftTargetContext` for why that restriction exists.
+  if (context.dir) parts.push(`Unless a file clearly belongs elsewhere, create new files in ${context.dir}/.`);
   return parts.join('\n\n');
 }
 

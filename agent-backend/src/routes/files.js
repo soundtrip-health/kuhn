@@ -15,6 +15,7 @@ import { publishProjectEvent } from '../project-events.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import {
   StorageError,
+  createProjectDir,
   readProjectFile,
   writeProjectFile,
   deleteProjectEntry,
@@ -146,6 +147,32 @@ router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res
   await deleteProjectEntry(projectId, path);
   publishProjectEvent(projectId, { type: 'file_change', path, kind: 'delete' }, { userId: req.user?.id ?? null });
   res.json({ path, deleted: true });
+}));
+
+/**
+ * POST /api/projects/:projectId/files/mkdir — body { path }. Creates an empty
+ * folder; 201 when it was created, 200 { created: false } when it was already
+ * there. The response echoes the CANONICAL path storage operated on.
+ *
+ * Deliberately publishes NO project event and schedules no commit (012-001):
+ *  - git cannot track an empty directory, so `git status --porcelain` stays
+ *    empty and commitNow short-circuits (history.js) — the commit would be a
+ *    pure no-op;
+ *  - `file_change` is file-shaped everywhere downstream (annotateUnseen above
+ *    walks files only; the activity log renders per-file rows), so announcing
+ *    a directory would insert a bogus activity row and mark a directory unseen.
+ * Consequence, accepted: a second tab or a collaborator sees a new EMPTY
+ * folder only on its next tree refresh. Live visibility needs a non-file event
+ * kind and is deferred to story 012-004.
+ */
+router.post('/api/projects/:projectId/files/mkdir', handle(async (projectId, req, res) => {
+  const { path } = req.body ?? {};
+  if (typeof path !== 'string' || path.length === 0) {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  const { path: canonicalPath, created } = await createProjectDir(projectId, path);
+  res.status(created ? 201 : 200).json({ path: canonicalPath, created });
 }));
 
 /** POST /api/projects/:projectId/files/move — body { from, to } */

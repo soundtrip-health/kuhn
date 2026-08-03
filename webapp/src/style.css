@@ -842,9 +842,24 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .file-empty { padding: 8px 12px; color: var(--ink-3); font-size: 13px; }
 
 /* live file manager (story 005-003): loading dim, refresh, unseen pill */
-#file-tree.is-loading { opacity: .55; pointer-events: none; transition: opacity .15s ease .1s; }
+/* Scoped to the ROWS (story 012-001): `pointer-events: none` on the container
+   removed #file-tree from hit-testing for the whole duration of four parallel
+   fetches, so a drop or a click into an inline rename input landing in that
+   window silently did nothing — no move, no error, no highlight. */
+#file-tree.is-loading { opacity: .55; transition: opacity .15s ease .1s; }
+#file-tree.is-loading .file-entry,
+#file-tree.is-loading .file-list summary,
+#file-tree.is-loading .drop-zone { pointer-events: none; }
+/* An inline rename input for a FOLDER is mounted inside the <summary> and would
+   inherit its `pointer-events: none` — the exact click-into-the-input failure
+   the rescope above was meant to fix. Exempt the editors and the root row. */
+#file-tree.is-loading .file-name-input,
+#file-tree.is-loading .file-row-inline,
+#file-tree.is-loading .file-entry.file-root { pointer-events: auto; }
 .file-refresh { display: inline-flex; align-items: center; }
 .file-refresh svg { display: block; }
+.files-icon-btn { display: inline-flex; align-items: center; }
+.files-icon-btn svg { display: block; }
 .toggle-pill {
   display: inline-block; margin-left: 6px; min-width: 16px; text-align: center;
   font: 600 10px/16px var(--font-ui); letter-spacing: .02em;
@@ -887,7 +902,91 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   padding: 4px 6px; background: var(--chrome); outline: none;
 }
 #file-tree.drag-over { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-sm); }
-.file-list details.drag-over > summary { background: var(--accent-soft); border-radius: 7px; color: var(--ink); }
+/* Was an --accent-soft fill, which was indistinguishable from "this is the
+   open document" and from the upload target. A drop destination is now ONE
+   visual channel — a dashed accent outline — whatever is being dropped. */
+.file-list details.drag-over > summary {
+  outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 7px; color: var(--ink);
+}
+
+/* ---- Folder tree (story 012-001) ------------------------------------ */
+/* THREE DISTINCT VISUAL CHANNELS, deliberately not sharing a token, because
+   all three can land on the same row at the same time:
+     open document        -> --accent-soft FILL      (.file-entry.active)
+     upload/create target -> inset left RULE         (.is-target)
+     drop destination     -> dashed accent OUTLINE   (.is-drop-target)  */
+
+.file-list summary { border-radius: 7px; }
+.file-list summary:hover { background: var(--soft); }
+.file-list summary .file-actions { margin-left: auto; }
+.file-list summary:hover .file-actions,
+.file-list summary:focus-within .file-actions,
+.file-row:focus-within .file-actions { display: flex; }
+
+/* The project root is a real, focusable treeitem: the only keyboard path back
+   to a root upload target, and the only place that default is announced. */
+.file-root-row { margin-bottom: 2px; }
+.file-entry.file-root { font-weight: 500; }
+
+/* channel 2 — upload / create target.
+   The rule must re-assert the focus ring: the global `:focus-visible` (line 33)
+   is `outline: none; box-shadow: var(--focus-ring)` at specificity 0-1-0, so
+   these higher-specificity selectors would otherwise replace the ring's
+   box-shadow while its `outline: none` still applied — leaving the tree's
+   default keyboard entry point with NO visible focus at all. */
+.file-list summary.is-target,
+.file-entry.file-root.is-target { box-shadow: inset 2px 0 0 var(--accent); color: var(--ink); }
+.file-list summary.is-target:focus-visible,
+.file-entry.file-root.is-target:focus-visible {
+  box-shadow: inset 2px 0 0 var(--accent), var(--focus-ring);
+}
+.file-list summary.is-target .file-chevron,
+.file-entry.file-root.is-target .file-icon { color: var(--accent); }
+
+/* rolled-up badges: the file count stays visible in BOTH states (it is visible
+   today on open folders); only the unseen/comment rollups collapse away. */
+.file-rollup { display: flex; align-items: center; gap: 5px; flex: none; }
+.file-list details[open] > summary .file-badge.is-rollup { display: none; }
+
+/* channel 3 — internal (element-to-element) move drag */
+.file-list summary.is-dragging, .file-entry.is-dragging { opacity: .5; }
+.is-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 7px; }
+/* the row actually under the pointer, when the destination row is elsewhere */
+.is-drop-under { box-shadow: inset 0 -2px 0 var(--accent-line); }
+.is-drop-invalid {
+  outline: 2px dashed var(--warn); outline-offset: -2px; border-radius: 7px; cursor: no-drop;
+}
+
+/* inline rename / new-folder input — `.file-name-input`'s flex sizing is inert
+   outside a `.file-row`, so both entry points wrap it in one. */
+.file-row-inline { flex: 1 1 auto; min-width: 0; }
+.file-list summary > .file-row-inline { width: 100%; }
+
+/* ---- "Move to…" dialog (story 012-001; chrome reused from .pb-*) ----- */
+.mv-modal { width: min(460px, 100%); max-height: 76vh; }
+/* REQUIRED, not cosmetic: `.pb-input { flex: 1 }` is written for the row-flex
+   `.pb-new`, but `.pb-modal` is a COLUMN — unqualified it grows vertically and
+   fights the list for height. */
+.mv-filter { flex: 0 0 auto; }
+.mv-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px;
+}
+.mv-list[hidden] { display: none; }  /* display:flex beats the [hidden] default */
+.mv-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 10px; border-radius: var(--r-xs); cursor: pointer;
+}
+.mv-item:hover { background: var(--soft); }
+/* DOM focus stays in the filter input by design (aria-activedescendant), so
+   this ring is the ONLY signal of which destination Enter will pick — it has
+   to clear the 3:1 non-text contrast floor. --accent-line (#C7D6F0) is ~1.46:1
+   against the --chrome modal; --accent (#2F5BB7) is ~5.6:1. */
+.mv-item.active { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.mv-empty { color: var(--ink-3); font: var(--ui-body); padding: 10px 2px; }
+.mv-error { color: var(--warn); font: var(--ui-small); }
+.mv-error:empty { display: none; }   /* .pb-modal has gap: 18px */
 
 /* ---- Preview panel (story 019; floating window) --------------------- */
 /* A draggable / resizable overlay rather than a layout column, so opening it

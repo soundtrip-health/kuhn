@@ -29,6 +29,7 @@ import { icon } from './icons';
 import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity, setBudget } from './status';
+import { isUnder, selectedDir } from './tree-state';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -537,6 +538,27 @@ async function send(): Promise<void> {
 }
 
 /**
+ * The folder selected in the file panel, as agent context — but ONLY when it
+ * sits inside `draft/` (story 012-001).
+ *
+ * Why the restriction: `isSuggestionPath` (agent-backend/src/pending-edits.js)
+ * gates the whole suggestion/review loop on a path's FIRST segment being
+ * exactly `draft`. An agent write under `draft/` becomes a pending edit the
+ * user reviews; anywhere else it lands on disk immediately. So hinting an agent
+ * toward a non-draft folder would silently downgrade a reviewable proposal into
+ * a direct write — a change to the trust loop disguised as a convenience.
+ *
+ * Outside `draft/` (including the project root, the default) we send nothing
+ * and the agent uses its own judgement, exactly as before this story. Nothing
+ * here enforces anything: the runtime resolves `write_file` paths the same way
+ * either way, and the suggestion gate is untouched.
+ */
+function draftTargetContext(): { dir: string } | undefined {
+  const dir = selectedDir();
+  return dir && isUnder(dir, 'draft') ? { dir } : undefined;
+}
+
+/**
  * Run a single chat turn. Separated from send() so the user message is appended
  * once but the run itself can be re-invoked by "Try again" after a transient
  * overload (story 029) — resuming the agent's session if one was recorded.
@@ -549,7 +571,13 @@ async function dispatchTask(role: string, text: string): Promise<void> {
 
   try {
     await runAgentTask(
-      { role, projectId: activeProjectId, input: text, sessionId: sessions.get(role) },
+      {
+        role,
+        projectId: activeProjectId,
+        input: text,
+        sessionId: sessions.get(role),
+        context: draftTargetContext(),
+      },
       createEventHandler(),
     );
   } catch (err) {
@@ -862,7 +890,13 @@ async function continueAfterBudget(agent: string): Promise<void> {
   setAgentActivity(`${agentLabel(agent)} is working…`);
   try {
     await runAgentTask(
-      { role: agent, projectId: activeProjectId, input: prompt, sessionId: sessions.get(agent) },
+      {
+        role: agent,
+        projectId: activeProjectId,
+        input: prompt,
+        sessionId: sessions.get(agent),
+        context: draftTargetContext(),
+      },
       createEventHandler(),
     );
   } catch (err) {

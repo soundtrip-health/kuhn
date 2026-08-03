@@ -100,6 +100,17 @@ let lastSavedMarkdown = '';
 // tab is parked — no autosave, no write-through — until it is retargeted or
 // reloaded, because writing to `currentPath` would resurrect a dead path.
 let movedAway = false;
+/** Set by main.ts. A 4002 room-moved close is the one retarget signal that
+ * survives a dropped SSE feed, but the editor alone cannot complete a retarget:
+ * `retargetDocument` owns only editor state, while the file tree's active row
+ * (files.ts `activePath`) and the workspace's active document live behind
+ * main.ts. Calling back through it keeps the 4002 leg and the SSE leg on the
+ * SAME path — both are re-entrancy guarded, so the doubled arrival is a no-op. */
+let onRetarget: ((path: string) => void) | null = null;
+
+export function setRetargetHandler(fn: (path: string) => void): void {
+  onRetarget = fn;
+}
 // Writer SDK session for in-editor `/write` follow-ups ("make it shorter").
 // In-session only — chat restore (story 020) owns cross-reload continuity.
 let writerSession: string | undefined;
@@ -194,12 +205,14 @@ function agentCommands(): AgentCommand[] {
         openCitePicker({
           projectId: currentProjectId,
           anchor: { x: coords.left, y: coords.bottom },
-          onPick: (key) => {
+          onPick: (key, bibPath) => {
             insertCitation(view, key);
-            // The backend already updated references.bib — refresh dependents
-            void refreshBib(currentProjectId);
+            // The backend already wrote the bibliography and told us where
+            // (story 012-001: it need not be draft/references.bib) — reload
+            // exactly that file rather than re-resolving from a stale tree.
+            void refreshBib(currentProjectId, bibPath);
             void refreshTree(currentProjectId);
-            toast('Citation inserted · references.bib updated');
+            toast(`Citation inserted · ${bibPath} updated`);
           },
           onClose: () => view.focus(),
         });
@@ -658,7 +671,10 @@ async function followMovedRoom(reason: string): Promise<void> {
     strandMovedDocument();
     return;
   }
-  await retargetDocument(next);
+  // Through main.ts, not straight to retargetDocument: the tree's active row
+  // and the workspace's active document would otherwise stay on the dead path.
+  if (onRetarget) onRetarget(next);
+  else await retargetDocument(next); // no host wired (tests) — editor-only
 }
 
 /**

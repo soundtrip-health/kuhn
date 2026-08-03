@@ -127,10 +127,42 @@ export interface Job {
   created_at: string;
 }
 
+/**
+ * What every failing backend call rejects with (story 012-001). Strictly
+ * additive: it extends Error and `.message` is still the backend's readable
+ * `error` string, so the ~30 existing `catch (err) { (err as Error).message }`
+ * sites are unchanged. What it adds is the rest of the JSON body — `status`,
+ * the storage `code` and the `paths` array — which callers previously could
+ * not see at all. The move UI needs it to tell the route's two 409s apart:
+ * a destination that already exists on disk (`code:'conflict'`, no paths) vs.
+ * an agent's pending edit already waiting there (`code:'conflict'` + `paths`,
+ * which lives only in the DB and so cannot be detected from the tree).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly paths?: string[];
+
+  constructor(status: number, message: string, code?: string, paths?: string[]) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.paths = paths;
+  }
+}
+
 async function expectOk(res: Response): Promise<Response> {
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string; code?: string; paths?: unknown;
+    };
+    throw new ApiError(
+      res.status,
+      body.error ?? `${res.status} ${res.statusText}`,
+      body.code,
+      Array.isArray(body.paths) ? (body.paths as string[]) : undefined,
+    );
   }
   return res;
 }
@@ -801,16 +833,47 @@ export async function deleteFile(projectId: number, path: string): Promise<void>
   await expectOk(await apiFetch(fileUrl(projectId, path), { method: 'DELETE' }));
 }
 
-/** Move/rename an entry; rejects with the backend's readable error (409 on a
- * destination that already exists). */
-export async function moveFile(projectId: number, from: string, to: string): Promise<void> {
-  await expectOk(
+/**
+ * Move/rename an entry; rejects with an ApiError carrying the backend's
+ * readable message (409 on a destination that already exists or that holds a
+ * pending edit, 400 when the destination is inside the source).
+ * Resolves with the CANONICAL paths storage actually operated on — `'a//b'`
+ * and `'dir/'` rename fine on disk but are not what the tree is keyed by.
+ */
+export async function moveFile(
+  projectId: number,
+  from: string,
+  to: string,
+): Promise<{ from: string; to: string }> {
+  const res = await expectOk(
     await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to }),
     }),
   );
+  return (await res.json()) as { from: string; to: string };
+}
+
+/**
+ * Create an empty folder (story 012-001). Resolves with the canonical path and
+ * whether it had to be created — an existing folder is a 200 `created:false`,
+ * not an error, so a double-submit is harmless. A FILE already holding the
+ * path rejects with an ApiError whose `code` is 'conflict'.
+ * Publishes no project event: other tabs see it on their next tree refresh.
+ */
+export async function createFolder(
+  projectId: number,
+  path: string,
+): Promise<{ path: string; created: boolean }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/mkdir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  );
+  return (await res.json()) as { path: string; created: boolean };
 }
 
 /** Fetch raw file bytes (correct Content-Type) for previewing. */
@@ -944,7 +1007,9 @@ export interface AgentTaskParams {
   projectId: number;
   input: string;
   sessionId?: string;
-  context?: { selection?: string; cursor?: { line: number }; files?: string[] };
+  /** `dir` (story 012-001) is the folder the user has selected in the file
+   *  panel, sent ONLY when it is inside draft/ — see chat.ts for why. */
+  context?: { selection?: string; cursor?: { line: number }; files?: string[]; dir?: string };
   /** Compose mode (story 017): writer returns text only, no file writes. */
   compose?: boolean;
 }

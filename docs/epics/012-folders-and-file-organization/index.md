@@ -32,10 +32,11 @@ that keeps the storage-as-truth model.
 
 | # | Story | Status | Size |
 |---|-------|--------|------|
-| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | ready | M |
+| 001 | [Folder tree UI](stories/001-folder-tree-ui.md) — real tree in the file manager: expand/collapse, create folder, rename, move via drag + dialog | in-progress | M |
 | 002 | [Move-aware path consumers](stories/002-move-aware-consumers.md) — a `moved` event kind; comments, Yjs rooms, pending edits, badges follow `from → to` | **done** | L |
 | 003 | [Agent & render awareness](stories/003-agent-folder-awareness.md) — agent file tools handle folders well (list shows tree, move_file already exists); render/export and citation paths verified against nested docs | ready | S |
 | 004 | [Move hardening](stories/004-move-hardening.md) — tombstone a moved Yjs room so a non-compliant client cannot resurrect it; stand up vitest in the webapp and cover the `moved` handler | ready | S |
+| 005 | [Badge divergence & path errors](stories/005-badge-count-divergence.md) — folder rollup vs. the unseen pill disagree on file-less proposals; ancestor-is-a-file paths 500 instead of 409 | ready | S |
 
 ## Sequencing
 

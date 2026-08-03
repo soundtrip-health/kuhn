@@ -16,7 +16,9 @@
     "write-check": "node scripts/write-check.mjs",
     "suggestion-check": "node scripts/suggestion-check.mjs",
     "comments-check": "node scripts/comments-check.mjs",
-    "move-check": "node scripts/move-check.mjs"
+    "move-check": "node scripts/move-check.mjs",
+    "files-check": "node scripts/files-check.mjs",
+    "tree-check": "node scripts/tree-check.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",

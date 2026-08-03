@@ -226,6 +226,46 @@ export async function moveProjectEntry(projectId, fromPath, toPath) {
   return { from: relativeToRoot(root, from), to: relativeToRoot(root, to) };
 }
 
+/**
+ * Create an empty directory (with any missing parents) inside the project.
+ * Returns `{ path, created }` where `path` is the CANONICAL relative path —
+ * same contract as moveProjectEntry, and for the same reason: the webapp keys
+ * expansion and selection state by path, so `'a//b/'` must not become a second
+ * key for the folder the tree reports as `a/b`. (story 012-001)
+ *
+ * Idempotent: an existing directory returns `created: false` rather than
+ * throwing, so a double-submit is harmless. Anything that is NOT a directory
+ * occupying the path is a `conflict` — this API never clobbers.
+ */
+export async function createProjectDir(projectId, relPath) {
+  const { root, abs } = await resolveSafe(projectId, relPath);
+  if (abs === root) throw new StorageError('invalid_path', 'Cannot create the project root');
+  const path = relativeToRoot(root, abs);
+  let stats = null;
+  try {
+    stats = await lstat(abs);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  if (stats) {
+    if (!stats.isDirectory()) {
+      throw new StorageError('conflict', `A file already exists at ${path}`);
+    }
+    return { path, created: false };
+  }
+  try {
+    await mkdir(abs, { recursive: true });
+  } catch (err) {
+    // Lost a race with a concurrent write that put a FILE here (or on an
+    // ancestor) between the lstat above and now: still a conflict, not a 500.
+    if (err.code === 'EEXIST' || err.code === 'ENOTDIR') {
+      throw new StorageError('conflict', `A file already exists at ${path}`);
+    }
+    throw err;
+  }
+  return { path, created: true };
+}
+
 // ---- Org library scope (story 006-001) --------------------------------------
 // Same read/write/delete contracts as the project scope, confined to
 // <orgsRoot>/<orgId>/library via resolveOrgSafe.

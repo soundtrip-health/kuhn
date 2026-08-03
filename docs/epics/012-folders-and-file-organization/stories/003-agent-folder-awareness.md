@@ -44,3 +44,10 @@ it and closes any gaps.
 
 - This is deliberately a verification story; keep it S by filing anything
   L-sized rather than absorbing it.
+- **Known gap inherited from [012-001](001-folder-tree-ui.md), start here:**
+  `render.js` resolves the bibliography as `references.bib` **next to the source
+  document**. Now that folders are a first-class UI concept, moving a document
+  away from its bib silently drops the bibliography from every rendered PDF and
+  Pandoc export — no error, just missing references. This is exactly the
+  "relative reference from a nested doc" case in this story's sketch, and it is
+  a confirmed break rather than a hypothesis.
