@@ -70,9 +70,10 @@ reopen only with a reason:
 
 **Decided at kickoff:** 002 ships first, so 001 can enable move with no
 orphaning caveat and no warning banner to remove later. 002 and 001 are done.
-**003 is next** — a verification sweep more than a build, with the render.js
-bibliography break as its confirmed starting point. Then 004 (which also
-inherits 001's deferred rename-vs-agent-write race), then 005.
+**003 is next** — a verification sweep more than a build; its recon notes
+(2026-08-03) already pin the bibliography behaviours to decide and verify in
+code, so start there. Then 004 (which also inherits 001's deferred
+rename-vs-agent-write race), then 005.
 
 ## Risks
 

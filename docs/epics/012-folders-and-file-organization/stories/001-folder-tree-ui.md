@@ -158,6 +158,6 @@ between rename and event, SSE vs. WS-close ordering).
   (`realpathDeepestExisting` tolerates only `ENOENT`, so `ENOTDIR` rethrows
   bare). Pre-existing and shared with `readProjectFile`/`writeProjectFile`;
   `mkdir('draft/main.md/sub')` should be a 409 — [012-005](005-badge-count-divergence.md).
-- `render.js` still resolves the bibliography as `references.bib` **next to the
-  source document**, so moving a doc away from its bib silently drops the
-  bibliography from rendered PDFs and Pandoc exports — [012-003](003-agent-folder-awareness.md).
+- Bibliography behaviour under moved/nested documents — the shape of the gap
+  turned out subtler than first recorded here; the full description lives in
+  [012-003](003-agent-folder-awareness.md)'s recon notes.
