@@ -519,6 +519,11 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 #chat-filter-toggle { font-size: 12px; }
 .chat-filtered-out { display: none !important; }
+/* Context size readout + fresh-start button (issue #43) */
+#chat-context-size { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+#chat-context-size.is-high { color: var(--warn); }
+#chat-clear-btn { margin-left: auto; padding: 5px 7px; color: var(--ink-3); }
+#chat-clear-btn:hover { color: var(--ink); }
 
 #chat-log {
   flex: 1; min-height: 0; overflow-y: auto;
@@ -939,9 +944,10 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .preview-download { display: inline-block; margin: 18px; color: var(--accent); font-size: 13px; }
 
-/* ---- Inline chat notices: budget-reached, provider-overloaded ------- */
+/* ---- Inline chat notices: budget, overload, long-context (issue #43) - */
 .chat-notice-budget,
-.chat-notice-overload {
+.chat-notice-overload,
+.chat-notice-context {
   margin: 10px 0;
   padding: 13px 15px;
   background: var(--soft);
@@ -951,16 +957,20 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   animation: kuhn-rise var(--dur) var(--ease) both;
 }
 .chat-notice-budget .notice-title,
-.chat-notice-overload .notice-title {
+.chat-notice-overload .notice-title,
+.chat-notice-context .notice-title {
   display: flex; align-items: center; gap: 7px;
   font-weight: 600; font-size: 13px; color: var(--ink);
   margin-bottom: 6px;
 }
-.chat-notice-budget .notice-title svg { color: var(--advisor); }
+.chat-notice-budget .notice-title svg,
+.chat-notice-context .notice-title svg { color: var(--advisor); }
 .chat-notice-budget p,
-.chat-notice-overload p { margin: 0 0 8px; font: var(--ui-body); color: var(--ink-2); }
+.chat-notice-overload p,
+.chat-notice-context p { margin: 0 0 8px; font: var(--ui-body); color: var(--ink-2); }
 .chat-notice-budget .notice-action,
-.chat-notice-overload .notice-action { margin-top: 2px; }
+.chat-notice-overload .notice-action,
+.chat-notice-context .notice-action { margin-top: 2px; }
 
 /* Overload is a transient infra hiccup, not a project limit — accent it. */
 .chat-notice-overload { border-left-color: var(--accent); }

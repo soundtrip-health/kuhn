@@ -69,6 +69,15 @@ let showAllAgents = localStorage.getItem(SHOW_ALL_KEY) === '1';
 // conversation, not to the event's author agent.
 let conversationAgent: string | null = null;
 
+// Context assessment (issue #43): a run's inputTokens is what the agent's SDK
+// session carried into its last reply — a good proxy for the context it will
+// carry into the next one. Above the threshold we suggest (once per agent,
+// re-armed by a fresh start) clearing between tasks; the user can also clear
+// manually any time via the fresh-start button next to the send button.
+const CONTEXT_SUGGEST_TOKENS = 100_000;
+const contextTokens = new Map<string, number>();
+const contextSuggested = new Set<string>();
+
 export function initChat(
   projectId: number,
   fileChangeHandler: (change: FileChange) => void,
@@ -81,6 +90,8 @@ export function initChat(
   // Reset per-project conversation state so switching projects (story 006)
   // doesn't carry a previous project's transcript or agent sessions over.
   sessions.clear();
+  contextTokens.clear();
+  contextSuggested.clear();
   running = false;
   pendingQuestionJobId = null;
   activeQuestionCard = null;
@@ -93,6 +104,11 @@ export function initChat(
   if (listenersWired) return; // the form/input listeners bind once for the page
   listenersWired = true;
 
+  const clearBtn = document.getElementById('chat-clear-btn');
+  if (clearBtn) {
+    clearBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
+    clearBtn.addEventListener('click', () => clearConversation(selectedAgent(), { confirm: true }));
+  }
   document.getElementById('chat-filter-toggle')?.addEventListener('click', () => {
     showAllAgents = !showAllAgents;
     localStorage.setItem(SHOW_ALL_KEY, showAllAgents ? '1' : '0');
@@ -175,6 +191,85 @@ function applyChatFilter(): void {
     toggle.textContent = showAllAgents ? `${agentLabel(agent)} only` : 'All agents';
     toggle.setAttribute('aria-pressed', String(showAllAgents));
   }
+  updateContextIndicator();
+  scrollLog();
+}
+
+// ---- Context assessment & clearing (issue #43) -----------------------------
+
+function compactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+/** Show the selected agent's carried context in the filter bar, if known. */
+function updateContextIndicator(): void {
+  const el = document.getElementById('chat-context-size');
+  if (!el) return;
+  const tokens = contextTokens.get(selectedAgent());
+  el.textContent = tokens ? `context ~${compactTokens(tokens)} tokens` : '';
+  el.classList.toggle('is-high', (tokens ?? 0) >= CONTEXT_SUGGEST_TOKENS);
+}
+
+/** Record a finished run's context size and suggest a fresh start when it has
+ * grown enough that clearing between tasks is worth it. */
+function assessContext(agent: string, inputTokens: number): void {
+  contextTokens.set(agent, inputTokens);
+  updateContextIndicator();
+  if (inputTokens < CONTEXT_SUGGEST_TOKENS || contextSuggested.has(agent)) return;
+  contextSuggested.add(agent); // once per agent; a fresh start re-arms it
+  const label = agentLabel(agent);
+  const log = document.getElementById('chat-log')!;
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-context';
+  tagConversation(card, agent);
+  card.innerHTML =
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} This conversation is getting long</div>` +
+    `<p>${label} is carrying ~${compactTokens(inputTokens)} tokens of chat context into every reply, which ` +
+    `costs more and can bury what matters. If you're between tasks, a fresh start keeps ${label} sharp — ` +
+    `your files and drafts are untouched, only the chat context resets.</p>`;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-accent btn-sm notice-action';
+  btn.innerHTML = `Start fresh conversation ${icon('arrow-right', { size: 13, stroke: 2 })}`;
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    clearConversation(agent, { confirm: false });
+  });
+  card.append(btn);
+  log.append(card);
+  scrollLog();
+}
+
+/**
+ * Drop an agent's SDK session so its next message starts a fresh conversation.
+ * The transcript stays on screen (server history is untouched); a divider marks
+ * the break so the context boundary is visible in the log.
+ */
+function clearConversation(agent: string, opts: { confirm: boolean }): void {
+  const label = agentLabel(agent);
+  if (running) {
+    notify(`${label} is still working — wait for the task to finish before clearing`);
+    return;
+  }
+  if (!sessions.has(agent) && !contextTokens.has(agent)) {
+    notify(`No conversation context with ${label} to clear`);
+    return;
+  }
+  // Documented exception (story 005-004): native confirm(), as with delete.
+  if (opts.confirm && !window.confirm(
+    `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.`,
+  )) return;
+  sessions.delete(agent);
+  contextTokens.delete(agent);
+  contextSuggested.delete(agent);
+  const divider = document.createElement('div');
+  divider.className = 'chat-divider';
+  divider.textContent = `fresh conversation with ${label} — earlier chat context cleared`;
+  tagConversation(divider, agent);
+  document.getElementById('chat-log')!.append(divider);
+  updateContextIndicator();
   scrollLog();
 }
 
@@ -353,7 +448,11 @@ function createEventHandler(): (event: AgentEvent) => void {
       }
       case 'done': {
         if (event.sessionId) sessions.set(event.agent, event.sessionId);
-        if (event.usage) addTokenUsage(event.usage);
+        if (event.usage) {
+          addTokenUsage(event.usage);
+          // The done event fires for the addressed role's job (issue #43).
+          assessContext(conversationAgent ?? event.agent, event.usage.inputTokens);
+        }
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
         break;
       }

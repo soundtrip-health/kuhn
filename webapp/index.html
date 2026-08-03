@@ -48,6 +48,8 @@
         <!-- Conversation filter (issue #45): chat.ts fills label + toggle -->
         <div id="chat-filter-bar">
           <span id="chat-filter-label"></span>
+          <!-- Context size + fresh-start (issue #43): chat.ts fills both -->
+          <span id="chat-context-size" title="Approximate context the selected agent carries into its next reply"></span>
           <button id="chat-filter-toggle" type="button" class="btn btn-quiet btn-sm" aria-pressed="false"
             title="Toggle between the selected agent's conversation and the full history"></button>
         </div>
@@ -71,6 +73,9 @@
                   <option value="analyst">Analyst</option>
                 </select>
               </div>
+              <button id="chat-clear-btn" type="button" class="btn btn-quiet btn-sm"
+                title="Start a fresh conversation with the selected agent (clears its chat context)"
+                aria-label="Start a fresh conversation"></button>
               <button type="submit" class="send-btn" title="Send (Enter)" aria-label="Send"></button>
             </div>
           </div>
