@@ -161,7 +161,8 @@ the backend (plus Google Fonts in `index.html`).
 
 ## 7. Production checklist
 
-Before pointing real users (or a pilot org) at an instance:
+Before pointing real users (or a pilot org) at an instance (deployment steps:
+[deployment.md](deployment.md)):
 
 - [ ] `KUHN_AUTH_MODE=magic-link` + a strong `KUHN_SESSION_SECRET` (dev mode
       has no authentication at all).

@@ -26,6 +26,13 @@ export const config = {
     origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
       .split(',').map((s) => s.trim()),
   },
+  webapp: {
+    // Built webapp to serve at / alongside the API (single-port deployment).
+    // Served only when the directory contains an index.html; set
+    // KUHN_WEBAPP_DIST to another build, or to '' to disable serving.
+    dist: process.env.KUHN_WEBAPP_DIST
+      ?? new URL('../../webapp/dist', import.meta.url).pathname,
+  },
   auth: {
     // 'dev' (default): x-kuhn-user header / seeded dev user, no login needed —
     // local development and the token-free check scripts. Anything else

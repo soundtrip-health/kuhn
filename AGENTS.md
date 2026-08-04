@@ -46,6 +46,11 @@ http://localhost:3002/health
 - `npm run db:seed` — re-seed agents & tools (run after editing prompts/seed data)
 - `npm run smoke` — research smoke test (uses real model quota)
 
+The backend also serves `webapp/dist` at `/` whenever that build exists
+(single-port deployment — see `docs/deployment.md`; disable with
+`KUHN_WEBAPP_DIST=''`). Production webapp builds call the API on their own
+origin; dev builds default to `http://localhost:3002`.
+
 Needs `ANTHROPIC_API_KEY` in `agent-backend/.env`. The SQLite DB and uploaded
 project files both live under an explicit data directory, `KUHN_DATA_DIR`
 (default: repo-root `./data`, gitignored) — `data/db/kuhn.sqlite` and

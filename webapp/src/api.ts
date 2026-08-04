@@ -1,10 +1,19 @@
 // Backend client: projects, files (story 018 API), and the agent task SSE
 // stream (story 011 events + story 013 text_delta).
 
-export const BACKEND_URL: string =
-  (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? 'http://localhost:3002';
+// Backend origin. An explicit VITE_BACKEND_URL always wins (empty string
+// means same-origin). Otherwise production builds default to same-origin —
+// the backend serves the built webapp on one port — and dev builds default
+// to the local backend.
+const configuredBackend = import.meta.env.VITE_BACKEND_URL as string | undefined;
 
-export const BACKEND_WS_URL = BACKEND_URL.replace(/^http/, 'ws');
+export const BACKEND_URL: string = (
+  configuredBackend ?? (import.meta.env.PROD ? '' : 'http://localhost:3002')
+).replace(/\/+$/, '');
+
+export const BACKEND_WS_URL: string = (
+  BACKEND_URL || (typeof location !== 'undefined' ? location.origin : '')
+).replace(/^http/, 'ws');
 
 /**
  * Every backend call goes through here (story 007-002): the session cookie

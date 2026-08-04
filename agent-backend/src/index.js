@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
@@ -35,6 +37,22 @@ app.use(cors({ origin: config.cors.origin, credentials: true }));
 app.use(express.json());
 app.use(healthRouter); // health needs no identity
 app.use(authRouter);   // login/logout happen before identity exists (007-002)
+// Single-port deployment: serve the built webapp alongside the API. Mounted
+// before session() — a signed-out visitor must be able to load the app shell
+// to reach the sign-in screen. The SPA fallback leaves API paths alone so
+// unmatched /api requests still 404 instead of returning index.html.
+const webappDist = config.webapp.dist;
+const serveWebapp = webappDist && existsSync(join(webappDist, 'index.html'));
+if (serveWebapp) {
+  app.use(express.static(webappDist));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api') || req.path === '/health') {
+      next();
+      return;
+    }
+    res.sendFile(join(webappDist, 'index.html'));
+  });
+}
 // Story 005: resolve req.user before any tenant-scoped route runs.
 app.use(session);
 app.use(meRouter);
@@ -81,6 +99,9 @@ async function main() {
     console.log(`[kuhn] Yjs signaling:  ws://localhost:${config.port}/yjs-signaling`);
     console.log(`[kuhn] Yjs websocket:  ws://localhost:${config.port}/yjs-websocket/<room>`);
     console.log(`[kuhn] Health check:   http://localhost:${config.port}/health`);
+    if (serveWebapp) {
+      console.log(`[kuhn] Serving webapp: ${webappDist}`);
+    }
   });
 }
 

@@ -7,7 +7,7 @@ write manuscripts, protocols, and grant applications. You author in friendly mar
 BibTeX; the toolchain renders to PDF via Typst and exports to Word/LaTeX via Pandoc — so LaTeX
 is an export target, never a prerequisite.
 
-What's in place today:
+Current capabilities:
 
 - **Agent-integrated editing** — six specialized agents (PM, Writer, Research Assistant,
   Advisor, Reviewer, Analyst) embedded in the editor, with token-streaming chat, mid-task
@@ -21,7 +21,7 @@ What's in place today:
 - **Tenant-safe by design** — project-scoped storage, sandboxed execution, and per-tenant
   knowledge bases over a shared curated guidance corpus.
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
@@ -30,9 +30,9 @@ What's in place today:
 - Docker (for sandboxed rendering/export only — the database is in-process SQLite).
 - An `ANTHROPIC_API_KEY` (or Claude Code login credentials on a dev machine).
 
-### Run it (one command)
+### Run it
 
-From the repo root:
+From the repository root:
 
 ```bash
 # Install everything (root orchestrator + both packages) — first time
@@ -46,87 +46,34 @@ npm run dev
 ```
 
 The root `package.json` is a dev-only orchestrator: its `postinstall` installs both packages,
-so a single root `npm install` bootstraps the whole repo.
+so a single root `npm install` bootstraps the whole repository.
 
-Then open **http://localhost:5174**. On first run with an empty database, Kuhn creates a
+Open **http://localhost:5174**. On first run with an empty database, Kuhn creates a
 "Demo Manuscript" project — click **Seed project** to run the full seeding pipeline (PM
 interview → research → skeleton draft). Note that agent runs use real model quota.
 
-The backend serves at **http://localhost:3002** (health check: `/health`). It creates the
-SQLite DB on startup, applies the schema, and seeds agents, tools, and assignments — no
-service to start. The DB and uploaded project files live under `KUHN_DATA_DIR` (default:
-repo-root `./data`) — `data/db/kuhn.sqlite` and `data/files/<projectId>/`.
+The backend serves at **http://localhost:3002** (health check: `/health`). On startup it
+creates the SQLite database, applies the schema, and seeds agents, tools, and assignments —
+there is no database service to run. The database and uploaded project files live under
+`KUHN_DATA_DIR` (default: repo-root `./data`) — `data/db/kuhn.sqlite` and
+`data/files/<projectId>/`.
 
 ### Signing in
 
-Auth is controlled by `KUHN_AUTH_MODE` in `agent-backend/.env`:
+Authentication is controlled by `KUHN_AUTH_MODE` in `agent-backend/.env`:
 
-- **`dev` (default)** — no login. Requests resolve to a seeded dev user; the sign-in
-  screen never appears. Use this for local development and the token-free check scripts.
+- **`dev` (default)** — no login. Requests resolve to a seeded dev user and the sign-in
+  screen never appears. Intended for local development and the token-free check scripts.
 - **`magic-link`** — passwordless email login (requires `KUHN_SESSION_SECRET` at startup).
-  Enter your email on the sign-in screen; with no `KUHN_SMTP_URL` configured the sign-in
-  link is **printed to the backend server console** (`[auth] Magic link for … : <url>`) —
-  open that URL to log in. Any email works: the first login creates the user in the
-  default org. Links are single-use and expire in 15 minutes. Set
-  `KUHN_SMTP_URL` (`smtp[s]://user:pass@host:port`) to send real email, and
-  `KUHN_APP_URL` to the webapp's public origin (default `http://localhost:5174`) so the
-  post-login redirect lands on the app.
-
-### Deploying a test server (cloudflared tunnel)
-
-The pitfall: the webapp bakes the backend address in **at build time**
-(`VITE_BACKEND_URL`, default `http://localhost:3002`). A stock build opened
-from another machine tries to call the *visitor's* localhost, every request
-fails, and the app drops to the sign-in screen with "Failed to fetch" — even
-when the server runs in dev auth mode. A deployed instance therefore needs a
-publicly reachable backend URL compiled into the webapp.
-
-The simplest shape is **one public hostname, path-routed** in the tunnel, so
-webapp and backend share an origin (no CORS or cookie complications):
-
-```yaml
-# ~/.cloudflared/config.yml — order matters; first match wins
-ingress:
-  - hostname: kuhn.example.com
-    path: ^/(api|health|yjs-websocket|yjs-signaling)(/.*)?$
-    service: http://localhost:3002
-  - hostname: kuhn.example.com
-    service: http://localhost:5174        # webapp (built, served statically)
-  - service: http_status:404
-```
-
-```bash
-# Backend — agent-backend/.env
-ANTHROPIC_API_KEY=...
-KUHN_AUTH_MODE=magic-link                # real login for invited users
-KUHN_SESSION_SECRET=$(openssl rand -hex 32)
-KUHN_APP_URL=https://kuhn.example.com    # post-login redirect + secure cookie
-CORS_ORIGIN=https://kuhn.example.com
-# KUHN_SMTP_URL=smtps://user:pass@host:465   # unset = links print to the log
-
-# Webapp — build with the public backend origin, then serve dist/
-cd webapp
-VITE_BACKEND_URL=https://kuhn.example.com npm run build
-npx serve -l 5174 dist
-```
-
-Notes:
-
-- With no `KUHN_SMTP_URL`, invite flow is manual: a test user requests a link,
-  and you copy it to them from the server log (`[auth] Magic link for …`).
-- WebSockets (Yjs collab) ride the same hostname — `wss://` is derived from
-  `VITE_BACKEND_URL` automatically, and cloudflared proxies WS fine.
-- The backend trusts `X-Forwarded-Proto`/`Host` (`trust proxy`), so magic
-  links come out as `https://kuhn.example.com/...` behind the tunnel.
-- Render/export still need the sandbox Docker images pulled on the server
-  (see Prerequisites); the DB and uploads live under `KUHN_DATA_DIR`.
-- Two-hostname setups (`app.` + `api.`) also work but reintroduce CORS and
-  cookie scope: both must sit under the same registrable domain, `CORS_ORIGIN`
-  must name the webapp origin, and `VITE_BACKEND_URL` the api origin.
+  A user enters their email on the sign-in screen and receives a single-use link (15-minute
+  expiry); the first login creates the user in the default organization. With no
+  `KUHN_SMTP_URL` configured, links are printed to the backend console
+  (`[auth] Magic link for …`) instead of emailed. See
+  [docs/deployment.md](docs/deployment.md) for the full configuration.
 
 ### Running the packages individually
 
-Each package is independently installable and runnable; the root command above just wraps them.
+Each package is independently installable and runnable; the root commands wrap them.
 
 ```bash
 # Backend — http://localhost:3002
@@ -135,13 +82,27 @@ cp .env.example .env      # first time; set ANTHROPIC_API_KEY
 npm install               # first time
 npm run dev
 
-# Webapp — http://localhost:5174 (pinned; backend CORS allowlist includes it)
+# Webapp — http://localhost:5174 (pinned; the backend CORS allowlist includes it)
 cd webapp
 npm install               # first time
 npm run dev               # backend must be running
 ```
 
 See [webapp/README.md](webapp/README.md) for webapp-specific notes.
+
+## Deployment
+
+Kuhn deploys as a single Node.js process: the backend serves the API, the collaboration
+WebSockets, and the built webapp on one port, behind any TLS-terminating proxy or tunnel.
+
+```bash
+npm install
+npm run build      # builds the webapp; production builds call the API on the same origin
+npm start          # serves everything on :3002
+```
+
+See [docs/deployment.md](docs/deployment.md) for the full guide: required environment
+variables, Cloudflare Tunnel configuration, inviting users, and running as a service.
 
 ## Development
 
@@ -152,13 +113,13 @@ See [webapp/README.md](webapp/README.md) for webapp-specific notes.
   docker pull pandoc/core:latest && docker pull minidocks/poppler:latest`)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-Render/export and any future analyst code execution run inside sandboxed Docker images (no host
-Python environment required). Re-seed agents/tools after editing prompts or seed data with
-`npm run db:seed` (from `agent-backend/`).
+Render/export and any future analyst code execution run inside sandboxed Docker images (no
+host Python environment required). Re-seed agents/tools after editing prompts or seed data
+with `npm run db:seed` (from `agent-backend/`).
 
-See [CLAUDE.md](CLAUDE.md) for detailed contributor guidance (repository layout, where things
-live, agent prompts, conventions). This repo is also configured so Claude Code can run common
-read-only and build commands without asking permission.
+See [CLAUDE.md](CLAUDE.md) for contributor guidance (repository layout, where things live,
+agent prompts, conventions). The repository is also configured so Claude Code can run common
+read-only and build commands without prompting.
 
 ### Architecture
 
@@ -183,11 +144,10 @@ read-only and build commands without asking permission.
 └───────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for details and the 2026-06-11 decision
-revisions (Milkdown editor, Claude Agent SDK, multi-tenancy invariants).
+See [docs/architecture.md](docs/architecture.md) for details and decision history.
 
-Evaluating Kuhn for your org? [docs/data-pipeline.md](docs/data-pipeline.md) lays out
-where all data is stored and processed, what is ephemeral, what leaves the machine
+Evaluating Kuhn for your organization? [docs/data-pipeline.md](docs/data-pipeline.md) lays
+out where all data is stored and processed, what is ephemeral, what leaves the machine
 (LLM provider, PubMed/arXiv, SMTP), and a production checklist.
 
 ### Agents
@@ -197,22 +157,10 @@ The six agents' system prompts live in
 `agent-backend/src/db/seed-data.js`; both are seeded into the database at startup, and the
 runtime loads prompts from there.
 
-### Roadmap
+### Project management
 
-Planned work not yet implemented:
-
-- **More slash commands** — `/write` (contextual drafting), `/research`, `/figure`, `/review`
-- **File manager UI** — dedicated file-tree management in the webapp
-- **UI design implementation** — the visual design pass
-- **Live seeding verification** — end-to-end validation of the seeding pipeline
-
-Work is organized into epics and stories in [`docs/epics/`](docs/epics/).
-
-| Epic | Status | Description |
-|------|--------|-------------|
-| [001 — Editor Foundation Research](docs/epics/001-editor-foundation-research/index.md) | Done (decision revised 2026-06-11) | Editor evaluation; TeXlyre choice superseded by Milkdown |
-| [002 — Agent Orchestration Layer](docs/epics/002-agent-orchestration-layer/index.md) | In Progress | Agent runtime (Claude Agent SDK), single-app webapp, editor integration |
-| [003 — TeXlyre Citation Assistant](docs/epics/003-texlyre-citation-assistant/index.md) | Done | Grounded `/cite` workflow — backend logic ported to Milkdown |
+Work is organized into epics and stories under [`docs/epics/`](docs/epics/), each with an
+`index.md` recording its status and story table.
 
 ## License
 
