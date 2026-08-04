@@ -88,6 +88,10 @@ function shape(row) {
     parentId: row.parent_id,
     userId: row.user_id,
     userName: row.user_name ?? null,
+    // Epic 013: external-reviewer attribution — the display name joins from
+    // review_links.reviewer_name, mirroring user_name from users.display_name.
+    reviewLinkId: row.review_link_id ?? null,
+    reviewerName: row.reviewer_name ?? null,
     agent: row.agent_slug,
     jobId: row.job_id,
     body: row.body,
@@ -98,16 +102,21 @@ function shape(row) {
     resolvedAt: row.resolved_at,
     resolvedBy: row.resolved_by,
     resolvedByName: row.resolved_by_name ?? null,
+    resolvedByLinkId: row.resolved_by_link_id ?? null,
+    resolvedByReviewerName: row.resolved_by_reviewer_name ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 const SELECT = `
-  SELECT c.*, u.display_name AS user_name, ru.display_name AS resolved_by_name
+  SELECT c.*, u.display_name AS user_name, ru.display_name AS resolved_by_name,
+         rl.reviewer_name AS reviewer_name, rrl.reviewer_name AS resolved_by_reviewer_name
   FROM comments c
   LEFT JOIN users u ON u.id = c.user_id
-  LEFT JOIN users ru ON ru.id = c.resolved_by`;
+  LEFT JOIN users ru ON ru.id = c.resolved_by
+  LEFT JOIN review_links rl ON rl.id = c.review_link_id
+  LEFT JOIN review_links rrl ON rrl.id = c.resolved_by_link_id`;
 
 function getRow(projectId, id) {
   const { rows } = querySync(
@@ -152,38 +161,43 @@ export function unresolvedCounts(projectId) {
 }
 
 /** Create a thread root. Anchor fields are stored as given — REST callers
- *  send the editor selection; the agent tool resolves its quote first. */
+ *  send the editor selection; the agent tool resolves its quote first.
+ *  Reviewer-authored rows (epic 013) pass reviewLinkId with userId null. */
 export function createThread(projectId, {
   path, body, quote = null, start = null, end = null,
-  userId = null, agentSlug = null, jobId = null,
+  userId = null, agentSlug = null, jobId = null, reviewLinkId = null,
 }) {
   const { rows } = querySync(
-    `INSERT INTO comments (project_id, path, user_id, agent_slug, job_id, body,
-                           anchor_quote, anchor_start, anchor_end)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO comments (project_id, path, user_id, agent_slug, job_id, review_link_id,
+                           body, anchor_quote, anchor_start, anchor_end)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING id`,
-    [projectId, path, userId, agentSlug, jobId, body, quote, start, end],
+    [projectId, path, userId, agentSlug, jobId, reviewLinkId, body, quote, start, end],
   );
   return { ...shape(getRow(projectId, rows[0].id)), replies: [] };
 }
 
 /** Append a reply to a thread root. */
-export function addReply(projectId, rootId, { body, userId = null, agentSlug = null, jobId = null }) {
+export function addReply(projectId, rootId, {
+  body, userId = null, agentSlug = null, jobId = null, reviewLinkId = null,
+}) {
   const root = getRow(projectId, rootId);
   if (root.parent_id != null) {
     throw new StorageError('conflict', 'Replies attach to the thread root');
   }
   const { rows } = querySync(
-    `INSERT INTO comments (project_id, path, parent_id, user_id, agent_slug, job_id, body)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO comments (project_id, path, parent_id, user_id, agent_slug, job_id,
+                           review_link_id, body)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
-    [projectId, root.path, rootId, userId, agentSlug, jobId, body],
+    [projectId, root.path, rootId, userId, agentSlug, jobId, reviewLinkId, body],
   );
   return shape(getRow(projectId, rows[0].id));
 }
 
-/** Resolve or reopen a thread (root only). */
-export function setResolved(projectId, id, resolved, { userId = null } = {}) {
+/** Resolve or reopen a thread (root only). Member actors stamp resolved_by;
+ *  reviewer actors (epic 013) stamp resolved_by_link_id instead. */
+export function setResolved(projectId, id, resolved, { userId = null, reviewLinkId = null } = {}) {
   const row = getRow(projectId, id);
   if (row.parent_id != null) {
     throw new StorageError('conflict', 'Resolve applies to the thread root');
@@ -192,9 +206,10 @@ export function setResolved(projectId, id, resolved, { userId = null } = {}) {
     `UPDATE comments
      SET resolved_at = ${resolved ? "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : 'NULL'},
          resolved_by = $3,
+         resolved_by_link_id = $4,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
      WHERE project_id = $1 AND id = $2`,
-    [projectId, id, resolved ? userId : null],
+    [projectId, id, resolved ? userId : null, resolved ? reviewLinkId : null],
   );
   return shape(getRow(projectId, id));
 }
@@ -223,10 +238,22 @@ export function updateAnchor(projectId, id, { quote, start, end, orphaned } = {}
   return shape(getRow(projectId, id));
 }
 
-/** Delete a comment the acting user authored (replies cascade off a root). */
-export function deleteOwn(projectId, id, { userId }) {
+/**
+ * Delete a comment the acting identity authored (replies cascade off a root).
+ * Two exact-match actor forms: `{userId}` matches member rows only (reviewer
+ * rows have user_id NULL) and `{reviewLinkId}` (epic 013) matches that link's
+ * rows only — neither can cross the wall. No identity at all is forbidden.
+ */
+export function deleteOwn(projectId, id, { userId = null, reviewLinkId = null } = {}) {
   const row = getRow(projectId, id);
-  if (userId == null || row.user_id !== userId) {
+  // Reviewers delete exactly their own link's comments — never a member's.
+  // Members delete their own, plus any reviewer-authored comment: reviewers
+  // are guests in the member's project, and once a link is revoked no other
+  // identity could ever remove its content.
+  const owns = reviewLinkId != null
+    ? row.review_link_id === reviewLinkId
+    : userId != null && (row.user_id === userId || (row.user_id === null && row.review_link_id != null));
+  if (!owns) {
     throw new StorageError('forbidden', 'Only the comment author can delete it');
   }
   querySync(`DELETE FROM comments WHERE project_id = $1 AND id = $2`, [projectId, id]);

@@ -91,6 +91,11 @@ type FileStatusKind = 'new' | 'modified' | 'generated' | 'ingesting' | 'done' | 
 interface FileStatus {
   status: FileStatusKind;
   originAgent?: string;
+  /** The change came through an external review link (epic 013): the badge
+   * says "external", not the member/agent guess, and the accessible name
+   * carries the reviewer's claimed display name. */
+  external?: boolean;
+  reviewerName?: string | null;
 }
 
 let projectId = 0;
@@ -450,13 +455,18 @@ function hydrateStatus(nodes: TreeNode[], activity: FileActivityEvent[]): void {
         walk(node.children ?? []);
       } else if (node.unseen) {
         const ev = latest.get(node.path);
+        // An event carrying a review_link_id was an external reviewer's edit
+        // (epic 013) — badge it as such, never as a member or agent change.
+        const external = Boolean(ev?.review_link_id);
         statusMap.set(node.path, {
           status: !ev
             ? 'modified' // unseen but the event aged out of the log
             : ev.agent_slug
               ? (ev.kind === 'create' ? 'generated' : 'modified')
-              : (ev.kind === 'create' ? 'new' : 'modified'),
-          originAgent: ev?.agent_slug ?? (ev ? 'user' : undefined),
+              : (ev.kind === 'create' && !external ? 'new' : 'modified'),
+          originAgent: ev?.agent_slug ?? (ev && !external ? 'user' : undefined),
+          external,
+          reviewerName: ev?.reviewer_name ?? null,
         });
       }
     }
@@ -1569,12 +1579,17 @@ function renderFile(
   // Badge visuals are decorative here — the status is spoken via the
   // treeitem's accessible name, not the color/dot alone (story 005-004).
   const commentCount = commentMap.get(node.path) ?? 0;
+  const externalText = st?.external
+    ? `changed by external reviewer${st.reviewerName ? ` ${st.reviewerName}` : ''}`
+    : '';
   const ariaStatus = [
-    st ? STATUS_TEXT[st.status] : '',
+    st ? (externalText || STATUS_TEXT[st.status]) : '',
     commentCount > 0 ? `${commentCount} open comment${commentCount === 1 ? '' : 's'}` : '',
   ].filter(Boolean).join(', ');
   button.setAttribute('aria-label', ariaStatus ? `${node.name}, ${ariaStatus}` : node.name);
-  const badge = statusBadge(st);
+  // An external reviewer's change gets an origin badge of its own (epic 013)
+  // in place of the member/agent unseen badge.
+  const badge = st?.external ? externalBadge(st.reviewerName) : statusBadge(st);
   if (badge) {
     badge.setAttribute('aria-hidden', 'true');
     button.append(badge);
@@ -1687,6 +1702,16 @@ function textBadge(label: string): HTMLElement {
   const badge = document.createElement('span');
   badge.className = 'file-badge';
   badge.textContent = label;
+  return badge;
+}
+
+/** "external" origin badge for changes made through a review link (epic 013).
+ * It IS unseen state (markSeen's selector removes plain file-badges), unlike
+ * the suggested/comment badges, so opening the file clears it. */
+function externalBadge(reviewerName?: string | null): HTMLElement {
+  const badge = textBadge('external');
+  badge.classList.add('is-external');
+  if (reviewerName) badge.title = `Changed by ${reviewerName} (external reviewer)`;
   return badge;
 }
 

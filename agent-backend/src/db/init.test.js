@@ -24,6 +24,10 @@ beforeAll(async () => {
     CREATE TABLE jobs (id INTEGER PRIMARY KEY, role TEXT NOT NULL, input TEXT NOT NULL);
     CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, role TEXT NOT NULL);
     CREATE TABLE file_events (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, path TEXT NOT NULL, body TEXT NOT NULL);
+    -- Epic 013: schema.sql creates review_links BEFORE applyColumnMigrations
+    -- runs, so the FK targets of the new columns always exist by then.
+    CREATE TABLE review_links (id INTEGER PRIMARY KEY);
     INSERT INTO conversations (agent_slug) VALUES ('pm');
     INSERT INTO projects (id, name) VALUES (1, 'P');
     INSERT INTO file_events (project_id, path, kind) VALUES (1, 'draft/main.md', 'update');
@@ -44,14 +48,25 @@ describe('applyColumnMigrations (story 007-001)', () => {
     expect(() => applyColumnMigrations()).not.toThrow();
     expect(columns('jobs').filter((c) => c === 'user_id')).toHaveLength(1);
   });
+
+  it('adds the epic 013 reviewer-attribution columns', () => {
+    applyColumnMigrations();
+    expect(columns('comments')).toEqual(
+      expect.arrayContaining(['review_link_id', 'resolved_by_link_id']),
+    );
+    expect(columns('file_events')).toContain('review_link_id');
+  });
 });
 
 describe('applyFileEventsKindMigration (story 012-002)', () => {
   it("rebuilds a legacy file_events so kind 'moved' is accepted, preserving rows", () => {
-    applyColumnMigrations();          // adds user_id + meta to the legacy table
+    applyColumnMigrations();          // adds user_id + meta + review_link_id
     applyFileEventsKindMigration();   // rebuilds it for the widened CHECK
 
     expect(columns('file_events')).toContain('meta');
+    // The migration-order trap (epic 013): applyColumnMigrations runs FIRST,
+    // so the rebuild DDL must carry review_link_id or the rebuild drops it.
+    expect(columns('file_events')).toContain('review_link_id');
     expect(querySync('SELECT id, path, kind FROM file_events').rows).toEqual([
       { id: 1, path: 'draft/main.md', kind: 'update' },
     ]);

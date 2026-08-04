@@ -26,6 +26,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   querySync('DELETE FROM comments');
+  querySync('DELETE FROM review_links');
   querySync('DELETE FROM users');
   querySync('DELETE FROM projects');
   querySync('DELETE FROM organizations');
@@ -140,5 +141,82 @@ describe('threads', () => {
     root();
     expect(() => comments.setResolved(PROJECT_ID + 1, 999, true, {})).toThrowError(/No comment/);
     expect(comments.listThreads(PROJECT_ID + 1)).toHaveLength(0);
+  });
+});
+
+describe('reviewer attribution (epic 013)', () => {
+  /** A claimed review link row; the store's own tests cover minting. */
+  const link = (over = {}) => querySync(
+    `INSERT INTO review_links
+       (project_id, path, mode, token_hash, created_by, reviewer_name, claimed_at, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), '2999-01-01T00:00:00.000Z')
+     RETURNING id`,
+    [PROJECT_ID, over.path ?? 'draft/main.md', over.mode ?? 'comment',
+     over.tokenHash ?? `hash-${Math.random()}`, USER, over.name ?? 'Jane'],
+  ).rows[0].id;
+
+  const reviewerRoot = (linkId, over = {}) => comments.createThread(PROJECT_ID, {
+    path: 'draft/main.md', body: 'External note.', quote: 'target', start: 1, end: 7,
+    userId: null, reviewLinkId: linkId, ...over,
+  });
+
+  it('creates reviewer-authored roots and replies with the joined display name', () => {
+    const linkId = link();
+    const t = reviewerRoot(linkId);
+    expect(t).toMatchObject({
+      userId: null, userName: null, reviewLinkId: linkId, reviewerName: 'Jane', agent: null,
+    });
+    const r = comments.addReply(PROJECT_ID, t.id, { body: 'more', reviewLinkId: linkId });
+    expect(r).toMatchObject({ reviewLinkId: linkId, reviewerName: 'Jane', userId: null });
+    // Member rows are unchanged: no reviewer fields.
+    const m = comments.createThread(PROJECT_ID, { path: 'draft/main.md', body: 'member', userId: USER });
+    expect(m).toMatchObject({ reviewLinkId: null, reviewerName: null, userName: 'Dev User' });
+  });
+
+  it('resolve stamps resolved_by_link_id and its reviewer name; reopen clears both', () => {
+    const linkId = link();
+    const t = reviewerRoot(linkId);
+    const resolved = comments.setResolved(PROJECT_ID, t.id, true, { reviewLinkId: linkId });
+    expect(resolved).toMatchObject({
+      resolvedBy: null, resolvedByLinkId: linkId, resolvedByReviewerName: 'Jane',
+    });
+    expect(resolved.resolvedAt).toBeTruthy();
+    const reopened = comments.setResolved(PROJECT_ID, t.id, false, {});
+    expect(reopened).toMatchObject({ resolvedAt: null, resolvedByLinkId: null });
+  });
+
+  it('deleteOwn: reviewers are exact-identity; members also delete reviewer content', () => {
+    const linkId = link();
+    const otherLinkId = link({ name: 'Joe', tokenHash: 'hash-other' });
+    const reviewer = reviewerRoot(linkId);
+    const member = comments.createThread(PROJECT_ID, { path: 'draft/main.md', body: 'm', userId: USER });
+
+    // Reviewer cannot delete a member's comment, another link's, or with no identity.
+    expect(() => comments.deleteOwn(PROJECT_ID, member.id, { reviewLinkId: linkId }))
+      .toThrowError(/author/);
+    expect(() => comments.deleteOwn(PROJECT_ID, reviewer.id, { reviewLinkId: otherLinkId }))
+      .toThrowError(/author/);
+    expect(() => comments.deleteOwn(PROJECT_ID, reviewer.id, {})).toThrowError(/author/);
+    // A member is NOT exact-identity against guests: reviewer-authored rows are
+    // deletable by any member — otherwise a revoked link's comments would be
+    // permanently undeletable (no session can ever own them again).
+    comments.deleteOwn(PROJECT_ID, reviewer.id, { userId: USER });
+
+    // Each identity deletes its own; members still can't delete other members'.
+    const reviewer2 = reviewerRoot(linkId);
+    expect(() => comments.deleteOwn(PROJECT_ID, member.id, { userId: OTHER_USER }))
+      .toThrowError(/author/);
+    comments.deleteOwn(PROJECT_ID, reviewer2.id, { reviewLinkId: linkId });
+    comments.deleteOwn(PROJECT_ID, member.id, { userId: USER });
+    expect(comments.listThreads(PROJECT_ID)).toHaveLength(0);
+  });
+
+  it('link deletion degrades attribution to NULL without dropping the comment', () => {
+    const linkId = link();
+    const t = reviewerRoot(linkId);
+    querySync('DELETE FROM review_links WHERE id = $1', [linkId]);
+    const [thread] = comments.listThreads(PROJECT_ID, { path: 'draft/main.md' });
+    expect(thread.id).toBe(t.id);
+    expect(thread).toMatchObject({ reviewLinkId: null, reviewerName: null });
   });
 });

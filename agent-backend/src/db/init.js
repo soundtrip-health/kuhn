@@ -21,6 +21,11 @@ const COLUMN_MIGRATIONS = [
   { table: 'messages', column: 'is_error', ddl: 'INTEGER' },
   // Story 012-002: JSON sidecar on file events ('moved' stores {"from": ...}).
   { table: 'file_events', column: 'meta', ddl: 'TEXT' },
+  // Epic 013: reviewer attribution. Nullable — member rows stay NULL. Safe to
+  // ALTER: review_links is created by schema.sql before this runs.
+  { table: 'comments', column: 'review_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
+  { table: 'comments', column: 'resolved_by_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
+  { table: 'file_events', column: 'review_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK
@@ -37,6 +42,7 @@ const FILE_EVENTS_NEW_DDL = `
     agent_slug  TEXT,
     user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
     job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    review_link_id INTEGER REFERENCES review_links(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   )`;
 
@@ -48,7 +54,8 @@ const FILE_EVENTS_INDEXES = [
 ];
 
 const FILE_EVENTS_COLUMNS = [
-  'id', 'project_id', 'path', 'kind', 'meta', 'agent_slug', 'user_id', 'job_id', 'created_at',
+  'id', 'project_id', 'path', 'kind', 'meta', 'agent_slug', 'user_id', 'job_id',
+  'review_link_id', 'created_at',
 ];
 
 /**

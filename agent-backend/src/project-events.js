@@ -22,9 +22,12 @@
 import { config } from './config.js';
 import { recordFileEvent } from './db/file-activity.js';
 import { applyMove } from './db/move-paths.js';
+import { revokeLinksUnder } from './db/review-links.js';
 import { commitNow, scheduleCommit } from './history.js';
 import {
-  CLOSE_ROOM_MOVED, evictRoom, evictRoomsUnder,
+  CLOSE_LINK_REVOKED, CLOSE_ROOM_MOVED,
+  closeReviewerConnections, closeReviewerOnlyRoom,
+  evictRoom, evictRoomsUnder,
   plantMoveTombstone, clearMoveTombstonesUnder,
 } from './yjs-websocket.js';
 
@@ -121,6 +124,35 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
         console.error('[project-events] Failed to persist file event:', err);
       }
     }
+    // Epic 013: a deleted document takes its review links with it — a file
+    // delete revokes the links at that path, a folder delete its subtree's,
+    // and every revoked credential's live sockets are closed. This is a
+    // CREDENTIAL operation, so it does not inherit the deliberate swallow
+    // below (a lost activity row is cosmetic; a link that survives its
+    // document is a live secret pointing at nothing — or at whatever is
+    // created there next). Its own try/catch keeps a revocation failure loud
+    // and unmistakable without breaking event delivery, and runs BEFORE the
+    // fan-out so no subscriber acts on a delete while its links still work.
+    // Moves never come through here: applyMove re-keys review_links.path
+    // inside its own transaction.
+    if (event.kind === 'delete') {
+      try {
+        const revoked = revokeLinksUnder(pid, event.path);
+        for (const linkId of revoked) {
+          closeReviewerConnections(linkId, {
+            code: CLOSE_LINK_REVOKED,
+            reason: 'Document removed',
+          });
+        }
+      } catch (err) {
+        console.error(
+          `[project-events] REVIEW LINK REVOCATION FAILED for delete of '${event.path}' `
+            + `(project ${pid}) — external review links under this path may still be live `
+            + `and must be revoked manually:`,
+          err,
+        );
+      }
+    }
     // Evict any in-memory collab room for this path (story 038): a stale room
     // inside its empty-room grace window would otherwise win over the bytes
     // just written to storage when the file is next opened. This is the same
@@ -164,6 +196,17 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
         evictRoom(`project-${pid}/${event.path}`, {
           closeConnections: event.kind === 'delete',
         });
+        // Epic 013 (brief decision 3): a real write landing at a path whose
+        // room is held ONLY by reviewers must not diverge silently — and that
+        // stale room must not clobber the accepted edit when a reviewer's
+        // provider re-syncs. Close those reviewer sockets with the
+        // reconnectable refresh code so reconnect re-seeds from storage.
+        // No-op when the room has any member connection (their SSE feed
+        // reconciles, story 038 semantics) or when evictRoom above already
+        // dropped it (delete closed everyone; idle rooms are gone).
+        if (event.kind !== 'delete') {
+          closeReviewerOnlyRoom(`project-${pid}/${event.path}`);
+        }
         // A fresh file event at a tombstoned path proves the path is live
         // again (a new file created at the old name): stop bouncing joins.
         clearMoveTombstonesUnder(`project-${pid}/${event.path}`);

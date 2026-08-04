@@ -27,6 +27,7 @@ beforeAll(async () => {
 beforeEach(() => {
   querySync('DELETE FROM file_events');
   querySync('DELETE FROM file_seen');
+  querySync('DELETE FROM review_links');
   querySync('DELETE FROM projects');
   querySync('DELETE FROM organizations');
   querySync('DELETE FROM users');
@@ -109,6 +110,26 @@ describe('file activity store (story 005-002)', () => {
     recordFileEvent(PROJECT_ID, { path: 'a.md', kind: 'update' });
     querySync("UPDATE file_events SET meta = '{not json' WHERE project_id = $1", [PROJECT_ID]);
     expect(listFileActivity(PROJECT_ID)[0].meta).toBeNull();
+  });
+
+  it('attributes reviewer events and joins the reviewer name (epic 013)', () => {
+    const linkId = querySync(
+      `INSERT INTO review_links
+         (project_id, path, mode, token_hash, created_by, reviewer_name, claimed_at, expires_at)
+       VALUES ($1, 'draft/main.md', 'edit', 'hash-1', $2, 'Jane',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), '2999-01-01T00:00:00.000Z')
+       RETURNING id`,
+      [PROJECT_ID, USER_ID],
+    ).rows[0].id;
+
+    recordFileEvent(PROJECT_ID, { path: 'draft/main.md', kind: 'update', reviewLinkId: linkId });
+    recordFileEvent(PROJECT_ID, { path: 'draft/main.md', kind: 'update', userId: USER_ID });
+
+    const [member, reviewer] = listFileActivity(PROJECT_ID);
+    expect(member).toMatchObject({ review_link_id: null, reviewer_name: null, user_id: USER_ID });
+    expect(reviewer).toMatchObject({
+      review_link_id: linkId, reviewer_name: 'Jane', user_id: null, kind: 'update',
+    });
   });
 
   it("a 'moved' event marks the new path unseen (renamed = changed)", () => {

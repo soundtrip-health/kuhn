@@ -1,6 +1,6 @@
 # Story 013-001: Review links & guest sessions
 
-**Status:** ready
+**Status:** done
 **Epic:** [013 — External Review via Magic Links](../index.md)
 **Estimate:** M
 
@@ -51,3 +51,11 @@ nothing else.
 
 - Viewer-role members (010-003) are unaffected — this path is only for
   people with no account at all.
+
+## As built (2026-08-04)
+
+All ACs met. `auth_events` never landed (010-005), so mint/claim/revoke are
+recorded on `review_links` columns + live `review_link` feed events — see the
+epic index "As built" for this and the confirmed single-reviewer/any-member/
+single-cookie decisions. Claim UPDATE + session INSERT are one transaction
+(a crash between them must not burn the link).

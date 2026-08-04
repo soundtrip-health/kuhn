@@ -12,11 +12,17 @@
 //     listed, never dropped — and the flag round-trips to the server so other
 //     tabs agree. Re-finding the text (e.g. after a version restore) clears it.
 //  4. Commenting on a selection goes through a "Comment" item in Crepe's
-//     selection toolbar (editor.ts buildToolbar) — it captures the selection
+//     selection toolbar (editor-core buildToolbar) — it captures the selection
 //     as the anchor quote and opens the panel composer.
 //
 // State is re-fetched (debounced) on any comment event — main.ts calls
-// refreshCommentsSoon() — and on document open (editor.ts attaches).
+// refreshCommentsSoon() — and on document open (editor-core attaches).
+//
+// Epic 013 (story 002): parameterized by TRANSPORT (which REST namespace the
+// calls go through — member /api/projects/* or reviewer /api/review/*) and
+// IDENTITY (who "I" am and what I may do), so the external-reviewer surface
+// reuses this module without touching member state. The member wrapper in
+// editor.ts reproduces today's rules exactly.
 
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state';
@@ -26,19 +32,9 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import { gutter, GutterMarker } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 
-import {
-  createComment,
-  deleteComment,
-  getComments,
-  replyToComment,
-  setCommentResolved,
-  updateCommentAnchor,
-  type Comment,
-  type CommentThread,
-} from './api';
+import type { Comment, CommentThread } from './api';
 import { agentIdentity } from './agents';
 import { icon } from './icons';
-import { currentUser } from './login';
 import { toast } from './toast';
 
 const key = new PluginKey<DecorationSet>('kuhn-comments');
@@ -76,10 +72,44 @@ export const commentsPlugin = $prose(
     }),
 );
 
+/** REST access for comment threads — the member api.ts functions, or the
+ *  reviewer's /api/review/* equivalents (which ignore projectId/path args:
+ *  the review session pins both server-side). */
+export interface CommentsTransport {
+  getComments(projectId: number, path?: string): Promise<CommentThread[]>;
+  createComment(
+    projectId: number,
+    params: { path: string; body: string; anchor?: { quote: string; start?: number; end?: number } },
+  ): Promise<CommentThread>;
+  replyToComment(projectId: number, rootId: number, body: string): Promise<Comment>;
+  setCommentResolved(projectId: number, rootId: number, resolved: boolean): Promise<CommentThread>;
+  updateCommentAnchor(
+    projectId: number,
+    rootId: number,
+    anchor: { quote?: string; start?: number; end?: number; orphaned?: boolean },
+  ): Promise<CommentThread>;
+  deleteComment(projectId: number, id: number): Promise<void>;
+}
+
+/** Who the panel's user is and what they may do (epic 013 §3.2).
+ *  Member: isMine by userId, compose/resolve-any/anchors on, delete-own.
+ *  Reviewer: isMine by reviewLinkId; compose/resolve/delete per link mode;
+ *  canPatchAnchors only in edit mode — it gates the two server writebacks
+ *  (anchor drift + orphan flags) that would otherwise 403 into console noise. */
+export interface CommentsIdentity {
+  isMine(c: Comment): boolean;
+  canCompose: boolean;
+  canResolve(t: CommentThread): boolean;
+  canDelete(t: CommentThread): boolean;
+  canPatchAnchors: boolean;
+}
+
 interface Attached {
   view: EditorView;
   projectId: number;
   path: string;
+  transport: CommentsTransport;
+  identity: CommentsIdentity;
 }
 
 const REFRESH_DEBOUNCE_MS = 300;
@@ -98,7 +128,7 @@ let anchorRetries = 0;
 /** Root id whose reply composer is open (survives re-renders). */
 let replyOpenId: number | null = null;
 
-/** Bind the open document's editor view (editor.ts, after create). */
+/** Bind the open document's editor view (editor-core, after create). */
 export function attachComments(view: EditorView, ctx: Omit<Attached, 'view'>): void {
   attached = { view, ...ctx };
   threads = [];
@@ -113,8 +143,11 @@ export function attachComments(view: EditorView, ctx: Omit<Attached, 'view'>): v
   refreshCommentsSoon();
 }
 
-/** The document is closing — drop all comment state (editor.ts teardown). */
-export function detachComments(): void {
+/** The document is closing — drop all comment state (editor-core teardown).
+ *  Pass the closing view to make the detach a no-op when a NEWER document has
+ *  already attached (a superseded open racing a fresh one, story 012-002). */
+export function detachComments(view?: EditorView): void {
+  if (view && attached && attached.view !== view) return;
   attached = null;
   threads = [];
   anchoredIds = new Set();
@@ -149,7 +182,7 @@ async function refresh(): Promise<void> {
   const seq = ++refreshSeq;
   let fetched: CommentThread[];
   try {
-    fetched = await getComments(ctx.projectId, ctx.path);
+    fetched = await ctx.transport.getComments(ctx.projectId, ctx.path);
   } catch {
     return; // backend hiccup — a later event retries
   }
@@ -195,7 +228,7 @@ function reconcile(ctx: Attached): void {
         { comment: t.id },
       ),
     );
-    maybeSyncQuote(ctx, t, range);
+    if (ctx.identity.canPatchAnchors) maybeSyncQuote(ctx, t, range);
   }
 
   // Sync/seed race: nothing anchors while the doc is still empty — retry
@@ -211,14 +244,18 @@ function reconcile(ctx: Attached): void {
 
   // Orphan transitions before the panel renders, so the chip is current.
   // Server writeback is fire-and-forget: keeps the flag honest for other
-  // tabs; a re-found anchor clears it.
+  // tabs; a re-found anchor clears it. Identities without anchor-patch rights
+  // (view/comment reviewers) keep the local flag but never write back —
+  // member tabs own anchor maintenance for them.
   for (const t of withQuote) {
     const found = anchoredIds.has(t.id);
     if (found === t.orphaned) {
       t.orphaned = !found;
-      void updateCommentAnchor(ctx.projectId, t.id, { orphaned: !found }).catch(() => {
-        /* cosmetic — the next reconcile retries */
-      });
+      if (ctx.identity.canPatchAnchors) {
+        void ctx.transport.updateCommentAnchor(ctx.projectId, t.id, { orphaned: !found }).catch(() => {
+          /* cosmetic — the next reconcile retries */
+        });
+      }
     }
   }
 
@@ -240,7 +277,7 @@ function maybeSyncQuote(ctx: Attached, t: CommentThread, range: { from: number; 
   t.anchor.quote = text;
   t.anchor.start = range.from;
   t.anchor.end = range.to;
-  void updateCommentAnchor(ctx.projectId, t.id, { quote: text, start: range.from, end: range.to })
+  void ctx.transport.updateCommentAnchor(ctx.projectId, t.id, { quote: text, start: range.from, end: range.to })
     .catch(() => { /* cosmetic — the next reconcile retries */ });
 }
 
@@ -370,6 +407,11 @@ function authorOf(c: Comment): { label: string; colorVar: string } {
     const id = agentIdentity(c.agent);
     return { label: id.label, colorVar: id.colorVar };
   }
+  // Externally-authored comment (epic 013): joined reviewer name + a distinct
+  // color so external voices never render as members.
+  if (c.reviewLinkId != null || c.reviewerName != null) {
+    return { label: `${c.reviewerName ?? 'Reviewer'} · external reviewer`, colorVar: '--reviewer' };
+  }
   return { label: c.userName ?? 'User', colorVar: '--accent' };
 }
 
@@ -411,7 +453,9 @@ function renderPanel(): void {
     const empty = document.createElement('p');
     empty.className = 'mc-empty';
     empty.textContent = ctx
-      ? 'No comments yet. Select text in the document to comment on it.'
+      ? ctx.identity.canCompose
+        ? 'No comments yet. Select text in the document to comment on it.'
+        : 'No comments on this document yet.'
       : 'Open a document to see its comments.';
     list.replaceChildren(empty);
     updateToggleCount();
@@ -512,22 +556,30 @@ function cardActions(ctx: Attached, t: CommentThread): HTMLElement {
   actions.className = 'mc-actions';
 
   if (!t.resolvedAt) {
+    if (ctx.identity.canCompose) {
+      actions.append(
+        smallButton('Reply', () => {
+          replyOpenId = replyOpenId === t.id ? null : t.id;
+          renderPanel();
+        }),
+      );
+    }
+    if (ctx.identity.canResolve(t)) {
+      actions.append(
+        smallButton('Resolve', () =>
+          void mutate(() => ctx.transport.setCommentResolved(ctx.projectId, t.id, true), 'Thread resolved')),
+      );
+    }
+  } else if (ctx.identity.canResolve(t)) {
     actions.append(
-      smallButton('Reply', () => {
-        replyOpenId = replyOpenId === t.id ? null : t.id;
-        renderPanel();
-      }),
-      smallButton('Resolve', () => void mutate(() => setCommentResolved(ctx.projectId, t.id, true), 'Thread resolved')),
-    );
-  } else {
-    actions.append(
-      smallButton('Reopen', () => void mutate(() => setCommentResolved(ctx.projectId, t.id, false), 'Thread reopened')),
+      smallButton('Reopen', () =>
+        void mutate(() => ctx.transport.setCommentResolved(ctx.projectId, t.id, false), 'Thread reopened')),
     );
   }
-  const me = currentUser();
-  if (me && t.userId === me.id && !t.agent) {
+  if (ctx.identity.canDelete(t)) {
     actions.append(
-      smallButton('Delete', () => void mutate(() => deleteComment(ctx.projectId, t.id), 'Comment deleted')),
+      smallButton('Delete', () =>
+        void mutate(() => ctx.transport.deleteComment(ctx.projectId, t.id), 'Comment deleted')),
     );
   }
 
@@ -554,7 +606,7 @@ function replyComposer(ctx: Attached, t: CommentThread): HTMLElement {
     const body = input.value.trim();
     if (!body) return;
     replyOpenId = null;
-    void mutate(() => replyToComment(ctx.projectId, t.id, body), 'Reply added');
+    void mutate(() => ctx.transport.replyToComment(ctx.projectId, t.id, body), 'Reply added');
   });
   setTimeout(() => input.focus(), 0);
   return form;
@@ -623,10 +675,12 @@ function focusThread(id: number, opts: { scrollEditor?: boolean; scrollPanel?: b
 // ---- Selection composer -----------------------------------------------------
 
 /**
- * Entry point for the Crepe toolbar "Comment" item (editor.ts buildToolbar):
- * capture the current selection as the anchor quote and open the composer.
+ * Entry point for the Crepe toolbar "Comment" item (editor-core buildToolbar)
+ * and the reviewer surface's selection affordance: capture the current
+ * selection as the anchor quote and open the composer.
  */
 export function beginCommentFromSelection(view: EditorView): void {
+  if (!attached?.identity.canCompose) return;
   const sel = view.state.selection;
   if (sel.empty) return;
   const quote = view.state.doc.textBetween(sel.from, sel.to, '\n', '');
@@ -637,7 +691,7 @@ export function beginCommentFromSelection(view: EditorView): void {
 function openComposer(sel: { quote: string; from: number; to: number }): void {
   const ctx = attached;
   const composer = document.getElementById('comments-composer');
-  if (!ctx || !composer) return;
+  if (!ctx || !ctx.identity.canCompose || !composer) return;
   togglePanel(true);
   composer.hidden = false;
 
@@ -653,7 +707,7 @@ function openComposer(sel: { quote: string; from: number; to: number }): void {
     if (!body) return;
     closeComposer();
     void mutate(() =>
-      createComment(ctx.projectId, {
+      ctx.transport.createComment(ctx.projectId, {
         path: ctx.path,
         body,
         anchor: { quote: sel.quote, start: sel.from, end: sel.to },
@@ -696,10 +750,11 @@ export async function sourceCommentGutter(
   projectId: number,
   path: string,
   text: string,
+  transport: CommentsTransport,
 ): Promise<Extension> {
   let lines = new Set<number>();
   try {
-    const fetched = await getComments(projectId, path);
+    const fetched = await transport.getComments(projectId, path);
     lines = commentedLines(text, fetched);
   } catch {
     /* no gutter beats no source mode */

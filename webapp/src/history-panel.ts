@@ -154,10 +154,16 @@ function renderList(): void {
     const who = entry.agent ? agentIdentity(entry.agent).label : entry.authorName;
     const dot = entry.agent
       ? `<span class="hy-dot" style="background: var(${agentIdentity(entry.agent).colorVar})"></span>`
-      : '';
+      : entry.external
+        ? `<span class="hy-dot" style="background: var(--reviewer)"></span>`
+        : '';
+    // External-reviewer versions (epic 013): the backend parses the
+    // `link-<id>@reviewers.kuhn.local` author and sets `external` — tag them
+    // so an outsider's save is never mistaken for a member's.
+    const external = entry.external ? `<span class="hy-external">external</span>` : '';
     row.innerHTML =
       `<span class="hy-label">${i === 0 ? '<span class="hy-latest">latest</span>' : ''}${escapeHtml(entry.label)}</span>` +
-      `<span class="hy-meta">${dot}${escapeHtml(who)} · ${timeAgo(entry.date)}</span>`;
+      `<span class="hy-meta">${dot}${escapeHtml(who)}${external} · ${timeAgo(entry.date)}</span>`;
     row.addEventListener('click', () => void select(entry));
     return row;
   });

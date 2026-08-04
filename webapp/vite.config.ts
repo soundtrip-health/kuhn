@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
 
@@ -23,11 +24,37 @@ function gitRev(): string {
   }
 }
 
+const entry = (file: string): string => fileURLToPath(new URL(file, import.meta.url));
+
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
     __BUILD_REV__: JSON.stringify(gitRev()),
   },
+  // Multi-entry (epic 013 story 002): the member app plus the slim external-
+  // reviewer surface. In production the backend serves review.html for
+  // /review/* (agent-backend index.js static branch).
+  build: {
+    rollupOptions: {
+      input: {
+        main: entry('./index.html'),
+        review: entry('./review.html'),
+      },
+    },
+  },
+  plugins: [
+    {
+      // Dev-server equivalent of the backend's /review/* static branch, so
+      // /review/<token> works under `npm run dev` too.
+      name: 'kuhn-review-entry',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/review' || req.url?.startsWith('/review/')) req.url = '/review.html';
+          next();
+        });
+      },
+    },
+  ],
   // Pinned so the backend CORS allowlist stays in sync (5173 is Vite's
   // default and often taken by other local apps; we claim 5174).
   server: {

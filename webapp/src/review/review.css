@@ -1,0 +1,115 @@
+/* External-reviewer surface (epic 013 story 002).
+   Rides on kuhn-tokens.css + style.css (imported before this file): the
+   editor/comments/statusbar subtrees reuse the member ids and classes, so
+   this sheet only adds the review shell's own chrome — top bar, flex layout
+   (no #layout grid), the claim/refusal overlay, and the floating comment
+   affordance. All colors are var(--token). */
+
+/* ---- Top bar --------------------------------------------------------- */
+#review-topbar {
+  height: 46px; flex: 0 0 46px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 18px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.review-topbar-divider { width: 1px; height: 18px; background: var(--line); flex: none; }
+#review-topbar .review-doc {
+  display: flex; align-items: center; gap: 10px;
+  min-width: 0; flex: 1;
+}
+#review-title {
+  font-weight: 600; font-size: 13.5px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.review-mode-badge {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: .06em;
+  padding: 2px 7px; border-radius: var(--r-xs);
+  background: var(--reviewer-soft); color: var(--reviewer);
+  white-space: nowrap; flex: none;
+}
+#review-name {
+  margin-left: auto; flex: none;
+  font-size: 12px; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+/* ---- Layout ----------------------------------------------------------- */
+/* Its own flex row (plan §3.1) — the member #layout grid never loads here. */
+#review-layout {
+  flex: 1; min-height: 0;
+  display: flex;
+}
+
+/* "Powered by Kuhn" in the member statusbar's slot. */
+#review-powered { color: var(--ink-3); letter-spacing: .02em; }
+
+/* ---- Floating comment affordance (comment mode) ----------------------- */
+.rv-float-comment {
+  position: absolute; z-index: 30;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+}
+
+/* ---- Claim / refusal overlay ------------------------------------------ */
+/* Opaque on purpose: pre-claim there is no document to show, and after a
+   revocation/expiry the document must leave the screen with the session. */
+#review-overlay {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: clamp(24px, 12vh, 96px) 24px 24px;
+  background: var(--bg);
+  overflow-y: auto;
+}
+#review-overlay[hidden] { display: none; }
+
+.rv-card {
+  width: min(430px, 100%);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.rv-brand { margin-bottom: 14px; }
+.rv-brand-name { font-weight: 600; font-size: 15px; letter-spacing: .01em; }
+.rv-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono); font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--reviewer);
+}
+.rv-title {
+  margin: 0;
+  font-family: var(--font-doc, inherit);
+  font-size: 24px; font-weight: 600; line-height: 1.25;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.rv-line { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+.rv-fine { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+
+.rv-claim-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.rv-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.rv-input {
+  font: inherit; font-size: 14px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 9px 11px;
+}
+.rv-input:focus { outline: none; border-color: var(--accent-line, var(--accent)); }
+.rv-error { margin: 0; font-size: 12px; color: var(--warn); }
+.rv-error[hidden] { display: none; }
+.rv-submit { align-self: flex-start; margin-top: 2px; }
+
+/* ---- Narrow widths ---------------------------------------------------- */
+/* Comments collapse under the document instead of squeezing it (story 002:
+   don't break narrow-width rendering). */
+@media (max-width: 860px) {
+  #review-layout { flex-direction: column; }
+  #comments-panel {
+    flex: 0 0 42%;
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+  #review-name { display: none; }
+  #editor-subheader { padding: 0 14px; }
+}

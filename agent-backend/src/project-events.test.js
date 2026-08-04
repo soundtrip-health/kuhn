@@ -5,18 +5,27 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 // history.test.js — here we only assert the wiring.
 vi.mock('./db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
 vi.mock('./db/move-paths.js', () => ({ applyMove: vi.fn() }));
+vi.mock('./db/review-links.js', () => ({ revokeLinksUnder: vi.fn(() => []) }));
 vi.mock('./history.js', () => ({ scheduleCommit: vi.fn(), commitNow: vi.fn() }));
 vi.mock('./yjs-websocket.js', () => ({
   evictRoom: vi.fn(),
   evictRoomsUnder: vi.fn(),
+  closeReviewerConnections: vi.fn(),
+  closeReviewerOnlyRoom: vi.fn(),
   CLOSE_ROOM_EVICTED: 4001,
   CLOSE_ROOM_MOVED: 4002,
+  CLOSE_LINK_REVOKED: 4003,
+  CLOSE_LINK_EXPIRED: 4004,
+  CLOSE_DOC_REFRESH: 4005,
 }));
 
 import { recordFileEvent } from './db/file-activity.js';
 import { applyMove } from './db/move-paths.js';
+import { revokeLinksUnder } from './db/review-links.js';
 import { commitNow, scheduleCommit } from './history.js';
-import { evictRoom, evictRoomsUnder } from './yjs-websocket.js';
+import {
+  closeReviewerConnections, closeReviewerOnlyRoom, evictRoom, evictRoomsUnder,
+} from './yjs-websocket.js';
 
 import { config } from './config.js';
 import {
@@ -292,5 +301,98 @@ describe("kind 'moved' (story 012-002)", () => {
     expect(applyMove).not.toHaveBeenCalled();
     expect(recordFileEvent).not.toHaveBeenCalled();
     expect(a).not.toHaveBeenCalled();
+  });
+});
+
+describe('review-link lifecycle (epic 013, story 003)', () => {
+  const change = (kind, over = {}) => ({
+    type: 'file_change', kind, path: 'draft/main.md', ...over,
+  });
+
+  beforeEach(() => {
+    for (const mock of [
+      recordFileEvent, applyMove, evictRoom, evictRoomsUnder, scheduleCommit,
+      revokeLinksUnder, closeReviewerConnections, closeReviewerOnlyRoom,
+    ]) {
+      vi.mocked(mock).mockReset();
+    }
+    vi.mocked(revokeLinksUnder).mockReturnValue([]);
+  });
+
+  it('delete revokes every link under the path and closes each credential\'s sockets', () => {
+    vi.mocked(revokeLinksUnder).mockReturnValue([3, 8]);
+
+    publishProjectEvent(7, change('delete', { path: 'draft/dir' }));
+
+    expect(revokeLinksUnder).toHaveBeenCalledTimes(1);
+    expect(revokeLinksUnder).toHaveBeenCalledWith(7, 'draft/dir');
+    // One close per revoked credential — NOT room-level eviction, which would
+    // kick members and destroy doc state (that stays evictRoom's job below).
+    expect(closeReviewerConnections).toHaveBeenCalledTimes(2);
+    expect(closeReviewerConnections).toHaveBeenNthCalledWith(1, 3, {
+      code: 4003, reason: 'Document removed',
+    });
+    expect(closeReviewerConnections).toHaveBeenNthCalledWith(2, 8, {
+      code: 4003, reason: 'Document removed',
+    });
+    // The delete still closes the room itself for everyone.
+    expect(evictRoom).toHaveBeenCalledWith('project-7/draft/dir', { closeConnections: true });
+  });
+
+  it('revocation runs before fan-out, so no subscriber acts while links are live', () => {
+    vi.mocked(revokeLinksUnder).mockReturnValue([5]);
+    const order = [];
+    const a = vi.fn(() => order.push([
+      vi.mocked(revokeLinksUnder).mock.calls.length,
+      vi.mocked(closeReviewerConnections).mock.calls.length,
+    ]));
+    sub(1, a);
+
+    publishProjectEvent(1, change('delete'));
+
+    expect(order).toEqual([[1, 1]]);
+  });
+
+  it('a revocation failure is loud and does not break eviction or delivery', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(revokeLinksUnder).mockImplementation(() => { throw new Error('db locked'); });
+      const a = vi.fn();
+      sub(1, a);
+
+      // A credential failure must not take event delivery down with it…
+      expect(() => publishProjectEvent(1, change('delete'))).not.toThrow();
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(evictRoom).toHaveBeenCalledTimes(1);
+      expect(closeReviewerConnections).not.toHaveBeenCalled();
+      // …but it must NOT inherit the generic activity-row swallow either:
+      // its own catch logs a distinct, unmistakable message.
+      const logged = errors.mock.calls.map(([msg]) => String(msg));
+      expect(logged.some((m) => m.includes('REVIEW LINK REVOCATION FAILED')
+        && m.includes("'draft/main.md'"))).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('a real non-delete write closes a reviewer-only room at that path (decision 3)', () => {
+    for (const kind of ['create', 'update', 'upload']) {
+      publishProjectEvent(2, change(kind, { path: `docs/${kind}.md` }));
+      expect(closeReviewerOnlyRoom).toHaveBeenCalledWith(`project-2/docs/${kind}.md`);
+    }
+    expect(closeReviewerOnlyRoom).toHaveBeenCalledTimes(3);
+    // No revocation on a mere write.
+    expect(revokeLinksUnder).not.toHaveBeenCalled();
+  });
+
+  it('delete, proposed, moved and non-file events never reach the reviewer-only closure', () => {
+    publishProjectEvent(1, change('delete')); // evictRoom already closed everyone
+    publishProjectEvent(1, change('proposed')); // pending marker, not a real write
+    publishProjectEvent(1, change('moved', { path: 'b.md', meta: { from: 'a.md' } }));
+    publishProjectEvent(1, { type: 'notice' });
+    expect(closeReviewerOnlyRoom).not.toHaveBeenCalled();
+    // And nothing but delete revokes.
+    expect(revokeLinksUnder).toHaveBeenCalledTimes(1);
+    expect(revokeLinksUnder).toHaveBeenCalledWith(1, 'draft/main.md');
   });
 });

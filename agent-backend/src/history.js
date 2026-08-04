@@ -51,12 +51,28 @@ async function ensureRepo(dir) {
 
 // ---- Attribution -------------------------------------------------------------
 
+/** External-reviewer author email (epic 013): link-<id>@reviewers.kuhn.local.
+ *  The id round-trips through listHistory the same way agent slugs do. */
+const REVIEWER_EMAIL_RE = /^link-(\d+)@reviewers\.kuhn\.local$/;
+
 /**
- * Resolve commit author identity. Agent slugs win over userId (an agent write
- * on behalf of a user is the agent's version); falls back to a generic user.
- * @param {{ agent?: string|null, userId?: number|null }} meta
+ * Resolve commit author identity. Precedence: agent > reviewer > user (an
+ * agent write on behalf of a user is the agent's version), EXCEPT an explicit
+ * reviewer checkpoint (epic 013, ?checkpoint=1 → reviewerCheckpoint) which
+ * wins over agent meta pending in the same window — commitNow merges the
+ * window's meta, and without the flag a reviewer's deliberate Cmd+S would be
+ * relabeled as an agent save. Falls back to a generic user.
+ * @param {{ agent?: string|null, userId?: number|null,
+ *           reviewer?: { linkId: number, name?: string|null }|null,
+ *           reviewerCheckpoint?: boolean }} meta
  */
 async function authorFor(meta = {}) {
+  if (meta.reviewer && (meta.reviewerCheckpoint === true || !meta.agent)) {
+    return {
+      name: `${meta.reviewer.name || 'External reviewer'} (external)`,
+      email: `link-${meta.reviewer.linkId}@reviewers.kuhn.local`,
+    };
+  }
   if (meta.agent) {
     return { name: `Kuhn ${meta.agent}`, email: `${meta.agent}@agents.kuhn.local` };
   }
@@ -92,10 +108,15 @@ const pending = new Map();
 function mergeMeta(a = {}, b = {}) {
   // Last writer wins per field; an agent touch anywhere in the window marks
   // the coalesced commit as agent-authored (mixed windows are rare and the
-  // label says "edits", not a specific claim).
+  // label says "edits", not a specific claim). Reviewer meta (epic 013)
+  // coalesces the same way; the reviewerCheckpoint flag is sticky so an
+  // explicit reviewer save keeps its attribution through the merge (it wins
+  // over agent meta in authorFor).
   return {
     agent: b.agent ?? a.agent ?? null,
     userId: b.userId ?? a.userId ?? null,
+    reviewer: b.reviewer ?? a.reviewer ?? null,
+    reviewerCheckpoint: b.reviewerCheckpoint === true || a.reviewerCheckpoint === true,
     label: b.label ?? a.label ?? null,
   };
 }
@@ -144,7 +165,8 @@ export async function commitNow(projectId, meta = {}) {
       if (status.trim().length === 0) return null;
       await git(dir, ['add', '-A']);
       const author = await authorFor(meta);
-      const label = meta.label || (meta.agent ? `${meta.agent} edits` : 'Edits');
+      const label = meta.label
+        || (meta.agent ? `${meta.agent} edits` : meta.reviewer ? 'External edits' : 'Edits');
       await git(dir, ['commit', '-q', '-m', label], {
         GIT_AUTHOR_NAME: author.name,
         GIT_AUTHOR_EMAIL: author.email,
@@ -168,7 +190,8 @@ export function flushProject(projectId) {
 
 /**
  * List versions, newest first, optionally scoped to one file.
- * @returns {Promise<Array<{hash, shortHash, authorName, authorEmail, date, label, agent: string|null}>>}
+ * @returns {Promise<Array<{hash, shortHash, authorName, authorEmail, date,
+ *   label, agent: string|null, external: boolean, reviewerLinkId: number|null}>>}
  */
 export async function listHistory(projectId, relPath = null, limit = 50) {
   const dir = await resolveProjectDir(projectId);
@@ -190,6 +213,9 @@ export async function listHistory(projectId, relPath = null, limit = 50) {
     .map((record) => {
       const [hash, authorName, authorEmail, date, label] = record.split('\x1f');
       const agentMatch = /^(.+)@agents\.kuhn\.local$/.exec(authorEmail ?? '');
+      // Epic 013: external-reviewer versions carry link-<id>@reviewers.kuhn.local
+      // (the same author-email idiom as agents) → external flag + link id.
+      const reviewerMatch = REVIEWER_EMAIL_RE.exec(authorEmail ?? '');
       return {
         hash,
         shortHash: hash.slice(0, 8),
@@ -198,6 +224,8 @@ export async function listHistory(projectId, relPath = null, limit = 50) {
         date,
         label,
         agent: agentMatch ? agentMatch[1] : null,
+        external: reviewerMatch != null,
+        reviewerLinkId: reviewerMatch ? Number(reviewerMatch[1]) : null,
       };
     });
 }

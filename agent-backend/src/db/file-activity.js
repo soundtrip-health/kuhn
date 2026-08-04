@@ -21,16 +21,20 @@ function parseMeta(raw) {
  * Append one file event and prune the project's log to the configured cap.
  * `meta` is a plain object (story 012-002: a 'moved' row stores
  * `{ from: <old path> }`; `path` is always the NEW path) stored as JSON.
- * @param {{ path: string, kind: string, agentSlug?: string|null, jobId?: number|null, userId?: number|null, meta?: object|null }} event
+ * `reviewLinkId` (epic 013) attributes an external reviewer's debounced edit
+ * event; member/agent rows leave it NULL.
+ * @param {{ path: string, kind: string, agentSlug?: string|null, jobId?: number|null, userId?: number|null, reviewLinkId?: number|null, meta?: object|null }} event
  */
 export function recordFileEvent(
   projectId,
-  { path, kind, agentSlug = null, jobId = null, userId = null, meta = null },
+  { path, kind, agentSlug = null, jobId = null, userId = null, reviewLinkId = null, meta = null },
 ) {
   querySync(
-    `INSERT INTO file_events (project_id, path, kind, agent_slug, job_id, user_id, meta)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [projectId, path, kind, agentSlug, jobId, userId, meta == null ? null : JSON.stringify(meta)],
+    `INSERT INTO file_events (project_id, path, kind, agent_slug, job_id, user_id,
+                              review_link_id, meta)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [projectId, path, kind, agentSlug, jobId, userId, reviewLinkId,
+     meta == null ? null : JSON.stringify(meta)],
   );
   querySync(
     `DELETE FROM file_events
@@ -44,14 +48,18 @@ export function recordFileEvent(
   );
 }
 
-/** Recent events for a project, newest first, optionally after `since`. */
+/** Recent events for a project, newest first, optionally after `since`.
+ *  Reviewer-attributed rows (epic 013) carry review_link_id plus the link's
+ *  reviewer_name so the activity feed can badge external origin. */
 export function listFileActivity(projectId, { since = null, limit = 200 } = {}) {
   const cap = Math.min(Math.max(parseInt(limit) || 200, 1), 1000);
   const { rows } = querySync(
-    `SELECT id, path, kind, meta, agent_slug, job_id, user_id, created_at
-     FROM file_events
-     WHERE project_id = $1 AND ($2 IS NULL OR created_at > $2)
-     ORDER BY created_at DESC, id DESC
+    `SELECT e.id, e.path, e.kind, e.meta, e.agent_slug, e.job_id, e.user_id,
+            e.review_link_id, rl.reviewer_name AS reviewer_name, e.created_at
+     FROM file_events e
+     LEFT JOIN review_links rl ON rl.id = e.review_link_id
+     WHERE e.project_id = $1 AND ($2 IS NULL OR e.created_at > $2)
+     ORDER BY e.created_at DESC, e.id DESC
      LIMIT ${cap}`,
     [projectId, since],
   );

@@ -17,8 +17,8 @@ Each epic is a directory containing an `index.md` (overview) and a `stories/` su
 | 009 | [Agent Depth & Cost Control](009-agent-depth-and-cost/index.md) | Draft — roadmap priority #2 |
 | 010 | [Collaboration & Org Readiness](010-collab-and-org-readiness/index.md) | Draft — roadmap priority #3 |
 | 011 | [Multi-Tenant Orgs & Administration](011-multi-tenant-orgs/index.md) | Ready — issue #46; builds on 010-003 |
-| 012 | [Folders & File Organization](012-folders-and-file-organization/index.md) | **In progress** — issue #47; branch `epic-012-folders` |
-| 013 | [External Review via Magic Links](013-external-review/index.md) | Ready — issue #48; builds on 010-003 + 008-004 |
+| 012 | [Folders & File Organization](012-folders-and-file-organization/index.md) | Done — issue #47; PR #55 |
+| 013 | [External Review via Magic Links](013-external-review/index.md) | Done — issue #48; built ahead of 010-003 via its documented fallback (013-002 owns the message-level room guard; 010-003 inherits it) |
 
 ## Delivery plan — issues #46/#47/#48 track (2026-08-02)
 
@@ -48,6 +48,13 @@ unblocked by 010-003):
   004 promotion approval in either order.
 - 013: 001 review links/guest sessions → 002 reviewer surface → 003 link
   management & attribution.
+
+> **Status 2026-08-04:** 013 is done (all three stories, branch
+> `epic-013-external-review`), landing *before* 010-003 via the fallback the
+> epic spec named: 013-002 built the message-level read-only room guard and
+> the reviewer principal path; 010-003 inherits both (pass `access: 'read'`
+> for viewer members). 011 remains the only open epic on this track and
+> still wants 010-003 first.
 
 **Deferred from this track:** 010-005's `auth_events` table is a soft
 dependency — 011/013 stories record events into it if it exists and note the

@@ -21,6 +21,8 @@ import orgLibraryRouter from './routes/org-library.js';
 import pendingEditsRouter from './routes/pending-edits.js';
 import projectsRouter from './routes/projects.js';
 import renderRouter from './routes/render.js';
+import reviewRouter from './routes/review.js';
+import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
@@ -37,6 +39,11 @@ app.use(cors({ origin: config.cors.origin, credentials: true }));
 app.use(express.json());
 app.use(healthRouter); // health needs no identity
 app.use(authRouter);   // login/logout happen before identity exists (007-002)
+// Epic 013: the guest (external reviewer) surface, BEFORE session() — a
+// reviewer is anonymous to the member stack (their cookie is one session()
+// cannot see), and every guest route lives under /api/review/*, so the rest
+// of /api stays structurally closed to them.
+app.use(reviewRouter);
 // Single-port deployment: serve the built webapp alongside the API. Mounted
 // before session() — a signed-out visitor must be able to load the app shell
 // to reach the sign-in screen. The SPA fallback leaves API paths alone so
@@ -44,10 +51,20 @@ app.use(authRouter);   // login/logout happen before identity exists (007-002)
 const webappDist = config.webapp.dist;
 const serveWebapp = webappDist && existsSync(join(webappDist, 'index.html'));
 if (serveWebapp) {
+  const reviewShell = join(webappDist, 'review.html');
+  const serveReviewShell = existsSync(reviewShell);
   app.use(express.static(webappDist));
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api') || req.path === '/health') {
       next();
+      return;
+    }
+    // Epic 013: /review/<token> gets the slim reviewer shell, not the member
+    // SPA (which would boot the full app and 401 its way to the sign-in
+    // overlay). Falls through to the SPA only when the build predates the
+    // reviewer entry.
+    if (serveReviewShell && (req.path === '/review' || req.path.startsWith('/review/'))) {
+      res.sendFile(reviewShell);
       return;
     }
     res.sendFile(join(webappDist, 'index.html'));
@@ -66,6 +83,7 @@ app.use(orgLibraryRouter);
 app.use(pendingEditsRouter);
 app.use(projectsRouter);
 app.use(renderRouter);
+app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013)
 
 const server = createServer(app);
 

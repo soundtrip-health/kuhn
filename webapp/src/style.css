@@ -1428,3 +1428,63 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 /* Source-mode gutter marker (v1). */
 .cm-comment-gutter { width: 16px; }
 .cm-comment-marker { display: inline-flex; color: var(--reviewer, var(--accent)); padding-top: 2px; }
+
+/* ---- External review links (epic 013, story 003) ----------------------- */
+/* File-tree origin badge: the change came through a review link. */
+.file-badge.is-external { color: var(--reviewer); background: var(--reviewer-soft); }
+/* History-panel tag on externally-authored versions. */
+.hy-external {
+  font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--reviewer); background: var(--reviewer-soft);
+  padding: 1px 4px; border-radius: var(--r-xs); margin-left: 5px;
+}
+
+/* Share dialog (share-links.ts) — hy-overlay backdrop, its own card. */
+#editor-share-btn { font-family: var(--font-mono); font-size: 11px; display: inline-flex; align-items: center; gap: 5px; }
+.sh-card {
+  width: min(600px, calc(100vw - 48px));
+  max-height: min(680px, calc(100vh - 64px));
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg, 12px);
+  box-shadow: 0 24px 64px rgba(0,0,0,.28);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sh-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.sh-mint { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line-2); }
+.sh-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sh-row-label { font: var(--ui-small); font-weight: 600; color: var(--ink-2); min-width: 72px; }
+.sh-radio { font-size: 12.5px; color: var(--ink); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.sh-note { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); margin: 0; }
+.sh-note-overlap { color: var(--ink-2); }
+.sh-mint-actions { display: flex; justify-content: flex-end; }
+.sh-minted { display: flex; flex-direction: column; gap: 6px; }
+.sh-url-row { display: flex; gap: 8px; }
+.sh-url {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+.sh-url:focus { outline: none; border-color: var(--accent-line); }
+.sh-once { color: var(--reviewer); }
+.sh-links { display: flex; flex-direction: column; }
+.sh-links-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px 4px; }
+.sh-all-toggle { font-size: 11.5px; color: var(--ink-3); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.sh-list { padding: 4px 8px 12px; display: flex; flex-direction: column; gap: 2px; }
+.sh-link-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--r-sm, 6px);
+}
+.sh-link-row:hover { background: var(--soft-2); }
+.sh-link-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sh-link-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sh-link-who { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+.sh-link-who.sh-unclaimed { color: var(--ink-3); font-weight: 400; font-style: italic; }
+.sh-mode-badge {
+  font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--reviewer); background: var(--reviewer-soft);
+  padding: 1px 5px; border-radius: var(--r-xs);
+}
+.sh-link-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.sh-revoke { flex: none; }

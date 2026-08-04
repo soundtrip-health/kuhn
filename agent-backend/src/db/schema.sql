@@ -248,6 +248,9 @@ CREATE TABLE IF NOT EXISTS file_events (
   -- events the user whose request ran the job. Epic 005 shipped without this.
   user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
   job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  -- Epic 013: external-reviewer attribution (kind 'update' debounced rows).
+  -- Nullable — member/agent rows stay NULL.
+  review_link_id INTEGER REFERENCES review_links(id) ON DELETE SET NULL,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -377,7 +380,46 @@ CREATE TABLE IF NOT EXISTS comments (
   orphaned      INTEGER NOT NULL DEFAULT 0,
   resolved_at   TEXT,
   resolved_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- Epic 013: external-reviewer attribution. Nullable — member rows stay NULL;
+  -- display names join from review_links.reviewer_name at read time.
+  review_link_id      INTEGER REFERENCES review_links(id) ON DELETE SET NULL,
+  resolved_by_link_id INTEGER REFERENCES review_links(id) ON DELETE SET NULL,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_comments_project_path ON comments (project_id, path, created_at);
+
+-- ============================================================
+-- External review (epic 013): magic links scoped to one document.
+-- Both tables store only sha256 hashes of the secrets the reviewer holds
+-- (same discipline as auth_tokens/sessions above). Mint/claim/revoke are
+-- durably recorded by these columns; live fan-out is feed-only.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS review_links (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path           TEXT NOT NULL,                 -- workspace-relative doc path; rekeyed on move (applyMove)
+  mode           TEXT NOT NULL CHECK (mode IN ('view', 'comment', 'edit')),
+  token_hash     TEXT NOT NULL UNIQUE,          -- sha256(raw url token)
+  -- Deleting the minting user revokes their outstanding links — the safe
+  -- default; SET NULL would leave live credentials with no accountable owner.
+  created_by     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reviewer_name  TEXT,                          -- claimed display name (claim time)
+  claimed_at     TEXT,                          -- NULL = unclaimed; single-claim discipline
+  revoked_at     TEXT,
+  revoked_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  expires_at     TEXT NOT NULL,
+  last_active_at TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_links_project_path ON review_links(project_id, path);
+
+CREATE TABLE IF NOT EXISTS review_sessions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash  TEXT NOT NULL UNIQUE,             -- sha256(raw session token)
+  link_id     INTEGER NOT NULL REFERENCES review_links(id) ON DELETE CASCADE,
+  expires_at  TEXT NOT NULL,                    -- = the link's expires_at at claim time
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_sessions_link ON review_sessions(link_id);

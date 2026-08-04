@@ -75,7 +75,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link';
   agent: string;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
   ts?: string;
@@ -106,8 +106,15 @@ export interface AgentEvent {
   maxAttempts?: number;
   nextRetryMs?: number;
   message?: string;
-  // Margin-comment mutation (story 008-004) — re-fetch comments for `path`.
-  action?: 'create' | 'reply' | 'resolve' | 'reopen' | 'delete';
+  // Margin-comment mutation (story 008-004) — re-fetch comments for `path`;
+  // 'mint' | 'claim' | 'revoke' | 'edit' are review-link lifecycle actions on
+  // `type: 'review_link'` feed events (epic 013 §2.6).
+  action?: 'create' | 'reply' | 'resolve' | 'reopen' | 'delete' | 'mint' | 'claim' | 'revoke' | 'edit';
+  // Review-link feed event payload (epic 013): the link id, its mode, and the
+  // claimed reviewer name (absent while unclaimed).
+  linkId?: number;
+  mode?: ReviewLinkMode;
+  name?: string;
   // Seeding pipeline stage markers (story 015); 'started' is the project
   // feed's job-start marker (story 005-001).
   stage?: string;
@@ -344,6 +351,11 @@ export interface HistoryEntry {
   label: string;
   /** Agent slug when the version was agent-authored, else null. */
   agent: string | null;
+  /** True when the version was authored by an external reviewer (epic 013):
+   *  the backend parses `link-<id>@reviewers.kuhn.local` author emails. */
+  external?: boolean;
+  /** The authoring review link's id when `external`. */
+  reviewerLinkId?: number | null;
 }
 
 export async function getHistory(projectId: number, path: string): Promise<HistoryEntry[]> {
@@ -492,6 +504,12 @@ export interface Comment {
   userName: string | null;
   /** Agent slug for agent-filed comments; null = human-authored. */
   agent: string | null;
+  /** Minting review link id for externally-authored comments (epic 013);
+   *  null/absent = member- or agent-authored. */
+  reviewLinkId?: number | null;
+  /** The external reviewer's claimed display name, joined at read time from
+   *  review_links (epic 013) — the analogue of userName. */
+  reviewerName?: string | null;
   body: string;
   /** Root rows only; null on replies. */
   anchor: CommentAnchor | null;
@@ -581,6 +599,77 @@ export async function deleteComment(projectId: number, id: number): Promise<void
   await expectOk(
     await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/comments/${id}`, { method: 'DELETE' }),
   );
+}
+
+// ---- External review links — member management (epic 013, story 003) --------
+// The member-facing half of external review: mint/list/revoke magic links
+// scoped to ONE document. These shapes are the frozen client contract for
+// agent-backend/src/routes/review-links.js (plan §2.3): camelCase JSON, list
+// wrapped as `{ links }`, mint as `{ url, link }`, revoke as `{ link }`.
+// The raw link URL appears ONLY in the mint response — show it once.
+
+export type ReviewLinkMode = 'view' | 'comment' | 'edit';
+
+export interface ReviewLink {
+  id: number;
+  projectId: number;
+  /** Workspace-relative document path; rekeyed server-side on moves. */
+  path: string;
+  mode: ReviewLinkMode;
+  createdBy: number;
+  /** Minting member's display name (or email), for the active-links panel. */
+  createdByName: string | null;
+  /** Claimed display name; null until the link is claimed. */
+  reviewerName: string | null;
+  /** Null = unclaimed (single-claim discipline). */
+  claimedAt: string | null;
+  revokedAt: string | null;
+  expiresAt: string;
+  lastActiveAt: string | null;
+  createdAt: string;
+}
+
+/** Mint a review link for one document. The response's `url` is the only time
+ *  the raw token is visible; `ttlMs` is clamped server-side (default 7d). */
+export async function mintReviewLink(
+  projectId: number,
+  params: { path: string; mode: ReviewLinkMode; ttlMs?: number },
+): Promise<{ url: string; link: ReviewLink }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/review-links`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }),
+  );
+  return (await res.json()) as { url: string; link: ReviewLink };
+}
+
+/** Review links for a project (optionally one path; revoked rows on demand). */
+export async function listReviewLinks(
+  projectId: number,
+  opts: { path?: string; includeRevoked?: boolean } = {},
+): Promise<ReviewLink[]> {
+  const params = new URLSearchParams();
+  if (opts.path) params.set('path', opts.path);
+  if (opts.includeRevoked) params.set('includeRevoked', '1');
+  const query = params.toString();
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/review-links${query ? `?${query}` : ''}`),
+  );
+  return ((await res.json()) as { links: ReviewLink[] }).links;
+}
+
+/** Revoke a link: its sessions die and its sockets close within one cycle. */
+export async function revokeReviewLink(projectId: number, linkId: number): Promise<ReviewLink> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/review-links/${linkId}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }),
+  );
+  return ((await res.json()) as { link: ReviewLink }).link;
 }
 
 // ---- File manager (story 014) ----
@@ -785,6 +874,11 @@ export interface FileActivityEvent {
   meta?: { from?: string } | null;
   agent_slug: string | null; // null = user action
   job_id: number | null;
+  /** Review link id when the event was an external reviewer's edit (epic 013);
+   *  drives the "external reviewer" origin badge. */
+  review_link_id?: number | null;
+  /** That link's claimed reviewer name, joined at read time. */
+  reviewer_name?: string | null;
   created_at: string;
 }
 

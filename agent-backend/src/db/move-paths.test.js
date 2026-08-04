@@ -23,6 +23,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   querySync('DELETE FROM comments');
+  querySync('DELETE FROM review_links');
   querySync('DELETE FROM pending_edits');
   querySync('DELETE FROM file_events');
   querySync('DELETE FROM file_seen');
@@ -63,6 +64,12 @@ const setActiveDocument = (path) => querySync(
   [PROJECT_ID, JSON.stringify({ activeDocument: path, title: 'keep me' })],
 );
 
+const reviewLink = (path) => querySync(
+  `INSERT INTO review_links (project_id, path, mode, token_hash, created_by, expires_at)
+   VALUES ($1, $2, 'comment', $3, $4, '2999-01-01T00:00:00.000Z') RETURNING id`,
+  [PROJECT_ID, path, `hash-${path}-${Math.random()}`, USER_ID],
+).rows[0].id;
+
 const paths = (table) => querySync(
   `SELECT path FROM ${table} WHERE project_id = $1 ORDER BY path`, [PROJECT_ID],
 ).rows.map((r) => r.path);
@@ -84,6 +91,7 @@ describe('applyMove — file move (story 012-002)', () => {
     const root = comment('draft/main.md', 'root');
     comment('draft/main.md', 'reply', root); // replies copy the root's path
     pending('draft/main.md');
+    reviewLink('draft/main.md'); // epic 013: links follow their document
     setActiveDocument('draft/main.md');
 
     const result = applyMove(PROJECT_ID, 'draft/main.md', 'archive/main.md', {
@@ -96,10 +104,12 @@ describe('applyMove — file move (story 012-002)', () => {
       comments: 2,
       pendingEdits: 1,
       activeDocument: 1,
+      reviewLinks: 1,
     });
     expect(paths('file_seen')).toEqual(['archive/main.md']);
     expect(paths('comments')).toEqual(['archive/main.md', 'archive/main.md']);
     expect(paths('pending_edits')).toEqual(['archive/main.md']);
+    expect(paths('review_links')).toEqual(['archive/main.md']);
     expect(config()).toEqual({ activeDocument: 'archive/main.md', title: 'keep me' });
 
     expect(events()).toEqual([{
@@ -160,11 +170,17 @@ describe('applyMove — folder move', () => {
     comment('directive.md', 'decoy');
     pending('dir/a.md');
     pending('directive.md');
+    reviewLink('dir/a.md');
+    reviewLink('dir/sub/b.md');
+    reviewLink('directive.md'); // prefix look-alike stays put
     setActiveDocument('dir/sub/b.md');
 
     const result = applyMove(PROJECT_ID, 'dir', 'archive/dir');
 
-    expect(result).toMatchObject({ comments: 2, pendingEdits: 1, activeDocument: 1 });
+    expect(result).toMatchObject({ comments: 2, pendingEdits: 1, activeDocument: 1, reviewLinks: 2 });
+    expect(paths('review_links')).toEqual([
+      'archive/dir/a.md', 'archive/dir/sub/b.md', 'directive.md',
+    ]);
     expect(paths('file_seen')).toEqual([
       'archive/dir', 'archive/dir/a.md', 'archive/dir/sub/b.md', 'directive.md',
     ]);
@@ -196,6 +212,7 @@ describe('applyMove — atomicity', () => {
     seen('draft/main.md');
     comment('draft/main.md', 'root');
     pending('draft/main.md');
+    reviewLink('draft/main.md');
     setActiveDocument('draft/main.md');
 
     // userId 4242 has no users row: file_events.user_id's FK rejects the
@@ -206,6 +223,7 @@ describe('applyMove — atomicity', () => {
     expect(paths('file_seen')).toEqual(['draft/main.md']);
     expect(paths('comments')).toEqual(['draft/main.md']);
     expect(paths('pending_edits')).toEqual(['draft/main.md']);
+    expect(paths('review_links')).toEqual(['draft/main.md']);
     expect(config().activeDocument).toBe('draft/main.md');
     expect(events()).toHaveLength(0);
   });

@@ -19,7 +19,7 @@ vi.mock('./db.js', () => ({
 }));
 
 import { config } from './config.js';
-import { commitNow, fileAtVersion, flushProject, listHistory } from './history.js';
+import { commitNow, fileAtVersion, flushProject, listHistory, scheduleCommit } from './history.js';
 import { StorageError, listProjectTree, readProjectFile } from './storage.js';
 
 let root;
@@ -84,6 +84,68 @@ describe('version history (story 008-002)', () => {
 
   it('an empty repo (no commits yet) lists as empty rather than erroring', async () => {
     expect(await listHistory(1)).toEqual([]);
+  });
+
+  it('reviewer commits round-trip through listHistory as external (epic 013)', async () => {
+    const hash = await commitNow(1, {
+      reviewer: { linkId: 5, name: 'Jane R' }, label: 'Save draft/main.md',
+    });
+    expect(hash).toMatch(/^[0-9a-f]{40}$/);
+    const [entry] = await listHistory(1);
+    expect(entry).toMatchObject({
+      hash,
+      authorName: 'Jane R (external)',
+      authorEmail: 'link-5@reviewers.kuhn.local',
+      label: 'Save draft/main.md',
+      agent: null,
+      external: true,
+      reviewerLinkId: 5,
+    });
+
+    // Member and agent versions stay non-external.
+    await writeFile(join(root, '1', 'draft', 'main.md'), '# v2\n');
+    await commitNow(1, { userId: 7 });
+    await writeFile(join(root, '1', 'draft', 'main.md'), '# v3\n');
+    await commitNow(1, { agent: 'writer' });
+    const [agentEntry, userEntry] = await listHistory(1);
+    expect(agentEntry).toMatchObject({ agent: 'writer', external: false, reviewerLinkId: null });
+    expect(userEntry).toMatchObject({ authorName: 'Dr. PI', external: false, reviewerLinkId: null });
+  });
+
+  it('reviewer autosaves default their label and win over plain user meta', async () => {
+    await commitNow(1, { reviewer: { linkId: 9, name: 'Sam' }, userId: 7 });
+    const [entry] = await listHistory(1);
+    expect(entry).toMatchObject({
+      label: 'External edits',
+      authorEmail: 'link-9@reviewers.kuhn.local',
+      external: true,
+      reviewerLinkId: 9,
+    });
+  });
+
+  it('a coalesced window with agent meta stays agent-attributed (agent > reviewer)', async () => {
+    scheduleCommit(1, { reviewer: { linkId: 3, name: 'Sam' } });
+    const hash = await commitNow(1, { agent: 'writer' }); // absorbs the pending window
+    expect(hash).toMatch(/^[0-9a-f]{40}$/);
+    const [entry] = await listHistory(1);
+    expect(entry).toMatchObject({ agent: 'writer', external: false, label: 'writer edits' });
+  });
+
+  it('an explicit reviewer checkpoint beats pending agent meta (013 fix)', async () => {
+    scheduleCommit(1, { agent: 'writer' }); // agent touched the same window
+    const hash = await commitNow(1, {
+      reviewer: { linkId: 3, name: 'Sam' }, reviewerCheckpoint: true, label: 'Save draft/main.md',
+    });
+    expect(hash).toMatch(/^[0-9a-f]{40}$/);
+    const [entry] = await listHistory(1);
+    expect(entry).toMatchObject({
+      authorName: 'Sam (external)',
+      authorEmail: 'link-3@reviewers.kuhn.local',
+      agent: null,
+      external: true,
+      reviewerLinkId: 3,
+      label: 'Save draft/main.md',
+    });
   });
 
   it('the .git directory is invisible to the storage API (008-002 guard)', async () => {

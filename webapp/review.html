@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Review · Kuhn</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <!-- External-reviewer surface (epic 013 story 002). A separate slim entry:
+         no member chrome, no files/chat/preview panels, and the bundle makes
+         zero member-only API calls — everything goes through /api/review/*. -->
+
+    <!-- ================= TOP BAR ================= -->
+    <header id="review-topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-inner"></span></span>
+        <span id="app-name">Kuhn</span>
+      </div>
+      <span class="review-topbar-divider" aria-hidden="true"></span>
+      <div class="review-doc">
+        <span id="review-title"></span>
+        <span id="review-mode-badge" class="review-mode-badge" hidden></span>
+      </div>
+      <span id="review-name" title="You appear to collaborators under this name"></span>
+    </header>
+
+    <!-- ================= MIDDLE ================= -->
+    <main id="review-layout">
+      <!-- The editor subtree editor-core/comments expect (same ids as the
+           member shell — style.css rules apply as-is). -->
+      <section id="editor-pane">
+        <div id="editor-subheader">
+          <span id="editor-path" class="editor-path"></span>
+          <div class="editor-meta">
+            <span id="editor-wordcount">0 words</span>
+            <button id="editor-comments-btn" type="button" class="btn btn-quiet btn-sm"
+              aria-pressed="false" title="Margin comments">Comments</button>
+          </div>
+        </div>
+        <div id="editor-scroll">
+          <div id="editor"></div>
+        </div>
+      </section>
+
+      <!-- Margin comments panel (comments.ts owns the contents) -->
+      <aside id="comments-panel" class="collapsed">
+        <div id="comments-toolbar">
+          <span class="panel-eyebrow">Comments</span>
+          <span class="spacer"></span>
+          <button id="comments-close" type="button" class="preview-close"
+            title="Close comments" aria-label="Close comments">&times;</button>
+        </div>
+        <div id="comments-composer" hidden>
+          <blockquote class="mc-quote"></blockquote>
+          <form class="mc-compose">
+            <textarea class="mc-input" rows="3" placeholder="Comment on the selected text…"></textarea>
+            <div class="mc-compose-actions">
+              <button type="button" class="mc-cancel btn btn-ghost btn-sm">Cancel</button>
+              <button type="submit" class="btn btn-accent btn-sm">Comment</button>
+            </div>
+          </form>
+        </div>
+        <div id="comments-list"></div>
+      </aside>
+    </main>
+
+    <!-- ================= STATUS BAR ================= -->
+    <footer id="statusbar">
+      <div class="status-left">
+        <span id="status-doc"></span>
+        <span id="status-save" data-state="saved"></span>
+        <span id="status-notice" role="status" aria-live="polite"></span>
+      </div>
+      <div class="status-right">
+        <span id="review-powered">Powered by Kuhn</span>
+      </div>
+    </footer>
+
+    <!-- Claim / refusal / end-of-session screens (review/claim.ts renders
+         into this; opaque, so it doubles as the pre-claim shell). -->
+    <div id="review-overlay" role="dialog" aria-modal="true"></div>
+
+    <script type="module" src="/src/review/main.ts"></script>
+  </body>
+</html>

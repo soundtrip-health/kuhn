@@ -1,6 +1,6 @@
 # Story 013-003: Link management & attribution
 
-**Status:** ready
+**Status:** done
 **Epic:** [013 — External Review via Magic Links](../index.md)
 **Estimate:** M
 
@@ -48,3 +48,12 @@ this, links minted in 001 are unaccountable.
 - Email-sending the link is out of scope v1 (copy-link only) — members
   already have the reviewer's email thread; revisit with the 009-002 mailer
   needs if both want it.
+
+## As built (2026-08-04)
+
+All ACs met. Mint/revoke guard is `isMember` (any org member) with the
+010-003 role seam marked in `routes/review-links.js` — the story's
+"editor+/owners" phrasing awaits that migration. Members may additionally
+delete reviewer-authored comment threads (see epic index "As built").
+Share-dialog copy states plainly that unsaved reviewer edits are lost when an
+agent update refreshes the doc.

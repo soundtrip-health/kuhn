@@ -40,7 +40,9 @@ import { icon } from './icons';
 import { initAuth } from './login';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
+import { initShareLinks, refreshShareLinks } from './share-links';
 import { notify, setVersion } from './status';
+import { toast } from './toast';
 import { refreshSuggestionsSoon } from './suggestion-hunks';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
@@ -267,6 +269,30 @@ async function switchToActiveProject(): Promise<void> {
         if (event.path === currentDocumentPath()) refreshCommentsSoon();
         refreshTreeSoon(projectId);
       }
+      // Review-link lifecycle (epic 013 §3.4): surface mint/claim/revoke/edit
+      // to members as toasts, and keep an open share dialog live. Reviewer
+      // edits are NOT file_change events (that would evict the reviewer's own
+      // room), so the tree/activity refresh has to ride this event instead.
+      if (event.type === 'review_link') {
+        const path = event.path ?? 'a document';
+        const mode = event.mode ? ` (${event.mode})` : '';
+        switch (event.action) {
+          case 'mint':
+            toast(`Review link created for ${path}${mode}`);
+            break;
+          case 'claim':
+            toast(`Review link for ${path} claimed by ${event.name ?? 'a reviewer'}${mode}`);
+            break;
+          case 'revoke':
+            toast(`Review link for ${path} revoked`);
+            break;
+          case 'edit':
+            toast(`External reviewer ${event.name ?? ''} edited ${path}`.replace('  ', ' '));
+            refreshTreeSoon(projectId); // external badge rides the activity log
+            break;
+        }
+        refreshShareLinks();
+      }
     },
   });
 
@@ -426,6 +452,11 @@ async function main(): Promise<void> {
   buildEditorHero();
   setSetupHandler((projectId) => openSetupWizard(projectId));
   initHistoryButton(() => ({
+    projectId: workspace.activeProject()?.id ?? 0,
+    path: currentDocumentPath(),
+  }));
+  // Share for external review (epic 013): mint/list/revoke links for the doc.
+  initShareLinks(() => ({
     projectId: workspace.activeProject()?.id ?? 0,
     path: currentDocumentPath(),
   }));

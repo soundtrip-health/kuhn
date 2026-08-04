@@ -1,6 +1,6 @@
 # Story 013-002: The reviewer surface
 
-**Status:** ready
+**Status:** done
 **Epic:** [013 — External Review via Magic Links](../index.md)
 **Estimate:** L
 
@@ -51,3 +51,13 @@ visually.
 
 - Mobile-usable is a stretch goal; reviewers open links from email on
   phones. At minimum, don't break rendering at narrow widths.
+
+## As built (2026-08-04)
+
+All ACs met, with one spec deviation: "a pending agent edit merges like any
+second collaborator" is not achievable while agent writes are storage-level —
+as built, a real file change closes reviewer-only rooms with a reconnectable
+4005 and the page refreshes onto reseeded content (epic index "As built" has
+the rationale; revisit at 010-002). Hardening beyond spec: malformed-frame
+crash guard (1002) and awareness clientID anti-spoofing, both server-side
+with regression tests. Logged-out verification is `npm run review-check`.

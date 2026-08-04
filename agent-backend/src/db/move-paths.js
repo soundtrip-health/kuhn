@@ -18,6 +18,10 @@
 //                          root.path, db/comments.js:177-180)
 //   pending_edits.path    (schema.sql:340, UNIQUE(project_id, path)) — see the
 //                          collision and scope notes on rekeyPendingEdits
+//   review_links.path     (epic 013; no unique key) — a live review link keeps
+//                          pointing at its document across a move; the guest
+//                          principal reads the row per request, so open
+//                          reviewer sessions re-point transparently
 //   projects.config JSON `activeDocument` (schema.sql:117)
 // APPENDED to, never rewritten:
 //   file_events.path      (schema.sql:240) — the activity log is append-only;
@@ -173,7 +177,7 @@ function rekeyActiveDocument(projectId, from, to) {
  * @param {string} to   - new path
  * @param {{agentSlug?: string|null, jobId?: number|null, userId?: number|null}} [attribution]
  * @returns {{from: string, to: string, comments: number, pendingEdits: number,
- *            outOfScope: number, activeDocument: number}}
+ *            outOfScope: number, activeDocument: number, reviewLinks: number}}
  * @throws {StorageError} 'invalid_path' for a degenerate move, 'conflict' when
  *   the destination already holds a pending edit. Any throw rolls back every
  *   table, including the file_events row.
@@ -202,6 +206,15 @@ export function applyMove(projectId, from, to, { agentSlug = null, jobId = null,
     const pending = rekeyPendingEdits(projectId, src, dst);
     const activeDocument = rekeyActiveDocument(projectId, src, dst);
 
+    // review_links.path has no unique key either (epic 013): plain UPDATE.
+    // Revoked/expired rows are rekeyed too — the audit trail should name the
+    // document where it lives now.
+    const reviewLinks = querySync(
+      `UPDATE review_links SET path = ${REKEY}, updated_at = ${NOW}
+       WHERE project_id = $1 AND ${SUBTREE}`,
+      [projectId, src, dst],
+    ).rowCount;
+
     // Last, and inside the same transaction: the announcement can only be
     // durable if the rewrite it announces is.
     recordFileEvent(projectId, {
@@ -215,6 +228,7 @@ export function applyMove(projectId, from, to, { agentSlug = null, jobId = null,
       pendingEdits: pending.rekeyed,
       outOfScope: pending.outOfScope,
       activeDocument,
+      reviewLinks,
     };
   });
 }
