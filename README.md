@@ -159,10 +159,11 @@ runtime loads prompts from there.
 
 ### Project management
 
-Work is organized into epics and stories under [`docs/epics/`](docs/epics/), each with an
-`index.md` recording its status and story table.
+Public work is tracked through [GitHub issues](https://github.com/soundtrip-health/kuhn/issues)
+and pull requests. The maintainers' epic/story planning record lives in a private companion
+repository. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report bugs, propose features,
+and submit changes.
 
 ## License
 
-TBD — no copyleft constraints; the editor stack (Milkdown/ProseMirror/Yjs) is MIT. See
-[strategy.md](strategy.md).
+[MIT](LICENSE).

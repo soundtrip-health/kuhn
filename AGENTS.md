@@ -19,7 +19,7 @@ package**; only `npm install` and `npm run dev` are meaningful at the root.
 kuhn/
 ├── agent-backend/   # Node.js service: agent runtime, REST + WebSocket, SQLite, Yjs, render/export
 ├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
-├── docs/            # architecture.md + epics/ (project management — see "Stories")
+├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
 └── guidance-docs/   # Curated reference corpus (regulatory guidance, etc.), by project type — content, not wired into the app
 ```
 
@@ -118,9 +118,12 @@ prompts returned to per-agent `.md` files — now under `db/prompts/`.)
 
 ## Stories — project-management rules
 
-Epics and stories live in `docs/epics/NNN-epic-slug/` (`index.md` + `stories/`).
-Statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`. These rules are about
-keeping that record honest:
+Public work is tracked via GitHub issues and PRs. The maintainers additionally keep an
+epic/story planning record in `docs/epics/NNN-epic-slug/` (`index.md` + `stories/`) —
+**not part of the public tree**; it lives in a private companion repository and in
+maintainers' checkouts (git-excluded). If `docs/epics/` is absent in your checkout,
+skip this section. Statuses: `draft`, `ready`, `in-progress`, `done`, `blocked`.
+These rules are about keeping that record honest:
 
 1. **A `done` story is read-only** — historical record, never the home for open work.
 2. **Every known issue has an owning open story** — self-contained enough to act on without reading back into the done story.

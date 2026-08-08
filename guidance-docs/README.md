@@ -22,8 +22,7 @@ guidance-docs/
 > product-level guidance available to every tenant. Organization-specific material
 > (a tenant's data-warehouse schema, confidential regulatory examples) must **not**
 > live here — it belongs in that tenant's per-tenant knowledge base. See
-> `docs/architecture.md` §Knowledge Base Tenancy, and `tenant-guidance/` for
-> staged tenant material.
+> `docs/architecture.md` §Knowledge Base Tenancy.
 
 ---
 
