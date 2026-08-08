@@ -379,6 +379,7 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   background: color-mix(in srgb, var(--ink) 32%, transparent);
   display: flex; align-items: center; justify-content: center;
 }
+.hy-overlay[hidden] { display: none; }  /* display:flex beats the [hidden] default */
 .hy-card {
   width: min(980px, calc(100vw - 48px));
   height: min(640px, calc(100vh - 64px));
