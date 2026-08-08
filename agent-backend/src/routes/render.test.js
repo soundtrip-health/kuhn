@@ -9,7 +9,16 @@ vi.mock('../render.js', async (importOriginal) => {
     exportDocument: vi.fn(),
   };
 });
+// Tenancy guard dependencies (story 010-003) — every project resolves, and
+// access defaults to full; role tests override checkOrgAccess per call.
+vi.mock('../db/projects.js', () => ({
+  getProject: vi.fn(async (id) => ({ id: Number(id), org_id: 10 })),
+}));
+vi.mock('../db/orgs.js', () => ({
+  checkOrgAccess: vi.fn(async (_u, orgId) => ({ ok: true, role: 'owner', org: { id: orgId } })),
+}));
 
+import { checkOrgAccess } from '../db/orgs.js';
 import { renderPdf, exportDocument } from '../render.js';
 import { SandboxError } from '../sandbox.js';
 import { StorageError } from '../storage.js';
@@ -21,6 +30,8 @@ let base;
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
+  // Stand in for the session middleware: every request has a current user.
+  app.use((req, _res, next) => { req.user = { id: 1, email: 'dev@kuhn.local' }; next(); });
   app.use(renderRouter);
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
@@ -107,5 +118,35 @@ describe('GET /export', () => {
   it('requires a path', async () => {
     const res = await fetch(exportUrl({ format: 'docx' }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('tenancy guard (story 010-003)', () => {
+  it('404s non-members without leaking, and never renders', async () => {
+    checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'not-member' });
+    const res = await postRender(1, { path: 'draft/main.md' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'project not found' });
+    expect(renderPdf).not.toHaveBeenCalled();
+  });
+
+  it('render and export are viewer reads — a viewer passes', async () => {
+    checkOrgAccess.mockResolvedValue({ ok: true, role: 'viewer', org: { id: 10 } });
+    renderPdf.mockResolvedValueOnce({ pdf: Buffer.from('%PDF-v'), cached: false });
+    expect((await postRender(1, { path: 'draft/main.md' })).status).toBe(200);
+    exportDocument.mockResolvedValueOnce({
+      output: Buffer.from('x'), contentType: 'text/plain', filename: 'main.tex',
+    });
+    const exp = await fetch(`${base}/api/projects/1/export?${new URLSearchParams({ path: 'draft/main.md', format: 'tex' })}`);
+    expect(exp.status).toBe(200);
+    checkOrgAccess.mockResolvedValue({ ok: true, role: 'owner', org: { id: 10 } });
+  });
+
+  it('403s a suspended org with the guard body', async () => {
+    checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'suspended', role: 'owner' });
+    const res = await postRender(1, { path: 'draft/main.md' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'organization suspended' });
+    expect(renderPdf).not.toHaveBeenCalled();
   });
 });

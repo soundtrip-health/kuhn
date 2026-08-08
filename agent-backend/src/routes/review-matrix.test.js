@@ -552,6 +552,47 @@ describe('lookup and claim lifecycle', () => {
   });
 });
 
+// ---- Suspension (011-001, fix MA2) --------------------------------------------
+
+describe('suspension covers the reviewer surface (MA2)', () => {
+  const suspend = () => querySync("UPDATE organizations SET status = 'suspended' WHERE id = 1");
+  const unsuspend = () => querySync("UPDATE organizations SET status = 'active' WHERE id = 1");
+
+  it('403s every session-bearing guest route while the org is suspended, and recovers on unsuspend', async () => {
+    suspend();
+    try {
+      // Reads refuse in every mode — an anonymous link holder must not keep
+      // reading a suspended tenant's files.
+      for (const mode of MODES) {
+        for (const path of ['/api/review/context', '/api/review/file', '/api/review/comments']) {
+          const res = await req('GET', path, { headers: guest(mode) });
+          expect(res.status, `${mode} GET ${path}`).toBe(403);
+          expect((await res.json()).error).toBe('organization suspended');
+        }
+      }
+      // Writes refuse BEFORE the mode gate: even the edit link cannot write.
+      const put = await fetch(url('/api/review/file'), {
+        method: 'PUT', headers: guest('edit'), body: 'suspended write\n',
+      });
+      expect(put.status).toBe(403);
+      expect(await readFile(join(root, String(PID), 'draft', 'main.md'), 'utf-8')).toBe('# Draft\n');
+      const comment = await req('POST', '/api/review/comments', {
+        headers: guest('comment'), body: { body: 'sneaky' },
+      });
+      expect(comment.status).toBe(403);
+      // The member surface refuses through the tenancy chokepoint too.
+      const member403 = await req('GET', `/api/projects/${PID}/files`, { headers: member() });
+      expect(member403.status).toBe(403);
+      expect(await member403.json()).toEqual({ error: 'organization suspended' });
+    } finally {
+      unsuspend();
+    }
+    // Reversible: the same session works again once the org is active.
+    expect((await req('GET', '/api/review/context', { headers: guest('view') })).status).toBe(200);
+    expect((await req('GET', `/api/projects/${PID}/files`, { headers: member() })).status).toBe(200);
+  });
+});
+
 // ---- Revocation & the member side --------------------------------------------
 
 describe('member management + revocation round trip', () => {

@@ -2,6 +2,8 @@
 // conventions as routes/files.js — the scope rule, hunk math, and
 // accept/reject orchestration live in src/pending-edits.js; these handlers
 // only translate HTTP and validate body shapes.
+// Tenancy (story 010-003): listing needs viewer; propose/accept/reject need
+// editor (they change what lands in draft/**).
 
 import { Router } from 'express';
 
@@ -14,6 +16,7 @@ import {
 } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { StorageError } from '../storage.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -25,15 +28,12 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -67,7 +67,7 @@ function validHunk(hunk, res) {
 }
 
 /** GET /api/projects/:projectId/pending-edits[?path=] — refreshed pending edits */
-router.get('/api/projects/:projectId/pending-edits', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/pending-edits', handle('viewer', async (projectId, req, res) => {
   const path = typeof req.query.path === 'string' && req.query.path.length > 0 ? req.query.path : null;
   const edits = await listEdits(projectId, { path });
   res.json({ edits });
@@ -79,7 +79,7 @@ router.get('/api/projects/:projectId/pending-edits', handle(async (projectId, re
  * tool path does (token-free check scripts, future human proposals). 400 for
  * paths outside the suggestion scope.
  */
-router.post('/api/projects/:projectId/pending-edits', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/pending-edits', handle('editor', async (projectId, req, res) => {
   const { path, proposedContent, agent = null, jobId = null } = req.body ?? {};
   if (typeof path !== 'string' || path.length === 0 || typeof proposedContent !== 'string') {
     res.status(400).json({ error: 'path and proposedContent are required' });
@@ -104,7 +104,7 @@ router.post('/api/projects/:projectId/pending-edits', handle(async (projectId, r
  * without a hunk (whole-file replace of a stale row). 409 on stale-without-
  * force and on hunk races.
  */
-router.post('/api/projects/:projectId/pending-edits/:id/accept', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/pending-edits/:id/accept', handle('editor', async (projectId, req, res) => {
   const id = requireEditId(req, res);
   if (id == null) return;
   const { hunk = null, force = false } = req.body ?? {};
@@ -122,7 +122,7 @@ router.post('/api/projects/:projectId/pending-edits/:id/accept', handle(async (p
  * { hunk?: {index, hash} }. No hunk = discard the whole edit. No file write,
  * no activity row, no commit.
  */
-router.post('/api/projects/:projectId/pending-edits/:id/reject', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/pending-edits/:id/reject', handle('editor', async (projectId, req, res) => {
   const id = requireEditId(req, res);
   if (id == null) return;
   const { hunk = null } = req.body ?? {};

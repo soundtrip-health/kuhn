@@ -35,3 +35,27 @@ export async function sendLoginLink(email, url) {
     ].join('\n'),
   });
 }
+
+/** Deliver an org invitation link (story 011-002), by mail or (dev) by server log. */
+export async function sendInviteLink(email, url, { orgName }) {
+  if (!config.auth.smtpUrl) {
+    console.log(`[auth] Invitation to ${orgName} for ${email}: ${url}`);
+    return;
+  }
+  const transport = await smtpTransport();
+  await transport.sendMail({
+    from: config.auth.mailFrom,
+    to: email,
+    subject: `You're invited to ${orgName} on Kuhn`,
+    text: [
+      `You've been invited to join ${orgName} on Kuhn.`,
+      '',
+      'Follow this link to accept the invitation and sign in:',
+      '',
+      url,
+      '',
+      `The link is valid for ${Math.round(config.auth.inviteTtlMs / 86400000)} day(s) and can be used once.`,
+      'If you were not expecting this invitation, ignore this message.',
+    ].join('\n'),
+  });
+}

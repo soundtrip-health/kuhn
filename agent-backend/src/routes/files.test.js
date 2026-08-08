@@ -1,14 +1,31 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
 
 vi.mock('../db.js', () => ({
+  // Serves both storage.js (root_path) and guards.js → getProject (org_id).
   query: vi.fn(async (_sql, [id]) => ({
-    rows: [1, 2].includes(Number(id)) ? [{ root_path: null }] : [],
+    rows: [1, 2].includes(Number(id))
+      ? [{ id: Number(id), org_id: 10, root_path: null, config: '{}' }]
+      : [],
   })),
 }));
+// The tenancy chokepoint (story 010-003): emulate the real rank check so each
+// route's minRole is exercised; tests flip the granted role via grantRole().
+vi.mock('../db/orgs.js', () => {
+  const RANK = { viewer: 1, editor: 2, owner: 3 };
+  const state = { role: 'owner', reason: null };
+  return {
+    __accessState: state,
+    checkOrgAccess: vi.fn(async (_userId, orgId, minRole = 'viewer') => {
+      if (state.reason) return { ok: false, reason: state.reason, role: state.role };
+      if (RANK[state.role] < RANK[minRole]) return { ok: false, reason: 'role', role: state.role };
+      return { ok: true, role: state.role, org: { id: orgId, status: 'active', settings: {} } };
+    }),
+  };
+});
 vi.mock('../db/file-activity.js', () => ({
   unseenPaths: vi.fn(() => new Set()),
   migrateSeenPaths: vi.fn(),
@@ -17,6 +34,7 @@ vi.mock('../db/move-paths.js', () => ({ findPendingEditConflicts: vi.fn(() => []
 vi.mock('../project-events.js', () => ({ publishProjectEvent: vi.fn() }));
 
 import { config } from '../config.js';
+import * as orgsDb from '../db/orgs.js';
 import { unseenPaths, migrateSeenPaths } from '../db/file-activity.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
 import { publishProjectEvent } from '../project-events.js';
@@ -383,5 +401,68 @@ describe('file routes', () => {
     expect((await fetch(url('/api/projects/1/file', { path: 'nope.md' }))).status).toBe(404);
     expect((await fetch(url('/api/projects/abc/files'))).status).toBe(400);
     expect((await fetch(url('/api/projects/1/file'))).status).toBe(400);
+  });
+
+  describe('tenancy guard (story 010-003)', () => {
+    const state = orgsDb.__accessState;
+    const grant = (role, reason = null) => { state.role = role; state.reason = reason; };
+    afterEach(() => grant('owner'));
+
+    const writes = () => [
+      ['PUT file', () => fetch(url('/api/projects/1/file', { path: 'draft/main.md' }), {
+        method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: 'nope',
+      })],
+      ['DELETE file', () => fetch(url('/api/projects/1/file', { path: 'draft/main.md' }), { method: 'DELETE' })],
+      ['mkdir', () => fetch(url('/api/projects/1/files/mkdir'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: 'x' }),
+      })],
+      ['move', () => fetch(url('/api/projects/1/files/move'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'draft/main.md', to: 'a.md' }),
+      })],
+      ['upload', () => {
+        const form = new FormData();
+        form.append('files', new Blob(['x'], { type: 'text/plain' }), 'guard.txt');
+        return fetch(url('/api/projects/1/files/upload'), { method: 'POST', body: form });
+      }],
+    ];
+
+    it('404s non-members on reads AND writes without leaking existence', async () => {
+      grant('owner', 'not-member');
+      const read = await fetch(url('/api/projects/1/files'));
+      expect(read.status).toBe(404);
+      expect(await read.json()).toEqual({ error: 'project not found' });
+      for (const [name, go] of writes()) {
+        expect((await go()).status, name).toBe(404);
+      }
+    });
+
+    it('viewers read (tree + file) but every write 403s with the role error', async () => {
+      grant('viewer');
+      expect((await fetch(url('/api/projects/1/files'))).status).toBe(200);
+      expect((await fetch(url('/api/projects/1/file', { path: 'draft/main.md' }))).status).toBe(200);
+      for (const [name, go] of writes()) {
+        const res = await go();
+        expect(res.status, name).toBe(403);
+        expect(await res.json(), name).toEqual({ error: 'requires editor role' });
+      }
+      // Nothing landed on disk.
+      expect((await fetch(url('/api/projects/1/file', { path: 'guard.txt' }))).status).toBe(404);
+    });
+
+    it('editors clear the write threshold', async () => {
+      grant('editor');
+      const res = await fetch(url('/api/projects/1/file', { path: 'editor-ok.md' }), {
+        method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: 'fine',
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('403s everyone once the org is suspended', async () => {
+      grant('owner', 'suspended');
+      const res = await fetch(url('/api/projects/1/files'));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'organization suspended' });
+    });
   });
 });

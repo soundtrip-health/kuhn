@@ -26,6 +26,9 @@ let base;
 let root;
 let PROJECT_ID;
 
+// Mutable per-test identity, injected by the session stand-in below.
+let sessionUser;
+
 const BASE = Array.from({ length: 14 }, (_, i) => `line${i + 1}`).join('\n') + '\n';
 const PROPOSED = BASE.replace('line2', 'LINE2').replace('line12', 'LINE12');
 
@@ -40,7 +43,7 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
   // Stand-in for the session middleware, so attribution is observable (007-001).
-  app.use((req, _res, next) => { req.user = { id: 9, email: 'dev@kuhn.local' }; next(); });
+  app.use((req, _res, next) => { req.user = sessionUser; next(); });
   app.use(router);
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
@@ -53,10 +56,15 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  sessionUser = { id: 9, email: 'dev@kuhn.local' };
   querySync('DELETE FROM pending_edits');
+  querySync('DELETE FROM memberships');
+  querySync('DELETE FROM users');
   querySync('DELETE FROM projects');
   querySync('DELETE FROM organizations');
   querySync("INSERT INTO organizations (id, name, slug) VALUES (1, 'Org', 'org')");
+  querySync("INSERT INTO users (id, email) VALUES (9, 'dev@kuhn.local'), (30, 'viewer@kuhn.local')");
+  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (9, 1, 'editor'), (30, 1, 'viewer')");
   const dir = await mkdtemp(join(root, 'p-'));
   const { rows } = querySync(
     "INSERT INTO projects (org_id, name, project_type, root_path) VALUES (1, 'P', 'manuscript', $1) RETURNING id",
@@ -190,6 +198,37 @@ describe('pending-edit routes (story 008-001)', () => {
     // Rejects publish only the SSE-only 'proposed' kind — never a real write event.
     const kinds = publishProjectEvent.mock.calls.map(([, e]) => e.kind);
     expect(kinds.filter((k) => k !== 'proposed')).toEqual([]);
+  });
+
+  it('guards the tenancy line (story 010-003): non-member 404, viewer read-only, suspended 403', async () => {
+    const edit = await proposeViaApi();
+
+    // Non-member: non-leaking 404 on read and write.
+    sessionUser = { id: 50, email: 'outsider@kuhn.local' };
+    expect((await fetch(url(`/api/projects/${PROJECT_ID}/pending-edits`))).status).toBe(404);
+    expect((await post(`/api/projects/${PROJECT_ID}/pending-edits/${edit.id}/accept`, {})).status).toBe(404);
+
+    // Viewer: list reads fine, but propose/accept/reject are editor writes.
+    sessionUser = { id: 30, email: 'viewer@kuhn.local' };
+    const list = await fetch(url(`/api/projects/${PROJECT_ID}/pending-edits`));
+    expect(list.status).toBe(200);
+    expect((await list.json()).edits).toHaveLength(1);
+    for (const go of [
+      post(`/api/projects/${PROJECT_ID}/pending-edits`, { path: 'draft/x.md', proposedContent: 'x' }),
+      post(`/api/projects/${PROJECT_ID}/pending-edits/${edit.id}/accept`, {}),
+      post(`/api/projects/${PROJECT_ID}/pending-edits/${edit.id}/reject`, {}),
+    ]) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'requires editor role' });
+    }
+
+    // Suspension refuses even the editor, on reads too.
+    sessionUser = { id: 9, email: 'dev@kuhn.local' };
+    querySync("UPDATE organizations SET status = 'suspended' WHERE id = 1");
+    const suspended = await fetch(url(`/api/projects/${PROJECT_ID}/pending-edits`));
+    expect(suspended.status).toBe(403);
+    expect(await suspended.json()).toEqual({ error: 'organization suspended' });
   });
 
   it('maps bad ids and unknown edits to 400/404, malformed hunks to 400', async () => {

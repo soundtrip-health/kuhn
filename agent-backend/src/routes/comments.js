@@ -1,8 +1,9 @@
 // Story 008-004: HTTP surface of margin comments. Same handler/error
-// conventions as routes/pending-edits.js, plus a project-membership guard
-// (the authorizeProject pattern from routes/projects.js): comments are
-// user-authored prose, so unlike the file routes these do not trust
-// :projectId alone. 404 on non-membership — don't leak existence.
+// conventions as routes/pending-edits.js, plus the tenancy guard
+// (requireProjectRole, story 010-003): 404 on non-membership — don't leak
+// existence. Viewers read threads only; create/reply/resolve/reopen/anchor/
+// delete need editor (confirmed decision F4 — in-org viewers are read-only;
+// external reviewers comment via their own /api/review surface instead).
 
 import { Router } from 'express';
 
@@ -15,10 +16,9 @@ import {
   unresolvedCounts,
   updateAnchor,
 } from '../db/comments.js';
-import { getProject } from '../db/projects.js';
-import { isMember } from '../db/orgs.js';
 import { publishProjectEvent } from '../project-events.js';
 import { StorageError } from '../storage.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -31,20 +31,12 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      const project = await getProject(projectId);
-      if (!project || req.user == null || !(await isMember(req.user.id, project.org_id))) {
-        res.status(404).json({ error: 'project not found' });
-        return;
-      }
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -71,13 +63,13 @@ function commentEvent(projectId, { action, path, id, rootId, agent = null }, use
 }
 
 /** GET /api/projects/:projectId/comments[?path=] — threads with nested replies */
-router.get('/api/projects/:projectId/comments', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/comments', handle('viewer', async (projectId, req, res) => {
   const path = typeof req.query.path === 'string' && req.query.path.length > 0 ? req.query.path : null;
   res.json({ threads: listThreads(projectId, { path }) });
 }));
 
 /** GET /api/projects/:projectId/comments/counts — unresolved threads per path */
-router.get('/api/projects/:projectId/comments/counts', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/comments/counts', handle('viewer', async (projectId, req, res) => {
   res.json({ counts: unresolvedCounts(projectId) });
 }));
 
@@ -88,7 +80,7 @@ router.get('/api/projects/:projectId/comments/counts', handle(async (projectId, 
  * server does not second-guess a human selection (the agent path resolves
  * its quote in the add_comment tool before it gets here).
  */
-router.post('/api/projects/:projectId/comments', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/comments', handle('editor', async (projectId, req, res) => {
   const { path, body, anchor = null } = req.body ?? {};
   if (typeof path !== 'string' || path.length === 0 || typeof body !== 'string' || body.trim().length === 0) {
     res.status(400).json({ error: 'path and a non-empty body are required' });
@@ -111,7 +103,7 @@ router.post('/api/projects/:projectId/comments', handle(async (projectId, req, r
 }));
 
 /** POST /api/projects/:projectId/comments/:id/replies — body { body } */
-router.post('/api/projects/:projectId/comments/:id/replies', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/comments/:id/replies', handle('editor', async (projectId, req, res) => {
   const id = requireCommentId(req, res);
   if (id == null) return;
   const { body } = req.body ?? {};
@@ -125,7 +117,7 @@ router.post('/api/projects/:projectId/comments/:id/replies', handle(async (proje
 }));
 
 /** POST /api/projects/:projectId/comments/:id/resolve — resolve the thread */
-router.post('/api/projects/:projectId/comments/:id/resolve', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/comments/:id/resolve', handle('editor', async (projectId, req, res) => {
   const id = requireCommentId(req, res);
   if (id == null) return;
   const thread = setResolved(projectId, id, true, { userId: req.user?.id ?? null });
@@ -134,7 +126,7 @@ router.post('/api/projects/:projectId/comments/:id/resolve', handle(async (proje
 }));
 
 /** POST /api/projects/:projectId/comments/:id/reopen — reopen the thread */
-router.post('/api/projects/:projectId/comments/:id/reopen', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/comments/:id/reopen', handle('editor', async (projectId, req, res) => {
   const id = requireCommentId(req, res);
   if (id == null) return;
   const thread = setResolved(projectId, id, false, { userId: req.user?.id ?? null });
@@ -149,7 +141,7 @@ router.post('/api/projects/:projectId/comments/:id/reopen', handle(async (projec
  * orphaning. No feed event — anchors are presentation state, and echoing
  * every keystroke-driven drift back to all tabs would be noise.
  */
-router.patch('/api/projects/:projectId/comments/:id/anchor', handle(async (projectId, req, res) => {
+router.patch('/api/projects/:projectId/comments/:id/anchor', handle('editor', async (projectId, req, res) => {
   const id = requireCommentId(req, res);
   if (id == null) return;
   const { quote, start, end, orphaned } = req.body ?? {};
@@ -165,7 +157,7 @@ router.patch('/api/projects/:projectId/comments/:id/anchor', handle(async (proje
 }));
 
 /** DELETE /api/projects/:projectId/comments/:id — author-only */
-router.delete('/api/projects/:projectId/comments/:id', handle(async (projectId, req, res) => {
+router.delete('/api/projects/:projectId/comments/:id', handle('editor', async (projectId, req, res) => {
   const id = requireCommentId(req, res);
   if (id == null) return;
   const { path, rootId } = deleteOwn(projectId, id, { userId: req.user?.id ?? null });

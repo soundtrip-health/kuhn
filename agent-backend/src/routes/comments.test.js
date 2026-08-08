@@ -147,4 +147,44 @@ describe('comment routes (story 008-004)', () => {
     sessionUser = { id: USER, email: 'dev@kuhn.local' };
     expect((await fetch(url('/api/projects/999999/comments'))).status).toBe(404);
   });
+
+  it('viewers read threads and counts but every comment write 403s (010-003, decision F4)', async () => {
+    const t = await createViaApi();
+    sessionUser = { id: 30, email: 'viewer@kuhn.local' };
+    querySync("INSERT INTO users (id, email) VALUES (30, 'viewer@kuhn.local')");
+    querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (30, 1, 'viewer')");
+
+    const list = await fetch(url(`/api/projects/${PROJECT_ID}/comments`));
+    expect(list.status).toBe(200);
+    expect((await list.json()).threads).toHaveLength(1);
+    expect((await fetch(url(`/api/projects/${PROJECT_ID}/comments/counts`))).status).toBe(200);
+
+    const denied = [
+      post(`/api/projects/${PROJECT_ID}/comments`, { path: 'draft/main.md', body: 'nope' }),
+      post(`/api/projects/${PROJECT_ID}/comments/${t.id}/replies`, { body: 'nope' }),
+      post(`/api/projects/${PROJECT_ID}/comments/${t.id}/resolve`, {}),
+      post(`/api/projects/${PROJECT_ID}/comments/${t.id}/reopen`, {}),
+      patch(`/api/projects/${PROJECT_ID}/comments/${t.id}/anchor`, { start: 1, end: 2 }),
+      fetch(url(`/api/projects/${PROJECT_ID}/comments/${t.id}`), { method: 'DELETE' }),
+    ];
+    for (const go of denied) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'requires editor role' });
+    }
+    expect(publishProjectEvent.mock.calls.filter(([, e]) => e.type === 'comment' && e.action !== 'create')).toEqual([]);
+  });
+
+  it('403s every route once the org is suspended', async () => {
+    const t = await createViaApi();
+    querySync("UPDATE organizations SET status = 'suspended' WHERE id = 1");
+    for (const go of [
+      fetch(url(`/api/projects/${PROJECT_ID}/comments`)),
+      post(`/api/projects/${PROJECT_ID}/comments/${t.id}/resolve`, {}),
+    ]) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'organization suspended' });
+    }
+  });
 });

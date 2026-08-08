@@ -77,10 +77,13 @@ export function revokeInvitation(orgId, id) {
 }
 
 /**
- * Redeem an invitation token. The org-status check runs BEFORE the atomic
- * accept, so a suspended org refuses WITHOUT burning the token — it redeems
- * normally after an unsuspend. The success shape carries the org row so the
- * verify door can handle the already-a-member path without another query.
+ * Redeem an invitation token. Expiry is checked BEFORE org status — an
+ * expired invite to a suspended org is dead either way, and reporting
+ * 'suspended' would falsely promise the link works after an unsuspend. For a
+ * live token the status check runs BEFORE the atomic accept, so a suspended
+ * org refuses WITHOUT burning it — it redeems normally after an unsuspend.
+ * The success shape carries the org row so the verify door can handle the
+ * already-a-member path without another query.
  * @returns {{ ok: true, invitation: object, org: {id,name,slug,status} }
  *   | { ok: false, reason: 'missing'|'revoked'|'used'|'expired'|'suspended' }}
  */
@@ -97,6 +100,7 @@ export function redeemInvitation(rawToken) {
   if (!found) return { ok: false, reason: 'missing' };
   if (found.revoked_at) return { ok: false, reason: 'revoked' };
   if (found.accepted_at) return { ok: false, reason: 'used' };
+  if (found.expires_at <= new Date().toISOString()) return { ok: false, reason: 'expired' };
   if (found.org_status === 'suspended') return { ok: false, reason: 'suspended' };
   const { rows: accepted } = querySync(
     `UPDATE invitations SET accepted_at = ${NOW}
@@ -111,4 +115,35 @@ export function redeemInvitation(rawToken) {
     invitation: accepted[0],
     org: { id: found.org_id, name: found.org_name, slug: found.org_slug, status: found.org_status },
   };
+}
+
+/**
+ * Is the invitee's email already a member of the org? The invitation-create
+ * route refuses with 409 when it is — a member needs a role change, not an
+ * invitation.
+ */
+export function inviteeIsMember(orgId, email) {
+  const normalized = String(email).trim().toLowerCase();
+  const { rows } = querySync(
+    `SELECT 1 FROM memberships m JOIN users u ON u.id = m.user_id
+     WHERE m.org_id = $1 AND lower(u.email) = $2`,
+    [orgId, normalized],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Grant a redeemed invitation's membership. ON CONFLICT DO NOTHING keeps an
+ * existing member's role untouched — the already-a-member redemption path
+ * marks the invitation accepted but never changes a role.
+ * @returns {boolean} true if a membership was created, false if the user was
+ *   already a member
+ */
+export function acceptInvitedMembership(userId, invitation) {
+  const { rowCount } = querySync(
+    `INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, org_id) DO NOTHING`,
+    [userId, invitation.org_id, invitation.role],
+  );
+  return rowCount > 0;
 }

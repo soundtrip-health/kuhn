@@ -165,4 +165,37 @@ describe('review-link routes (epic 013 story 003)', () => {
     sessionUser = { id: USER, email: 'dev@kuhn.local' };
     expect((await fetch(url('/api/projects/999999/review-links'))).status).toBe(404);
   });
+
+  it('viewers list links but cannot mint or revoke (010-003: handing out access is editor+)', async () => {
+    const { link } = await (await mint()).json();
+    sessionUser = { id: 30, email: 'viewer@kuhn.local' };
+    querySync("INSERT INTO users (id, email) VALUES (30, 'viewer@kuhn.local')");
+    querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (30, 1, 'viewer')");
+
+    const list = await fetch(url(`/api/projects/${PROJECT_ID}/review-links`));
+    expect(list.status).toBe(200);
+    expect((await list.json()).links.map((l) => l.id)).toEqual([link.id]);
+
+    for (const go of [mint(), post(`/api/projects/${PROJECT_ID}/review-links/${link.id}/revoke`, {})]) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'requires editor role' });
+    }
+    // The viewer's revoke attempt closed nothing.
+    expect(closeReviewerConnections).not.toHaveBeenCalled();
+  });
+
+  it('403s mint, list, and revoke once the org is suspended', async () => {
+    const { link } = await (await mint()).json();
+    querySync("UPDATE organizations SET status = 'suspended' WHERE id = 1");
+    for (const go of [
+      mint(),
+      fetch(url(`/api/projects/${PROJECT_ID}/review-links`)),
+      post(`/api/projects/${PROJECT_ID}/review-links/${link.id}/revoke`, {}),
+    ]) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'organization suspended' });
+    }
+  });
 });

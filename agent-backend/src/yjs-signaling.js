@@ -13,14 +13,17 @@
  *     { type: 'publish',   topic: string, data: any }           (relayed)
  *     { type: 'pong' }
  *
- * Authorization (story 007-003): the upgrade handler (collab-auth.js) has
- * already authenticated the connection and stamped req.kuhnUser. Topics are
- * room names, so each subscribe/publish topic is membership-checked like a
- * doc-sync room join; unauthorized topics are silently dropped. Results are
- * cached per connection. Dev mode: canJoinRoom always allows.
+ * Authorization (story 007-003; roles in 010-003): the upgrade handler
+ * (collab-auth.js) has already authenticated the connection and stamped
+ * req.kuhnUser. Topics are room names, so each subscribe topic is
+ * membership-checked like a doc-sync room join (canJoinRoom — viewers may
+ * listen), while publish requires editor-or-better and an unsuspended org
+ * (canPublishRoom) so the webrtc side channel can never out-privilege the
+ * doc-sync write gate. Unauthorized topics are silently dropped. Verdicts are
+ * cached per connection, per level. Dev mode: both checks always allow.
  */
 
-import { canJoinRoom } from './collab-auth.js';
+import { canJoinRoom, canPublishRoom } from './collab-auth.js';
 
 /** @type {Map<string, Set<import('ws').WebSocket>>} topic → subscribers */
 const topics = new Map();
@@ -40,12 +43,19 @@ export function handleSignalingConnection(ws, req) {
   /** @type {Set<string>} topics this client is subscribed to */
   const subscribed = new Set();
   const user = req?.kuhnUser ?? null;
-  /** @type {Map<string, boolean>} per-connection topic authorization cache */
+  /** @type {Map<string, boolean>} per-connection subscribe authorization cache */
   const allowed = new Map();
+  /** @type {Map<string, boolean>} per-connection publish authorization cache */
+  const allowedPublish = new Map();
 
   async function authorizeTopic(topic) {
     if (!allowed.has(topic)) allowed.set(topic, await canJoinRoom(user, topic));
     return allowed.get(topic);
+  }
+
+  async function authorizePublish(topic) {
+    if (!allowedPublish.has(topic)) allowedPublish.set(topic, await canPublishRoom(user, topic));
+    return allowedPublish.get(topic);
   }
 
   ws.on('message', async (raw) => {
@@ -85,7 +95,7 @@ export function handleSignalingConnection(ws, req) {
       }
 
       case 'publish': {
-        if (!(await authorizeTopic(msg.topic))) break; // no relay into rooms you can't join
+        if (!(await authorizePublish(msg.topic))) break; // viewers listen, never speak (010-003)
         const subs = getSubscribers(msg.topic);
         for (const sub of subs) {
           if (sub !== ws) {

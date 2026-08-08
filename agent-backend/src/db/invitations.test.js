@@ -117,6 +117,43 @@ describe('redeemInvitation', () => {
     querySync(`UPDATE organizations SET status = 'active' WHERE id = ${ORG}`);
     expect(inv.redeemInvitation(token).ok).toBe(true);
   });
+
+  it('an EXPIRED invite to a suspended org reports expired, not suspended', () => {
+    // The suspended copy says "the link stays valid" — untrue for expired rows,
+    // so expiry must win the check order.
+    const { token, invitation } = mint();
+    querySync('UPDATE invitations SET expires_at = $1 WHERE id = $2',
+      ['2020-01-01T00:00:00.000Z', invitation.id]);
+    querySync(`UPDATE organizations SET status = 'suspended' WHERE id = ${ORG}`);
+    expect(inv.redeemInvitation(token)).toEqual({ ok: false, reason: 'expired' });
+    // Unsuspending changes nothing — the row is terminal.
+    querySync(`UPDATE organizations SET status = 'active' WHERE id = ${ORG}`);
+    expect(inv.redeemInvitation(token)).toEqual({ ok: false, reason: 'expired' });
+  });
+});
+
+describe('inviteeIsMember / acceptInvitedMembership', () => {
+  it('inviteeIsMember matches by normalized email within the org only', () => {
+    querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES (${INVITER}, ${ORG}, 'owner')`);
+    expect(inv.inviteeIsMember(ORG, '  Owner@LAB.org ')).toBe(true);
+    expect(inv.inviteeIsMember(ORG, 'new@lab.org')).toBe(false);
+    expect(inv.inviteeIsMember(999, 'owner@lab.org')).toBe(false);
+  });
+
+  it('acceptInvitedMembership grants the invited role once and never changes an existing one', () => {
+    querySync("INSERT INTO users (id, email) VALUES (2, 'new@lab.org')");
+    const { invitation } = mint({ role: 'viewer' });
+    expect(inv.acceptInvitedMembership(2, invitation)).toBe(true);
+    expect(querySync(
+      `SELECT role FROM memberships WHERE user_id = 2 AND org_id = ${ORG}`,
+    ).rows).toEqual([{ role: 'viewer' }]);
+    // Already a member: no-op, role untouched, reported false.
+    const upgrade = mint({ role: 'owner' });
+    expect(inv.acceptInvitedMembership(2, upgrade.invitation)).toBe(false);
+    expect(querySync(
+      `SELECT role FROM memberships WHERE user_id = 2 AND org_id = ${ORG}`,
+    ).rows).toEqual([{ role: 'viewer' }]);
+  });
 });
 
 describe('revokeInvitation / listOrgInvitations', () => {

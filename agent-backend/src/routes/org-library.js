@@ -1,15 +1,16 @@
 // Story 006-001: HTTP surface of the org knowledge library. Documents are
 // org-scoped (the first org-scoped content in the system): metadata rows in
 // org_documents, bytes at <orgsRoot>/<orgId>/library/<docId>/<filename>
-// through the storage service's org scope. Every route is membership-guarded
-// with the same non-leaking 404 pattern as the project routes.
+// through the storage service's org scope. Every route goes through
+// requireOrgRole (story 010-003) with the same non-leaking 404 pattern as the
+// project routes: reads need viewer, uploads need editor, and deleting a
+// shared library document is owner-only (the 010-003 matrix).
 
 import { createHash } from 'node:crypto';
 import { basename, extname } from 'node:path';
 
 import { Router } from 'express';
 
-import { isMember } from '../db/orgs.js';
 import {
   deleteOrgDocument,
   getOrgDocument,
@@ -19,6 +20,7 @@ import {
 import { queueIngest } from '../ingest.js';
 import { subscribeOrgEvents } from '../project-events.js';
 import { StorageError, deleteOrgEntry, readOrgFile, writeOrgFile } from '../storage.js';
+import { requireOrgRole } from './guards.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 
 const router = Router();
@@ -32,18 +34,11 @@ const CONTENT_TYPES = {
   '.json': 'application/json',
 };
 
-/** Resolve an org the session user may access, or 404 without leaking. */
-async function authorizeOrg(req, res) {
-  const orgId = parseInt(req.params.orgId);
-  if (Number.isNaN(orgId)) {
-    res.status(400).json({ error: 'orgId must be a number' });
-    return null;
-  }
-  if (!(await isMember(req.user.id, orgId))) {
-    res.status(404).json({ error: 'organization not found' });
-    return null;
-  }
-  return orgId;
+/** Resolve an org where the session user holds minRole, or refuse (404
+ *  non-leaking / 403 role / 403 suspended — routes/guards.js). */
+async function authorizeOrg(req, res, minRole) {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, minRole);
+  return ctx ? ctx.orgId : null;
 }
 
 /** Multer originalname is client-controlled: keep the base name only. */
@@ -92,7 +87,7 @@ export async function storeOrgDocument(orgId, buffer, {
 
 /** GET /api/orgs/:orgId/library — the org's documents, newest first. */
 router.get('/api/orgs/:orgId/library', async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'viewer');
   if (orgId == null) return;
   res.json({ documents: listOrgDocuments(orgId) });
 });
@@ -103,7 +98,7 @@ router.get('/api/orgs/:orgId/library', async (req, res) => {
  * per-file dedupe on identical bytes returns the existing document.
  */
 router.post('/api/orgs/:orgId/library/upload', uploadMiddleware, async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'editor');
   if (orgId == null) return;
   const files = req.files ?? [];
   if (files.length === 0) {
@@ -124,7 +119,7 @@ router.post('/api/orgs/:orgId/library/upload', uploadMiddleware, async (req, res
 
 /** GET /api/orgs/:orgId/library/:docId — document metadata. */
 router.get('/api/orgs/:orgId/library/:docId', async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'viewer');
   if (orgId == null) return;
   const doc = getOrgDocument(orgId, parseInt(req.params.docId));
   if (!doc) {
@@ -136,7 +131,7 @@ router.get('/api/orgs/:orgId/library/:docId', async (req, res) => {
 
 /** GET /api/orgs/:orgId/library/:docId/content — raw bytes. */
 router.get('/api/orgs/:orgId/library/:docId/content', async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'viewer');
   if (orgId == null) return;
   const doc = getOrgDocument(orgId, parseInt(req.params.docId));
   if (!doc) {
@@ -150,7 +145,7 @@ router.get('/api/orgs/:orgId/library/:docId/content', async (req, res) => {
 
 /** DELETE /api/orgs/:orgId/library/:docId — remove record and bytes. */
 router.delete('/api/orgs/:orgId/library/:docId', async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'owner');
   if (orgId == null) return;
   const doc = getOrgDocument(orgId, parseInt(req.params.docId));
   if (!doc) {
@@ -174,7 +169,7 @@ router.delete('/api/orgs/:orgId/library/:docId', async (req, res) => {
  * status too.
  */
 router.get('/api/orgs/:orgId/events', async (req, res) => {
-  const orgId = await authorizeOrg(req, res);
+  const orgId = await authorizeOrg(req, res, 'viewer');
   if (orgId == null) return;
 
   const unsubscribe = subscribeOrgEvents(orgId, (event) => {

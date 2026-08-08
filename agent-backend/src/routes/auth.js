@@ -15,6 +15,8 @@ import {
   createSession,
   deleteSession,
 } from '../db/auth.js';
+import { acceptInvitedMembership, redeemInvitation } from '../db/invitations.js';
+import { recordAuthEvent } from '../db/auth-events.js';
 import { sendLoginLink } from '../mailer.js';
 import { resolveUser, SESSION_COOKIE, readSessionCookie } from '../session.js';
 
@@ -48,14 +50,64 @@ authRouter.post('/api/auth/request-link', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Refusal → login-overlay copy key (webapp/src/login.ts renders these).
+const INVITE_REFUSALS = {
+  missing: 'invite-invalid',
+  revoked: 'invite-revoked',
+  used: 'invite-used',
+  expired: 'invite-expired',
+  suspended: 'invite-suspended',
+};
+
 /**
- * GET /api/auth/verify?token=…
- * Redeem the token: get-or-create the user (first login lands in the default
- * org — resolveUser's existing behavior), open a session, set the signed
- * cookie, and redirect into the app. Invalid/expired/reused tokens redirect
- * with ?login=expired so the webapp can say "request a new link".
+ * The invitation door (story 011-002): redeem the invite token, get-or-create
+ * the invited user, grant the membership at the invited role, and sign them
+ * in. An already-a-member redemption burns the invitation but never touches
+ * the existing role — the overlay explains and offers a normal sign-in.
+ * Refusals redirect with ?login=invite-<reason>; a suspended-org refusal
+ * happens BEFORE the accept, so that token stays valid for after an unsuspend.
+ */
+async function redeemInviteAndSignIn(req, res) {
+  const result = redeemInvitation(req.query.invite);
+  if (!result.ok) {
+    res.redirect(`${config.auth.appUrl}/?login=${INVITE_REFUSALS[result.reason]}`);
+    return;
+  }
+  const { invitation, org } = result;
+  const user = await resolveUser(invitation.email);
+  const joined = acceptInvitedMembership(user.id, invitation);
+  recordAuthEvent({
+    type: 'invite.redeemed',
+    actorUserId: user.id,
+    orgId: org.id,
+    email: invitation.email,
+    meta: { invitationId: invitation.id, role: invitation.role, alreadyMember: !joined },
+  });
+  if (!joined) {
+    res.redirect(`${config.auth.appUrl}/?login=invite-already-member`);
+    return;
+  }
+  const { cookieValue, expiresAt } = await createSession(user.id);
+  res.cookie(SESSION_COOKIE, cookieValue, {
+    ...cookieOptions(),
+    expires: new Date(expiresAt),
+  });
+  res.redirect(`${config.auth.appUrl}/`);
+}
+
+/**
+ * GET /api/auth/verify?token=… | ?invite=…
+ * The one verify door. ?token= redeems a magic-link token: get-or-create the
+ * user, open a session, set the signed cookie, and redirect into the app
+ * (membership-less outside dev — invitations are the door into an org).
+ * Invalid/expired/reused tokens redirect with ?login=expired so the webapp
+ * can say "request a new link". ?invite= redeems an invitation instead.
  */
 authRouter.get('/api/auth/verify', async (req, res) => {
+  if (typeof req.query.invite === 'string') {
+    await redeemInviteAndSignIn(req, res);
+    return;
+  }
   const email = typeof req.query.token === 'string'
     ? await consumeAuthToken(req.query.token)
     : null;

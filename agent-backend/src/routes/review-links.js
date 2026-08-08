@@ -1,18 +1,15 @@
 // Epic 013 story 003: member-facing review-link management — mint, list,
-// revoke. Mounted with the tenant routers AFTER session(), behind the
-// getProject + isMember guard pattern (404 on non-membership, like
-// routes/comments.js — don't leak existence). Guests never get here: they
-// carry only kuhn_review_session, which session() cannot see → 401 upstream.
+// revoke. Mounted with the tenant routers AFTER session(), behind
+// requireProjectRole (404 on non-membership, like routes/comments.js — don't
+// leak existence). Guests never get here: they carry only
+// kuhn_review_session, which session() cannot see → 401 upstream.
 //
-// Permission seam (010-003): any org member may mint/revoke in v1 — confirmed
-// decision 1. memberships.role is only ('owner','member') and nothing reads
-// it yet; when 010-003 lands a role substrate, its editor+/owner checks slot
-// in HERE, inside handle(), and nowhere else.
+// Roles (story 010-003): minting and revoking a link hand out / withdraw
+// document access, so they need editor; listing is a viewer read. The
+// thresholds live in handle()'s minRole argument and nowhere else.
 
 import { Router } from 'express';
 
-import { isMember } from '../db/orgs.js';
-import { getProject } from '../db/projects.js';
 import {
   REVIEW_MODES,
   createReviewLink,
@@ -22,6 +19,7 @@ import {
 import { publishProjectEvent } from '../project-events.js';
 import { StorageError, readProjectFile } from '../storage.js';
 import { CLOSE_LINK_REVOKED, closeReviewerConnections } from '../yjs-websocket.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -35,20 +33,12 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      const project = await getProject(projectId);
-      if (!project || req.user == null || !(await isMember(req.user.id, project.org_id))) {
-        res.status(404).json({ error: 'project not found' });
-        return;
-      }
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -67,7 +57,7 @@ function handle(fn) {
  * its hash. URL built from req.protocol/host like magic links (trust proxy is
  * set in index.js, so deployed links mint as https on the public host).
  */
-router.post('/api/projects/:projectId/review-links', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/review-links', handle('editor', async (projectId, req, res) => {
   const { path, mode, ttlMs } = req.body ?? {};
   if (typeof path !== 'string' || path.length === 0) {
     res.status(400).json({ error: 'path is required' });
@@ -94,7 +84,7 @@ router.post('/api/projects/:projectId/review-links', handle(async (projectId, re
 
 /** GET /api/projects/:projectId/review-links?path=&includeRevoked= — the
  *  active-links panel (per-doc with ?path=, per-project rollup without). */
-router.get('/api/projects/:projectId/review-links', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/review-links', handle('viewer', async (projectId, req, res) => {
   const path = typeof req.query.path === 'string' && req.query.path.length > 0
     ? req.query.path : null;
   const includeRevoked = req.query.includeRevoked === '1' || req.query.includeRevoked === 'true';
@@ -108,7 +98,7 @@ router.get('/api/projects/:projectId/review-links', handle(async (projectId, req
  * closes that credential's live sockets with 4003, then the feed hears about
  * it. Idempotent on an already-revoked link.
  */
-router.post('/api/projects/:projectId/review-links/:id/revoke', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/review-links/:id/revoke', handle('editor', async (projectId, req, res) => {
   const linkId = parseInt(req.params.id);
   if (Number.isNaN(linkId)) {
     res.status(400).json({ error: 'link id must be a number' });

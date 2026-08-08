@@ -467,6 +467,10 @@ export async function openDoc(options: OpenDocOptions): Promise<DocHandle> {
           }
         }
         options.onSynced?.({ empty: boundYdoc.getXmlFragment('prosemirror').length === 0 });
+        // Read-only clients never force local bytes over room truth: their
+        // replaceAll transaction would only diverge locally (the server drops
+        // write frames from `access:'read'` sockets), like seeding above.
+        if (!editable) return;
         // Force local text over whatever the room replayed (it propagates to
         // peers via collab). Two callers: returning from source mode (story
         // 039 — edits went straight to storage, which any still-warm room

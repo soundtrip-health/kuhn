@@ -2,6 +2,8 @@
 // move, and multipart upload. Consumed by the webapp (stories 013/014).
 // All path safety lives in src/storage.js; these handlers only translate
 // HTTP <-> storage calls and map StorageError codes to status codes.
+// Tenancy (story 010-003): every route passes requireProjectRole — reads need
+// viewer, mutations need editor; non-members get a non-leaking 404.
 
 import { Router } from 'express';
 import express from 'express';
@@ -13,6 +15,7 @@ import { findPendingEditConflicts } from '../db/move-paths.js';
 import { commitNow, scheduleCommit } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
+import { requireProjectRole } from './guards.js';
 import {
   StorageError,
   createProjectDir,
@@ -49,15 +52,12 @@ const CONTENT_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -87,7 +87,7 @@ function annotateUnseen(nodes, unseen) {
 }
 
 /** GET /api/projects/:projectId/files[?path=subdir] — project tree */
-router.get('/api/projects/:projectId/files', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/files', handle('viewer', async (projectId, req, res) => {
   const tree = await listProjectTree(projectId, typeof req.query.path === 'string' ? req.query.path : '.');
   const unseen = unseenPaths(projectId, req.user?.id ?? null);
   if (unseen.size > 0) annotateUnseen(tree, unseen);
@@ -95,7 +95,7 @@ router.get('/api/projects/:projectId/files', handle(async (projectId, req, res) 
 }));
 
 /** GET /api/projects/:projectId/file?path=... — raw file content */
-router.get('/api/projects/:projectId/file', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/file', handle('viewer', async (projectId, req, res) => {
   const path = requirePath(req, res);
   if (path == null) return;
   const buf = await readProjectFile(projectId, path);
@@ -117,7 +117,7 @@ const rawBody = (req, res, next) =>
 router.put(
   '/api/projects/:projectId/file',
   rawBody,
-  handle(async (projectId, req, res) => {
+  handle('editor', async (projectId, req, res) => {
     const path = requirePath(req, res);
     if (path == null) return;
     if (!Buffer.isBuffer(req.body)) {
@@ -137,7 +137,7 @@ router.put(
 );
 
 /** DELETE /api/projects/:projectId/file?path=... */
-router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res) => {
+router.delete('/api/projects/:projectId/file', handle('editor', async (projectId, req, res) => {
   const path = requirePath(req, res);
   if (path == null) return;
   // Snapshot-before-destroy (008-002): a delete is the one mutation whose
@@ -165,7 +165,7 @@ router.delete('/api/projects/:projectId/file', handle(async (projectId, req, res
  * folder only on its next tree refresh. Live visibility needs a non-file event
  * kind and is deferred to story 012-004.
  */
-router.post('/api/projects/:projectId/files/mkdir', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/files/mkdir', handle('editor', async (projectId, req, res) => {
   const { path } = req.body ?? {};
   if (typeof path !== 'string' || path.length === 0) {
     res.status(400).json({ error: 'path is required' });
@@ -176,7 +176,7 @@ router.post('/api/projects/:projectId/files/mkdir', handle(async (projectId, req
 }));
 
 /** POST /api/projects/:projectId/files/move — body { from, to } */
-router.post('/api/projects/:projectId/files/move', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/files/move', handle('editor', async (projectId, req, res) => {
   const { from, to } = req.body ?? {};
   if (!from || !to) {
     res.status(400).json({ error: 'from and to are required' });
@@ -247,7 +247,7 @@ router.post('/api/projects/:projectId/files/move', handle(async (projectId, req,
 router.post(
   '/api/projects/:projectId/files/upload',
   uploadMiddleware,
-  handle(async (projectId, req, res) => {
+  handle('editor', async (projectId, req, res) => {
     const files = req.files ?? [];
     if (files.length === 0) {
       res.status(400).json({ error: 'No files in upload (use the "files" form field)' });

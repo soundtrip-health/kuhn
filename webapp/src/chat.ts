@@ -30,10 +30,12 @@ import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity, setBudget } from './status';
 import { isUnder, selectedDir } from './tree-state';
+import * as workspace from './workspace';
 
 marked.setOptions({ gfm: true, breaks: false });
 
 const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
+const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor role';
 
 // SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
@@ -57,6 +59,36 @@ let onFileChange: (change: FileChange) => void = () => {};
 // import wizard.ts (which imports startSeeding from here — would be a cycle).
 let setupHandler: (projectId: number) => void = () => {};
 export function setSetupHandler(fn: (projectId: number) => void): void { setupHandler = fn; }
+
+// ---- Role-aware composer (story 010-003) ------------------------------------
+
+/** Whether the current user may direct agents: agent tasks mutate the project,
+ * so viewers — and anyone in a suspended org — get a read-only chat (the
+ * transcript stays readable; only the composer is disabled). */
+function canUseComposer(): boolean {
+  return workspace.canEdit() && !workspace.activeOrgSuspended();
+}
+
+/** Snapshot of canUseComposer() at the last chrome render (skip no-op emits). */
+let composerEditable: boolean | null = null;
+
+/** Enable/disable the composer to match the role, with the view-only hint. */
+function applyComposerRole(): void {
+  composerEditable = canUseComposer();
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+  if (input) {
+    input.disabled = !composerEditable;
+    // Answer mode never survives a role flip (viewers can't start tasks), so
+    // overwriting the placeholder here is safe.
+    input.placeholder = composerEditable ? DEFAULT_PLACEHOLDER : VIEW_ONLY_PLACEHOLDER;
+    input.title = composerEditable ? '' : VIEW_ONLY_PLACEHOLDER;
+  }
+  const send = document.querySelector<HTMLButtonElement>('#chat-form .send-btn');
+  if (send) {
+    send.disabled = !composerEditable;
+    send.title = composerEditable ? 'Send (Enter)' : VIEW_ONLY_PLACEHOLDER;
+  }
+}
 
 // Conversation filter (issue #45): by default the log shows only the selected
 // agent's conversation — agents don't share chat context, so seeing exactly
@@ -100,10 +132,17 @@ export function initChat(
   const seedingPanel = document.getElementById('seeding-panel');
   if (seedingPanel) seedingPanel.hidden = true;
   applyChatFilter(); // refresh the filter bar for the (possibly new) project
+  applyComposerRole(); // the active org (and so the role) can differ per project
   void restore();
 
   if (listenersWired) return; // the form/input listeners bind once for the page
   listenersWired = true;
+
+  // Role changes under us (workspace re-fetches orgs on `kuhn:role-refresh`
+  // 403s and on org switches) re-render the composer chrome.
+  workspace.subscribe(() => {
+    if (canUseComposer() !== composerEditable) applyComposerRole();
+  });
 
   const clearBtn = document.getElementById('chat-clear-btn');
   if (clearBtn) {
@@ -497,6 +536,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 async function send(): Promise<void> {
+  if (!canUseComposer()) return; // view-only chrome; the server 403s too
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
   const role = (document.getElementById('chat-role') as HTMLSelectElement).value;
   const text = input.value.trim();
@@ -590,6 +630,10 @@ async function dispatchTask(role: string, text: string): Promise<void> {
 /** Run the seeding pipeline (story 015), narrated by the seeding panel. */
 export async function startSeeding(): Promise<void> {
   if (running) return;
+  if (!canUseComposer()) {
+    notify('View only — seeding a project needs the editor role');
+    return;
+  }
   // "Try again" after a transient overload re-runs the whole seeding pipeline —
   // the correct retry for a new-doc request, which is not a resumable chat turn.
   retryAction = () => startSeeding();
@@ -626,7 +670,7 @@ function finishRun(): void {
 
 function exitAnswerMode(): void {
   pendingQuestionJobId = null;
-  (document.getElementById('chat-input') as HTMLTextAreaElement).placeholder = DEFAULT_PLACEHOLDER;
+  applyComposerRole(); // restores the role-appropriate placeholder + state
 }
 
 // ---- Rendering ------------------------------------------------------------

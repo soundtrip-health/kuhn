@@ -49,6 +49,8 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   querySync('DELETE FROM auth_tokens');
+  querySync('DELETE FROM auth_events');
+  querySync('DELETE FROM invitations');
   querySync('DELETE FROM sessions');
   querySync('DELETE FROM memberships');
   querySync('DELETE FROM users');
@@ -141,6 +143,43 @@ describe('magic-link login (story 007-002)', () => {
     });
     expect(out.status).toBe(200);
     expect((await probe(cookie)).status).toBe(401); // replaying the old cookie fails
+  });
+});
+
+describe('invitation redemption via the verify door (story 011-002)', () => {
+  it('?invite= redeems: membership at the invited role plus a live session', async () => {
+    const { createInvitation } = await import('../db/invitations.js');
+    querySync("INSERT INTO organizations (id, name, slug) VALUES (7, 'Lab', 'lab')");
+    const { token } = createInvitation({
+      orgId: 7, email: 'invitee@lab.org', role: 'viewer', ttlMs: 60_000,
+    });
+
+    const verify = await fetch(
+      `${base}/api/auth/verify?invite=${encodeURIComponent(token)}`,
+      { redirect: 'manual' },
+    );
+    expect(verify.status).toBe(302);
+    expect(verify.headers.get('location')).toBe(`${config.auth.appUrl}/`);
+    const cookie = decodeURIComponent(
+      (verify.headers.get('set-cookie') ?? '').match(/kuhn_session=([^;]+)/)[1],
+    );
+
+    const res = await probe(cookie);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ email: 'invitee@lab.org' });
+    // Invitations grant EXACTLY the invited org+role — never the default org.
+    expect(querySync(
+      `SELECT m.org_id, m.role FROM memberships m
+       JOIN users u ON u.id = m.user_id WHERE u.email = 'invitee@lab.org'`,
+    ).rows).toEqual([{ org_id: 7, role: 'viewer' }]);
+    expect(querySync("SELECT type FROM auth_events").rows).toEqual([{ type: 'invite.redeemed' }]);
+  });
+
+  it('a dead invite token redirects with its reason and sets no cookie', async () => {
+    const bad = await fetch(`${base}/api/auth/verify?invite=garbage`, { redirect: 'manual' });
+    expect(bad.status).toBe(302);
+    expect(bad.headers.get('location')).toBe(`${config.auth.appUrl}/?login=invite-invalid`);
+    expect(bad.headers.get('set-cookie')).toBeNull();
   });
 });
 

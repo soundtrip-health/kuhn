@@ -167,6 +167,42 @@ const ORIGIN_CLASS: Record<string, string> = {
   analyst: 'origin-analyst',
 };
 
+// ---- Role-aware chrome (story 010-003) ---------------------------------------
+
+/** Whether the current user may mutate project files: editors and owners of an
+ * ACTIVE org. Suspended orgs read as view-only too — every write would 403.
+ * Every mutating entry point re-checks this (the server enforces it anyway;
+ * the chrome just stops offering actions that can only fail). */
+function canMutate(): boolean {
+  return workspace.canEdit() && !workspace.activeOrgSuspended();
+}
+
+/** Snapshot of canMutate() as of the last chrome render, so workspace events
+ * that don't change it (project switches, doc changes) skip the re-render. */
+let roleEditable: boolean | null = null;
+
+/** Show/hide the panel-header write affordances to match the role. */
+function applyRoleChrome(): void {
+  roleEditable = canMutate();
+  const uploadBtn = document.getElementById('files-upload-btn');
+  if (uploadBtn) uploadBtn.hidden = !roleEditable;
+  const newFolderBtn = document.getElementById('files-new-folder-btn');
+  if (newFolderBtn) newFolderBtn.hidden = !roleEditable;
+}
+
+/** Re-render the tree from the cached nodes (no refetch — a refetch here could
+ * loop through the 403 → role-refresh → re-render path on suspended orgs). */
+function rerenderFromCache(): void {
+  const container = document.getElementById('file-tree');
+  if (!container || inlineEditing) return;
+  const nodes = tree();
+  const frag = document.createDocumentFragment();
+  frag.append(renderTree(nodes));
+  if (nodes.length === 0) frag.append(emptyState());
+  container.replaceChildren(frag);
+  initRovingTabindex(container);
+}
+
 // ---- Wiring -----------------------------------------------------------------
 
 export function initFiles(activeProjectId: number, h: FilesHandlers): void {
@@ -189,9 +225,19 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   refreshDeferred = false;
   focusAfterRender = null;
   clearInternalDrag();
+  applyRoleChrome(); // the active org (and so the role) can differ per project
 
   if (listenersWired) return; // tree/upload listeners bind once for the page
   listenersWired = true;
+
+  // Role-aware chrome (010-003): when the role or org status changes under us
+  // (workspace re-fetches orgs on `kuhn:role-refresh` 403s and org switches),
+  // re-render so write affordances appear/disappear to match.
+  workspace.subscribe(() => {
+    if (canMutate() === roleEditable) return;
+    applyRoleChrome();
+    rerenderFromCache();
+  });
 
   const treeRoot = document.getElementById('file-tree')!;
   treeRoot.setAttribute('role', 'tree');
@@ -233,6 +279,12 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   treeEl.addEventListener('dragover', (e) => {
     if (!e.dataTransfer?.types.includes('Files')) return;
     e.preventDefault();
+    // Viewers can't upload — refuse the drop visibly (dropEffect none) but
+    // still preventDefault, or the browser would navigate to the dropped file.
+    if (!canMutate()) {
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
     const dir = (e.target as HTMLElement | null)?.closest('[data-dir]') as HTMLElement | null;
     if (dir !== dragTarget) clearDrag();
     if (dir) {
@@ -251,6 +303,7 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   treeEl.addEventListener('drop', (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
+    if (!canMutate()) return; // uploadInto would refuse anyway; skip the toast noise
     const dir = (e.target as HTMLElement | null)?.closest('[data-dir]') as HTMLElement | null;
     clearDrag();
     // Re-validate against the CURRENT tree, like every other write destination
@@ -711,6 +764,10 @@ function applyTargetClasses(): void {
 }
 
 async function uploadInto(fileList: FileList | File[], dir: string): Promise<void> {
+  if (!canMutate()) {
+    toast('View only — uploading needs the editor role');
+    return;
+  }
   const files = Array.from(fileList);
   if (files.length === 0) return;
   const { uploaded, failed } = await uploadFiles(projectId, files, dir || undefined);
@@ -737,6 +794,7 @@ function neighbourPath(path: string): string {
 }
 
 async function deleteEntry(node: TreeNode): Promise<void> {
+  if (!canMutate()) return; // viewer chrome offers no delete; belt and braces
   // PREFIX, not equality: deleting a FOLDER that contains the open document
   // must close the editor, or it keeps autosaving to a path that no longer
   // exists — and `writeProjectFile` mkdirs the parent, re-creating the folder.
@@ -801,7 +859,7 @@ function endInline(): boolean {
 }
 
 function beginRename(node: TreeNode): void {
-  if (inlineEditing) return;
+  if (inlineEditing || !canMutate()) return;
   const root = document.getElementById('file-tree');
   // Folders are <summary role="treeitem">, files a <button class="file-entry">
   // inside a `.file-row`. The old lookup was `.file-entry[data-path]` only, so
@@ -912,6 +970,7 @@ function moveErrorMessage(err: unknown, node: TreeNode, to: string): string {
 
 /** Build the legal destinations and hand them to the (dumb) dialog. */
 function openMoveFor(node: TreeNode): void {
+  if (!canMutate()) return;
   const parent = parentDir(node.path);
   const targets: MoveTarget[] = [];
   // The project-root row sits at depth 0, so real folders start at depth 1.
@@ -962,7 +1021,7 @@ function newFolderGroup(dir: string): HTMLUListElement | null {
 }
 
 async function beginNewFolder(parent: string): Promise<void> {
-  if (inlineEditing) return;
+  if (inlineEditing || !canMutate()) return;
   const dir = parent && findNode(parent)?.type === 'dir' ? parent : '';
   if (dir) {
     expandAncestors(dir);
@@ -1099,7 +1158,7 @@ function clearInternalDrag(): void {
 
 function onInternalDragStart(e: DragEvent): void {
   clearInternalDrag(); // never inherit state from a drag that ended off-tree
-  if (inlineEditing) {
+  if (inlineEditing || !canMutate()) {
     e.preventDefault();
     return;
   }
@@ -1200,8 +1259,13 @@ function setIngestBadge(path: string, state: 'ingesting' | 'done' | null): void 
 }
 
 /** Copy a file into the org library (confirmation names the org), then track
- * its ingestion on the row: spinner while processing, check when searchable. */
+ * its ingestion on the row: spinner while processing, check when searchable.
+ * Under an approval-required promotion policy (epic 011-004) the backend
+ * answers 202 `{request}` instead — nothing is copied until an owner approves,
+ * so the row gets a toast, not an ingest badge. The label stays neutral
+ * ("Add to org library") because the policy is only knowable server-side. */
 async function promoteEntry(node: TreeNode): Promise<void> {
+  if (!canMutate()) return; // viewers can't suggest either (route is editor+)
   const org = workspace.activeOrg();
   if (!org) {
     toast('No active organization to add to');
@@ -1213,14 +1277,20 @@ async function promoteEntry(node: TreeNode): Promise<void> {
   );
   if (!ok) return;
 
-  let document_: Awaited<ReturnType<typeof promoteFileToLibrary>>;
+  let result: Awaited<ReturnType<typeof promoteFileToLibrary>>;
   try {
-    document_ = await promoteFileToLibrary(projectId, node.path);
+    result = await promoteFileToLibrary(projectId, node.path);
   } catch (err) {
     toast(`Add to library failed: ${(err as Error).message}`);
     return;
   }
-  const { document: doc, deduped } = document_;
+  if (result.request) {
+    // 202: routed to the owners' approval queue — no document exists yet.
+    toast('Suggested — awaiting admin approval');
+    return;
+  }
+  const { document: doc, deduped } = result;
+  if (!doc) return; // defensive: neither a document nor a request came back
   if (doc.status === 'ready') {
     toast(deduped ? `Already in the ${org.name} library` : `Added to the ${org.name} library`);
     return;
@@ -1250,9 +1320,14 @@ function emptyNotice(text: string): HTMLElement {
   return div;
 }
 
-/** Empty-state drop zone — functional upload target (click or drop). */
+/** Empty-state drop zone — functional upload target (click or drop). Viewers
+ * get a plain notice instead: the invitation to upload would only 403. */
 function emptyState(): DocumentFragment {
   const frag = document.createDocumentFragment();
+  if (!canMutate()) {
+    frag.append(emptyNotice('No files in this project yet.'));
+    return frag;
+  }
   const zone = document.createElement('div');
   zone.className = 'drop-zone';
   zone.innerHTML =
@@ -1323,8 +1398,10 @@ function rootRow(groupId: string, hasChildren: boolean): HTMLElement {
     // it explicitly or nothing associates the tree's levels.
     btn.setAttribute('aria-owns', groupId);
   }
-  btn.setAttribute('aria-keyshortcuts', 'N');
-  btn.title = 'Uploads and new folders land in the selected folder';
+  if (canMutate()) {
+    btn.setAttribute('aria-keyshortcuts', 'N');
+    btn.title = 'Uploads and new folders land in the selected folder';
+  }
   btn.innerHTML = icon('folder', { size: 14, stroke: 1.7 }).replace('<svg', '<svg class="file-icon"');
   const name = document.createElement('span');
   name.className = 'file-name';
@@ -1339,7 +1416,9 @@ function rootRow(groupId: string, hasChildren: boolean): HTMLElement {
 
   const actions = document.createElement('div');
   actions.className = 'file-actions';
-  actions.append(actionButton('folder-plus', 'New folder (N)', () => void beginNewFolder('')));
+  if (canMutate()) {
+    actions.append(actionButton('folder-plus', 'New folder (N)', () => void beginNewFolder('')));
+  }
   row.append(btn, actions);
   return row;
 }
@@ -1381,9 +1460,10 @@ function renderFolder(
   // Unmodified single keys, deliberately: Ctrl/Cmd+Shift+N is a reserved
   // browser accelerator (new Incognito window) that the page never receives,
   // and Cmd+M is Minimize on macOS. No modifiers means nothing to compute per
-  // platform, and nothing advertised here is unbound.
-  summary.setAttribute('aria-keyshortcuts', 'N R F2 M Delete Backspace');
-  summary.draggable = true;
+  // platform, and nothing advertised here is unbound. Viewers advertise none:
+  // every one of these keys mutates, and they are all role-gated.
+  if (canMutate()) summary.setAttribute('aria-keyshortcuts', 'N R F2 M Delete Backspace');
+  summary.draggable = canMutate();
 
   const children = node.children ?? [];
   const group = renderNodes(children, level + 1);
@@ -1550,9 +1630,9 @@ function renderFile(
   button.setAttribute('aria-level', String(level));
   button.setAttribute('aria-posinset', String(posinset));
   button.setAttribute('aria-setsize', String(setsize));
-  button.setAttribute('aria-keyshortcuts', 'N R F2 M L Delete Backspace');
+  if (canMutate()) button.setAttribute('aria-keyshortcuts', 'N R F2 M L Delete Backspace');
   button.setAttribute('aria-selected', String(node.path === activePath));
-  button.draggable = true;
+  button.draggable = canMutate();
   if (node.path === activePath) button.classList.add('active');
 
   // A live org-library ingest badge outranks unseen state (story 006-004);
@@ -1624,6 +1704,9 @@ function renderFile(
 function fileActions(node: TreeNode): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'file-actions';
+  // Viewer chrome (010-003): every row action mutates (promote is editor+ on
+  // the server too), so viewers get an empty action strip.
+  if (!canMutate()) return wrap;
   if (node.type === 'dir') {
     wrap.append(
       actionButton('folder-plus', 'New folder inside (N)', () => void beginNewFolder(node.path)),
@@ -1785,8 +1868,9 @@ function onTreeKeydown(e: KeyboardEvent): void {
 
   // Row actions on unmodified single keys. Ctrl/Cmd+Shift+N never reaches the
   // page (new Incognito window) and Cmd+M is Minimize on macOS, so a modified
-  // chord would have been advertised and dead.
-  if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+  // chord would have been advertised and dead. All of them mutate (including
+  // L, promote), so the whole block is role-gated (010-003).
+  if (!e.metaKey && !e.ctrlKey && !e.altKey && canMutate()) {
     if (e.key === 'n' || e.key === 'N') {
       e.preventDefault();
       void beginNewFolder(node ? (node.type === 'dir' ? node.path : parentDir(node.path)) : '');

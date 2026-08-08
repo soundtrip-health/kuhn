@@ -28,7 +28,7 @@
 import { config } from './config.js';
 import { querySync } from './db.js';
 import { getSessionUser } from './db/auth.js';
-import { isMember } from './db/orgs.js';
+import { checkOrgAccess, isMember } from './db/orgs.js';
 import { getProject } from './db/projects.js';
 import { reviewerPrincipal } from './review-auth.js';
 import { readSessionCookie, resolveUser } from './session.js';
@@ -96,9 +96,60 @@ export async function wsPrincipal(req, room = null) {
 }
 
 /**
+ * Is this project's org suspended? Sync (querySync) so the reviewer branch of
+ * authorizeRoom and reviewerLinkState can consult it without an await chain.
+ * A project with no org row (legacy nullable org_id) is not suspended.
+ */
+function projectOrgSuspended(projectId) {
+  const { rows } = querySync(
+    `SELECT o.status FROM projects p JOIN organizations o ON o.id = p.org_id
+     WHERE p.id = $1`,
+    [projectId],
+  );
+  return rows[0]?.status === 'suspended';
+}
+
+/**
+ * Member room access by role (story 010-003): 'write' for editor/owner,
+ * 'read' for viewer, null for no membership, unknown project/room, or a
+ * suspended org. Dev mode: always 'write' — preserves canJoinRoom's dev
+ * bypass, and dev WS identities may hold NO membership at all (the default-org
+ * auto-join lives in the HTTP session middleware, not the WS path).
+ * Exported so yjs-websocket.js's 60s member sweep (fix MB3) re-runs the same
+ * verdict on live sockets that the upgrade ran at join — one function, reused
+ * (the epic 013 discipline).
+ * @returns {Promise<'write'|'read'|null>}
+ */
+export async function memberRoomAccess(user, room) {
+  if (config.auth.mode === 'dev') return 'write';
+  if (!user) return null;
+  const parsed = parseRoomName(room);
+  if (!parsed) return null;
+  const project = await getProject(parsed.projectId);
+  if (!project) return null;
+  const access = await checkOrgAccess(user.id, project.org_id);
+  if (!access.ok) return null; // not-member or suspended — both refuse
+  return access.role === 'viewer' ? 'read' : 'write';
+}
+
+/**
+ * May this user PUBLISH into a signaling topic (story 010-003, fix I6)?
+ * Editor-or-better in the room's org and not suspended — the same threshold
+ * as a write doc-sync socket, so the webrtc side channel can never
+ * out-privilege the message-level gate. Subscribe stays isMember-based
+ * (canJoinRoom): viewers may listen, never speak.
+ */
+export async function canPublishRoom(user, room) {
+  return (await memberRoomAccess(user, room)) === 'write';
+}
+
+/**
  * May this principal join this room, and at what access level?
- * - member: org membership (same rule as every REST route); access 'write'.
- * - reviewer: exactly the link's own doc; access 'read' unless mode 'edit'.
+ * - member: org membership + role (story 010-003) — editor/owner 'write',
+ *   viewer 'read', suspended org refused (memberRoomAccess).
+ * - reviewer: exactly the link's own doc; access 'read' unless mode 'edit';
+ *   refused when the doc's org is suspended (fix MA2 — a review link must not
+ *   stay a side door into a suspended org).
  * Reviewer principals are enforced in EVERY auth mode — dev's unconditional
  * allow stays member-only, or dev-mode reviewer tests would be vacuous.
  * @returns {Promise<{ok: boolean, access?: 'read'|'write'}>}
@@ -111,9 +162,11 @@ export async function authorizeRoom(principal, room) {
       && parsed.projectId === principal.projectId
       && parsed.path === principal.path;
     if (!ok) return { ok: false };
+    if (projectOrgSuspended(principal.projectId)) return { ok: false };
     return { ok: true, access: principal.mode === 'edit' ? 'write' : 'read' };
   }
-  return (await canJoinRoom(principal.user, room)) ? { ok: true, access: 'write' } : { ok: false };
+  const access = await memberRoomAccess(principal.user, room);
+  return access ? { ok: true, access } : { ok: false };
 }
 
 /**
@@ -121,17 +174,25 @@ export async function authorizeRoom(principal, room) {
  * sockets (epic 013): the post-registration TOCTOU re-check and the 60s sweep
  * in yjs-websocket.js, which must re-validate revocation and existence in the
  * DB rather than trust the upgrade-time principal for up to 90 days.
- * @returns {'live'|'revoked'|'expired'|'missing'}
+ * 'suspended' (story 010-003, fix MA2) means the link itself is live but its
+ * project's org is suspended — the sweep treats it as closed; it comes back
+ * on unsuspension, so revoked/expired (terminal states) outrank it.
+ * @returns {'live'|'revoked'|'expired'|'suspended'|'missing'}
  */
 export function reviewerLinkState(linkId) {
   const { rows } = querySync(
-    'SELECT revoked_at, expires_at FROM review_links WHERE id = $1',
+    `SELECT l.revoked_at, l.expires_at, o.status AS org_status
+     FROM review_links l
+     JOIN projects p ON p.id = l.project_id
+     LEFT JOIN organizations o ON o.id = p.org_id
+     WHERE l.id = $1`,
     [linkId],
   );
   const row = rows[0];
   if (!row) return 'missing';
   if (row.revoked_at != null) return 'revoked';
   if (row.expires_at < new Date().toISOString()) return 'expired';
+  if (row.org_status === 'suspended') return 'suspended';
   return 'live';
 }
 

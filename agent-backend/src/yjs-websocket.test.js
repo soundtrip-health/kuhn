@@ -1,4 +1,4 @@
-import { beforeAll, describe, it, expect, vi } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 
 // Keep this an eviction + message-gate test: file_change persistence is
 // covered in db/file-activity.test.js, hub fan-out in project-events.test.js.
@@ -23,26 +23,38 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let handleYjsConnection; let evictRoom; let evictRoomsUnder; let hasRoom;
 let closeReviewerConnections; let closeReviewerOnlyRoom; let sweepReviewerConnections;
+let sweepMemberConnections;
 let publishProjectEvent;
+let config;
 let querySync;
 let createReviewLink; let revokeReviewLink;
 
 beforeAll(async () => {
   let exec;
+  ({ config } = await import('./config.js'));
   ({ exec, querySync } = await import('./db.js'));
   exec(readFileSync(resolve(__dirname, 'db/schema.sql'), 'utf-8'));
   ({
     handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom,
     closeReviewerConnections, closeReviewerOnlyRoom, sweepReviewerConnections,
+    sweepMemberConnections,
   } = await import('./yjs-websocket.js'));
   ({ publishProjectEvent } = await import('./project-events.js'));
   ({ createReviewLink, revokeReviewLink } = await import('./db/review-links.js'));
 
-  // Minimal tenancy fixtures for review_links FKs.
-  querySync("INSERT INTO organizations (id, name, slug) VALUES (7, 'Lab', 'lab')");
-  querySync("INSERT INTO users (id, email) VALUES (1, 'member@lab.org')");
-  querySync('INSERT INTO memberships (user_id, org_id) VALUES (1, 7)');
+  // Minimal tenancy fixtures for review_links FKs and the member sweep
+  // (010-003): org 7 holds an owner-ish member (1), a viewer (2) and an
+  // editor (3); org 9 with project 6 is suspendable within tests; user 4
+  // belongs to both (editor) so removal/suspension can be exercised without
+  // disturbing the other fixtures.
+  querySync("INSERT INTO organizations (id, name, slug) VALUES (7, 'Lab', 'lab'), (9, 'Freezable', 'freezable')");
+  querySync(`INSERT INTO users (id, email) VALUES
+    (1, 'member@lab.org'), (2, 'viewer@lab.org'), (3, 'editor@lab.org'), (4, 'other@lab.org')`);
+  querySync('INSERT INTO memberships (user_id, org_id) VALUES (1, 7)'); // default role: editor
+  querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES
+    (2, 7, 'viewer'), (3, 7, 'editor'), (4, 7, 'editor'), (4, 9, 'editor')`);
   querySync("INSERT INTO projects (id, org_id, name, project_type) VALUES (5, 7, 'P', 'manuscript')");
+  querySync("INSERT INTO projects (id, org_id, name, project_type) VALUES (6, 9, 'F', 'manuscript')");
 });
 
 /** Minimal ws double: enough surface for handleYjsConnection + evictRoom. */
@@ -86,16 +98,19 @@ function connect(room, collab) {
   return ws;
 }
 
-/** Mint a live review link on project 5 and shape its reviewer principal. */
-function mintPrincipal(path, mode, name = 'Jane') {
-  const { link } = createReviewLink({ projectId: 5, path, mode, createdBy: 1 });
+/** Mint a live review link and shape its reviewer principal. */
+function mintPrincipal(path, mode, name = 'Jane', projectId = 5) {
+  const { link } = createReviewLink({ projectId, path, mode, createdBy: 1 });
   return {
-    kind: 'reviewer', linkId: link.id, projectId: 5, path, mode, name,
+    kind: 'reviewer', linkId: link.id, projectId, path, mode, name,
     expiresAt: link.expiresAt,
   };
 }
 
 const MEMBER_COLLAB = { principal: { kind: 'member', user: { id: 1 } }, access: 'write' };
+
+/** Member collab stamp for any fixture user (story 010-003). */
+const memberCollab = (id, access = 'write') => ({ principal: { kind: 'member', user: { id } }, access });
 
 // --- binary message helpers -------------------------------------------------
 
@@ -560,5 +575,148 @@ describe('reviewer connection lifecycle (epic 013)', () => {
     expect(decodeReviewers(after[after.length - 1])).toEqual([]);
     member.disconnect();
     late.disconnect();
+  });
+});
+
+// --- Story 010-003: viewer members on the message gate + the member sweep ----
+
+describe('viewer-member message gate (story 010-003 AC2)', () => {
+  it('drops crafted Update/SyncStep2 from a member socket stamped read; broadcasts still reach it', () => {
+    const room = 'project-5/draft/member-gate.md';
+    const editor = connect(room, memberCollab(3));
+    const viewer = connect(room, memberCollab(2, 'read'));
+
+    const before = editor.sent.length;
+    viewer.receive(updateMessage(Y.encodeStateAsUpdate(docWithText('INJECTED'))));
+    viewer.receive(step2Message(docWithText('ALSO INJECTED')));
+
+    // No broadcast reached the editor, and a fresh sync sees an empty doc —
+    // dropped at the message level, exactly like a view-mode reviewer.
+    expect(editor.sent.length).toBe(before);
+    expect(serverText(room)).toBe('');
+
+    // Positive control: the editor's write lands and is broadcast to the
+    // read-only viewer connection (read ≠ deaf).
+    editor.receive(updateMessage(Y.encodeStateAsUpdate(docWithText('LEGIT'))));
+    expect(serverText(room)).toBe('LEGIT');
+    const viewerDoc = applySync(viewer, new Y.Doc());
+    expect(viewerDoc.getText('t').toString()).toBe('LEGIT');
+    editor.disconnect();
+    viewer.disconnect();
+  });
+
+  it('never grants the seed to a viewer-member read socket, even first into an empty room', () => {
+    const room = 'project-5/draft/member-seed.md';
+    const viewer = connect(room, memberCollab(2, 'read'));
+    expect(decodeGrant(viewer.sent[0])).toBe(0);
+
+    const editor = connect(room, memberCollab(3));
+    expect(decodeGrant(editor.sent[0])).toBe(1);
+    viewer.disconnect();
+    editor.disconnect();
+  });
+});
+
+describe('member socket sweep (story 010-003, fix MB3)', () => {
+  // The sweep consults the DB through memberRoomAccess, which is
+  // unconditionally 'write' in dev mode — flip to magic-link so entitlement
+  // changes are actually evaluated. handleYjsConnection itself never reads
+  // config, so the rest of this file is unaffected.
+  beforeAll(() => {
+    config.auth.mode = 'magic-link';
+  });
+  afterAll(() => {
+    config.auth.mode = 'dev';
+  });
+
+  it('leaves sockets alone while their entitlement still covers the stamp', async () => {
+    const room = 'project-5/draft/sweep-ok.md';
+    const write = connect(room, memberCollab(3));
+    const read = connect(room, memberCollab(2, 'read'));
+    await sweepMemberConnections();
+    expect(write.closed).toBe(null);
+    expect(read.closed).toBe(null);
+    write.disconnect();
+    read.disconnect();
+  });
+
+  it('demotion closes the write socket with 4006; a promoted viewer read socket survives', async () => {
+    const room = 'project-5/draft/sweep-demote.md';
+    const write = connect(room, memberCollab(3)); // editor, stamped write
+    const read = connect(room, memberCollab(2, 'read')); // viewer, stamped read
+    querySync("UPDATE memberships SET role = 'viewer' WHERE user_id = 3 AND org_id = 7");
+    querySync("UPDATE memberships SET role = 'editor' WHERE user_id = 2 AND org_id = 7");
+    try {
+      await sweepMemberConnections();
+      // The demoted editor's write socket closes; reconnect re-authorizes at
+      // upgrade and lands read-only.
+      expect(write.closed).toEqual({ code: 4006, reason: 'Write access revoked' });
+      // The promoted viewer's read socket is still within entitlement.
+      expect(read.closed).toBe(null);
+    } finally {
+      querySync("UPDATE memberships SET role = 'editor' WHERE user_id = 3 AND org_id = 7");
+      querySync("UPDATE memberships SET role = 'viewer' WHERE user_id = 2 AND org_id = 7");
+    }
+    read.disconnect();
+  });
+
+  it('membership removal closes the socket', async () => {
+    const ws = connect('project-5/draft/sweep-removed.md', memberCollab(4));
+    querySync('DELETE FROM memberships WHERE user_id = 4 AND org_id = 7');
+    try {
+      await sweepMemberConnections();
+      expect(ws.closed).toEqual({ code: 4006, reason: 'Organization access revoked' });
+    } finally {
+      querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (4, 7, 'editor')");
+    }
+  });
+
+  it('suspension closes live member sockets AND reviewer sockets on the org (fixes MB3 + MA2)', async () => {
+    const room = 'project-6/draft/frozen.md';
+    const memberWs = connect(room, memberCollab(4));
+    const rev = connect(room, {
+      principal: mintPrincipal('draft/frozen.md', 'view', 'Ada', 6), access: 'read',
+    });
+    sweepReviewerConnections();
+    await sweepMemberConnections();
+    expect(memberWs.closed).toBe(null);
+    expect(rev.closed).toBe(null);
+
+    querySync("UPDATE organizations SET status = 'suspended' WHERE id = 9");
+    try {
+      sweepReviewerConnections();
+      await sweepMemberConnections();
+      expect(memberWs.closed).toEqual({ code: 4006, reason: 'Organization access revoked' });
+      expect(rev.closed).toEqual({ code: 4006, reason: 'Organization suspended' });
+
+      // A reviewer landing DURING suspension is closed by the registration
+      // TOCTOU re-check before any doc bytes.
+      const late = connect(room, {
+        principal: mintPrincipal('draft/frozen.md', 'view', 'Late', 6), access: 'read',
+      });
+      expect(late.closed).toEqual({ code: 4006, reason: 'Organization suspended' });
+      expect(late.sent).toEqual([]);
+    } finally {
+      querySync("UPDATE organizations SET status = 'active' WHERE id = 9");
+    }
+  });
+
+  it('a disconnected socket is deregistered — the sweep does not close it retroactively', async () => {
+    const ws = connect('project-999/draft/gone-project.md', memberCollab(3));
+    ws.disconnect(); // close handler deregisters before the sweep runs
+    await sweepMemberConnections();
+    expect(ws.closed).toBe(null);
+  });
+
+  it('dev mode never closes member sockets, even identities with no membership', async () => {
+    config.auth.mode = 'dev';
+    try {
+      const ws = connect('project-999/draft/dev.md', memberCollab(4242));
+      await sweepMemberConnections();
+      expect(ws.closed).toBe(null);
+      ws.disconnect();
+    } finally {
+      config.auth.mode = 'magic-link';
+    }
   });
 });

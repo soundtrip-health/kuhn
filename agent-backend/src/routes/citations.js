@@ -1,6 +1,8 @@
 // Story 016: HTTP surface of the citation service, consumed by the /cite
 // editor command. Search returns PubMed-grounded candidates; POST verifies
 // the chosen PMID against PubMed and upserts it into the project bibliography.
+// Tenancy (story 010-003): search/list are viewer reads; the bibliography
+// upsert is an editor write.
 
 import { Router } from 'express';
 
@@ -12,6 +14,7 @@ import {
 } from '../citations.js';
 import { listProjectReferences } from '../db/references.js';
 import { StorageError } from '../storage.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -23,15 +26,12 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -46,7 +46,7 @@ function handle(fn) {
 }
 
 /** GET /api/projects/:projectId/citations/search?q=...&max=8 — PubMed candidates */
-router.get('/api/projects/:projectId/citations/search', handle(async (_projectId, req, res) => {
+router.get('/api/projects/:projectId/citations/search', handle('viewer', async (_projectId, req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   if (!query) {
     res.status(400).json({ error: 'q query parameter is required' });
@@ -62,7 +62,7 @@ router.get('/api/projects/:projectId/citations/search', handle(async (_projectId
  * Upserts the cited work into the project bibliography (default
  * draft/references.bib); returns { key, created, bibtex, path }.
  */
-router.post('/api/projects/:projectId/citations', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/citations', handle('editor', async (projectId, req, res) => {
   const { pmid, path } = req.body ?? {};
   if (typeof pmid !== 'string' && typeof pmid !== 'number') {
     res.status(400).json({ error: 'pmid is required' });
@@ -76,7 +76,7 @@ router.post('/api/projects/:projectId/citations', handle(async (projectId, req, 
  * GET /api/projects/:projectId/references — the project's stored references
  * (canonical SQLite store), for a citation picker/library view.
  */
-router.get('/api/projects/:projectId/references', handle(async (projectId, _req, res) => {
+router.get('/api/projects/:projectId/references', handle('viewer', async (projectId, _req, res) => {
   const references = await listProjectReferences(projectId);
   res.json({ references });
 }));

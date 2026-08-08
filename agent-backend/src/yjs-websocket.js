@@ -14,7 +14,7 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 
-import { reviewerLinkState } from './collab-auth.js';
+import { memberRoomAccess, reviewerLinkState } from './collab-auth.js';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
@@ -54,6 +54,13 @@ export const CLOSE_LINK_EXPIRED = 4004;
  * never clobber the accepted edit).
  */
 export const CLOSE_DOC_REFRESH = 4005;
+/**
+ * Story 010-003: the socket's org access changed while it was connected —
+ * membership removed, org suspended, or role demoted below the stamped access
+ * level. RECONNECTABLE: reconnecting re-authorizes at upgrade, so a demoted
+ * editor lands read-only while a removed/suspended member is refused with 403.
+ */
+export const CLOSE_ACCESS_CHANGED = 4006;
 
 // A WebSocket close frame caps the reason at 123 UTF-8 BYTES and ws.close()
 // throws RangeError past it. Project paths can be long and non-ASCII, so
@@ -263,34 +270,72 @@ export function hasRoom(name) {
   return docs.has(name);
 }
 
-// --- Reviewer connections (epic 013) ----------------------------------------
+// --- Reviewer + member connections (epic 013; 010-003) -----------------------
 // Every socket carries ws.kuhnAccess ('read'|'write') and ws.kuhnPrincipal
 // (stamped from req.kuhnCollab by the upgrade handler in collab-auth.js).
 // Reviewer sockets are additionally indexed by link id so a revocation can
 // close exactly that credential's connections — room-level evictRoom must NOT
 // be used for revocation: it would kick org members and destroy doc state.
+// Member sockets are registered too (story 010-003, fix MB3), so the same 60s
+// cadence can re-check org access and close sockets whose entitlement changed.
 
 /** @type {Map<number, Set<import('ws').WebSocket>>} linkId → live sockets */
 const reviewerConns = new Map();
 
-const REVIEWER_SWEEP_MS = 60_000;
-let reviewerSweepTimer = null;
+/** @type {Set<import('ws').WebSocket>} member sockets, re-checked by the sweep (010-003) */
+const memberConns = new Set();
 
-function ensureReviewerSweep() {
-  if (reviewerSweepTimer) return;
-  reviewerSweepTimer = setInterval(sweepReviewerConnections, REVIEWER_SWEEP_MS);
-  reviewerSweepTimer.unref?.();
+const SWEEP_MS = 60_000;
+let sweepTimer = null;
+
+function ensureSweep() {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    sweepReviewerConnections();
+    void sweepMemberConnections();
+  }, SWEEP_MS);
+  sweepTimer.unref?.();
 }
 
 /** Close one reviewer socket with the verdict for a non-live link state. */
 function closeForLinkState(ws, state) {
   const [code, reason] = state === 'expired'
     ? [CLOSE_LINK_EXPIRED, 'Link expired']
-    : [CLOSE_LINK_REVOKED, state === 'missing' ? 'Document removed' : 'Link revoked'];
+    : state === 'suspended'
+      ? [CLOSE_ACCESS_CHANGED, 'Organization suspended']
+      : [CLOSE_LINK_REVOKED, state === 'missing' ? 'Document removed' : 'Link revoked'];
   try {
     ws.close(code, reason);
   } catch {
     // a dying socket must not block the sweep/re-check
+  }
+}
+
+/**
+ * 60s sweep over registered member sockets (story 010-003, fix MB3): re-run
+ * the org access check IN THE DATABASE for each and close any socket whose
+ * current entitlement no longer covers its upgrade-time stamp — membership
+ * removed, org suspended, or role demoted below the stamped access (a demoted
+ * editor's write socket closes; its reconnect re-authorizes and lands
+ * read-only). A viewer whose role was RAISED is left alone: its read socket is
+ * still within entitlement, and reconnect picks up write. Dev mode never
+ * closes anything (memberRoomAccess is unconditionally 'write' there). Same
+ * discipline as sweepReviewerConnections, which stays untouched.
+ */
+export async function sweepMemberConnections() {
+  for (const ws of [...memberConns]) {
+    const access = await memberRoomAccess(ws.kuhnPrincipal?.user ?? null, ws.kuhnRoom);
+    if (access === 'write') continue;
+    if (access === 'read' && ws.kuhnAccess === 'read') continue;
+    memberConns.delete(ws);
+    try {
+      ws.close(
+        CLOSE_ACCESS_CHANGED,
+        access === null ? 'Organization access revoked' : 'Write access revoked',
+      );
+    } catch {
+      // a dying socket must not block the sweep
+    }
   }
 }
 
@@ -545,7 +590,15 @@ export function handleYjsConnection(ws, req) {
       reviewerConns.set(reviewer.linkId, set);
     }
     set.add(ws);
-    ensureReviewerSweep();
+    ensureSweep();
+  }
+
+  // Member sockets are swept too (story 010-003, fix MB3): removal, demotion
+  // and suspension must reach live connections, not just the next upgrade.
+  if (ws.kuhnPrincipal?.kind === 'member') {
+    ws.kuhnRoom = roomName;
+    memberConns.add(ws);
+    ensureSweep();
   }
 
   ws.on('message', (raw) => {
@@ -603,6 +656,7 @@ export function handleYjsConnection(ws, req) {
 
   ws.on('close', () => {
     entry.conns.delete(ws);
+    memberConns.delete(ws);
     if (reviewer) {
       const set = reviewerConns.get(reviewer.linkId);
       if (set) {

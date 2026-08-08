@@ -15,6 +15,7 @@ import express from 'express';
 import { extname } from 'node:path';
 
 import { config } from '../config.js';
+import { querySync } from '../db.js';
 import {
   addReply,
   createThread,
@@ -70,6 +71,32 @@ function handle(fn) {
     }
   };
 }
+
+/**
+ * Suspension gate (story 011-001, fix MA2): this router is mounted BEFORE
+ * session() and authenticates by link token alone, so the tenancy chokepoint
+ * (db/orgs.js, membership-based) never sees reviewer traffic. A suspended
+ * org must still refuse its external reviewers, or an anonymous link holder
+ * could keep reading and writing a suspended tenant's files. One cheap
+ * per-request status lookup on the link's project's org; 403 with the same
+ * body the member guards emit.
+ */
+function refuseSuspended(req, res, next) {
+  const { rows } = querySync(
+    `SELECT o.status FROM projects p JOIN organizations o ON o.id = p.org_id
+     WHERE p.id = $1`,
+    [req.reviewer.projectId],
+  );
+  if (rows[0]?.status === 'suspended') {
+    res.status(403).json({ error: 'organization suspended' });
+    return;
+  }
+  next();
+}
+
+/** Every session-bearing route: resolve the reviewer, then refuse suspended
+ *  orgs. Express accepts the array anywhere a middleware goes. */
+const reviewerAccess = [reviewerSession, refuseSuspended];
 
 /** Mode gate for session-bearing routes (runs after reviewerSession). */
 const requireMode = (...modes) => (req, res, next) => {
@@ -227,13 +254,13 @@ router.post('/api/review/claim', handle(async (req, res) => {
 
 /** GET /api/review/context — the reviewer's scope; re-fetched after a 4002
  *  room move so the client learns the document's new path. */
-router.get('/api/review/context', reviewerSession, handle(async (req, res) => {
+router.get('/api/review/context', reviewerAccess, handle(async (req, res) => {
   res.json(contextOf(req.reviewer));
 }));
 
 /** GET /api/review/file — the linked document's bytes. No path parameter
  *  exists, so there is no traversal surface. All modes. */
-router.get('/api/review/file', reviewerSession, handle(async (req, res) => {
+router.get('/api/review/file', reviewerAccess, handle(async (req, res) => {
   const buf = await readProjectFile(req.reviewer.projectId, req.reviewer.path);
   res.set('Content-Type',
     CONTENT_TYPES[extname(req.reviewer.path).toLowerCase()] ?? 'application/octet-stream');
@@ -255,7 +282,7 @@ const rawBody = (req, res, next) =>
  * ?checkpoint=1 additionally sets reviewerCheckpoint so an explicit reviewer
  * save is never relabeled by agent meta pending in the same window.
  */
-router.put('/api/review/file', reviewerSession, requireMode('edit'), rawBody,
+router.put('/api/review/file', reviewerAccess, requireMode('edit'), rawBody,
   handle(async (req, res) => {
     const { projectId, path, linkId, mode, name } = req.reviewer;
     if (!Buffer.isBuffer(req.body)) {
@@ -280,7 +307,7 @@ router.put('/api/review/file', reviewerSession, requireMode('edit'), rawBody,
 
 /** GET /api/review/comments — the linked document's threads. All modes
  *  (view included, per story 001). */
-router.get('/api/review/comments', reviewerSession, handle(async (req, res) => {
+router.get('/api/review/comments', reviewerAccess, handle(async (req, res) => {
   res.json({ threads: listThreads(req.reviewer.projectId, { path: req.reviewer.path }) });
 }));
 
@@ -289,7 +316,7 @@ router.get('/api/review/comments', reviewerSession, handle(async (req, res) => {
  * reviewer's document (any body path is ignored); authored as
  * { userId: null, reviewLinkId } (epic 013 attribution model).
  */
-router.post('/api/review/comments', reviewerSession, requireMode('comment', 'edit'),
+router.post('/api/review/comments', reviewerAccess, requireMode('comment', 'edit'),
   handle(async (req, res) => {
     const { body, anchor = null } = req.body ?? {};
     if (typeof body !== 'string' || body.trim().length === 0) {
@@ -316,7 +343,7 @@ router.post('/api/review/comments', reviewerSession, requireMode('comment', 'edi
 
 /** POST /api/review/comments/:id/replies — comment/edit; any thread on the
  *  reviewer's document (threads elsewhere are a 404). */
-router.post('/api/review/comments/:id/replies', reviewerSession, requireMode('comment', 'edit'),
+router.post('/api/review/comments/:id/replies', reviewerAccess, requireMode('comment', 'edit'),
   handle(async (req, res) => {
     const found = requireDocComment(req, res);
     if (found == null) return;
@@ -353,15 +380,15 @@ function setResolvedRoute(resolved, action) {
   });
 }
 
-router.post('/api/review/comments/:id/resolve', reviewerSession, requireMode('comment', 'edit'),
+router.post('/api/review/comments/:id/resolve', reviewerAccess, requireMode('comment', 'edit'),
   setResolvedRoute(true, 'resolve'));
-router.post('/api/review/comments/:id/reopen', reviewerSession, requireMode('comment', 'edit'),
+router.post('/api/review/comments/:id/reopen', reviewerAccess, requireMode('comment', 'edit'),
   setResolvedRoute(false, 'reopen'));
 
 /** DELETE /api/review/comments/:id — comment/edit, own only (exact
  *  review_link_id match in deleteOwn — a reviewer can never delete member or
  *  agent comments, nor another link's). */
-router.delete('/api/review/comments/:id', reviewerSession, requireMode('comment', 'edit'),
+router.delete('/api/review/comments/:id', reviewerAccess, requireMode('comment', 'edit'),
   handle(async (req, res) => {
     const found = requireDocComment(req, res);
     if (found == null) return;
@@ -377,7 +404,7 @@ router.delete('/api/review/comments/:id', reviewerSession, requireMode('comment'
  * its writebacks off. No feed event (presentation state, as on the member
  * route).
  */
-router.patch('/api/review/comments/:id/anchor', reviewerSession, requireMode('edit'),
+router.patch('/api/review/comments/:id/anchor', reviewerAccess, requireMode('edit'),
   handle(async (req, res) => {
     const found = requireDocComment(req, res);
     if (found == null) return;

@@ -1,12 +1,14 @@
 // Story 019: HTTP surface of the render/export service. Failures must reach
 // the UI as readable messages (compile stderr excerpt), not 500s: sandbox
 // errors map to 4xx/504 JSON bodies the webapp shows verbatim.
+// Tenancy (story 010-003): render and export are reads — viewer threshold.
 
 import { Router } from 'express';
 
 import { renderPdf, exportDocument, EXPORT_FORMATS } from '../render.js';
 import { SandboxError } from '../sandbox.js';
 import { StorageError } from '../storage.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -24,15 +26,12 @@ const SANDBOX_STATUS = {
   output_too_large: 413,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STORAGE_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -50,7 +49,7 @@ function handle(fn) {
  * POST /api/projects/:projectId/render — body { path }.
  * Renders markdown → Typst → PDF and returns the PDF bytes.
  */
-router.post('/api/projects/:projectId/render', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/render', handle('viewer', async (projectId, req, res) => {
   const path = req.body?.path;
   if (typeof path !== 'string' || path.length === 0) {
     res.status(400).json({ error: 'path is required in the request body' });
@@ -66,7 +65,7 @@ router.post('/api/projects/:projectId/render', handle(async (projectId, req, res
  * GET /api/projects/:projectId/export?path=...&format=docx|tex
  * Pandoc export, served as an attachment download.
  */
-router.get('/api/projects/:projectId/export', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/export', handle('viewer', async (projectId, req, res) => {
   const path = req.query.path;
   const format = req.query.format;
   if (typeof path !== 'string' || path.length === 0) {

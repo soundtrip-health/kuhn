@@ -17,6 +17,7 @@ import commentsRouter from './routes/comments.js';
 import filesRouter from './routes/files.js';
 import historyRouter from './routes/history.js';
 import orgsRouter from './routes/orgs.js';
+import orgAdminRouter from './routes/org-admin.js';
 import orgLibraryRouter from './routes/org-library.js';
 import pendingEditsRouter from './routes/pending-edits.js';
 import projectsRouter from './routes/projects.js';
@@ -79,6 +80,7 @@ app.use(commentsRouter);
 app.use(filesRouter);
 app.use(historyRouter);
 app.use(orgsRouter);
+app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)
 app.use(orgLibraryRouter);
 app.use(pendingEditsRouter);
 app.use(projectsRouter);

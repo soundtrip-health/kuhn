@@ -13,7 +13,8 @@ vi.mock('../agents/project-config.js', () => ({
   applyProjectConfig: vi.fn(async (id) => ({ project: { id, config: { setup: { status: 'complete' } } }, created: true })),
 }));
 vi.mock('../db/orgs.js', () => ({
-  isMember: vi.fn(async () => true),
+  checkOrgAccess: vi.fn(),
+  listUserOrgs: vi.fn(async () => []),
   primaryOrgId: vi.fn(async () => 7),
 }));
 vi.mock('../agents/seeding.js', () => ({ runSeedPipeline: vi.fn() }));
@@ -29,7 +30,7 @@ vi.mock('../db/file-activity.js', () => ({
 
 import { runSeedPipeline } from '../agents/seeding.js';
 import { listProjectConversations } from '../db/conversation.js';
-import { isMember, primaryOrgId } from '../db/orgs.js';
+import { checkOrgAccess, listUserOrgs, primaryOrgId } from '../db/orgs.js';
 import {
   getProject,
   listProjectsForUser,
@@ -58,9 +59,23 @@ beforeAll(async () => {
 
 afterAll(() => new Promise((ok) => server.close(ok)));
 
+const RANK = { viewer: 1, editor: 2, owner: 3 };
+/** Emulate the chokepoint's rank check for a granted role (010-003). */
+const grantRole = (role) => checkOrgAccess.mockImplementation(
+  async (_userId, orgId, minRole = 'viewer') => (
+    RANK[role] >= RANK[minRole]
+      ? { ok: true, role, org: { id: Number(orgId), status: 'active', settings: {} } }
+      : { ok: false, reason: 'role', role }
+  ),
+);
+const denyAccess = (reason) => checkOrgAccess.mockImplementation(
+  async () => ({ ok: false, reason }),
+);
+
 beforeEach(() => {
   vi.clearAllMocks();
-  isMember.mockResolvedValue(true);
+  grantRole('owner');
+  listUserOrgs.mockResolvedValue([]);
   primaryOrgId.mockResolvedValue(7);
 });
 
@@ -71,6 +86,19 @@ describe('GET /api/projects (story 005 — org scoped)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ projects: [{ id: 1, name: 'A', org_id: 7 }] });
     expect(listProjectsForUser).toHaveBeenCalledWith(1);
+  });
+
+  it('excludes projects of suspended orgs (story 011-001)', async () => {
+    listProjectsForUser.mockResolvedValue([
+      { id: 1, name: 'Alive', org_id: 7 },
+      { id: 2, name: 'Frozen', org_id: 8 },
+    ]);
+    listUserOrgs.mockResolvedValue([
+      { id: 7, status: 'active' },
+      { id: 8, status: 'suspended' },
+    ]);
+    const res = await fetch(`${base}/api/projects`);
+    expect(await res.json()).toEqual({ projects: [{ id: 1, name: 'Alive', org_id: 7 }] });
   });
 });
 
@@ -97,25 +125,38 @@ describe('POST /api/projects (story 005)', () => {
     expect(createProject).toHaveBeenCalledWith({ name: 'New', projectType: 'manuscript', orgId: 7 });
   });
 
-  it('honors an orgId the user belongs to', async () => {
+  it('honors an orgId the user holds editor in', async () => {
     createProject.mockResolvedValue({ id: 10, org_id: 3 });
     await fetch(`${base}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'X', orgId: 3 }),
     });
-    expect(isMember).toHaveBeenCalledWith(1, 3);
+    expect(checkOrgAccess).toHaveBeenCalledWith(1, 3, 'editor');
     expect(createProject).toHaveBeenCalledWith({ name: 'X', projectType: 'manuscript', orgId: 3 });
   });
 
-  it('403s for an org the user does not belong to', async () => {
-    isMember.mockResolvedValue(false);
+  it('404s (non-leaking) for an org the user does not belong to', async () => {
+    denyAccess('not-member');
     const res = await fetch(`${base}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'X', orgId: 999 }),
     });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'organization not found' });
+    expect(createProject).not.toHaveBeenCalled();
+  });
+
+  it('403s a viewer — creating projects needs editor (010-003)', async () => {
+    grantRole('viewer');
+    const res = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'X' }),
+    });
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'requires editor role' });
     expect(createProject).not.toHaveBeenCalled();
   });
 });
@@ -135,7 +176,7 @@ describe('PUT /api/projects/:id/active-document (story 006)', () => {
 
   it('404s for a project in another org', async () => {
     getProject.mockResolvedValue({ id: 3, org_id: 7 });
-    isMember.mockResolvedValue(false);
+    denyAccess('not-member');
     const res = await fetch(`${base}/api/projects/3/active-document`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -212,7 +253,7 @@ describe('file seen & activity endpoints (story 005-002)', () => {
     expect(noPath.status).toBe(400);
     expect(markSeen).not.toHaveBeenCalled();
 
-    isMember.mockResolvedValue(false);
+    denyAccess('not-member');
     const forbidden = await fetch(`${base}/api/projects/3/files/seen`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -252,7 +293,7 @@ describe('GET /api/projects/:id/events (story 005-001)', () => {
 
   it('404s for non-members without leaking existence', async () => {
     getProject.mockResolvedValue({ id: 3, org_id: 7 });
-    isMember.mockResolvedValue(false);
+    denyAccess('not-member');
     const res = await fetch(`${base}/api/projects/3/events`);
     expect(res.status).toBe(404);
   });
@@ -352,11 +393,65 @@ describe('PUT /api/projects/:id/config', () => {
   });
 
   it('404s for a project the user cannot access', async () => {
-    isMember.mockResolvedValue(false);
+    denyAccess('not-member');
     const res = await fetch(`${base}/api/projects/5/config`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('role tightening (story 010-003)', () => {
+  beforeEach(() => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7, config: {} });
+  });
+
+  it('viewers keep their reads: activity, conversations, seen', async () => {
+    grantRole('viewer');
+    expect((await fetch(`${base}/api/projects/3/files/activity`)).status).toBe(200);
+    expect((await fetch(`${base}/api/projects/3/conversations`)).status).toBe(200);
+    const seen = await fetch(`${base}/api/projects/3/files/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'draft/main.md' }),
+    });
+    expect(seen.status).toBe(200);
+  });
+
+  it('viewers cannot rename, save config, seed, promote, or set the active document', async () => {
+    grantRole('viewer');
+    const json = { 'Content-Type': 'application/json' };
+    const denied = [
+      fetch(`${base}/api/projects/3`, { method: 'PATCH', headers: json, body: JSON.stringify({ name: 'N' }) }),
+      fetch(`${base}/api/projects/3/config`, { method: 'PUT', headers: json, body: JSON.stringify({ answers: {} }) }),
+      fetch(`${base}/api/projects/3/active-document`, { method: 'PUT', headers: json, body: JSON.stringify({ path: 'x.md' }) }),
+      fetch(`${base}/api/projects/3/seed`, { method: 'POST' }),
+      fetch(`${base}/api/projects/3/files/promote`, { method: 'POST', headers: json, body: JSON.stringify({ path: 'x.md' }) }),
+    ];
+    for (const go of denied) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'requires editor role' });
+    }
+    expect(runSeedPipeline).not.toHaveBeenCalled();
+    expect(updateProjectConfig).not.toHaveBeenCalled();
+  });
+
+  it('403s reads and writes alike once the org is suspended', async () => {
+    denyAccess('suspended');
+    for (const go of [
+      fetch(`${base}/api/projects/3/files/activity`),
+      fetch(`${base}/api/projects/3/conversations`),
+      fetch(`${base}/api/projects/3`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'N' }),
+      }),
+    ]) {
+      const res = await go;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'organization suspended' });
+    }
   });
 });

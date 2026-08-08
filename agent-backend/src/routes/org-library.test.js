@@ -19,6 +19,9 @@ let writeProjectFile; let resolveOrgSafe;
 let server; let base;
 let orgsRoot; let projectsRoot;
 
+// Mutable per-test identity, injected by the session stand-in below.
+let sessionUser;
+
 beforeAll(async () => {
   ({ exec, querySync } = await import('../db.js'));
   ({ config } = await import('../config.js'));
@@ -35,7 +38,7 @@ beforeAll(async () => {
 
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => { req.user = { id: 1, email: 'dev@kuhn.local' }; next(); });
+  app.use((req, _res, next) => { req.user = sessionUser; next(); });
   app.use(orgLibraryRouter);
   app.use(projectsRouter);
   await new Promise((ok) => { server = app.listen(0, ok); });
@@ -49,16 +52,21 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  sessionUser = { id: 1, email: 'dev@kuhn.local' };
   querySync('DELETE FROM org_documents');
   querySync('DELETE FROM projects');
   querySync('DELETE FROM memberships');
   querySync('DELETE FROM users');
   querySync('DELETE FROM organizations');
   querySync("INSERT INTO organizations (id, name, slug) VALUES (1, 'Mine', 'mine'), (2, 'Theirs', 'theirs')");
-  querySync("INSERT INTO users (id, email, display_name) VALUES (1, 'dev@kuhn.local', 'Dev')");
-  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (1, 1, 'owner')");
+  querySync(`INSERT INTO users (id, email, display_name) VALUES
+    (1, 'dev@kuhn.local', 'Dev'), (2, 'editor@kuhn.local', 'Ed'), (3, 'viewer@kuhn.local', 'Vi')`);
+  querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES
+    (1, 1, 'owner'), (2, 1, 'editor'), (3, 1, 'viewer')`);
   querySync("INSERT INTO projects (id, org_id, name, project_type) VALUES (10, 1, 'P', 'manuscript')");
 });
+
+const as = (id) => { sessionUser = { id, email: `u${id}@kuhn.local` }; };
 
 const upload = async (orgId, entries) => {
   const form = new FormData();
@@ -162,5 +170,54 @@ describe('org library routes (story 006-001)', () => {
     await expect(resolveOrgSafe(1, '../2/steal.txt')).rejects.toMatchObject({ code: 'outside_root' });
     await expect(resolveOrgSafe(1, '/etc/hosts')).rejects.toMatchObject({ code: 'outside_root' });
     await expect(resolveOrgSafe(99, 'x.txt')).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  describe('role thresholds (story 010-003)', () => {
+    it('viewers read the library but cannot upload or delete', async () => {
+      const doc = (await (await upload(1, [['ro.txt', 'read me']])).json()).documents[0];
+      as(3); // viewer
+      expect((await fetch(`${base}/api/orgs/1/library`)).status).toBe(200);
+      expect((await fetch(`${base}/api/orgs/1/library/${doc.id}`)).status).toBe(200);
+      const content = await fetch(`${base}/api/orgs/1/library/${doc.id}/content`);
+      expect(content.status).toBe(200);
+      expect(await content.text()).toBe('read me');
+
+      const up = await upload(1, [['sneak.txt', 'x']]);
+      expect(up.status).toBe(403);
+      expect(await up.json()).toEqual({ error: 'requires editor role' });
+      const del = await fetch(`${base}/api/orgs/1/library/${doc.id}`, { method: 'DELETE' });
+      expect(del.status).toBe(403);
+      expect(await del.json()).toEqual({ error: 'requires owner role' });
+    });
+
+    it('editors upload but deleting shared library docs is owner-only', async () => {
+      as(2); // editor
+      const res = await upload(1, [['ed.txt', 'editor bytes']]);
+      expect(res.status).toBe(201);
+      const doc = (await res.json()).documents[0];
+      const del = await fetch(`${base}/api/orgs/1/library/${doc.id}`, { method: 'DELETE' });
+      expect(del.status).toBe(403);
+      expect(await del.json()).toEqual({ error: 'requires owner role' });
+      expect(querySync('SELECT COUNT(*) AS n FROM org_documents').rows[0].n).toBe(1);
+
+      as(1); // owner
+      expect((await fetch(`${base}/api/orgs/1/library/${doc.id}`, { method: 'DELETE' })).status).toBe(200);
+    });
+
+    it('403s every route for every member once the org is suspended', async () => {
+      const doc = (await (await upload(1, [['s.txt', 'x']])).json()).documents[0];
+      querySync("UPDATE organizations SET status = 'suspended' WHERE id = 1");
+      for (const id of [1, 2, 3]) {
+        as(id);
+        const res = await fetch(`${base}/api/orgs/1/library`);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'organization suspended' });
+      }
+      as(1);
+      expect((await upload(1, [['y.txt', 'y']])).status).toBe(403);
+      expect((await fetch(`${base}/api/orgs/1/library/${doc.id}/content`)).status).toBe(403);
+      expect((await fetch(`${base}/api/orgs/1/library/${doc.id}`, { method: 'DELETE' })).status).toBe(403);
+      expect((await fetch(`${base}/api/orgs/1/events`)).status).toBe(403);
+    });
   });
 });

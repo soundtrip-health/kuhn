@@ -20,6 +20,8 @@ import { editorViewCtx } from '@milkdown/kit/core';
 import type { Ctx } from '@milkdown/kit/ctx';
 import { markdownToSlice } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
+import { WebsocketProvider } from 'y-websocket';
+import { Doc as YDoc } from 'yjs';
 
 import {
   BACKEND_WS_URL,
@@ -43,9 +45,11 @@ import {
   type CommentsTransport,
 } from './comments';
 import {
+  CLOSE_ROOM_EVICTED,
   CLOSE_ROOM_MOVED,
   createSaveEngine,
   openDoc,
+  roomName,
   type AwarenessUser,
   type DocHandle,
   type DocTransport,
@@ -59,6 +63,7 @@ import { performRetarget, resolveMovedRoom } from './move-follow';
 import { notify, setDocument, setSaveState } from './status';
 import { attachSuggestions, detachSuggestions } from './suggestion-hunks';
 import { toast } from './toast';
+import * as workspace from './workspace';
 import { startWrite } from './write-suggestion';
 
 // On open, reflect the persisted state in the top-bar "Saved" affordance.
@@ -70,6 +75,22 @@ let docHandle: DocHandle | null = null;
 // own save engine (same debounce/checkpoint semantics, from editor-core).
 let sourceView: CmEditorView | null = null;
 let sourceEngine: SaveEngine | null = null;
+// Viewer static fallback (010-003, fix MB2): while a viewer is on a static
+// render of the stored bytes, a headless provider watches the (empty) room so
+// the tab can swap to live collab the moment an editor seeds real content —
+// the reviewer surface's empty-room strategy (review/main.ts), ported here.
+let staticWatcher: { provider: WebsocketProvider; ydoc: YDoc } | null = null;
+
+/** Grace period after an empty first sync before falling back to a static
+ *  render: a write-capable member may be milliseconds from seeding. */
+const VIEWER_STATIC_FALLBACK_MS = 600;
+
+/** Whether the current user may edit documents: editors/owners of an ACTIVE
+ * org. Viewers — and anyone in a suspended org, where every write 403s — get
+ * read-only surfaces (010-003). */
+function canEditDocs(): boolean {
+  return workspace.canEdit() && !workspace.activeOrgSuspended();
+}
 
 let currentProjectId = 0;
 let currentPath = '';
@@ -117,18 +138,22 @@ const memberTransport: DocTransport = {
 /** Member rules: mine = my userId (never agent rows), compose always,
  *  resolve ANY thread, delete own plus reviewer-authored threads (guests'
  *  content is deletable by the hosts — matches the server's deleteOwn),
- *  anchor writebacks on. */
+ *  anchor writebacks on.
+ *  VIEWERS read only (fork F4, 010-003): compose/resolve/delete/anchor-patch
+ *  all off — the server 403s each of those routes below editor, so offering
+ *  the affordances would only surface failures. */
 function memberCommentsIdentity(): CommentsIdentity {
   const isMine = (c: Comment): boolean => {
     const me = currentUser();
     return me != null && c.userId === me.id && !c.agent;
   };
+  const editable = canEditDocs();
   return {
     isMine,
-    canCompose: true,
-    canResolve: () => true,
-    canDelete: (t) => isMine(t) || t.reviewLinkId != null,
-    canPatchAnchors: true,
+    canCompose: editable,
+    canResolve: () => editable,
+    canDelete: (t) => editable && (isMine(t) || t.reviewLinkId != null),
+    canPatchAnchors: editable,
   };
 }
 
@@ -414,12 +439,15 @@ async function openDocumentInner(
   const stored = await readTextFile(projectId, path);
   if (seq !== openSeq) return; // switched away before we touched the singletons
 
+  // Viewers open read-only (010-003): no seeding, no saves, no slash commands,
+  // no suggestion review — and comments per the F4 read-only identity.
+  const editable = canEditDocs();
   const commands = agentCommands();
   const handle = await openDoc({
     projectId,
     path,
-    editable: true,
-    features: { slashCommands: true, suggestions: true, bib: true, comments: true },
+    editable,
+    features: { slashCommands: editable, suggestions: editable, bib: true, comments: true },
     transport: memberTransport,
     awarenessUser: memberAwarenessUser(),
     commentsIdentity: memberCommentsIdentity(),
@@ -446,11 +474,19 @@ async function openDocumentInner(
       if (code === CLOSE_ROOM_MOVED) void followMovedRoom(reason);
     },
     onReviewers: renderReviewerBanner,
+    // MB2 (010-003): a read-only client on an EMPTY room must not sit on a
+    // blank document — it can never seed, and rooms die 30s after the last
+    // editor leaves. Fall back to a static render of the stored bytes.
+    onSynced: ({ empty }) => {
+      if (empty && !editable) scheduleViewerFallback(projectId, path, seq);
+    },
     // Pending agent suggestions for this doc (story 008-001): the module
     // fetches GET /pending-edits itself and renders hunk decorations;
     // accept/reject go through REST after flushing any local save. (Margin
-    // comments attach inside editor-core, right after this.)
+    // comments attach inside editor-core, right after this.) Viewers skip the
+    // attach: accept/reject are editor-gated on the server.
     onReady: (view) => {
+      if (!editable) return;
       attachSuggestions(view, {
         projectId,
         path,
@@ -480,11 +516,92 @@ export async function closeDocument(): Promise<void> {
 async function teardownRich(): Promise<void> {
   detachSuggestions();
   renderReviewerBanner([]);
+  destroyStaticWatcher();
   const handle = docHandle;
   docHandle = null;
   // Comments detach + collab disconnect + provider/ydoc/crepe teardown all
   // live in the handle (editor-core), in the story-024-safe order.
   if (handle) await handle.destroy();
+}
+
+// ---- Viewer static fallback (010-003, fix MB2) -------------------------------
+// Ported from the reviewer surface (review/main.ts): empty first sync on a
+// read-only client → render current storage statically (collab:false — no
+// bytes ever reach the room) and watch the room headlessly; the moment a
+// write-capable member seeds it, remount the live collab doc.
+
+function destroyStaticWatcher(): void {
+  const w = staticWatcher;
+  staticWatcher = null;
+  if (w) {
+    w.provider.destroy();
+    w.ydoc.destroy();
+  }
+}
+
+/** After an empty first sync, give a write-capable peer a beat to seed before
+ * falling back — re-checked at fire time (someone may have seeded meanwhile). */
+function scheduleViewerFallback(projectId: number, path: string, seq: number): void {
+  window.setTimeout(() => {
+    if (seq !== openSeq || path !== currentPath || projectId !== currentProjectId) return;
+    const frag = docHandle?.ydoc?.getXmlFragment('prosemirror');
+    if (frag != null && frag.length > 0) return; // seeded while we waited
+    void mountViewerStatic(projectId, path);
+  }, VIEWER_STATIC_FALLBACK_MS);
+}
+
+async function mountViewerStatic(projectId: number, path: string): Promise<void> {
+  const seq = ++openSeq; // supersede the (blank) collab mount
+  await teardownRich();
+  if (seq !== openSeq || path !== currentPath) return;
+  let stored: string | null;
+  try {
+    stored = await readTextFile(projectId, path);
+  } catch {
+    return; // transient — reopening the document retries the whole path
+  }
+  if (seq !== openSeq || path !== currentPath) return;
+  const handle = await openDoc({
+    projectId,
+    path,
+    editable: false,
+    collab: false,
+    features: { slashCommands: false, suggestions: false, bib: true, comments: true },
+    transport: memberTransport,
+    awarenessUser: null,
+    commentsIdentity: memberCommentsIdentity(),
+    stored,
+    onMarkdownUpdated: updateDocMeta,
+  });
+  if (seq !== openSeq) {
+    void handle.destroy();
+    return;
+  }
+  docHandle = handle;
+  setSaveState('saved');
+
+  // Headless room watcher: swap to live collab when real content appears.
+  const ydoc = new YDoc();
+  const provider = new WebsocketProvider(
+    `${BACKEND_WS_URL}/yjs-websocket`,
+    roomName(projectId, path),
+    ydoc,
+  );
+  staticWatcher = { provider, ydoc };
+  ydoc.on('update', () => {
+    if (seq !== openSeq) return;
+    if (ydoc.getXmlFragment('prosemirror').length === 0) return;
+    void openDocument(projectId, path); // full reopen → fresh Y.Doc + provider
+  });
+  provider.on('connection-close', (event: CloseEvent | null) => {
+    if (event == null || seq !== openSeq) return;
+    if (event.code === CLOSE_ROOM_EVICTED || event.code === CLOSE_ROOM_MOVED) {
+      // Terminal for the watcher (auto-reconnect would hammer a dead room);
+      // a move still follows the document, like the live provider's onClose.
+      provider.disconnect();
+      if (event.code === CLOSE_ROOM_MOVED) void followMovedRoom(event.reason ?? '');
+    }
+  });
 }
 
 function destroySourceView(): void {
@@ -535,12 +652,15 @@ function createSourceView(
   });
   engine.noteSaved(doc);
   sourceEngine = engine;
+  // Viewers get the same raw view, read-only (010-003): no edits, no saves.
+  const editable = canEditDocs();
   sourceView = new CmEditorView({
     parent: root,
     state: EditorState.create({
       doc,
       extensions: [
         ...extra,
+        ...(editable ? [] : [EditorState.readOnly.of(true), CmEditorView.editable.of(false)]),
         history(),
         cmKeymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         ...(opts.markdown ? [cmMarkdown()] : []),
@@ -691,9 +811,32 @@ export async function discardDocument(): Promise<void> {
  * (Cmd/Ctrl+S) additionally commits a history version now (story 008-002).
  */
 export async function flushSave(opts: { checkpoint?: boolean } = {}): Promise<void> {
+  // Read-only surfaces never write — without this, a viewer's Cmd+S checkpoint
+  // would PUT even a clean buffer and surface a 403 as a save error.
+  if (!canEditDocs()) return;
   if (sourceView) {
     await sourceEngine?.flush(sourceView.state.doc.toString(), opts);
     return;
   }
   await docHandle?.flushSave(opts);
 }
+
+// ---- Role changes under an open document (010-003 + I5) ----------------------
+// workspace re-fetches /api/orgs on guard-shaped 403s (`kuhn:role-refresh`) and
+// emits 'orgs'. If the effective editability flipped, reopen the current
+// document so the surface matches: demoted → read-only chrome (and the static
+// fallback if the room is cold); promoted → a live editable collab doc.
+
+let lastRoleEditable: boolean | null = null;
+
+workspace.subscribe((change) => {
+  if (change !== 'orgs' && change !== 'init') return;
+  const editable = canEditDocs();
+  if (editable === lastRoleEditable) return;
+  const first = lastRoleEditable == null;
+  lastRoleEditable = editable;
+  if (first) return; // baseline, not a flip
+  if (currentPath && currentProjectId) {
+    void openDocument(currentProjectId, currentPath);
+  }
+});

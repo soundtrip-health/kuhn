@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 // --- Mocks -----------------------------------------------------------------
 
@@ -1076,6 +1076,18 @@ describe('ask_user reconnect (story 027)', () => {
 // --- Story 006-003: search_org_knowledge agent tool ---------------------------
 
 describe('search_org_knowledge (story 006-003)', () => {
+  // The suspension gate (011-001, fix I4) reads organizations.status from the
+  // real (in-memory, otherwise schemaless) db.js. Give it just that table:
+  // org 3 is what the mocked getProject reports for every project.
+  beforeAll(async () => {
+    const { exec, querySync } = await import('../db.js');
+    exec(`CREATE TABLE IF NOT EXISTS organizations (
+      id INTEGER PRIMARY KEY, name TEXT, slug TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+    )`);
+    querySync("INSERT OR IGNORE INTO organizations (id, name, slug) VALUES (3, 'Org', 'org')");
+  });
+
   const ADVISOR = {
     slug: 'advisor',
     name: 'Domain Expert (Advisor)',
@@ -1171,6 +1183,23 @@ describe('search_org_knowledge (story 006-003)', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/fts index corrupt/);
+  });
+
+  it('refuses with "organization suspended" instead of results when the org is suspended (011-001 I4)', async () => {
+    const { querySync } = await import('../db.js');
+    getAgentWithTools.mockResolvedValue(ADVISOR);
+    searchOrgKnowledge.mockReturnValueOnce([{ docId: 1, title: 't', filename: 'f', headingPath: null, seq: 0, snippet: 'x', rank: -1 }]);
+    querySync("UPDATE organizations SET status = 'suspended' WHERE id = 3");
+    try {
+      const searchTool = await orgSearchTool();
+      const result = await searchTool.handler({ query: 'anything', limit: 8 });
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toMatch(/organization suspended/i);
+      expect(result.content[0].text).toMatch(/do not retry/i);
+      expect(searchOrgKnowledge).not.toHaveBeenCalled();
+    } finally {
+      querySync("UPDATE organizations SET status = 'active' WHERE id = 3");
+    }
   });
 });
 

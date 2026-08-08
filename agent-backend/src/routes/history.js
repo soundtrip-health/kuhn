@@ -1,6 +1,7 @@
 // Story 008-002: HTTP surface of the version history. Same handler/error
 // conventions as routes/files.js — path safety and git mechanics live in
 // src/history.js / src/storage.js; these handlers translate HTTP.
+// Tenancy (story 010-003): reads need viewer, restore needs editor.
 
 import { Router } from 'express';
 import { extname } from 'node:path';
@@ -8,6 +9,7 @@ import { extname } from 'node:path';
 import { commitNow, fileAtVersion, listHistory } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
 import { StorageError, writeProjectFile } from '../storage.js';
+import { requireProjectRole } from './guards.js';
 
 const router = Router();
 
@@ -19,15 +21,12 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-function handle(fn) {
+function handle(minRole, fn) {
   return async (req, res) => {
-    const projectId = parseInt(req.params.projectId);
-    if (Number.isNaN(projectId)) {
-      res.status(400).json({ error: 'projectId must be a number' });
-      return;
-    }
     try {
-      await fn(projectId, req, res);
+      const project = await requireProjectRole(req, res, req.params.projectId, minRole);
+      if (!project) return;
+      await fn(project.id, req, res);
     } catch (err) {
       if (err instanceof StorageError) {
         res.status(STATUS_BY_CODE[err.code] ?? 500).json({ error: err.message, code: err.code });
@@ -40,7 +39,7 @@ function handle(fn) {
 }
 
 /** GET /api/projects/:projectId/history?path=&limit= — versions, newest first */
-router.get('/api/projects/:projectId/history', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/history', handle('viewer', async (projectId, req, res) => {
   const path = typeof req.query.path === 'string' && req.query.path.length > 0 ? req.query.path : null;
   const limit = parseInt(req.query.limit) || 50;
   const history = await listHistory(projectId, path, limit);
@@ -48,7 +47,7 @@ router.get('/api/projects/:projectId/history', handle(async (projectId, req, res
 }));
 
 /** GET /api/projects/:projectId/history/file?path=&ref= — content at a version */
-router.get('/api/projects/:projectId/history/file', handle(async (projectId, req, res) => {
+router.get('/api/projects/:projectId/history/file', handle('viewer', async (projectId, req, res) => {
   const { path, ref } = req.query;
   if (typeof path !== 'string' || path.length === 0 || typeof ref !== 'string') {
     res.status(400).json({ error: 'path and ref query parameters are required' });
@@ -65,7 +64,7 @@ router.get('/api/projects/:projectId/history/file', handle(async (projectId, req
  * Append-only: snapshots the current state, writes the old content back
  * through the normal storage path, and commits that as a new version.
  */
-router.post('/api/projects/:projectId/history/restore', handle(async (projectId, req, res) => {
+router.post('/api/projects/:projectId/history/restore', handle('editor', async (projectId, req, res) => {
   const { path, ref } = req.body ?? {};
   if (typeof path !== 'string' || path.length === 0 || typeof ref !== 'string') {
     res.status(400).json({ error: 'path and ref are required' });

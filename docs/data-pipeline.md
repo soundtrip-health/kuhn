@@ -2,7 +2,7 @@
 
 **Audience:** an organization (or its IT/security reviewer) evaluating Kuhn and
 asking: *where does our data go, how is it processed, and what is persisted?*
-**As of:** 2026-07-19 (story 008-001). File references point into `agent-backend/src/`
+**As of:** 2026-08-07 (story 010-003 / epic 011). File references point into `agent-backend/src/`
 unless noted. For system architecture see [architecture.md](architecture.md).
 
 Kuhn is self-hosted: one Node backend, one browser app, an in-process SQLite
@@ -89,8 +89,9 @@ absolute paths) and a per-file cap of 20 MB (`STORAGE_MAX_FILE_BYTES`).
 | Agent writes | `write_file` / `edit_file` / `move_file` tools (`agents/runtime.js`) | Same storage module, same limits; logged to the activity feed with the acting agent. Agent writes to `draft/**` do **not** touch the file: they land as pending suggestions (`pending_edits` table, story 008-001) the PI reviews per-hunk in the editor; only acceptance writes the file, activity-logged and version-committed under the originating agent/job — "an AI edited my manuscript" becomes "I approved these changes". The seeding pipeline's first draft is the deliberate exception (direct write). |
 | Org library upload / promote | `routes/org-library.js`, `routes/projects.js` | Deduplicated by sha256 within the org; triggers ingestion (§3). |
 
-Every route resolves the requesting user first and checks org membership;
-non-members get 404s (existence is not leaked).
+Every route resolves the requesting user first and checks org membership plus
+role (see the role matrix in §6); non-members get 404s (existence is not
+leaked), an insufficient role or a suspended org gets a 403.
 
 ## 3. Processing
 
@@ -156,6 +157,32 @@ the backend (plus Google Fonts in `index.html`).
   derive their org server-side from the task's project and can never address
   another tenant. The only cross-project surface is the org's own knowledge
   library, read-only, within the same org.
+- **Roles** (story 010-003): a membership carries one of three roles —
+  `viewer < editor < owner` — enforced at one chokepoint (`db/orgs.js
+  checkOrgAccess`, wrapped by `routes/guards.js`). Non-members get a
+  non-leaking 404; an insufficient role gets 403 `requires <role> role`. What
+  each threshold covers:
+
+  | Action | viewer | editor | owner |
+  |---|---|---|---|
+  | Read project files, tree, history, comments, pending edits, activity/events, conversations, references; render/export previews; list review links; list agent jobs and traces | ✓ | ✓ | ✓ |
+  | Write/delete/move/upload project files; restore history; propose/accept/reject pending edits; create/reply/resolve/delete comments; add citations; create/rename/configure/seed projects; dispatch agents and answer their questions; mint/revoke review links; promote files to the org library | | ✓ | ✓ |
+  | Read the org library (list, metadata, content, ingest events) | ✓ | ✓ | ✓ |
+  | Upload to the org library | | ✓ | ✓ |
+  | Delete org library documents; manage members, invitations, and org settings | | | ✓ |
+
+  In-org viewers are deliberately read-only for comments too; external
+  reviewers comment through the separate `/api/review` surface (epic 013).
+  Real-time collaboration mirrors the same line: viewer members get read-only
+  Yjs sockets (the server drops their write frames).
+- **Suspension** (story 011-001): a suspended organization refuses every
+  member request at the chokepoint (403 `organization suspended`), including
+  the anonymous reviewer surface (`/api/review/*` checks the link's project's
+  org status per request) and the agents' `search_org_knowledge` tool. Known
+  gap: **agent jobs already in flight when the suspension lands are not
+  killed** — they run to completion (only their org-knowledge searches start
+  refusing). Killing live jobs belongs to the job-lifecycle rework
+  (story 010-002).
 - **Abuse limits**: per-task token budget (default 2.5M, hard interrupt),
   50-turn cap, bounded sub-agent dispatch depth.
 

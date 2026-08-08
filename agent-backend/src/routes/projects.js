@@ -2,15 +2,16 @@
 // the active project. Story 005: project listing and creation are org-scoped to
 // the session user; a project's org is set from the session, not the client.
 // Full project lifecycle belongs to the PM agent (012).
+// Roles (story 010-003): reads (activity, events, conversations, seen) need
+// viewer; anything that mutates the project or its files needs editor.
 
 import { Router } from 'express';
 import { runSeedPipeline } from '../agents/seeding.js';
 import { applyProjectConfig } from '../agents/project-config.js';
 import { listProjectConversations } from '../db/conversation.js';
-import { isMember, primaryOrgId } from '../db/orgs.js';
+import { listUserOrgs, primaryOrgId } from '../db/orgs.js';
 import {
   createProject,
-  getProject,
   listProjectsForUser,
   setActiveDocument,
   updateProjectConfig,
@@ -18,6 +19,7 @@ import {
 import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { subscribeProjectEvents, teeProjectEvents } from '../project-events.js';
 import { StorageError, readProjectFile } from '../storage.js';
+import { requireOrgRole, requireProjectRole } from './guards.js';
 import { storeOrgDocument } from './org-library.js';
 import { streamEvents } from './sse.js';
 
@@ -25,16 +27,26 @@ const router = Router();
 
 const PROJECT_TYPES = ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'];
 
-/** GET /api/projects — the session user's projects across their orgs, oldest first */
+/** GET /api/projects — the session user's projects across their orgs, oldest
+ *  first. Projects of suspended orgs are excluded (story 011-001): the
+ *  per-project routes 403 them anyway, so listing them would only produce a
+ *  wall of failing fetches. */
 router.get('/api/projects', async (req, res) => {
-  const projects = await listProjectsForUser(req.user.id);
-  res.json({ projects });
+  const [projects, orgs] = await Promise.all([
+    listProjectsForUser(req.user.id),
+    listUserOrgs(req.user.id),
+  ]);
+  const suspended = new Set(orgs.filter((o) => o.status === 'suspended').map((o) => o.id));
+  res.json({
+    projects: suspended.size === 0 ? projects : projects.filter((p) => !suspended.has(p.org_id)),
+  });
 });
 
 /**
  * POST /api/projects — body { name, projectType?, orgId? }
- * The org is the requested `orgId` (only if the user is a member) or the user's
- * primary org; it is never trusted blindly from the client.
+ * The org is the requested `orgId` or the user's primary org; either way the
+ * user must hold editor there (story 010-003) — it is never trusted blindly
+ * from the client.
  */
 router.post('/api/projects', async (req, res) => {
   const { name, projectType = 'manuscript', orgId } = req.body ?? {};
@@ -47,39 +59,26 @@ router.post('/api/projects', async (req, res) => {
     return;
   }
 
-  let targetOrg = orgId != null ? Number(orgId) : null;
-  if (targetOrg != null) {
-    if (!(await isMember(req.user.id, targetOrg))) {
-      res.status(403).json({ error: 'not a member of that organization' });
-      return;
-    }
-  } else {
-    targetOrg = await primaryOrgId(req.user.id);
-  }
+  const targetOrg = orgId != null ? orgId : await primaryOrgId(req.user.id);
   if (targetOrg == null) {
     res.status(400).json({ error: 'no organization available for this user' });
     return;
   }
+  const ctx = await requireOrgRole(req, res, targetOrg, 'editor');
+  if (!ctx) return;
 
-  const project = await createProject({ name, projectType, orgId: targetOrg });
+  const project = await createProject({ name, projectType, orgId: ctx.orgId });
   res.status(201).json({ project });
 });
 
 /**
- * Resolve a project the session user may access, or send the right error.
+ * Resolve the project named by :id where the session user holds minRole, or
+ * send the right refusal (400 bad id · non-leaking 404 · 403 role/suspended —
+ * routes/guards.js).
  * @returns {Promise<object|null>} the project row, or null after responding
  */
-async function authorizeProject(req, res) {
-  const project = await getProject(parseInt(req.params.id));
-  if (!project) {
-    res.status(404).json({ error: 'project not found' });
-    return null;
-  }
-  if (!(await isMember(req.user.id, project.org_id))) {
-    res.status(404).json({ error: 'project not found' }); // don't leak existence
-    return null;
-  }
-  return project;
+function authorizeProject(req, res, minRole) {
+  return requireProjectRole(req, res, req.params.id, minRole);
 }
 
 /**
@@ -88,7 +87,7 @@ async function authorizeProject(req, res) {
  * record update — no files move.
  */
 router.patch('/api/projects/:id', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   if (!name) {
@@ -108,7 +107,7 @@ router.patch('/api/projects/:id', async (req, res) => {
  * complete.
  */
 router.put('/api/projects/:id/config', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
   const body = req.body ?? {};
   if (!body.answers || typeof body.answers !== 'object') {
@@ -171,7 +170,7 @@ function normalizeAnswers(a) {
  * project restores it.
  */
 router.put('/api/projects/:id/active-document', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
   const { path } = req.body ?? {};
   if (!path || typeof path !== 'string') {
@@ -188,7 +187,7 @@ router.put('/api/projects/:id/active-document', async (req, res) => {
  * → Writer skeleton. Streams stage markers and agent events as SSE.
  */
 router.post('/api/projects/:id/seed', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
   // teeProjectEvents publishes the pipeline's own stage markers / status-file
   // event to the project feed; agent events inside the pipeline are already
@@ -203,7 +202,7 @@ router.post('/api/projects/:id/seed', async (req, res) => {
  * never taken from the client.
  */
 router.post('/api/projects/:id/files/promote', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
   const { path, title } = req.body ?? {};
   if (!path || typeof path !== 'string') {
@@ -235,7 +234,7 @@ router.post('/api/projects/:id/files/promote', async (req, res) => {
  * session user; clears its new/changed badge (story 005-002). Idempotent.
  */
 router.post('/api/projects/:id/files/seen', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'viewer');
   if (!project) return;
   const { path } = req.body ?? {};
   if (!path || typeof path !== 'string') {
@@ -252,7 +251,7 @@ router.post('/api/projects/:id/files/seen', async (req, res) => {
  * live feed; the tree endpoint already carries per-node unseen flags.
  */
 router.get('/api/projects/:id/files/activity', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'viewer');
   if (!project) return;
   const events = listFileActivity(project.id, {
     since: typeof req.query.since === 'string' ? req.query.since : null,
@@ -269,7 +268,7 @@ router.get('/api/projects/:id/files/activity', async (req, res) => {
  * this stays open until the client disconnects.
  */
 router.get('/api/projects/:id/events', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'viewer');
   if (!project) return;
 
   const unsubscribe = subscribeProjectEvents(project.id, (event) => {
@@ -303,7 +302,7 @@ router.get('/api/projects/:id/events', async (req, res) => {
  * conversation first, for chat transcript restore (story 020).
  */
 router.get('/api/projects/:id/conversations', async (req, res) => {
-  const project = await authorizeProject(req, res);
+  const project = await authorizeProject(req, res, 'viewer');
   if (!project) return;
   const limit = req.query.limit != null ? parseInt(req.query.limit) : 20;
   const conversations = await listProjectConversations(project.id, { limit });

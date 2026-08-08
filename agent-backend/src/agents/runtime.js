@@ -6,6 +6,7 @@ import { query as sdkQuery, tool, createSdkMcpServer } from '@anthropic-ai/claud
 import { z } from 'zod';
 
 import { config } from '../config.js';
+import { query as dbQuery } from '../db.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
@@ -1025,6 +1026,24 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         try {
           const project = await getProject(projectId);
           const orgId = project?.org_id;
+          // Suspension (story 011-001, fix I4): a suspended org's knowledge is
+          // off limits to agents too, not just to browsers. Note the gap this
+          // does NOT close: jobs already in flight when the suspension lands
+          // keep running (documented in docs/data-pipeline.md; killing them is
+          // 010-002's lifecycle rework).
+          if (orgId != null) {
+            const { rows } = await dbQuery(
+              'SELECT status FROM organizations WHERE id = $1', [orgId],
+            );
+            if (rows[0]?.status === 'suspended') {
+              return {
+                content: [{
+                  type: 'text',
+                  text: 'Organization suspended: the org knowledge library is unavailable. Proceed without org guidance — do not retry this search.',
+                }],
+              };
+            }
+          }
           if (orgId == null || !hasReadyOrgDocuments(orgId)) {
             return {
               content: [{
