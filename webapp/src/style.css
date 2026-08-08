@@ -1489,3 +1489,99 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .sh-link-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
 .sh-revoke { flex: none; }
+
+/* ---- Org admin & platform console (epic 011) ------------------------
+   Shared admin primitives (plan §4.6): org-admin.ts defines the markup;
+   admin-console.ts (wave 4) reuses these classes untouched. */
+.admin-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(20, 22, 28, 0.32);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 8vh 24px 24px;
+}
+.admin-overlay[hidden] { display: none; }
+.admin-panel {
+  width: min(760px, 100%); max-height: 84vh;
+  background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column; gap: 14px; padding: 22px;
+  overflow: hidden;
+}
+.admin-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line-2); }
+.admin-tab {
+  font: var(--ui-title); color: var(--ink-2);
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 8px 12px 10px; margin-bottom: -1px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.admin-tab:hover { color: var(--ink); }
+.admin-tab.is-active { color: var(--ink); border-bottom-color: var(--accent); }
+.admin-tab-count {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--accent); background: var(--accent-soft);
+  padding: 3px 6px; border-radius: var(--r-pill);
+}
+.admin-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.admin-table { width: 100%; border-collapse: collapse; font: var(--ui-body); color: var(--ink); }
+.admin-table th {
+  font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-3); text-align: left; padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.admin-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-2); vertical-align: middle; }
+.admin-member-name { font: var(--ui-title); color: var(--ink); overflow-wrap: anywhere; }
+.admin-member-email { font: var(--ui-small); color: var(--ink-3); overflow-wrap: anywhere; }
+.admin-row-actions { text-align: right; white-space: nowrap; }
+.admin-form-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.admin-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+.role-badge, .status-badge {
+  display: inline-block; font: 500 11px/1 var(--font-ui); text-transform: capitalize;
+  padding: 3px 8px; border-radius: var(--r-pill);
+  background: var(--soft-2); color: var(--ink-2);
+}
+.role-badge.is-owner { background: var(--accent-soft); color: var(--accent); }
+.status-badge.is-accepted, .status-badge.is-active { background: var(--good-soft); color: var(--good); }
+.status-badge.is-revoked, .status-badge.is-expired, .status-badge.is-suspended {
+  background: var(--warn-soft); color: var(--warn);
+}
+.admin-empty { color: var(--ink-3); font: var(--ui-body); padding: 14px 2px; text-align: center; }
+.admin-inline-error { font: var(--ui-small); color: var(--warn); }
+.admin-inline-error[hidden] { display: none; }
+.admin-section-title {
+  font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-3); margin-top: 6px;
+}
+/* Settings knobs: label + control row over a hint line. */
+.admin-setting { display: flex; flex-direction: column; gap: 4px; }
+.admin-setting-label { font: var(--ui-title); color: var(--ink); min-width: 180px; }
+.admin-setting-hint { font: var(--ui-small); color: var(--ink-3); }
+.admin-reserved {
+  border: 1px dashed var(--line); border-radius: var(--r);
+  padding: 12px 14px; margin: 6px 0 0;
+  display: flex; flex-direction: column; gap: 8px;
+  color: var(--ink-3);
+}
+.admin-reserved .pb-input { max-width: 220px; }
+/* Promotion queue rows + inline preview. */
+.admin-promo-row {
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 10px 12px; background: var(--chrome);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.admin-promo-head { display: flex; align-items: flex-start; gap: 10px; }
+.admin-promo-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.admin-promo-path { font-family: var(--font-mono); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.admin-promo-meta { font: var(--ui-small); color: var(--ink-3); overflow-wrap: anywhere; }
+.admin-promo-note { font: var(--ui-body); color: var(--ink-2); font-style: italic; }
+.admin-preview {
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--soft); padding: 10px 12px;
+  max-height: 320px; overflow-y: auto;
+}
+.admin-preview-md { font: var(--doc-small); color: var(--doc-ink); }
+.admin-preview-md h1, .admin-preview-md h2, .admin-preview-md h3 { font-family: var(--font-doc); margin: 10px 0 4px; }
+.admin-preview-md p { margin: 6px 0; }
+.admin-preview-text {
+  font: var(--ui-mono); color: var(--ink);
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
+}

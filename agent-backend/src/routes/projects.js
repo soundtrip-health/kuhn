@@ -17,7 +17,14 @@ import {
   updateProjectConfig,
 } from '../db/projects.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
-import { subscribeProjectEvents, teeProjectEvents } from '../project-events.js';
+import { getOrgSettings } from '../db/org-settings.js';
+import { createPromotionRequest } from '../db/promotions.js';
+import {
+  publishOrgEvent,
+  publishProjectEvent,
+  subscribeProjectEvents,
+  teeProjectEvents,
+} from '../project-events.js';
 import { StorageError, readProjectFile } from '../storage.js';
 import { requireOrgRole, requireProjectRole } from './guards.js';
 import { storeOrgDocument } from './org-library.js';
@@ -196,19 +203,58 @@ router.post('/api/projects/:id/seed', async (req, res) => {
 });
 
 /**
- * POST /api/projects/:id/files/promote — body { path, title? }. Copy a
+ * POST /api/projects/:id/files/promote — body { path, title?, note? }. Copy a
  * project file into the owning org's knowledge library (story 006-001).
  * Authorization is project membership; the org is derived from the project,
  * never taken from the client.
+ *
+ * Policy branch (story 011-004): owners — and everyone when the org opted
+ * into promotion_policy 'direct' — take the direct path below, byte-for-byte
+ * today's behavior. Otherwise the call files a promotion request (status
+ * pending; NO file read, no copy, no ingest — copy happens on approval,
+ * routes/promotions.js) and returns 202 { request }. A duplicate suggestion
+ * while one is already pending for the same (project, path) returns the
+ * existing request with 200 instead of filing (or announcing) a second one.
  */
 router.post('/api/projects/:id/files/promote', async (req, res) => {
   const project = await authorizeProject(req, res, 'editor');
   if (!project) return;
-  const { path, title } = req.body ?? {};
+  const { path, title, note } = req.body ?? {};
   if (!path || typeof path !== 'string') {
     res.status(400).json({ error: 'path is required' });
     return;
   }
+
+  const policy = getOrgSettings(project.org_id)?.promotion_policy;
+  if (req.orgRole !== 'owner' && policy !== 'direct') {
+    const { request, existing } = createPromotionRequest({
+      orgId: project.org_id,
+      projectId: project.id,
+      path,
+      title: typeof title === 'string' && title.trim() ? title.trim() : null,
+      note: typeof note === 'string' && note.trim() ? note.trim() : null,
+      suggestedBy: req.user.id,
+    });
+    if (!existing) {
+      publishProjectEvent(project.id, {
+        type: 'promotion',
+        requestId: request.id,
+        path: request.path,
+        status: 'pending',
+      });
+      publishOrgEvent(project.org_id, {
+        type: 'promotion_request',
+        requestId: request.id,
+        projectId: project.id,
+        path: request.path,
+        status: 'pending',
+        suggestedBy: req.user.id,
+      });
+    }
+    res.status(existing ? 200 : 202).json({ request });
+    return;
+  }
+
   let buffer;
   try {
     buffer = await readProjectFile(project.id, path);

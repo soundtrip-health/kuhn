@@ -9,6 +9,7 @@
 import { revealFile } from './files';
 import { icon } from './icons';
 import { authMode, currentUser, signOut } from './login';
+import { openOrgAdmin } from './org-admin';
 import {
   libraryNeedsSetup,
   openCreateOrgModal,
@@ -156,6 +157,23 @@ function orgMenu(): HTMLElement {
       openOrgLibrary();
     });
     menu.append(library);
+  }
+
+  // Org admin entry (epic 011) — owners only; the overlay re-checks the role
+  // on open and closes itself if a role refresh demotes the user.
+  if (orgId != null && workspace.isOwner()) {
+    const admin = document.createElement('button');
+    admin.type = 'button';
+    admin.className = 'breadcrumb-menu-item bm-admin';
+    admin.setAttribute('role', 'menuitem');
+    admin.innerHTML =
+      `<span class="bm-check">${icon('lock', { size: 13, stroke: 1.8 })}</span>` +
+      `<span>Org admin…</span>`;
+    admin.addEventListener('click', () => {
+      closeOrgMenu();
+      openOrgAdmin();
+    });
+    menu.append(admin);
   }
 
   const create = document.createElement('button');

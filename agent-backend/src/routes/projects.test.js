@@ -18,6 +18,24 @@ vi.mock('../db/orgs.js', () => ({
   primaryOrgId: vi.fn(async () => 7),
 }));
 vi.mock('../agents/seeding.js', () => ({ runSeedPipeline: vi.fn() }));
+// Promote policy branch (story 011-004): settings, request store, library
+// store, and file reads are all seams here — the real wiring runs in
+// routes/promotions.test.js against real SQLite and a temp storage root.
+vi.mock('../db/org-settings.js', () => ({ getOrgSettings: vi.fn() }));
+vi.mock('../db/promotions.js', () => ({ createPromotionRequest: vi.fn() }));
+vi.mock('./org-library.js', () => ({ storeOrgDocument: vi.fn() }));
+vi.mock('../storage.js', () => {
+  class StorageError extends Error {
+    constructor(code, message) { super(message); this.code = code; }
+  }
+  return {
+    StorageError,
+    readProjectFile: vi.fn(),
+    // history.js (loaded via the real project-events hub) also imports these.
+    resolveProjectDir: vi.fn(),
+    resolveSafe: vi.fn(),
+  };
+});
 // Covers both this router's imports and the real project-events hub's
 // persistence hook; the SQL itself is tested in db/file-activity.test.js.
 vi.mock('../db/file-activity.js', () => ({
@@ -39,6 +57,10 @@ import {
   updateProjectConfig,
 } from '../db/projects.js';
 import { applyProjectConfig } from '../agents/project-config.js';
+import { getOrgSettings } from '../db/org-settings.js';
+import { createPromotionRequest } from '../db/promotions.js';
+import { storeOrgDocument } from './org-library.js';
+import { readProjectFile } from '../storage.js';
 import projectsRouter from './projects.js';
 import { config } from '../config.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
@@ -399,6 +421,72 @@ describe('PUT /api/projects/:id/config', () => {
       body: JSON.stringify({ answers }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('promote policy branch (story 011-004)', () => {
+  const json = { 'Content-Type': 'application/json' };
+  const promote = (body) => fetch(`${base}/api/projects/3/files/promote`, {
+    method: 'POST', headers: json, body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7 });
+    getOrgSettings.mockReturnValue({ promotion_policy: 'approval-required' });
+    createPromotionRequest.mockReturnValue({
+      request: { id: 44, project_id: 3, path: 'x.md', status: 'pending' },
+      existing: false,
+    });
+  });
+
+  it('202s an editor suggestion under approval-required — no file read, no library write', async () => {
+    grantRole('editor');
+    const res = await promote({ path: 'x.md', title: '  Title  ', note: '  why  ' });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({
+      request: { id: 44, project_id: 3, path: 'x.md', status: 'pending' },
+    });
+    expect(createPromotionRequest).toHaveBeenCalledWith({
+      orgId: 7, projectId: 3, path: 'x.md', title: 'Title', note: 'why', suggestedBy: 1,
+    });
+    expect(readProjectFile).not.toHaveBeenCalled();
+    expect(storeOrgDocument).not.toHaveBeenCalled();
+  });
+
+  it('200s a duplicate suggestion with the existing pending request', async () => {
+    grantRole('editor');
+    createPromotionRequest.mockReturnValue({
+      request: { id: 44, path: 'x.md', status: 'pending' },
+      existing: true,
+    });
+    const res = await promote({ path: 'x.md' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).request.id).toBe(44);
+  });
+
+  it('keeps owners on the direct path regardless of policy', async () => {
+    grantRole('owner');
+    readProjectFile.mockResolvedValue(Buffer.from('# doc'));
+    storeOrgDocument.mockResolvedValue({ document: { id: 9, org_id: 7 }, deduped: false });
+    const res = await promote({ path: 'sop.md', title: 'SOP' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ document: { id: 9, org_id: 7 }, deduped: false });
+    expect(createPromotionRequest).not.toHaveBeenCalled();
+    expect(storeOrgDocument).toHaveBeenCalledWith(7, Buffer.from('# doc'), {
+      filename: 'sop.md', title: 'SOP', source: 'project-promotion',
+      sourceProjectId: 3, createdBy: 1,
+    });
+  });
+
+  it("sends editors down the direct path when the org opted into policy 'direct' (AC5)", async () => {
+    grantRole('editor');
+    getOrgSettings.mockReturnValue({ promotion_policy: 'direct' });
+    readProjectFile.mockResolvedValue(Buffer.from('bytes'));
+    storeOrgDocument.mockResolvedValue({ document: { id: 5 }, deduped: false });
+    const res = await promote({ path: 'a.md' });
+    expect(res.status).toBe(201);
+    expect(createPromotionRequest).not.toHaveBeenCalled();
+    expect(storeOrgDocument).toHaveBeenCalled();
   });
 });
 

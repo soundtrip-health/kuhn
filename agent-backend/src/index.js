@@ -21,6 +21,7 @@ import orgAdminRouter from './routes/org-admin.js';
 import orgLibraryRouter from './routes/org-library.js';
 import pendingEditsRouter from './routes/pending-edits.js';
 import projectsRouter from './routes/projects.js';
+import promotionsRouter from './routes/promotions.js';
 import renderRouter from './routes/render.js';
 import reviewRouter from './routes/review.js';
 import reviewLinksRouter from './routes/review-links.js';
@@ -84,6 +85,7 @@ app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)
 app.use(orgLibraryRouter);
 app.use(pendingEditsRouter);
 app.use(projectsRouter);
+app.use(promotionsRouter); // owner-gated promotion-approval queue (story 011-004)
 app.use(renderRouter);
 app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013)
 
