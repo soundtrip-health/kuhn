@@ -69,7 +69,7 @@ beforeEach(async () => {
   querySync('DELETE FROM organizations');
   querySync("INSERT INTO organizations (id, name, slug) VALUES (1, 'Org', 'org')");
   querySync("INSERT INTO users (id, email, display_name) VALUES ($1, 'dev@kuhn.local', 'Dev User')", [USER]);
-  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, 1, 'member')", [USER]);
+  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, 1, 'editor')", [USER]);
   const { rows } = querySync(
     "INSERT INTO projects (org_id, name, project_type) VALUES (1, 'P', 'manuscript') RETURNING id",
   );

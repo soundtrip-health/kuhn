@@ -15,6 +15,7 @@ import {
   setActiveDocument as apiSetActiveDocument,
   type Org,
   type Project,
+  type Role,
 } from './api';
 
 /** What changed, so subscribers can re-render the minimum. */
@@ -28,6 +29,7 @@ interface State {
   activeDocPath: string; // the open document, '' when none
   projectsLoading: boolean; // a project-list fetch is in flight (story 005-004)
   projectsError: string | null; // last project-list fetch failure, if any
+  bootstrapped: boolean; // initWorkspace completed its first org load (epic 011)
 }
 
 const state: State = {
@@ -38,6 +40,7 @@ const state: State = {
   activeDocPath: '',
   projectsLoading: false,
   projectsError: null,
+  bootstrapped: false,
 };
 
 type Listener = (change: WorkspaceChange) => void;
@@ -49,6 +52,7 @@ export function subscribe(fn: Listener): () => void {
 }
 
 function emit(change: WorkspaceChange): void {
+  syncSuspendedBanner();
   for (const fn of [...listeners]) fn(change);
 }
 
@@ -64,6 +68,72 @@ export const activeDocPath = (): string => state.activeDocPath;
 export const projectsLoading = (): boolean => state.projectsLoading;
 export const projectsError = (): string | null => state.projectsError;
 
+// ---- Roles & org status (010-003 + epic 011) ---------------------------------
+
+/** The current user's role in the active org; null when no org is active. */
+export const activeOrgRole = (): Role | null => activeOrg()?.role ?? null;
+
+/** True when the user may mutate content in the active org (editor or owner). */
+export const canEdit = (): boolean => {
+  const role = activeOrgRole();
+  return role === 'editor' || role === 'owner';
+};
+
+/** True when the user administers the active org. */
+export const isOwner = (): boolean => activeOrgRole() === 'owner';
+
+/** True once bootstrap finished with zero orgs — the "ask your admin for an
+ *  invitation" empty state (invitation-only front door, epic 011). */
+export const hasNoOrgs = (): boolean => state.bootstrapped && state.orgs.length === 0;
+
+/** True when the active org is suspended: fetches into it would 403, so the
+ *  UI shows the suspended banner instead of firing them. */
+export const activeOrgSuspended = (): boolean => activeOrg()?.status === 'suspended';
+
+const SUSPENDED_BANNER_ID = 'suspended-org-banner';
+
+/** Keep a single suspended-org banner in sync with the active org's status. */
+function syncSuspendedBanner(): void {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById(SUSPENDED_BANNER_ID);
+  if (!activeOrgSuspended()) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const banner = document.createElement('div');
+  banner.id = SUSPENDED_BANNER_ID;
+  banner.setAttribute('role', 'alert');
+  banner.textContent =
+    'This organization is suspended. Its projects and library are unavailable until a platform administrator reactivates it.';
+  banner.style.cssText =
+    'padding:8px 16px;text-align:center;font-size:13px;' +
+    'background:var(--color-warning-bg, #7a2e2e);color:var(--color-warning-fg, #fff);';
+  document.body.prepend(banner);
+}
+
+// Stale-role mitigation (epic 011): api.ts raises `kuhn:role-refresh` whenever
+// a 403 carries a guard-shaped body (role change, suspension, super-admin).
+// Re-fetch the org list so role-aware chrome re-renders against fresh state.
+let roleRefreshInFlight = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener('kuhn:role-refresh', () => {
+    if (roleRefreshInFlight || !state.bootstrapped) return;
+    roleRefreshInFlight = true;
+    void listOrgs()
+      .then((orgs) => {
+        state.orgs = orgs;
+        emit('orgs');
+      })
+      .catch(() => {
+        /* transient — the next guard refusal retries */
+      })
+      .finally(() => {
+        roleRefreshInFlight = false;
+      });
+  });
+}
+
 // ---- Loading / switching ----------------------------------------------------
 
 /**
@@ -74,6 +144,7 @@ export const projectsError = (): string | null => state.projectsError;
 export async function initWorkspace(): Promise<void> {
   state.orgs = await listOrgs();
   state.activeOrgId = state.orgs[0]?.id ?? null;
+  state.bootstrapped = true;
   await loadProjects();
   // Boot keeps its throw-on-unreachable contract (main shows the banner).
   if (state.projectsError) throw new Error(state.projectsError);
@@ -86,7 +157,12 @@ async function loadProjects(): Promise<void> {
   state.projectsLoading = true;
   state.projectsError = null;
   try {
-    state.projects = state.activeOrgId != null ? await listOrgProjects(state.activeOrgId) : [];
+    // A suspended org 403s every content fetch — skip it and let the
+    // suspended banner explain, instead of surfacing a generic error.
+    state.projects =
+      state.activeOrgId != null && !activeOrgSuspended()
+        ? await listOrgProjects(state.activeOrgId)
+        : [];
   } catch (err) {
     state.projects = [];
     state.projectsError = (err as Error).message;
@@ -176,9 +252,10 @@ export function applyProjectUpdate(project: Project): void {
   if (project.id === state.activeProjectId) emit('project');
 }
 
-/** Create an organization and switch to it. */
-export async function createNewOrg(name: string): Promise<Org> {
-  const org = await apiCreateOrg(name);
+/** Create an organization and switch to it (super-admin only since epic 011;
+ *  `ownerEmail` names the first admin — pass your own email to keep access). */
+export async function createNewOrg(name: string, ownerEmail?: string): Promise<Org> {
+  const org = await apiCreateOrg(name, ownerEmail);
   state.orgs = [...state.orgs, org];
   emit('orgs');
   state.activeOrgId = org.id;

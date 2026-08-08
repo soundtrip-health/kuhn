@@ -133,7 +133,7 @@ beforeAll(async () => {
     "INSERT INTO users (id, email, display_name) VALUES ($1, 'pi@lab.test', 'Dr. PI'), ($2, 'outsider@lab.test', 'Outsider')",
     [MEMBER, OUTSIDER],
   );
-  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, 1, 'member')", [MEMBER]);
+  querySync("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, 1, 'editor')", [MEMBER]);
   const { rows } = querySync(
     "INSERT INTO projects (org_id, name, project_type) VALUES (1, 'P', 'manuscript') RETURNING id",
   );

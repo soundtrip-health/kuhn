@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS organizations (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   name        TEXT NOT NULL,
   slug        TEXT NOT NULL UNIQUE,
+  -- Epic 011: platform lifecycle. Suspension is enforced in the single access
+  -- chokepoint (db/orgs.js checkOrgAccess), so every org-scoped route refuses
+  -- at once; only the super-admin /api/admin routes ignore it.
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+  -- Story 011-003: org-level knobs, JSON merged over defaults at read time
+  -- (db/org-settings.js is the schema + validator).
+  settings    TEXT NOT NULL DEFAULT '{}',
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -61,14 +68,21 @@ CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   email         TEXT NOT NULL UNIQUE,
   display_name  TEXT,
+  -- Story 011-001: platform flag, synced from KUHN_SUPERADMIN_EMAILS at boot
+  -- (flips both ways). NEVER consulted by tenancy guards — a super-admin
+  -- without a membership is a stranger to every org's content.
+  is_superadmin INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Roles (story 010-003): viewer < editor < owner. Existing DBs are rebuilt by
+-- db/init.js applyMembershipsRoleMigration ('member' rows become 'editor');
+-- keep this DDL byte-compatible with MEMBERSHIPS_NEW_DDL there.
 CREATE TABLE IF NOT EXISTS memberships (
   user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  role       TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member')),
+  role       TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('owner', 'editor', 'viewer')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (user_id, org_id)
 );
@@ -423,3 +437,63 @@ CREATE TABLE IF NOT EXISTS review_sessions (
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_review_sessions_link ON review_sessions(link_id);
+
+-- ============================================================
+-- Invitations (story 011-002): the door into an org. Stores only sha256 of
+-- the token the invitee holds (auth_tokens discipline); redemption is a
+-- single atomic UPDATE in db/invitations.js. State is issued → accepted /
+-- revoked / expired (expiry is derived from expires_at, never written).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS invitations (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  email       TEXT NOT NULL,                 -- normalized lower-case
+  role        TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+  invited_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  token_hash  TEXT NOT NULL UNIQUE,          -- sha256(raw); raw shown once
+  expires_at  TEXT NOT NULL,
+  accepted_at TEXT,
+  revoked_at  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_invitations_org   ON invitations(org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email);
+
+-- ============================================================
+-- Promotion requests (story 011-004): an editor's suggestion that a project
+-- file join the org library. Holds only (project_id, path) — never bytes and
+-- never an org_documents row — so nothing touches storage/FTS before an owner
+-- approves (copy-on-approve). Re-suggest after rejection = a new row.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS promotion_requests (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id          INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path            TEXT NOT NULL,
+  title           TEXT,
+  note            TEXT,
+  suggested_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  decided_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at      TEXT,
+  decision_note   TEXT,
+  org_document_id INTEGER REFERENCES org_documents(id) ON DELETE SET NULL,  -- set on approve
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_promotion_requests_org ON promotion_requests(org_id, status, created_at DESC);
+
+-- ============================================================
+-- Auth/audit events (stories 011-001/002 AC5): append-only stub, forward-
+-- compatible with 010-005's real audit story. Types are the §4.4 enum
+-- (org.created, invite.issued, member.role_changed, …).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS auth_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  type          TEXT NOT NULL,
+  actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  org_id        INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+  email         TEXT,
+  meta          TEXT,                        -- JSON sidecar
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_auth_events_org ON auth_events(org_id, created_at DESC);

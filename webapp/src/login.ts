@@ -15,28 +15,40 @@ export const authMode = (): 'dev' | 'magic-link' => me?.mode ?? 'dev';
 /** The signed-in user, once known. */
 export const currentUser = (): Me['user'] | null => me?.user ?? null;
 
+/** Human-readable copy for the `?login=` redirect reasons the backend sends:
+ *  dead magic links, and invitation redemption failures (epic 011). */
+const LOGIN_NOTICES: Record<string, string> = {
+  'expired': 'That sign-in link has expired or was already used. Request a fresh one.',
+  'invite-expired': 'That invitation has expired. Ask your organization admin to send a new one.',
+  'invite-revoked': 'That invitation was revoked. Ask your organization admin to send a new one.',
+  'invite-used': 'That invitation was already used. If that was you, sign in with your email below.',
+  'invite-invalid': 'That invitation link is not valid. Check the link, or ask your organization admin to send a new one.',
+  'invite-suspended': 'That organization is currently suspended, so the invitation cannot be accepted yet. The link stays valid — try again once the organization is reactivated.',
+  'invite-already-member': 'You are already a member of that organization. Sign in with your email below.',
+};
+
 /**
  * Resolve the session before the workspace boots. Returns true when the app
  * may proceed (dev mode or a valid cookie); false after putting up the login
- * screen. Also handles the ?login=expired redirect from a dead magic link and
- * wires the global 401 listener for sessions that expire mid-use.
+ * screen. Also handles the ?login=<reason> redirects (dead magic link,
+ * invitation failures) and wires the global 401 listener for sessions that
+ * expire mid-use.
  */
 export async function initAuth(): Promise<boolean> {
   window.addEventListener('kuhn:unauthorized', () => showLogin());
 
   const params = new URLSearchParams(window.location.search);
-  const expired = params.get('login') === 'expired';
-  if (expired) {
+  const reason = params.get('login');
+  const notice = reason ? LOGIN_NOTICES[reason] : undefined;
+  if (reason) {
     params.delete('login');
     const query = params.toString();
     history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
   }
 
   me = await fetchMe().catch(() => null);
-  if (me) return true; // already signed in — an expired link is moot
-  showLogin(expired
-    ? 'That sign-in link has expired or was already used. Request a fresh one.'
-    : undefined);
+  if (me) return true; // already signed in — a dead link/invitation is moot
+  showLogin(notice);
   return false;
 }
 

@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, exec, querySync, transaction } from '../db.js';
+import { config } from '../config.js';
 import { seed } from './seed.js';
+import { syncSuperadmins } from './users.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +28,13 @@ const COLUMN_MIGRATIONS = [
   { table: 'comments', column: 'review_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
   { table: 'comments', column: 'resolved_by_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
   { table: 'file_events', column: 'review_link_id', ddl: 'INTEGER REFERENCES review_links(id) ON DELETE SET NULL' },
+  // Epic 011: platform flag + org lifecycle/settings. ALTER ... ADD COLUMN
+  // permits CHECK + NOT NULL-with-default; existing rows take the defaults,
+  // which satisfy the CHECKs.
+  { table: 'users', column: 'is_superadmin', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'organizations', column: 'status',
+    ddl: "TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended'))" },
+  { table: 'organizations', column: 'settings', ddl: "TEXT NOT NULL DEFAULT '{}'" },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK
@@ -105,6 +114,70 @@ export function applyFileEventsKindMigration() {
   }
 }
 
+// Story 010-003: memberships.role gained 'editor'/'viewer' (and 'member' rows
+// become 'editor'). CHECK constraints cannot be ALTERed, so an existing
+// database needs the documented table rebuild. Keep this DDL byte-compatible
+// with the memberships definition in schema.sql.
+const MEMBERSHIPS_NEW_DDL = `
+  CREATE TABLE memberships_new (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('owner', 'editor', 'viewer')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (user_id, org_id)
+  )`;
+
+const MEMBERSHIPS_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_memberships_org  ON memberships(org_id)',
+];
+
+/**
+ * Rebuild memberships so its role CHECK accepts owner/editor/viewer
+ * (story 010-003), migrating legacy 'member' rows to 'editor'. Same 12-step
+ * ALTER discipline as applyFileEventsKindMigration above: foreign_keys is
+ * toggled OUTSIDE the transaction (a silent no-op inside one), because
+ * memberships carries two outbound FKs — user_id, org_id — that SQLite
+ * re-validates on every row the INSERT ... SELECT copies.
+ */
+export function applyMembershipsRoleMigration() {
+  const { rows } = querySync(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memberships'",
+  );
+  const currentDdl = rows[0]?.sql;
+  // Idempotent: no table yet (schema.sql will create it), or already rebuilt.
+  if (!currentDdl || currentDdl.includes("'editor'")) return;
+
+  const [{ foreign_keys: fkEnabled }] = db.pragma('foreign_keys');
+  db.pragma('foreign_keys = OFF');
+  try {
+    transaction(() => {
+      // One statement per querySync: exec() would open its own transaction and
+      // the rebuild would not be atomic.
+      querySync(MEMBERSHIPS_NEW_DDL);
+      querySync(
+        `INSERT INTO memberships_new (user_id, org_id, role, created_at)
+         SELECT user_id, org_id,
+                CASE WHEN role = 'member' THEN 'editor' ELSE role END,
+                created_at
+         FROM memberships`,
+      );
+      querySync('DROP TABLE memberships');
+      querySync('ALTER TABLE memberships_new RENAME TO memberships');
+      for (const ddl of MEMBERSHIPS_INDEXES) querySync(ddl);
+    });
+    const violations = db.pragma('foreign_key_check');
+    if (violations.length) {
+      throw new Error(
+        `memberships rebuild left ${violations.length} foreign key violation(s)`,
+      );
+    }
+    console.log('[db] Migrated: memberships rebuilt for roles owner/editor/viewer.');
+  } finally {
+    db.pragma(`foreign_keys = ${fkEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */
 export function applyColumnMigrations() {
   for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
@@ -123,8 +196,12 @@ export async function initDb() {
   exec(schemaSql);
   applyColumnMigrations();
   applyFileEventsKindMigration();
+  applyMembershipsRoleMigration();
   console.log('[db] Schema applied.');
 
   // Seed default tenant, agents, tools, and assignments.
   await seed();
+
+  // After seed so the default user row exists before the flag sync.
+  syncSuperadmins(config.auth.superadminEmails);
 }

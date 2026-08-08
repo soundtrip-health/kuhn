@@ -90,11 +90,12 @@ describe('magic-link login (story 007-002)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ email: 'pi@lab.org' });
 
-    // First login lands in the default org (resolveUser behavior preserved).
+    // Invitation-only door (epic 011): a plain magic-link first login yields
+    // a session but ZERO org memberships — invitations are the way in.
     const { rows } = querySync(
-      "SELECT o.slug FROM memberships m JOIN organizations o ON o.id = m.org_id JOIN users u ON u.id = m.user_id WHERE u.email = 'pi@lab.org'",
+      "SELECT m.org_id FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = 'pi@lab.org'",
     );
-    expect(rows).toEqual([{ slug: 'default' }]);
+    expect(rows).toEqual([]);
 
     const me = await fetch(`${base}/api/auth/me`, {
       headers: { Cookie: `kuhn_session=${encodeURIComponent(cookie)}` },

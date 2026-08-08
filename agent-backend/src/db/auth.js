@@ -87,14 +87,15 @@ export async function createSession(userId) {
 
 /**
  * Resolve a signed cookie value to its user (story 007-002): signature, then
- * unexpired session row, then the users row.
- * @returns {Promise<{id: number, email: string, display_name: string|null}|null>}
+ * unexpired session row, then the users row. Carries is_superadmin (story
+ * 011-001) so requireSuperadmin can gate /api/admin without another query.
+ * @returns {Promise<{id: number, email: string, display_name: string|null, is_superadmin: number}|null>}
  */
 export async function getSessionUser(cookieValue) {
   const token = verifySessionCookie(cookieValue);
   if (!token) return null;
   const { rows } = await query(
-    `SELECT u.id, u.email, u.display_name
+    `SELECT u.id, u.email, u.display_name, u.is_superadmin
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = $1 AND s.expires_at >= ${NOW}`,
     [sha256(token)],

@@ -24,7 +24,25 @@ export const BACKEND_WS_URL: string = (
 async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(input, { credentials: 'include', ...init });
   if (res.status === 401) window.dispatchEvent(new CustomEvent('kuhn:unauthorized'));
+  if (res.status === 403) void detectStaleRole(res.clone());
   return res;
+}
+
+// The backend guard helpers' 403 bodies (routes/guards.js): a role threshold,
+// a suspended org, or a missing super-admin flag. Any of them arriving means
+// the client's cached role/status is stale — raise `kuhn:role-refresh` so
+// workspace.ts re-fetches /api/orgs and role-aware chrome re-renders.
+const GUARD_403_RE = /^(requires .+ role|organization suspended|super-admin required)$/;
+
+async function detectStaleRole(res: Response): Promise<void> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (typeof body.error === 'string' && GUARD_403_RE.test(body.error)) {
+      window.dispatchEvent(new CustomEvent('kuhn:role-refresh'));
+    }
+  } catch {
+    // Non-JSON 403 — not a guard refusal.
+  }
 }
 
 export interface WizardAnswers {
@@ -55,11 +73,15 @@ export interface Project {
   };
 }
 
+/** Membership role within an organization (010-003). Rank: viewer < editor < owner. */
+export type Role = 'owner' | 'editor' | 'viewer';
+
 export interface Org {
   id: number;
   name: string;
   slug: string;
-  role: 'owner' | 'member';
+  role: Role;
+  status: 'active' | 'suspended';
 }
 
 export interface TreeNode {
@@ -186,7 +208,7 @@ async function expectOk(res: Response): Promise<Response> {
 // ---- Auth (story 007-002) ----
 
 export interface Me {
-  user: { id: number; email: string; display_name: string | null };
+  user: { id: number; email: string; display_name: string | null; is_superadmin: boolean };
   mode: 'dev' | 'magic-link';
 }
 
@@ -222,16 +244,227 @@ export async function listOrgs(): Promise<Org[]> {
   return ((await res.json()) as { orgs: Org[] }).orgs;
 }
 
-/** Create an organization (the current user becomes its owner). */
-export async function createOrg(name: string): Promise<Org> {
+/**
+ * Create an organization (super-admin only since epic 011). `ownerEmail`
+ * names the first admin: an existing user (including the caller) becomes
+ * owner directly; otherwise an owner-role invitation is issued.
+ */
+export async function createOrg(name: string, ownerEmail?: string): Promise<Org> {
+  return (await adminCreateOrg({ name, ...(ownerEmail ? { ownerEmail } : {}) })).org;
+}
+
+// ---- Org administration & platform admin (010-003 + epic 011) ----
+
+export interface OrgMember {
+  user_id: number;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  created_at: string;
+}
+
+export interface Invitation {
+  id: number;
+  email: string;
+  role: Role;
+  state: 'pending' | 'accepted' | 'revoked' | 'expired';
+  expires_at: string;
+  created_at: string;
+}
+
+export interface OrgSettings {
+  default_member_role: 'viewer' | 'editor';
+  library_seeding: boolean;
+  promotion_policy: 'approval-required' | 'direct';
+}
+
+export interface PromotionRequest {
+  id: number;
+  project_id: number;
+  project_name: string;
+  path: string;
+  title: string | null;
+  note: string | null;
+  suggested_by_email: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  decision_note: string | null;
+  created_at: string;
+}
+
+export interface AdminOrg {
+  id: number;
+  name: string;
+  slug: string;
+  status: 'active' | 'suspended';
+  member_count: number;
+  created_at: string;
+}
+
+/** The org's members, owners first (owner-only endpoint). */
+export async function listOrgMembers(orgId: number): Promise<OrgMember[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/members`));
+  return ((await res.json()) as { members: OrgMember[] }).members;
+}
+
+/** Change a member's role; rejects 409 `code:'last_owner'` when it would leave zero owners. */
+export async function updateMemberRole(orgId: number, userId: number, role: Role): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/members/${userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }),
+  );
+}
+
+/** Remove a member; rejects 409 `code:'last_owner'` when it would leave zero owners. */
+export async function removeOrgMember(orgId: number, userId: number): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/members/${userId}`, { method: 'DELETE' }),
+  );
+}
+
+/** The org's invitations, newest first, with derived state (owner-only). */
+export async function listInvitations(orgId: number): Promise<Invitation[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/invitations`));
+  return ((await res.json()) as { invitations: Invitation[] }).invitations;
+}
+
+/** Invite an email into the org; rejects 409 when it is already a member. */
+export async function createInvitation(orgId: number, email: string, role: Role): Promise<Invitation> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/invitations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, role }),
+    }),
+  );
+  return ((await res.json()) as { invitation: Invitation }).invitation;
+}
+
+/** Revoke a pending invitation. */
+export async function revokeInvitation(orgId: number, invitationId: number): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/invitations/${invitationId}`, {
+      method: 'DELETE',
+    }),
+  );
+}
+
+/** The org's settings merged over defaults, plus its display row (owner-only). */
+export async function getOrgSettings(
+  orgId: number,
+): Promise<{ org: { id: number; name: string; slug: string; status: 'active' | 'suspended' }; settings: OrgSettings }> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/settings`));
+  return (await res.json()) as {
+    org: { id: number; name: string; slug: string; status: 'active' | 'suspended' };
+    settings: OrgSettings;
+  };
+}
+
+/**
+ * Patch org settings (flat body: `name` renames the org, the rest are settings
+ * knobs). Unknown keys / bad values reject 400 with the offending `field`;
+ * `slug` is immutable everywhere.
+ */
+export async function updateOrgSettings(
+  orgId: number,
+  patch: Partial<OrgSettings> & { name?: string },
+): Promise<{ org: { id: number; name: string; slug: string; status: 'active' | 'suspended' }; settings: OrgSettings }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  );
+  return (await res.json()) as {
+    org: { id: number; name: string; slug: string; status: 'active' | 'suspended' };
+    settings: OrgSettings;
+  };
+}
+
+/** All organizations on the platform (super-admin only). */
+export async function adminListOrgs(): Promise<AdminOrg[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/admin/orgs`));
+  return ((await res.json()) as { orgs: AdminOrg[] }).orgs;
+}
+
+/**
+ * Create an organization (super-admin only). `member` reports whether the
+ * caller ended up a member (ownerEmail matched their own existing account);
+ * otherwise an owner invitation went out and the caller has NO access.
+ */
+export async function adminCreateOrg(params: {
+  name: string;
+  slug?: string;
+  ownerEmail?: string;
+}): Promise<{ org: Org; member: boolean }> {
   const res = await expectOk(
     await apiFetch(`${BACKEND_URL}/api/orgs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(params),
     }),
   );
-  return ((await res.json()) as { org: Org }).org;
+  return (await res.json()) as { org: Org; member: boolean };
+}
+
+/** Rename or suspend/unsuspend an organization (super-admin only). */
+export async function adminUpdateOrg(
+  orgId: number,
+  patch: { name?: string; status?: 'active' | 'suspended' },
+): Promise<AdminOrg> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/admin/orgs/${orgId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  );
+  return ((await res.json()) as { org: AdminOrg }).org;
+}
+
+/** The org's promotion requests, optionally filtered by status (owner-only). */
+export async function listPromotions(
+  orgId: number,
+  status?: PromotionRequest['status'],
+): Promise<PromotionRequest[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/promotions${query}`));
+  return ((await res.json()) as { requests: PromotionRequest[] }).requests;
+}
+
+/** Approve a pending promotion request (copy-on-approve happens server-side). */
+export async function approvePromotion(
+  orgId: number,
+  id: number,
+  note?: string,
+): Promise<PromotionRequest> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/promotions/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+  );
+  return ((await res.json()) as { request: PromotionRequest }).request;
+}
+
+/** Reject a pending promotion request, recording who and why. */
+export async function rejectPromotion(
+  orgId: number,
+  id: number,
+  note?: string,
+): Promise<PromotionRequest> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/promotions/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+  );
+  return ((await res.json()) as { request: PromotionRequest }).request;
 }
 
 // ---- Projects (story 013; org-scoped in story 005) ----
@@ -811,13 +1044,15 @@ export async function deleteOrgDocument(orgId: number, docId: number): Promise<v
 
 /**
  * Copy a project file into the owning org's library (story 006-001 promote).
- * The org is derived server-side from the project.
+ * The org is derived server-side from the project. Under 011-004's
+ * approval-required policy an editor's call returns 202 with `request`
+ * (a pending suggestion — nothing copied yet) instead of `document`.
  */
 export async function promoteFileToLibrary(
   projectId: number,
   path: string,
   title?: string,
-): Promise<{ document: OrgDocument; deduped: boolean }> {
+): Promise<{ document?: OrgDocument; deduped?: boolean; request?: PromotionRequest }> {
   const res = await expectOk(
     await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/promote`, {
       method: 'POST',
@@ -825,7 +1060,7 @@ export async function promoteFileToLibrary(
       body: JSON.stringify({ path, ...(title ? { title } : {}) }),
     }),
   );
-  return (await res.json()) as { document: OrgDocument; deduped: boolean };
+  return (await res.json()) as { document?: OrgDocument; deduped?: boolean; request?: PromotionRequest };
 }
 
 /** Ingestion lifecycle event on the org feed (story 006-002). */

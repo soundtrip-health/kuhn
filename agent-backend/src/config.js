@@ -44,6 +44,18 @@ export const config = {
     // Magic-link token lifetime (single-use) and session lifetime.
     tokenTtlMs: parseInt(process.env.KUHN_AUTH_TOKEN_TTL_MS || String(15 * 60 * 1000)),
     sessionTtlMs: parseInt(process.env.KUHN_SESSION_TTL_MS || String(30 * 24 * 60 * 60 * 1000)),
+    // Invitation-link lifetime (story 011-002).
+    inviteTtlMs: parseInt(process.env.KUHN_INVITE_TTL_MS || String(7 * 24 * 60 * 60 * 1000)),
+    // Platform super-admins (story 011-001): comma-separated emails synced to
+    // users.is_superadmin at every boot (flips both ways). Dev mode defaults
+    // to the dev user so the create-org flow keeps working locally; outside
+    // dev there is no default — nobody is a super-admin unless listed.
+    superadminEmails: (
+      process.env.KUHN_SUPERADMIN_EMAILS
+        ?? ((process.env.KUHN_AUTH_MODE || 'dev') === 'dev'
+          ? (process.env.DEV_USER_EMAIL || 'dev@kuhn.local')
+          : '')
+    ).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
     // Where /api/auth/verify redirects after setting the cookie (the webapp).
     appUrl: process.env.KUHN_APP_URL || 'http://localhost:5174',
     // smtp[s]://user:pass@host:port — empty logs magic links to the server

@@ -11,13 +11,16 @@
 //     dev-user fallback are inert. No/invalid/expired cookie → 401.
 //
 // The user row is created on first sight (get-or-create at dev-request /
-// verify time) and, if they belong to no org yet, attached to the seeded
-// default organization so they always have a workspace. Swapping in SSO
+// verify time). DEV MODE ONLY: an identity with no org yet is attached to the
+// seeded default organization so local development always has a workspace.
+// Outside dev the door into an org is an invitation (story 011-002) — a plain
+// magic-link sign-in yields a session with zero memberships. Swapping in SSO
 // later still means replacing only this resolver.
 
 import { query } from './db.js';
 import { config } from './config.js';
 import { getSessionUser } from './db/auth.js';
+import { getOrgSettings } from './db/org-settings.js';
 
 const DEV_USER_EMAIL = process.env.DEV_USER_EMAIL || 'dev@kuhn.local';
 const DEFAULT_ORG_SLUG = 'default';
@@ -58,10 +61,12 @@ export function assertAuthConfig() {
 }
 
 /**
- * Get-or-create a user by email, guaranteeing at least one org membership.
- * Called at magic-link verify time (007-002) and per-request in dev mode.
+ * Get-or-create a user by email. Called at magic-link verify time (007-002)
+ * and per-request in dev mode. Deliberately does NOT grant any membership —
+ * dev mode's default-org auto-join is ensureDefaultMembership, and outside
+ * dev an invitation is the only door into an org (story 011-002).
  * @param {string} email
- * @returns {Promise<{id: number, email: string, display_name: string|null}>}
+ * @returns {Promise<{id: number, email: string, display_name: string|null, is_superadmin: number}>}
  */
 export async function resolveUser(email) {
   const normalized = (email || DEV_USER_EMAIL).trim().toLowerCase();
@@ -70,27 +75,36 @@ export async function resolveUser(email) {
     `INSERT INTO users (email, display_name)
      VALUES ($1, $2)
      ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
-     RETURNING id, email, display_name`,
+     RETURNING id, email, display_name, is_superadmin`,
     [normalized, normalized.split('@')[0]],
   );
-  const user = rows[0];
+  return rows[0];
+}
 
-  // Ensure the user has a workspace: attach to the default org if they have no
-  // membership yet (covers the dev user and any freshly resolved identity).
+/**
+ * DEV-MODE workspace guarantee: attach a membership-less user to the seeded
+ * default org so local development and the token-free check scripts keep
+ * working with zero setup. Role honors the default org's default_member_role
+ * setting (story 011-003), falling back to 'editor'.
+ */
+export async function ensureDefaultMembership(userId) {
   const { rows: memberRows } = await query(
     'SELECT 1 FROM memberships WHERE user_id = $1 LIMIT 1',
-    [user.id],
+    [userId],
   );
-  if (memberRows.length === 0) {
-    await query(
-      `INSERT INTO memberships (user_id, org_id, role)
-       SELECT $1, o.id, 'member' FROM organizations o WHERE o.slug = $2
-       ON CONFLICT (user_id, org_id) DO NOTHING`,
-      [user.id, DEFAULT_ORG_SLUG],
-    );
-  }
-
-  return user;
+  if (memberRows.length > 0) return;
+  const { rows: orgRows } = await query(
+    'SELECT id FROM organizations WHERE slug = $1',
+    [DEFAULT_ORG_SLUG],
+  );
+  const org = orgRows[0];
+  if (!org) return;
+  const role = getOrgSettings(org.id)?.default_member_role ?? 'editor';
+  await query(
+    `INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, org_id) DO NOTHING`,
+    [userId, org.id, role],
+  );
 }
 
 /**
@@ -103,6 +117,7 @@ export async function session(req, res, next) {
   try {
     if (config.auth.mode === 'dev') {
       req.user = await resolveUser(req.get('x-kuhn-user'));
+      await ensureDefaultMembership(req.user.id);
       next();
       return;
     }

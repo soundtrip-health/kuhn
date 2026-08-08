@@ -123,7 +123,7 @@ describe('comment routes (story 008-004)', () => {
     const t = await createViaApi();
     sessionUser = { id: 77, email: 'other@kuhn.local' };
     querySync("INSERT INTO users (id, email) VALUES (77, 'other@kuhn.local')");
-    querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (77, 1, 'member')");
+    querySync("INSERT INTO memberships (user_id, org_id, role) VALUES (77, 1, 'editor')");
     const denied = await fetch(url(`/api/projects/${PROJECT_ID}/comments/${t.id}`), { method: 'DELETE' });
     expect(denied.status).toBe(403);
     sessionUser = { id: USER, email: 'dev@kuhn.local' };
