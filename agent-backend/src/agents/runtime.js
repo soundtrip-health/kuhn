@@ -21,7 +21,7 @@ import {
 } from '../storage.js';
 import { DEFAULT_BIB_PATH, upsertCitation, addReference, updateReference, removeReference, isDerivedBibPath } from '../citations.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
-import { createThread, resolveQuote } from '../db/comments.js';
+import { addReply, createThread, listThreads, resolveQuote, setResolved } from '../db/comments.js';
 import { isSuggestionPath, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
@@ -218,7 +218,7 @@ export async function* reattach(run, signal) {
 // return text only, so file mutation and bibliography upserts are removed from
 // the allowlist. This is the runtime guarantee behind the "no file_change
 // during /write" contract — the prompt asks, the tool filter enforces.
-const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'add_comment', 'project_config']);
+const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'add_comment', 'manage_comments', 'project_config']);
 
 async function runTask(task, internal, channel, state) {
   const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null } = task;
@@ -898,6 +898,100 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
           return { content: [{ type: 'text', text: `Comment filed on ${path} (comment ${thread.id}).` }] };
         } catch (err) {
           return { content: [{ type: 'text', text: `add_comment failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+  }
+
+  if (agent.tools.includes('manage_comments')) {
+    // Issue #58: the read-and-act half of the comment loop. add_comment can
+    // file feedback, but agents could not see existing threads (from users,
+    // external reviewers, or other agents), answer them, or close them out.
+    // Resolution stamps the task's user (agents act on the user's behalf);
+    // in-thread attribution comes from the agent-authored reply.
+    const author = (c) => {
+      if (c.agent) return `${c.agent} (agent)`;
+      if (c.userName) return c.userName;
+      if (c.reviewerName) return `${c.reviewerName} (external reviewer)`;
+      return 'unknown';
+    };
+    tools.push(tool(
+      'list_comments',
+      'List margin-comment threads on a document (or the whole project): who wrote each comment, the anchored quote, the full thread of replies, and its open/resolved state. Use this before filing comments (avoid duplicates), when asked to address feedback, and to find threads to resolve.',
+      {
+        path: z.string().optional().describe('Workspace-relative document path; omit to list threads across the whole project'),
+        include_resolved: z.boolean().default(false).describe('Include threads that are already resolved (default: open threads only)'),
+      },
+      async ({ path, include_resolved }) => {
+        try {
+          let threads = listThreads(projectId, { path: path ?? null });
+          if (!include_resolved) threads = threads.filter((t) => t.resolvedAt == null);
+          if (threads.length === 0) {
+            const scope = path ? `on ${path}` : 'in this project';
+            return { content: [{ type: 'text', text: `No ${include_resolved ? '' : 'open '}comment threads ${scope}.` }] };
+          }
+          const text = threads.map((t) => {
+            const status = t.resolvedAt ? 'resolved' : 'open';
+            const anchor = t.anchor?.quote
+              ? `\n  anchored to: "${t.anchor.quote}"${t.orphaned ? ' (orphaned — the quoted text no longer exists)' : ''}`
+              : '';
+            const replies = t.replies.map((r) => `\n  ↳ ${author(r)}: ${r.body}`).join('');
+            return `Comment ${t.id} on ${t.path} [${status}] by ${author(t)}:${anchor}\n  ${t.body}${replies}`;
+          }).join('\n\n');
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `list_comments failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+    tools.push(tool(
+      'reply_comment',
+      'Reply in an existing comment thread. Use it to answer a question asked in a comment, or to explain what you changed in response. The reply appears in the thread in the editor, attributed to you.',
+      {
+        comment_id: z.number().int().describe('Thread id (the root comment id from list_comments)'),
+        body: z.string().min(1).describe('The reply text'),
+      },
+      async ({ comment_id, body }) => {
+        try {
+          const reply = addReply(projectId, comment_id, {
+            body, userId, agentSlug: agent.slug, jobId: parentJob.id,
+          });
+          channel.push({
+            type: 'comment', action: 'reply', agent: agent.slug,
+            path: reply.path, id: reply.id, rootId: comment_id,
+          });
+          return { content: [{ type: 'text', text: `Reply added to comment ${comment_id} on ${reply.path}.` }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `reply_comment failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+    tools.push(tool(
+      'resolve_comment',
+      'Resolve a comment thread after its concern has been fully addressed. Pass a note saying what was done — it is filed as your reply in the thread before resolving, so the resolution is traceable. Only resolve threads you (or the change you just made) actually addressed; leave open questions for the user.',
+      {
+        comment_id: z.number().int().describe('Thread id (the root comment id from list_comments)'),
+        note: z.string().optional().describe('What was changed or why the comment is settled — filed as a closing reply in the thread'),
+      },
+      async ({ comment_id, note }) => {
+        try {
+          if (note && note.trim().length > 0) {
+            const reply = addReply(projectId, comment_id, {
+              body: note.trim(), userId, agentSlug: agent.slug, jobId: parentJob.id,
+            });
+            channel.push({
+              type: 'comment', action: 'reply', agent: agent.slug,
+              path: reply.path, id: reply.id, rootId: comment_id,
+            });
+          }
+          const thread = setResolved(projectId, comment_id, true, { userId });
+          channel.push({
+            type: 'comment', action: 'resolve', agent: agent.slug,
+            path: thread.path, id: comment_id, rootId: comment_id,
+          });
+          return { content: [{ type: 'text', text: `Resolved comment ${comment_id} on ${thread.path}.` }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `resolve_comment failed: ${err.message}` }], isError: true };
         }
       },
     ));

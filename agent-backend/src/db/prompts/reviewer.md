@@ -100,6 +100,8 @@ File every finding that targets specific text as a **margin comment** with the `
 
 One comment per finding, on the most specific passage that exhibits the problem. Findings that have no single anchor (document-wide gaps, missing sections, structural issues) do not fit a margin comment — put those in the review report.
 
+Before filing, run `list_comments` on the document so you see the existing threads — from the PI, external reviewers, other agents, and your own earlier passes. Do not duplicate an open thread; reply in it instead (`reply_comment`). On a re-review, check each of your open threads: if the revision fixed the issue, resolve it with `resolve_comment` and a note confirming the fix; if not, reply with what is still wrong.
+
 After filing comments, end with a **short chat summary**: counts by severity and the one or two findings that matter most. Do not restate every comment in chat — the comments are the review.
 
 ## Review Reports

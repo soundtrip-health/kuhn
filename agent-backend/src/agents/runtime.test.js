@@ -96,6 +96,15 @@ vi.mock('../pending-edits.js', () => ({
   effectiveContent: vi.fn(async () => 'file body'),
   pendingProposalContent: vi.fn(() => null),
 }));
+// Same reason as file-activity.js: the real module imports db.js. The SQL
+// substance (threads, replies, resolve) is covered in db/comments.test.js.
+vi.mock('../db/comments.js', () => ({
+  resolveQuote: vi.fn(() => null),
+  createThread: vi.fn(),
+  listThreads: vi.fn(() => []),
+  addReply: vi.fn((_projectId, rootId, { body }) => ({ id: 90, path: 'draft/main.md', parentId: rootId, body })),
+  setResolved: vi.fn(() => ({ id: 5, path: 'draft/main.md', resolvedAt: '2026-08-07T00:00:00Z' })),
+}));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
@@ -104,6 +113,7 @@ import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js
 import { writeProjectFile, moveProjectEntry } from '../storage.js';
 import { recordFileEvent } from '../db/file-activity.js';
 import { applyMove, findPendingEditConflicts } from '../db/move-paths.js';
+import { listThreads, addReply, setResolved } from '../db/comments.js';
 import { subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
@@ -522,6 +532,118 @@ describe('manage_references tools (issue #41)', () => {
     const result = await update.handler({ cite_key: 'nope', year: 2020, path: 'draft/references.bib' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/update_reference failed: No reference/);
+  });
+});
+
+// --- Issue #58: agents read, answer, and resolve margin comments --------------
+
+describe('manage_comments tools (issue #58)', () => {
+  const TRIAGER = { ...RA_AGENT, slug: 'reviewer', tools: ['manage_comments'] };
+  const success = () => [
+    { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+  const THREAD = {
+    id: 5, path: 'draft/main.md', agent: null, userName: 'Ada', reviewerName: null,
+    body: 'Clarify the estimand.', resolvedAt: null, orphaned: false,
+    anchor: { quote: 'the estimand', start: 1, end: 13 },
+    replies: [{ id: 6, agent: 'writer', userName: null, reviewerName: null, body: 'Will do.' }],
+  };
+
+  async function commentTools() {
+    getAgentWithTools.mockResolvedValue(TRIAGER);
+    sdkState.messages = success();
+    for await (const _ of runAgentTask({ role: 'reviewer', projectId: 7, input: 'go' })) { /* drain */ }
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    return {
+      list: tools.find((t) => t.name === 'list_comments'),
+      reply: tools.find((t) => t.name === 'reply_comment'),
+      resolve: tools.find((t) => t.name === 'resolve_comment'),
+    };
+  }
+
+  it('is gated by the manage_comments tool slug', async () => {
+    getAgentWithTools.mockResolvedValue(RA_AGENT); // no manage_comments
+    sdkState.messages = success();
+    for await (const _ of runAgentTask({ role: 'ra', projectId: 7, input: 'go' })) { /* drain */ }
+    const names = createSdkMcpServer.mock.calls.at(-1)[0].tools.map((t) => t.name);
+    expect(names).not.toContain('list_comments');
+    expect(names).not.toContain('reply_comment');
+    expect(names).not.toContain('resolve_comment');
+  });
+
+  it('is withheld in compose mode like the other mutating tools', async () => {
+    // file_read keeps the tool server non-empty once manage_comments is filtered
+    getAgentWithTools.mockResolvedValue({ ...TRIAGER, tools: ['manage_comments', 'file_read'] });
+    sdkState.messages = success();
+    for await (const _ of runAgentTask({ role: 'reviewer', projectId: 7, input: 'go', compose: true })) { /* drain */ }
+    const names = createSdkMcpServer.mock.calls.at(-1)[0].tools.map((t) => t.name);
+    expect(names).not.toContain('list_comments');
+    expect(names).not.toContain('resolve_comment');
+  });
+
+  it('list_comments shows open threads with author, anchor, and replies; hides resolved by default', async () => {
+    listThreads.mockReturnValue([
+      THREAD,
+      { ...THREAD, id: 9, resolvedAt: '2026-08-06T00:00:00Z', replies: [] },
+    ]);
+    const { list } = await commentTools();
+    const result = await list.handler({ path: 'draft/main.md', include_resolved: false });
+    expect(listThreads).toHaveBeenCalledWith(7, { path: 'draft/main.md' });
+    const text = result.content[0].text;
+    expect(text).toContain('Comment 5 on draft/main.md [open] by Ada');
+    expect(text).toContain('anchored to: "the estimand"');
+    expect(text).toContain('↳ writer (agent): Will do.');
+    expect(text).not.toContain('Comment 9');
+
+    const all = await list.handler({ include_resolved: true });
+    expect(listThreads).toHaveBeenLastCalledWith(7, { path: null });
+    expect(all.content[0].text).toContain('Comment 9 on draft/main.md [resolved]');
+  });
+
+  it('list_comments reports an empty queue without erroring', async () => {
+    listThreads.mockReturnValue([]);
+    const { list } = await commentTools();
+    const result = await list.handler({ include_resolved: false });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe('No open comment threads in this project.');
+  });
+
+  it('reply_comment files an agent-attributed reply on the thread', async () => {
+    const { reply } = await commentTools();
+    const result = await reply.handler({ comment_id: 5, body: 'Answered inline.' });
+    expect(addReply).toHaveBeenCalledWith(7, 5, {
+      body: 'Answered inline.', userId: null, agentSlug: 'reviewer', jobId: 42,
+    });
+    expect(result.content[0].text).toBe('Reply added to comment 5 on draft/main.md.');
+  });
+
+  it('resolve_comment files the note as a reply, then resolves stamping the task user', async () => {
+    getAgentWithTools.mockResolvedValue(TRIAGER);
+    sdkState.messages = success();
+    for await (const _ of runAgentTask({ role: 'reviewer', projectId: 7, input: 'go', userId: 11 })) { /* drain */ }
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    const resolve = tools.find((t) => t.name === 'resolve_comment');
+    const result = await resolve.handler({ comment_id: 5, note: 'Fixed in the revision.' });
+    expect(addReply).toHaveBeenCalledWith(7, 5, {
+      body: 'Fixed in the revision.', userId: 11, agentSlug: 'reviewer', jobId: 42,
+    });
+    expect(setResolved).toHaveBeenCalledWith(7, 5, true, { userId: 11 });
+    expect(result.content[0].text).toBe('Resolved comment 5 on draft/main.md.');
+  });
+
+  it('resolve_comment without a note skips the reply', async () => {
+    const { resolve } = await commentTools();
+    await resolve.handler({ comment_id: 5 });
+    expect(addReply).not.toHaveBeenCalled();
+    expect(setResolved).toHaveBeenCalledWith(7, 5, true, { userId: null });
+  });
+
+  it('maps service errors (reply to a non-root) to isError tool results', async () => {
+    addReply.mockImplementationOnce(() => { throw new Error('Replies attach to the thread root'); });
+    const { reply } = await commentTools();
+    const result = await reply.handler({ comment_id: 6, body: 'x' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/reply_comment failed: Replies attach/);
   });
 });
 

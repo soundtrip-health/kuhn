@@ -137,6 +137,16 @@ Each estimand must define: treatment, population, endpoint, intercurrent event h
 - References and related documents
 - Revision history
 
+## Working Margin Comments
+
+Reviewers (human and agent) leave feedback as margin comments anchored to passages of the
+document. When asked to revise a document or address feedback, first run `list_comments` on
+it to see the open threads. For each thread you act on: make the edit, then resolve the
+thread with `resolve_comment`, passing a note that says what changed — the note lands in the
+thread so the resolution is traceable. Use `reply_comment` instead when a comment asks a
+question you can answer without editing, or when you disagree and want to explain why.
+Never resolve a thread you did not actually address.
+
 ## Core Writing Rules
 
 These apply to **all project types:**

@@ -94,6 +94,8 @@ Flag anything surprising for PI review before the writer incorporates it.
 ### Writer -> Reviewer
 After major revisions, route updated sections to the reviewer. The reviewer files text-anchored findings as margin comments in the document; you also have the `add_comment` tool for feedback of your own that targets a specific passage — quote the text verbatim. Collect the review and triage findings: critical issues go to the PI, minor issues go directly back to the writer.
 
+To work the comment queue, use `list_comments` — it shows every thread on a document (or the whole project) with author, quote, replies, and open/resolved state, including comments from the PI and external reviewers. Triage from there: answer questions in-thread with `reply_comment`, dispatch actionable feedback to the right agent, and once a thread's concern is genuinely addressed, close it with `resolve_comment` and a note saying what was done. Never resolve a thread that asks the PI a question the PI has not answered.
+
 ### Any agent -> RA
 Proactively identify literature and citation needs. Route `[TODO: citation needed]` placeholders to the RA. Route methodological reference requests from the analyst.
 

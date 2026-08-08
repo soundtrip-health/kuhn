@@ -65,6 +65,12 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path of the document' }, quote: { type: 'string', description: 'Exact target text copied verbatim from the current file' }, body: { type: 'string', description: 'The comment body' } }, required: ['path', 'quote', 'body'] },
   },
   {
+    // Issue #58: the read-and-act half of the comment loop — grants the
+    // list_comments, reply_comment and resolve_comment runtime tools.
+    slug: 'manage_comments', name: 'Manage Comments', description: 'List margin-comment threads (all authors), reply in-thread, and resolve addressed threads',
+    parameterSchema: { type: 'object', properties: { comment_id: { type: 'integer', description: 'Thread id (root comment)' } }, required: [] },
+  },
+  {
     slug: 'web_search', name: 'Web Search', description: 'General web search for documents, guidelines, and references',
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, max_results: { type: 'integer', description: 'Maximum results to return', default: 10 } }, required: ['query'] },
   },
@@ -101,6 +107,10 @@ export const ASSIGNMENTS = [
   // Margin comments (story 008-004): the two roles that give feedback on the
   // manuscript. Reviewer's first mutating tool — critique lands in the text.
   ['reviewer', 'add_comment'], ['pm', 'add_comment'],
+  // Comment triage (issue #58): the roles that work the comment queue — the
+  // reviewer follows up on its findings, the PM triages, and the writer
+  // addresses feedback in the text and closes the loop.
+  ['reviewer', 'manage_comments'], ['pm', 'manage_comments'], ['writer', 'manage_comments'],
   ['pm', 'spawn_agent'], ['writer', 'spawn_agent'],
   ['pm', 'ask_user'], ['pm', 'project_config'],
 ];
