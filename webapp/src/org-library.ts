@@ -5,6 +5,7 @@
 // surface is stories 006-001/002: /api/orgs/:id/library + the org SSE feed.
 
 import {
+  adminCreateOrg,
   deleteOrgDocument,
   getOrgDocument,
   listOrgLibrary,
@@ -15,6 +16,7 @@ import {
 } from './api';
 import { trapFocus } from './a11y';
 import { icon } from './icons';
+import { currentUser } from './login';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
@@ -476,10 +478,15 @@ function closeCreateModal(): void {
 
 /**
  * The org-creation modal (replaces the interim window.prompt): step 1 names
- * the org (with a live slug preview), step 2 offers to seed its library —
- * with an explicit, no-guilt skip.
+ * the org and its first admin (with a live slug preview), step 2 offers to
+ * seed its library — with an explicit, no-guilt skip. Super-admin only since
+ * epic 011 (breadcrumb.ts already hides the entry; this re-checks on open).
+ * When the first admin is someone else, the caller ends up with NO membership
+ * (member:false), so step 2 becomes an "invitation sent" note instead of the
+ * seed step — library uploads into an org you're not a member of would 404.
  */
 export function openCreateOrgModal(): void {
+  if (!currentUser()?.is_superadmin) return;
   closeCreateModal();
   const root = document.createElement('div');
   root.className = 'pb-overlay';
@@ -546,6 +553,24 @@ function renderNameStep(root: HTMLElement): void {
   };
   input.addEventListener('input', updateSlug);
 
+  // First admin (MB1): defaults to the caller. Keeping your own email makes
+  // you owner (member:true) so the seed step still works; naming someone else
+  // hands the org over and you get no access to it.
+  const adminLabel = document.createElement('label');
+  adminLabel.className = 'om-label';
+  adminLabel.textContent = 'First admin';
+  const adminInput = document.createElement('input');
+  adminInput.className = 'pb-input';
+  adminInput.type = 'email';
+  adminInput.required = true;
+  adminInput.value = currentUser()?.email ?? '';
+  adminInput.placeholder = 'first-admin@example.org';
+  adminInput.id = 'org-create-admin';
+  adminLabel.htmlFor = adminInput.id;
+  const adminHint = document.createElement('div');
+  adminHint.className = 'om-slug';
+  adminHint.textContent = 'Becomes the organization’s owner. Keep your own email to set it up yourself.';
+
   const actions = document.createElement('div');
   actions.className = 'om-actions';
   const cancel = document.createElement('button');
@@ -559,24 +584,64 @@ function renderNameStep(root: HTMLElement): void {
   submit.textContent = 'Create organization';
   actions.append(cancel, submit);
 
-  form.append(label, input, slugLine, actions);
+  form.append(label, input, slugLine, adminLabel, adminInput, adminHint, actions);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const name = input.value.trim();
-    if (!name) return;
+    const ownerEmail = adminInput.value.trim();
+    if (!name || !ownerEmail) return;
     submit.disabled = true;
-    void workspace
-      .createNewOrg(name)
-      .then((org) => renderSeedStep(root, org.id, org.name))
-      .catch((err: Error) => {
-        submit.disabled = false;
-        input.setCustomValidity(err.message);
-        input.reportValidity();
-        input.addEventListener('input', () => input.setCustomValidity(''), { once: true });
-      });
+    const failed = (err: Error, field: HTMLInputElement): void => {
+      submit.disabled = false;
+      field.setCustomValidity(err.message);
+      field.reportValidity();
+      field.addEventListener('input', () => field.setCustomValidity(''), { once: true });
+    };
+    const self = ownerEmail.toLowerCase() === (currentUser()?.email ?? '').toLowerCase();
+    if (self) {
+      // The caller is the first admin (member:true) — create through the
+      // workspace store so it switches in, then offer the seed step.
+      void workspace
+        .createNewOrg(name, ownerEmail)
+        .then((org) => renderSeedStep(root, org.id, org.name))
+        .catch((err: Error) => failed(err, input));
+    } else {
+      // Someone else's org: the caller is NOT a member (member:false), so
+      // don't switch the workspace into it and skip the seed step (MB1) —
+      // its project/library fetches would 404 for us.
+      void adminCreateOrg({ name, ownerEmail })
+        .then(({ org }) => renderInviteSentStep(root, org.name, ownerEmail))
+        .catch((err: Error) => failed(err, adminInput));
+    }
   });
   body.append(form);
   input.focus();
+}
+
+/** Step 2 when the first admin is someone else: no seed step (the caller has
+ * no access to the new org), just the handoff confirmation. */
+function renderInviteSentStep(root: HTMLElement, orgName: string, email: string): void {
+  const { body } = modalShell(root, 'New organization · step 2 of 2', `${orgName} is ready`);
+
+  const note = document.createElement('p');
+  note.className = 'ol-blurb';
+  note.setAttribute('role', 'status');
+  note.textContent =
+    `Invitation sent to ${email} — they become ${orgName}’s first admin. ` +
+    'You are not a member, so it won’t appear in your organization switcher; ' +
+    'manage it from the platform console.';
+
+  const actions = document.createElement('div');
+  actions.className = 'om-actions';
+  const done = document.createElement('button');
+  done.type = 'button';
+  done.className = 'btn btn-accent';
+  done.textContent = 'Done';
+  done.addEventListener('click', () => closeCreateModal());
+  actions.append(done);
+
+  body.append(note, actions);
+  done.focus();
 }
 
 function renderSeedStep(root: HTMLElement, orgId: number, orgName: string): void {
@@ -627,3 +692,48 @@ function renderSeedStep(root: HTMLElement, orgId: number, orgName: string): void
   body.append(blurb, zone, results, actions);
   zone.focus();
 }
+
+// ---- Zero-orgs empty state (epic 011 invitation-only door) --------------------
+
+const NO_ORGS_ID = 'no-orgs-state';
+
+/**
+ * Full-pane notice once bootstrap finishes with zero orgs: plain sign-ins are
+ * told the door is an invitation (there is nothing they can do in-app), while
+ * super-admins get the create-org affordance. Self-syncing off the workspace
+ * store, same pattern as its suspended banner — it appears after an uninvited
+ * magic-link sign-in and disappears the moment a role refresh finds an org.
+ */
+function syncNoOrgsState(): void {
+  const existing = document.getElementById(NO_ORGS_ID);
+  if (!workspace.hasNoOrgs()) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const el = document.createElement('div');
+  el.id = NO_ORGS_ID;
+  el.className = 'no-orgs-state';
+  el.setAttribute('role', 'status');
+  el.innerHTML =
+    `<div class="no-orgs-inner">` +
+      `<div class="no-orgs-icon">${icon('folder', { size: 22, stroke: 1.6 })}</div>` +
+      `<div class="no-orgs-title">No organization yet</div>` +
+      `<div class="no-orgs-sub"></div>` +
+    `</div>`;
+  const superadmin = currentUser()?.is_superadmin === true;
+  (el.querySelector('.no-orgs-sub') as HTMLElement).textContent = superadmin
+    ? 'Create your first organization to start writing.'
+    : 'Organizations are invitation-only. Ask your organization admin to send you an invitation — the emailed link signs you in and adds you.';
+  if (superadmin) {
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'btn btn-accent';
+    create.textContent = 'New organization…';
+    create.addEventListener('click', () => openCreateOrgModal());
+    (el.querySelector('.no-orgs-inner') as HTMLElement).append(create);
+  }
+  document.body.append(el);
+}
+
+workspace.subscribe(() => syncNoOrgsState());

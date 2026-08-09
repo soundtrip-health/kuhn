@@ -7,8 +7,8 @@
 // and rejects it in a finally-equivalent cleanup.
 import { chromium } from 'playwright';
 
-const BACKEND = 'http://localhost:3002';
-const WEBAPP = 'http://localhost:5174';
+const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3002';
+const WEBAPP = process.env.WEBAPP_URL ?? 'http://localhost:5174';
 const PHANTOM = 'draft/phantom-check-new.md';
 
 const projects = (await (await fetch(`${BACKEND}/api/projects`)).json()).projects;

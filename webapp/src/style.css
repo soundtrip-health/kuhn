@@ -1585,3 +1585,20 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   font: var(--ui-mono); color: var(--ink);
   white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
 }
+
+/* ---- Zero-orgs empty state (epic 011 invitation-only door, U10) ------
+   Covers the content area below the topbar (the org menu stays reachable
+   for sign-out / the platform console); overlays at z-index 100 — the
+   create-org modal and the console — still render above it. */
+.no-orgs-state {
+  position: fixed; top: 52px; left: 0; right: 0; bottom: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--paper);
+}
+.no-orgs-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: 440px; padding: 0 24px; text-align: center;
+}
+.no-orgs-icon { color: var(--ink-3); display: inline-flex; }
+.no-orgs-title { font: var(--ui-title); font-size: 15px; color: var(--ink); }
+.no-orgs-sub { font: var(--ui-body); color: var(--ink-3); line-height: 1.55; }

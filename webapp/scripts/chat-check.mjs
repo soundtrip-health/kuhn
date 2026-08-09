@@ -17,7 +17,7 @@ await page.press('#chat-input', 'Enter');
 // Watch the streaming bubble grow (text_delta), then settle (text)
 await page.waitForSelector('.chat-agent .chat-body', { timeout: 60000 });
 await page.waitForFunction(
-  () => document.getElementById('status-tokens')?.textContent?.includes('tokens:'),
+  () => / tokens\b/.test(document.getElementById('status-tokens')?.textContent ?? ''),
   { timeout: 120000 },
 );
 

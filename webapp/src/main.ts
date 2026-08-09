@@ -139,11 +139,13 @@ async function switchToActiveProject(): Promise<void> {
 
   if (!project) {
     // No project in this org — close the editor and invite the user to create one.
+    // With zero orgs there is nothing to create into; the zero-orgs empty state
+    // (org-library.ts) owns that screen instead of the project browser.
     await closeDocument();
     openTarget = '';
     setActiveFile('');
     document.getElementById('editor-path')!.textContent = '';
-    openProjectBrowser();
+    if (!workspace.hasNoOrgs()) openProjectBrowser();
     return;
   }
 
@@ -316,6 +318,15 @@ async function switchToActiveProject(): Promise<void> {
   // project — the signal that the project has never been seeded.
   let doc = findMarkdownPath(project.config?.activeDocument);
   if (!doc) {
+    // Bootstrapping the empty draft is a WRITE — viewers 403 on it (epic 011),
+    // so land them on the no-document state instead of an error.
+    if (!workspace.canEdit()) {
+      await closeDocument();
+      openTarget = '';
+      setActiveFile('');
+      workspace.setActiveDocument('');
+      return;
+    }
     await writeTextFile(projectId, MAIN_DOCUMENT, '');
     await refreshTree(projectId);
     if (seq !== switchSeq) return;

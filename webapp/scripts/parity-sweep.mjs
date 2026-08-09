@@ -2,7 +2,7 @@
 // editor in the running app and emit a pass/fail matrix. Requires backend
 // (:3002) + webapp dev server (:5174).
 import { chromium } from 'playwright';
-const WEBAPP = 'http://localhost:5174';
+const WEBAPP = process.env.WEBAPP_URL ?? 'http://localhost:5174';
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok, detail }); };
 

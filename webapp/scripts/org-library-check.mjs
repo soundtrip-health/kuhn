@@ -28,13 +28,18 @@ const json = async (res) => res.json();
 const libApi = (orgId, p = '') => `${BACKEND}/api/orgs/${orgId}/library${p}`;
 
 // --- API: find-or-create the check org (idempotent across runs) ---
+// Org creation is super-admin-only since epic 011 and the creator gets no
+// membership unless named as first admin — the dev user is both the default
+// super-admin and this script's identity, so pass its own email as ownerEmail
+// (member:true) or every library call below would 404.
+const me = (await json(await fetch(`${BACKEND}/api/auth/me`))).user;
 let orgs = (await json(await fetch(`${BACKEND}/api/orgs`))).orgs;
 let org = orgs.find((o) => o.slug === ORG_SLUG);
 if (!org) {
   const res = await fetch(`${BACKEND}/api/orgs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: ORG_NAME, slug: ORG_SLUG }),
+    body: JSON.stringify({ name: ORG_NAME, slug: ORG_SLUG, ownerEmail: me.email }),
   });
   check(res.status === 201, `create org returns 201 (got ${res.status})`);
   org = (await json(res)).org;
@@ -95,7 +100,7 @@ await page.waitForTimeout(800);
   await page.waitForSelector(entry, { timeout: 10000 }).catch(() => fail('promote fixture file not in the tree'));
   await page.hover(`${entry}`).catch(() => {});
   const row = page.locator('.file-row', { has: page.locator(entry) });
-  await row.locator('.file-action[title="Add to org library"]').click({ force: true })
+  await row.locator('.file-action[title^="Add to org library"]').click({ force: true })
     .catch(() => fail('promote action button not clickable'));
   const settled = await page
     .waitForSelector(`${entry} .file-done, ${entry} .file-spinner`, { timeout: 8000 })

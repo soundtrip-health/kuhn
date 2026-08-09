@@ -6,6 +6,7 @@
 // breadcrumb re-renders on every workspace change so it always shows where you
 // are.
 
+import { openAdminConsole } from './admin-console';
 import { revealFile } from './files';
 import { icon } from './icons';
 import { authMode, currentUser, signOut } from './login';
@@ -176,16 +177,32 @@ function orgMenu(): HTMLElement {
     menu.append(admin);
   }
 
-  const create = document.createElement('button');
-  create.type = 'button';
-  create.className = 'breadcrumb-menu-item bm-create';
-  create.setAttribute('role', 'menuitem');
-  create.innerHTML = `<span class="bm-check">${icon('plus', { size: 13, stroke: 2 })}</span><span>New organization…</span>`;
-  create.addEventListener('click', () => {
-    closeOrgMenu();
-    openCreateOrgModal(); // modal with the library-seeding step (story 006-004)
-  });
-  menu.append(create);
+  // Platform items (epic 011): org creation moved behind the super-admin flag
+  // (011-001 — orgs are provisioned, not self-served), and super-admins also
+  // get the console (all orgs: rename, suspend, member counts).
+  if (currentUser()?.is_superadmin) {
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'breadcrumb-menu-item bm-create';
+    create.setAttribute('role', 'menuitem');
+    create.innerHTML = `<span class="bm-check">${icon('plus', { size: 13, stroke: 2 })}</span><span>New organization…</span>`;
+    create.addEventListener('click', () => {
+      closeOrgMenu();
+      openCreateOrgModal(); // modal with the library-seeding step (story 006-004)
+    });
+    menu.append(create);
+
+    const console_ = document.createElement('button');
+    console_.type = 'button';
+    console_.className = 'breadcrumb-menu-item bm-console';
+    console_.setAttribute('role', 'menuitem');
+    console_.innerHTML = `<span class="bm-check">${icon('sparkle', { size: 13, stroke: 1.8 })}</span><span>Platform console…</span>`;
+    console_.addEventListener('click', () => {
+      closeOrgMenu();
+      openAdminConsole();
+    });
+    menu.append(console_);
+  }
 
   // Sign out (story 007-002) — only in real auth mode; dev mode has no
   // session to end. Labelled with the signed-in email so it doubles as the

@@ -155,8 +155,8 @@ determine agent quality.
 
 ## Multi-Tenancy Invariants
 
-Full multi-tenancy (auth, orgs, quotas, billing) remains deferred, but three invariants are
-adopted **now** so that adding it later is auth + quotas, not a rewrite:
+Three invariants were adopted from the start so that full multi-tenancy would be auth +
+quotas, not a rewrite (epic 011 built on them — see the roles section below):
 
 1. **Everything is project-scoped.** Every DB row and file path carries a `project_id` (and a
    tenant/owner column from the start, even while it has one value). A future multi-tenant
@@ -168,8 +168,29 @@ adopted **now** so that adding it later is auth + quotas, not a rewrite:
    any future terminal run in per-session containers. Document compilation is arbitrary code
    execution; treat it that way from day one.
 
-Also planned (not yet built): auth on Yjs rooms (currently anyone with a doc id can join — do not
-expose beyond trusted test users).
+Yjs rooms are membership-authorized at upgrade time (story 007-003) and role-aware since
+010-003: viewers get read-only sockets, and a 60-second member sweep closes live sockets on
+removal, demotion, or org suspension (close code 4006; reconnects re-authorize).
+
+### Roles & Organization Administration (010-003 / epic 011)
+
+Membership carries a role — `viewer < editor < owner` — and every role/suspension decision
+funnels through one chokepoint, `checkOrgAccess` (`db/orgs.js`), reached from routes via
+`routes/guards.js` (`requireProjectRole` / `requireOrgRole`). The error discipline is uniform
+and non-leaking: unknown-or-not-yours → 404, insufficient role → 403 `requires <role> role`,
+suspended org → 403 `organization suspended`. Reads need viewer; anything that mutates a
+project, its files, or org content needs editor; member management, invitations, org settings
+(rename + `default_member_role` / `library_seeding` / `promotion_policy`), shared-library
+deletion, and the promotion-approval queue are owner-only. Invitations are the only door into
+an org outside dev mode (single-use hashed tokens through the magic-link verify endpoint);
+an org must always keep at least one owner. Separately, `users.is_superadmin` is a **platform**
+flag (synced from `KUHN_SUPERADMIN_EMAILS` at boot), not a role: super-admins provision,
+rename, suspend, and unsuspend orgs via `POST /api/orgs` + `/api/admin/orgs`, but **no tenancy
+guard consults the flag** — a super-admin without a membership is a stranger to every org's
+content. Suspension refuses members everywhere through the same chokepoint while the
+`/api/admin` surface stays open (that is how an org is unsuspended). The whole contract is
+regression-locked by `routes/tenancy-matrix.test.js`, which sweeps every tenant-scoped route
+across principals × org status.
 
 ### Knowledge Base Tenancy
 
