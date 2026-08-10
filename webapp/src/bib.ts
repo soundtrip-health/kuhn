@@ -62,8 +62,18 @@ export async function refreshBib(projectId: number, path?: string): Promise<void
     bibPath = DEFAULT_BIB_PATH;
     loadedForProject = projectId;
   }
-  bibPath = path ?? findBibPath(bibPath) ?? bibPath;
+  const resolved = path ?? findBibPath(bibPath);
   const seq = ++loadSeq;
+  if (resolved == null) {
+    // The project has no bibliography at all (nothing has been cited yet).
+    // Requesting the default path anyway 404s on every document open and every
+    // project switch — caught here, but still logged by the browser, which is
+    // pure console noise. Keep the last known path so /cite's echoed path (or a
+    // later `.bib` appearing in the tree) still re-resolves.
+    entries.clear();
+    return;
+  }
+  bibPath = resolved;
   try {
     const text = await readTextFile(projectId, bibPath);
     if (seq !== loadSeq) return; // a newer load superseded this one

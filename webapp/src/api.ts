@@ -212,12 +212,21 @@ export interface Me {
   mode: 'dev' | 'magic-link';
 }
 
-/** The signed-in user and auth mode; null when not authenticated. */
+/**
+ * The signed-in user and auth mode; null when not authenticated.
+ *
+ * `is_superadmin` is NORMALIZED to a real boolean here: it comes off SQLite as
+ * 0/1, and a caller writing the natural `=== true` check silently disagrees
+ * with a caller writing a truthy check — which is exactly how the platform
+ * console came to be listed in the org menu but refuse to open.
+ */
 export async function fetchMe(): Promise<Me | null> {
   const res = await apiFetch(`${BACKEND_URL}/api/auth/me`);
   if (res.status === 401) return null;
   await expectOk(res);
-  return (await res.json()) as Me;
+  const me = (await res.json()) as Me;
+  if (me?.user) me.user.is_superadmin = !!me.user.is_superadmin;
+  return me;
 }
 
 /** Ask the backend to email a magic sign-in link (dev: logged to its console). */
