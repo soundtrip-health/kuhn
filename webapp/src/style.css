@@ -108,8 +108,10 @@ body {
 .breadcrumb-doc { font-family: var(--font-mono); font-size: 12px; }
 .breadcrumb-seg:disabled { color: var(--ink-3); cursor: default; background: none; }
 
+/* z-index 95: above the zero-orgs overlay (90) so the org menu really does
+   stay reachable there, below the full-screen modals/console (100). */
 .breadcrumb-menu {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 95;
   background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r);
   box-shadow: var(--shadow-pop); padding: 5px; min-width: 200px;
   display: flex; flex-direction: column; gap: 2px;
@@ -122,6 +124,10 @@ body {
 .breadcrumb-menu-item:hover { background: var(--soft); }
 .breadcrumb-menu-item.is-active { color: var(--accent); font-weight: 500; }
 .breadcrumb-menu-item .bm-check { width: 13px; display: inline-flex; color: var(--accent); }
+/* Explanatory stand-in when the org menu has no actionable entries. */
+.breadcrumb-menu-note { padding: 8px 10px; width: 260px; }
+.breadcrumb-menu-note p { margin: 0; font: var(--ui-small); color: var(--ink-2); }
+.breadcrumb-menu-note p + p { margin-top: 4px; color: var(--ink-3); }
 .breadcrumb-menu-item.bm-create { color: var(--ink-2); border-top: 1px solid var(--line-2); margin-top: 2px; }
 .breadcrumb-menu-item.bm-create .bm-check { color: var(--ink-3); }
 

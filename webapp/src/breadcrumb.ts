@@ -221,6 +221,27 @@ function orgMenu(): HTMLElement {
     });
     menu.append(out);
   }
+
+  // Nothing actionable to show. In practice this is the dev-mode org-less
+  // non-super-admin: no orgs to switch to, no org-scoped entries, org creation
+  // is super-admin-only (011-001), and dev mode has no session to sign out of.
+  // Rather than an unexplained empty popover, say why it's empty and who you
+  // are — in dev mode the identity is the `x-kuhn-user` header, which is the
+  // thing you'd want to check.
+  if (menu.querySelector('[role="menuitem"]') === null) {
+    const note = document.createElement('div');
+    note.className = 'breadcrumb-menu-note';
+    const who = currentUser()?.email;
+    const lines = ['No organizations yet — organizations are invitation-only.'];
+    if (who) lines.push(`Signed in as ${who}`);
+    if (authMode() === 'dev') lines.push('Dev mode — no session to sign out of.');
+    for (const line of lines) {
+      const p = document.createElement('p');
+      p.textContent = line;
+      note.append(p);
+    }
+    menu.append(note);
+  }
   return menu;
 }
 
