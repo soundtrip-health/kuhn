@@ -5,6 +5,12 @@ guidance, methodology, regulatory precedents), **organized by project type**.
 This is human-curated source material — a candidate corpus for the Advisor agent's
 knowledge base. It is not wired into the app; add and reorganize freely.
 
+> **Issue #65 is changing this.** The corpus is being reorganized into selectable
+> **knowledge packages** (by discipline, with a machine-readable `catalog.json`
+> manifest) — see `docs/specs/065-general-knowledge-library.md`. The per-domain
+> source lists feeding that work live in [`catalog/`](catalog/README.md). The
+> project-type organization below is superseded once the manifest lands.
+
 ## Organization
 
 One folder per project type. Add a document by dropping it in the matching folder
