@@ -5,6 +5,22 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Knowledge Library (Issue #65, 2026-08-11)
+
+**Setup:** backend + webapp dev servers (no Docker needed — v1 catalog items are
+markdown). Scripted version: `node webapp/scripts/knowledge-check.mjs`
+(`npm run knowledge-check` in `webapp/`, no LLM tokens).
+
+- [ ] Org menu → Org admin → **Knowledge** tab lists 12 packages (3 nested under Biosciences)
+- [ ] Checking a package imports its items; item rows reach "Searchable" live
+- [ ] Unchecking one item flips the package checkbox to indeterminate
+- [ ] Org library panel groups imports under "Kuhn knowledge library"; their delete buttons are locked
+- [ ] Non-owner members see a read-only Knowledge view via org menu → "Org knowledge…"
+- [ ] New-org seed step offers the package picker with "General scientific writing" pre-checked
+- [ ] After enabling, agent chat can cite the imported standards (`search_org_knowledge`)
+
+---
+
 ## Render & Export (Story 002-019, 2026-06-12)
 
 **Setup:** backend + webapp dev servers, Docker running with the sandbox images pulled

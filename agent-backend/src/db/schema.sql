@@ -304,12 +304,59 @@ CREATE TABLE IF NOT EXISTS org_documents (
                      )),
   source_project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   created_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- Issue #65: link back to the Kuhn knowledge catalog for imported items
+  -- (NULL for uploads/promotions). Mirrored in init.js COLUMN_MIGRATIONS; the
+  -- partial unique index over these columns lives in init.js, NOT here — on an
+  -- existing database this script runs before the columns are ALTERed in.
+  catalog_item_id      TEXT,
+  catalog_item_version INTEGER,
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_org_docs_org_sha ON org_documents(org_id, sha256);
 CREATE INDEX IF NOT EXISTS idx_org_docs_org ON org_documents(org_id, created_at DESC);
+
+-- ============================================================
+-- Kuhn knowledge catalog (issue #65) — org-independent packages/items seeded
+-- from guidance-docs/catalog.json (db/knowledge-catalog.js + seed.js). Rows
+-- are never deleted once shipped: items that leave the manifest or whose
+-- content file is absent in this deploy are marked available = 0 instead,
+-- because orgs may still hold imported copies. Per-org enablement is
+-- org_knowledge_selections; import status lives on the linked org_documents
+-- row (catalog_item_id above), reusing the existing ingest machinery.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS knowledge_packages (
+  id          TEXT PRIMARY KEY,          -- slug from the manifest, never reused
+  parent_id   TEXT REFERENCES knowledge_packages(id) ON DELETE RESTRICT,
+  title       TEXT NOT NULL,
+  description TEXT,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  available   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id          TEXT PRIMARY KEY,          -- "package/slug" from the manifest
+  package_id  TEXT NOT NULL REFERENCES knowledge_packages(id) ON DELETE RESTRICT,
+  title       TEXT NOT NULL,
+  path        TEXT NOT NULL,             -- relative to guidance-docs/
+  version     INTEGER NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('document', 'knowledge-card')),
+  source_url  TEXT,
+  license     TEXT,
+  tags        TEXT NOT NULL DEFAULT '[]',
+  available   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_package ON knowledge_items(package_id);
+
+CREATE TABLE IF NOT EXISTS org_knowledge_selections (
+  org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  item_id     TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+  enabled_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  enabled_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (org_id, item_id)
+);
 
 -- ============================================================
 -- Org-library ingestion (story 006-002): extracted text chunks + FTS5 index.

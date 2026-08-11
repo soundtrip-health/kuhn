@@ -7,10 +7,13 @@
 import {
   adminCreateOrg,
   deleteOrgDocument,
+  getKnowledgeCatalog,
   getOrgDocument,
   listOrgLibrary,
+  putKnowledgeSelections,
   subscribeOrgEvents,
   uploadOrgDocuments,
+  type KnowledgePackage,
   type OrgDocStatusEvent,
   type OrgDocument,
 } from './api';
@@ -72,8 +75,10 @@ function ensureFeed(orgId: number): FeedState {
   return state;
 }
 
-/** Listen to an org's ingestion events; the feed lives while listeners do. */
-function addOrgFeedListener(orgId: number, fn: FeedListener): () => void {
+/** Listen to an org's ingestion events; the feed lives while listeners do.
+ * Exported for the org-admin Knowledge tab (issue #65), which watches many
+ * imported documents at once through the same shared feed. */
+export function addOrgFeedListener(orgId: number, fn: FeedListener): () => void {
   const state = ensureFeed(orgId);
   state.listeners.add(fn);
   return () => {
@@ -262,6 +267,7 @@ async function uploadToLibrary(files: File[]): Promise<void> {
 }
 
 async function removeDoc(doc: OrgDocument, row: HTMLElement): Promise<void> {
+  if (doc.catalog_item_id) return; // managed via the Knowledge tab (issue #65)
   // Documented exception (story 005-004): native confirm() is accessible by
   // construction; the file manager's delete uses the same pattern.
   if (!window.confirm(`Remove "${doc.title || doc.filename}" from the organization library?`)) return;
@@ -331,10 +337,19 @@ function docRow(doc: OrgDocument): HTMLElement {
   const del = document.createElement('button');
   del.type = 'button';
   del.className = 'file-action ol-delete';
-  del.title = 'Remove from library';
-  del.setAttribute('aria-label', `Remove ${doc.title || doc.filename} from library`);
+  if (doc.catalog_item_id) {
+    // Catalog imports are deselected in the Knowledge tab, not deleted here —
+    // deleting the copy while the selection stands would desync the two.
+    del.disabled = true;
+    del.classList.add('is-locked');
+    del.title = 'Managed in the org admin Knowledge tab';
+    del.setAttribute('aria-label', `${doc.title || doc.filename} is managed in the Knowledge tab`);
+  } else {
+    del.title = 'Remove from library';
+    del.setAttribute('aria-label', `Remove ${doc.title || doc.filename} from library`);
+    del.addEventListener('click', () => void removeDoc(doc, row));
+  }
   del.innerHTML = icon('trash', { size: 13, stroke: 1.7 });
-  del.addEventListener('click', () => void removeDoc(doc, row));
 
   row.append(iconEl, body, del);
   return row;
@@ -442,7 +457,18 @@ function render(): void {
       `when drafting and reviewing, in this project and every future one.</div>`;
     list.append(empty);
   } else {
-    for (const doc of panelDocs) list.append(docRow(doc));
+    // Tenant material first; Kuhn catalog imports grouped under their own
+    // header so uploads stay visually primary (issue #65).
+    const own = panelDocs.filter((d) => !d.catalog_item_id);
+    const imported = panelDocs.filter((d) => d.catalog_item_id);
+    for (const doc of own) list.append(docRow(doc));
+    if (imported.length > 0) {
+      const header = document.createElement('div');
+      header.className = 'ol-group-title';
+      header.textContent = 'Kuhn knowledge library';
+      list.append(header);
+      for (const doc of imported) list.append(docRow(doc));
+    }
   }
 
   const zone = uploadZone(
@@ -644,6 +670,101 @@ function renderInviteSentStep(root: HTMLElement, orgName: string, email: string)
   done.focus();
 }
 
+/**
+ * Compact package picker for the seed step (issue #65): top-level packages
+ * with their sub-packages indented, "general scientific writing" pre-checked.
+ * Item-granular selection lives in the org admin Knowledge tab.
+ */
+function seedPackagePicker(orgId: number, results: HTMLElement): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'om-kn-picker';
+  const title = document.createElement('div');
+  title.className = 'om-label';
+  title.textContent = 'Start from the Kuhn knowledge library';
+  const hint = document.createElement('div');
+  hint.className = 'om-slug';
+  hint.textContent =
+    'Curated reporting standards and style references, imported as searchable library documents. ' +
+    'Fine-tune per item later in the org admin Knowledge tab.';
+  const list = document.createElement('div');
+  list.className = 'om-kn-list';
+  list.setAttribute('role', 'status');
+  list.textContent = 'Loading packages…';
+  wrap.append(title, hint, list);
+
+  const checked = new Map<string, HTMLInputElement>();
+  let catalog: KnowledgePackage[] = [];
+
+  void getKnowledgeCatalog()
+    .then((packages) => {
+      catalog = packages.filter((p) => p.available && p.items.some((i) => i.available));
+      list.textContent = '';
+      list.removeAttribute('role');
+      if (catalog.length === 0) {
+        wrap.hidden = true;
+        return;
+      }
+      for (const pkg of catalog) {
+        const row = document.createElement('label');
+        row.className = `om-kn-pkg${pkg.parent ? ' om-kn-nested' : ''}`;
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'kn-check';
+        box.value = pkg.id;
+        box.checked = pkg.id === 'general-scientific-writing';
+        checked.set(pkg.id, box);
+        const label = document.createElement('span');
+        label.textContent = pkg.title;
+        const count = document.createElement('span');
+        count.className = 'om-kn-count';
+        const n = pkg.items.filter((i) => i.available).length;
+        count.textContent = `${n} item${n === 1 ? '' : 's'}`;
+        row.append(box, label, count);
+        list.append(row);
+      }
+      const apply = document.createElement('button');
+      apply.type = 'button';
+      apply.className = 'btn btn-accent btn-sm om-kn-apply';
+      apply.textContent = 'Add selected knowledge';
+      apply.addEventListener('click', () => {
+        const itemIds = catalog
+          .filter((p) => checked.get(p.id)?.checked)
+          .flatMap((p) => p.items.filter((i) => i.available).map((i) => i.id));
+        if (itemIds.length === 0) return;
+        apply.disabled = true;
+        void putKnowledgeSelections(orgId, { enable: itemIds })
+          .then(() => {
+            hasReadyDocs.set(orgId, false); // imports are still ingesting
+            void refreshLibraryHint(orgId);
+            toast(`Importing ${itemIds.length} knowledge item${itemIds.length === 1 ? '' : 's'}`);
+            const note = document.createElement('div');
+            note.className = 'om-slug';
+            note.setAttribute('role', 'status');
+            note.textContent =
+              `Importing ${itemIds.length} items — they appear in the org library as they finish.`;
+            results.append(note);
+            apply.textContent = 'Added';
+          })
+          .catch((err: Error) => {
+            apply.disabled = false;
+            const fail = document.createElement('div');
+            fail.className = 'om-seed-fail';
+            fail.setAttribute('role', 'alert');
+            fail.textContent = `Could not enable packages: ${err.message}`;
+            results.append(fail);
+          });
+      });
+      list.append(apply);
+    })
+    .catch(() => {
+      // Catalog unavailable (e.g. not seeded in this deploy) — hide quietly;
+      // the upload zone below is the primary seeding path.
+      wrap.hidden = true;
+    });
+
+  return wrap;
+}
+
 function renderSeedStep(root: HTMLElement, orgId: number, orgName: string): void {
   const { body } = modalShell(root, 'New organization · step 2 of 2', "Seed your organization's library");
 
@@ -689,7 +810,7 @@ function renderSeedStep(root: HTMLElement, orgId: number, orgName: string): void
   done.addEventListener('click', () => closeCreateModal());
   actions.append(done);
 
-  body.append(blurb, zone, results, actions);
+  body.append(blurb, seedPackagePicker(orgId, results), zone, results, actions);
   zone.focus();
 }
 

@@ -59,6 +59,7 @@ export const docPath = (doc) => `${doc.id}/${doc.filename}`;
 export async function storeOrgDocument(orgId, buffer, {
   filename, title = null, mime = null, source = 'upload',
   sourceProjectId = null, createdBy = null, ingest = true,
+  catalogItemId = null, catalogItemVersion = null,
 }) {
   const { document, deduped } = insertOrgDocument({
     orgId,
@@ -70,6 +71,8 @@ export async function storeOrgDocument(orgId, buffer, {
     source,
     sourceProjectId,
     createdBy,
+    catalogItemId,
+    catalogItemVersion,
   });
   if (deduped) {
     if (ingest && document.status === 'failed') queueIngest(orgId, document.id);

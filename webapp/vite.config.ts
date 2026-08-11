@@ -60,8 +60,8 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: true,
-    // Serving the dev server through the Cloudflare tunnel needs the public
-    // hostname allowlisted (Vite blocks unknown Host headers by default).
-    allowedHosts: ['kuhn.soundtrip.ai'],
+    allowedHosts: [
+      'kuhn.soundtrip.ai'
+    ]
   },
 });

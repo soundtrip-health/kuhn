@@ -1608,3 +1608,74 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .no-orgs-icon { color: var(--ink-3); display: inline-flex; }
 .no-orgs-title { font: var(--ui-title); font-size: 15px; color: var(--ink); }
 .no-orgs-sub { font: var(--ui-body); color: var(--ink-3); line-height: 1.55; }
+
+/* ---- Knowledge catalog (issue #65) ----------------------------------
+   Org-admin Knowledge tab (package tree, tri-state toggles, import status),
+   the seed-step package picker, and the library panel's grouped imports. */
+.kn-tree { display: flex; flex-direction: column; gap: 8px; }
+.kn-pkg {
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 8px 12px; background: var(--chrome);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.kn-pkg-nested { margin-left: 26px; }
+.kn-pkg-head { display: flex; align-items: center; gap: 10px; }
+.kn-check { accent-color: var(--accent); width: 14px; height: 14px; flex: none; cursor: pointer; }
+.kn-check:disabled { cursor: default; }
+.kn-pkg-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 4px 0; cursor: pointer; text-align: left;
+}
+.kn-pkg-chevron {
+  color: var(--ink-3); display: inline-flex;
+  transform: rotate(-90deg); transition: transform var(--dur) var(--ease);
+}
+.kn-pkg-chevron.is-open { transform: none; }
+.kn-pkg-title { font: var(--ui-title); color: var(--ink); }
+.kn-pkg-count { font: var(--ui-small); color: var(--ink-3); margin-left: auto; }
+.kn-pkg-desc { font: var(--ui-small); color: var(--ink-3); margin-left: 24px; }
+.kn-item-list {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 4px 0 2px 6px; padding-left: 16px; border-left: 1px solid var(--line-2);
+}
+.kn-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 2px; }
+.kn-item .kn-check { margin-top: 3px; }
+.kn-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.kn-item-name {
+  font: var(--ui-body); color: var(--ink);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.kn-kind {
+  font: 500 10px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--ink-2); background: var(--soft-2);
+  padding: 3px 6px; border-radius: var(--r-pill);
+}
+.kn-kind.is-document { color: var(--accent); background: var(--accent-soft); }
+.kn-update {
+  font: 500 10px/1 var(--font-ui); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 3px 7px; border-radius: var(--r-pill);
+}
+.kn-item-meta { font: var(--ui-small); color: var(--ink-3); overflow-wrap: anywhere; }
+.kn-source { color: var(--accent); text-decoration: none; }
+.kn-source:hover { text-decoration: underline; }
+.kn-reimport { flex: none; align-self: center; }
+
+/* Seed-step package picker (compact: packages only). */
+.om-kn-picker { display: flex; flex-direction: column; gap: 6px; }
+.om-kn-picker[hidden] { display: none; }
+.om-kn-list { display: flex; flex-direction: column; gap: 4px; }
+.om-kn-pkg {
+  display: flex; align-items: center; gap: 8px;
+  font: var(--ui-body); color: var(--ink); cursor: pointer;
+}
+.om-kn-nested { margin-left: 22px; }
+.om-kn-count { font: var(--ui-small); color: var(--ink-3); }
+.om-kn-apply { align-self: flex-start; margin-top: 4px; }
+
+/* Library panel: imported-catalog grouping + locked delete. */
+.ol-group-title {
+  font: var(--ui-eyebrow); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-3); margin-top: 8px;
+}
+.ol-row:hover .ol-delete.is-locked { opacity: .45; cursor: not-allowed; }

@@ -175,6 +175,21 @@ function orgMenu(): HTMLElement {
       openOrgAdmin();
     });
     menu.append(admin);
+  } else if (orgId != null && workspace.activeOrgRole() != null) {
+    // Non-owner members (issue #65): the same overlay, opened on its only
+    // tab for them — the read-only Knowledge view.
+    const knowledgeItem = document.createElement('button');
+    knowledgeItem.type = 'button';
+    knowledgeItem.className = 'breadcrumb-menu-item bm-knowledge';
+    knowledgeItem.setAttribute('role', 'menuitem');
+    knowledgeItem.innerHTML =
+      `<span class="bm-check">${icon('sparkle', { size: 13, stroke: 1.8 })}</span>` +
+      `<span>Org knowledge…</span>`;
+    knowledgeItem.addEventListener('click', () => {
+      closeOrgMenu();
+      openOrgAdmin('knowledge');
+    });
+    menu.append(knowledgeItem);
   }
 
   // Platform items (epic 011): org creation moved behind the super-admin flag

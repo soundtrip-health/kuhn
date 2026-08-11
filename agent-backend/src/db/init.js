@@ -35,6 +35,10 @@ const COLUMN_MIGRATIONS = [
   { table: 'organizations', column: 'status',
     ddl: "TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended'))" },
   { table: 'organizations', column: 'settings', ddl: "TEXT NOT NULL DEFAULT '{}'" },
+  // Issue #65: catalog link on imported knowledge documents. Nullable —
+  // uploads/promotions stay NULL.
+  { table: 'org_documents', column: 'catalog_item_id', ddl: 'TEXT' },
+  { table: 'org_documents', column: 'catalog_item_version', ddl: 'INTEGER' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK
@@ -178,10 +182,25 @@ export function applyMembershipsRoleMigration() {
   }
 }
 
+/**
+ * Issue #65: partial unique index over migrated columns. schema.sql cannot
+ * carry it — on an existing database exec(schemaSql) runs BEFORE
+ * applyColumnMigrations(), and an index over a not-yet-added column would
+ * abort the whole schema script. Created here, after the columns exist, on
+ * both the fresh and the migrated path.
+ */
+export function applyKnowledgeIndexMigration() {
+  exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_docs_org_catalog
+          ON org_documents(org_id, catalog_item_id) WHERE catalog_item_id IS NOT NULL`);
+}
+
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */
 export function applyColumnMigrations() {
   for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
     const { rows } = querySync(`SELECT name FROM pragma_table_info('${table}')`);
+    // No table at all → nothing to migrate (real boots run schema.sql first,
+    // so this only happens in partial-stub test databases).
+    if (rows.length === 0) continue;
     if (!rows.some((r) => r.name === column)) {
       exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
       console.log(`[db] Migrated: ${table}.${column} added.`);
@@ -197,6 +216,7 @@ export async function initDb() {
   applyColumnMigrations();
   applyFileEventsKindMigration();
   applyMembershipsRoleMigration();
+  applyKnowledgeIndexMigration();
   console.log('[db] Schema applied.');
 
   // Seed default tenant, agents, tools, and assignments.

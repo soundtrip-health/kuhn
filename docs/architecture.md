@@ -199,10 +199,16 @@ The advisor's knowledge base is **per-tenant by default**:
 - **Tenant KB** — guidance summaries, source docs, and project knowledge belong to the tenant
   that uploaded them. Never shared across tenants. This is a sales requirement in the target
   market (FDA/clinical/grant writers will ask about data isolation before uploading a protocol).
-- **Shared guidance corpus** — a separate, Kuhn-curated, read-only library of public guidance
-  (FDA guidance documents, ICH guidelines, NIH/funder instructions, journal author guidelines).
-  Any tenant can pull from it according to their project type. Tenant uploads never flow into it;
-  curation is an explicit, Kuhn-side editorial act.
+- **Kuhn knowledge library** (issue #65, implemented) — a separate, Kuhn-curated, read-only
+  catalog of public guidance organized as selectable **knowledge packages** (reporting
+  standards, FDA/ICH regulatory guidance, style references), defined by
+  `guidance-docs/catalog.json` and seeded into `knowledge_packages`/`knowledge_items` at
+  startup. Org owners enable packages or individual items (org admin → Knowledge tab);
+  enabled items are imported per-org into `org_documents` (source `guidance-import`, linked
+  by `catalog_item_id`) through the same ingestion/FTS pipeline as uploads, so
+  `search_org_knowledge` needs no changes. Tenant uploads never flow into the catalog;
+  curation is an explicit, Kuhn-side editorial act, and a catalog version bump surfaces as
+  an explicit per-org "update available" state rather than an automatic re-import.
 
 ## Slash Commands
 

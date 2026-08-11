@@ -6,7 +6,8 @@ import { querySync, transaction } from '../db.js';
 
 const COLS =
   'id, org_id, filename, title, mime, size_bytes, sha256, status, status_detail, ' +
-  'source, source_project_id, created_by, created_at, updated_at';
+  'source, source_project_id, created_by, catalog_item_id, catalog_item_version, ' +
+  'created_at, updated_at';
 
 /**
  * Insert a library document record, deduplicating on (org_id, sha256): the
@@ -16,14 +17,17 @@ const COLS =
 export function insertOrgDocument({
   orgId, filename, title = null, mime = null, sizeBytes, sha256,
   source = 'upload', sourceProjectId = null, createdBy = null,
+  catalogItemId = null, catalogItemVersion = null,
 }) {
   try {
     const { rows } = querySync(
       `INSERT INTO org_documents
-         (org_id, filename, title, mime, size_bytes, sha256, source, source_project_id, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (org_id, filename, title, mime, size_bytes, sha256, source, source_project_id, created_by,
+          catalog_item_id, catalog_item_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING ${COLS}`,
-      [orgId, filename, title, mime, sizeBytes, sha256, source, sourceProjectId, createdBy],
+      [orgId, filename, title, mime, sizeBytes, sha256, source, sourceProjectId, createdBy,
+        catalogItemId, catalogItemVersion],
     );
     return { document: rows[0], deduped: false };
   } catch (err) {

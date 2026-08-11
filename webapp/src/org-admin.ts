@@ -15,17 +15,22 @@ import {
   approvePromotion,
   createInvitation,
   fileBlobUrl,
+  getOrgKnowledge,
   getOrgSettings,
   listInvitations,
   listOrgMembers,
   listPromotions,
+  putKnowledgeSelections,
   readTextFile,
+  reimportKnowledgeItems,
   rejectPromotion,
   removeOrgMember,
   revokeInvitation,
   updateMemberRole,
   updateOrgSettings,
   type Invitation,
+  type KnowledgePackage,
+  type OrgKnowledgeItem,
   type OrgMember,
   type OrgSettings,
   type PromotionRequest,
@@ -33,10 +38,15 @@ import {
 } from './api';
 import { trapFocus } from './a11y';
 import { icon } from './icons';
+import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions';
+type Tab = 'members' | 'settings' | 'promotions' | 'knowledge';
+
+/** Owner-only tabs; non-owner members see only the read-only Knowledge tab. */
+const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge'];
+const MEMBER_TABS: Tab[] = ['knowledge'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -72,13 +82,26 @@ interface PreviewState {
 let openPreviewId: number | null = null;
 const previews = new Map<number, PreviewState>();
 
+// Knowledge tab (issue #65): the catalog merged with this org's state.
+let knowledge: KnowledgePackage<OrgKnowledgeItem>[] | null = null;
+let knowledgeLoading = false;
+let knowledgeError: string | null = null;
+/** A selection PUT / reimport is in flight — controls disabled meanwhile. */
+let knowledgeBusy = false;
+const expandedPackages = new Set<string>();
+let stopKnowledgeFeed: (() => void) | null = null;
+
 // Close (or refresh) the overlay when roles change under us: api.ts raises
 // `kuhn:role-refresh` on guard-shaped 403s and workspace re-emits 'orgs'.
 workspace.subscribe((change) => {
   if (!overlay || overlay.hidden) return;
-  if (!workspace.isOwner() || workspace.activeOrg()?.id !== adminOrgId) {
+  if (workspace.activeOrgRole() == null || workspace.activeOrg()?.id !== adminOrgId) {
     closeOrgAdmin();
     return;
+  }
+  // Demoted from owner while open → only the Knowledge tab remains legal.
+  if (!workspace.isOwner() && activeTab !== 'knowledge') {
+    activeTab = 'knowledge';
   }
   if (change === 'orgs') render();
 });
@@ -102,15 +125,18 @@ function ensureOverlay(): HTMLElement {
   return overlay;
 }
 
-export function openOrgAdmin(): void {
+export function openOrgAdmin(initialTab: Tab = 'members'): void {
   const org = workspace.activeOrg();
-  if (!org || !workspace.isOwner()) return;
+  // Any member may open (issue #65: read-only Knowledge for non-owners);
+  // owner-only tabs and their fetches stay gated below.
+  if (!org || workspace.activeOrgRole() == null) return;
+  const owner = workspace.isOwner();
   const root = ensureOverlay();
   const wasHidden = root.hidden;
   root.hidden = false;
 
   adminOrgId = org.id;
-  activeTab = 'members';
+  activeTab = owner ? initialTab : 'knowledge';
   members = [];
   invitations = [];
   promotions = [];
@@ -122,12 +148,35 @@ export function openOrgAdmin(): void {
   settingsErrors = {};
   openPreviewId = null;
   previews.clear();
+  knowledge = null;
+  knowledgeError = null;
+  knowledgeBusy = false;
+  expandedPackages.clear();
 
   render();
-  void reloadMembers();
-  void reloadInvitations();
-  void reloadSettings();
-  void reloadPromotions(); // eager: the tab badge counts pending requests
+  if (owner) {
+    void reloadMembers();
+    void reloadInvitations();
+    void reloadSettings();
+    void reloadPromotions(); // eager: the tab badge counts pending requests
+  }
+  void reloadKnowledge();
+
+  // Live import status for the Knowledge tab: doc_status events land on the
+  // shared org feed; a poll tick (feed down) refetches the merged state.
+  stopKnowledgeFeed?.();
+  stopKnowledgeFeed = addOrgFeedListener(org.id, (event) => {
+    if (!knowledge) return;
+    if (event.type === 'poll') {
+      void reloadKnowledge();
+      return;
+    }
+    const item = knowledge.flatMap((p) => p.items).find((i) => i.doc_id === event.docId);
+    if (!item) return;
+    item.doc_status = event.status;
+    item.doc_status_detail = event.statusDetail ?? null;
+    if (activeTab === 'knowledge') render();
+  });
 
   if (wasHidden) {
     releaseFocus?.();
@@ -137,6 +186,8 @@ export function openOrgAdmin(): void {
 
 export function closeOrgAdmin(): void {
   if (overlay) overlay.hidden = true;
+  stopKnowledgeFeed?.();
+  stopKnowledgeFeed = null;
   releaseFocus?.(); // restores focus to the opener
   releaseFocus = null;
 }
@@ -200,6 +251,23 @@ async function reloadPromotions(): Promise<void> {
     promotionsError = (err as Error).message;
   } finally {
     promotionsLoading = false;
+  }
+  render();
+}
+
+async function reloadKnowledge(): Promise<void> {
+  const orgId = adminOrgId;
+  knowledgeLoading = knowledge === null;
+  render();
+  try {
+    const packages = await getOrgKnowledge(orgId);
+    if (orgId !== adminOrgId) return;
+    knowledge = packages;
+    knowledgeError = null;
+  } catch (err) {
+    knowledgeError = (err as Error).message;
+  } finally {
+    knowledgeLoading = false;
   }
   render();
 }
@@ -802,19 +870,267 @@ function promotionsTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Knowledge tab (issue #65) ----------------------------------------------------
+
+/** Apply a selection change and adopt the merged state the API returns. */
+async function applyKnowledgeChanges(changes: { enable?: string[]; disable?: string[] }): Promise<void> {
+  knowledgeBusy = true;
+  render();
+  try {
+    knowledge = await putKnowledgeSelections(adminOrgId, changes);
+    knowledgeError = null;
+    const enabled = changes.enable?.length ?? 0;
+    const disabled = changes.disable?.length ?? 0;
+    if (enabled > 0) toast(`Enabled ${enabled} knowledge item${enabled === 1 ? '' : 's'} — importing`);
+    else if (disabled > 0) toast(`Removed ${disabled} knowledge item${disabled === 1 ? '' : 's'}`);
+  } catch (err) {
+    knowledgeError = (err as Error).message;
+  } finally {
+    knowledgeBusy = false;
+  }
+  void refreshLibraryHint(adminOrgId);
+  render();
+}
+
+async function reimportItems(itemIds: string[]): Promise<void> {
+  knowledgeBusy = true;
+  render();
+  try {
+    knowledge = await reimportKnowledgeItems(adminOrgId, itemIds);
+    knowledgeError = null;
+    toast(`Re-importing ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    knowledgeError = (err as Error).message;
+  } finally {
+    knowledgeBusy = false;
+  }
+  render();
+}
+
+const toggleableItems = (pkg: KnowledgePackage<OrgKnowledgeItem>): OrgKnowledgeItem[] =>
+  pkg.items.filter((i) => i.available);
+
+/** Import-status element for an enabled item; mirrors org-library's statusEl. */
+function knowledgeStatusEl(item: OrgKnowledgeItem): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = `ol-status is-${item.doc_status ?? 'pending'}`;
+  wrap.setAttribute('role', 'status');
+  if (item.doc_status === 'ready') {
+    wrap.innerHTML = `${icon('check', { size: 13, stroke: 2 })}<span>Searchable</span>`;
+  } else if (item.doc_status === 'failed') {
+    wrap.innerHTML = `${icon('x', { size: 13, stroke: 2 })}<span></span>`;
+    (wrap.querySelector('span:last-child') as HTMLElement).textContent =
+      `Failed — ${item.doc_status_detail || 'could not process this item'}`;
+  } else {
+    const spinner = document.createElement('span');
+    spinner.className = 'file-spinner';
+    const label = document.createElement('span');
+    label.textContent = item.doc_status === 'ingesting' ? 'Processing…' : 'Importing…';
+    wrap.append(spinner, label);
+  }
+  return wrap;
+}
+
+function knowledgeItemRow(item: OrgKnowledgeItem, owner: boolean): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'kn-item';
+  row.dataset.itemId = item.id;
+
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'kn-check';
+  check.checked = item.enabled;
+  check.disabled = !owner || !item.available || knowledgeBusy;
+  check.setAttribute('aria-label', `${item.enabled ? 'Disable' : 'Enable'} ${item.title}`);
+  check.addEventListener('change', () => {
+    void applyKnowledgeChanges(check.checked ? { enable: [item.id] } : { disable: [item.id] });
+  });
+
+  const body = document.createElement('div');
+  body.className = 'kn-item-body';
+
+  const name = document.createElement('div');
+  name.className = 'kn-item-name';
+  name.textContent = item.title;
+  const kindBadge = document.createElement('span');
+  kindBadge.className = `kn-kind is-${item.kind}`;
+  kindBadge.textContent = item.kind === 'document' ? 'doc' : 'card';
+  kindBadge.title = item.kind === 'document'
+    ? 'Full document, vendored in the Kuhn library'
+    : 'Kuhn-authored summary card with a link to the canonical source';
+  name.append(kindBadge);
+  if (item.update_available) {
+    const pill = document.createElement('span');
+    pill.className = 'kn-update';
+    pill.textContent = 'Update available';
+    name.append(pill);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'kn-item-meta';
+  const metaParts: (HTMLElement | string)[] = [];
+  if (item.license) metaParts.push(item.license);
+  if (!item.available) metaParts.push('Unavailable in this deployment');
+  if (item.source_url) {
+    const link = document.createElement('a');
+    link.href = item.source_url;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    link.className = 'kn-source';
+    link.textContent = 'Source';
+    link.setAttribute('aria-label', `Canonical source of ${item.title}`);
+    metaParts.push(link);
+  }
+  metaParts.forEach((part, i) => {
+    if (i > 0) meta.append(' · ');
+    meta.append(part);
+  });
+
+  body.append(name, meta);
+  if (item.enabled) body.append(knowledgeStatusEl(item));
+
+  row.append(check, body);
+
+  if (owner && item.enabled && (item.update_available || item.doc_status === 'failed')) {
+    const reimport = document.createElement('button');
+    reimport.type = 'button';
+    reimport.className = 'btn btn-quiet btn-sm kn-reimport';
+    reimport.textContent = 'Re-import';
+    reimport.disabled = knowledgeBusy;
+    reimport.setAttribute('aria-label', `Re-import ${item.title}`);
+    reimport.addEventListener('click', () => void reimportItems([item.id]));
+    row.append(reimport);
+  }
+  return row;
+}
+
+function knowledgePackageBlock(
+  pkg: KnowledgePackage<OrgKnowledgeItem>,
+  owner: boolean,
+  nested: boolean,
+): HTMLElement {
+  const block = document.createElement('div');
+  block.className = `kn-pkg${nested ? ' kn-pkg-nested' : ''}`;
+  block.dataset.packageId = pkg.id;
+
+  const head = document.createElement('div');
+  head.className = 'kn-pkg-head';
+
+  // Tri-state package checkbox over its own direct items (sub-packages are
+  // independent toggles — spec §10.3).
+  const toggleable = toggleableItems(pkg);
+  const enabledCount = toggleable.filter((i) => i.enabled).length;
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'kn-check kn-pkg-check';
+  check.checked = toggleable.length > 0 && enabledCount === toggleable.length;
+  check.indeterminate = enabledCount > 0 && enabledCount < toggleable.length;
+  check.disabled = !owner || toggleable.length === 0 || knowledgeBusy;
+  check.setAttribute('aria-label', `${check.checked ? 'Disable' : 'Enable'} every item in ${pkg.title}`);
+  if (check.indeterminate) check.setAttribute('aria-checked', 'mixed');
+  check.addEventListener('change', () => {
+    const ids = toggleable.map((i) => i.id);
+    void applyKnowledgeChanges(check.checked ? { enable: ids } : { disable: ids });
+  });
+
+  const expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'kn-pkg-toggle';
+  const expanded = expandedPackages.has(pkg.id);
+  expand.setAttribute('aria-expanded', String(expanded));
+  const title = document.createElement('span');
+  title.className = 'kn-pkg-title';
+  title.textContent = pkg.title;
+  const count = document.createElement('span');
+  count.className = 'kn-pkg-count';
+  count.textContent = pkg.items.length === 0
+    ? 'no items yet'
+    : `${enabledCount}/${toggleable.length} enabled`;
+  const chevron = document.createElement('span');
+  chevron.className = `kn-pkg-chevron${expanded ? ' is-open' : ''}`;
+  chevron.innerHTML = icon('chevron-down', { size: 13, stroke: 2 });
+  expand.append(chevron, title, count);
+  expand.addEventListener('click', () => {
+    if (expandedPackages.has(pkg.id)) expandedPackages.delete(pkg.id);
+    else expandedPackages.add(pkg.id);
+    render();
+  });
+
+  head.append(check, expand);
+  block.append(head);
+
+  if (pkg.description) {
+    const desc = document.createElement('div');
+    desc.className = 'kn-pkg-desc';
+    desc.textContent = pkg.description;
+    block.append(desc);
+  }
+
+  if (expanded) {
+    const list = document.createElement('div');
+    list.className = 'kn-item-list';
+    for (const item of pkg.items) list.append(knowledgeItemRow(item, owner));
+    block.append(list);
+  }
+  return block;
+}
+
+function knowledgeTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (knowledgeError) parts.push(inlineError(knowledgeError));
+  if (knowledgeLoading || knowledge === null) {
+    if (!knowledgeError) parts.push(emptyRow('Loading the knowledge catalog…'));
+    return parts;
+  }
+  if (knowledge.length === 0) {
+    parts.push(emptyRow('The Kuhn knowledge catalog is empty in this deployment.'));
+    return parts;
+  }
+
+  const owner = workspace.isOwner();
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'Curated packages of reporting standards, regulatory guidance, and style references. ' +
+      'Enabled items are imported into this organization’s library and become searchable by agents.'
+    : 'Knowledge packages this organization has enabled. Only owners can change the selection.';
+  parts.push(blurb);
+
+  const tree = document.createElement('div');
+  tree.className = 'kn-tree';
+  const children = new Map<string, KnowledgePackage<OrgKnowledgeItem>[]>();
+  for (const pkg of knowledge) {
+    if (pkg.parent) {
+      if (!children.has(pkg.parent)) children.set(pkg.parent, []);
+      children.get(pkg.parent)!.push(pkg);
+    }
+  }
+  for (const pkg of knowledge) {
+    if (pkg.parent) continue;
+    if (!pkg.available && pkg.items.length === 0) continue; // private/absent content
+    tree.append(knowledgePackageBlock(pkg, owner, false));
+    for (const child of children.get(pkg.id) ?? []) {
+      tree.append(knowledgePackageBlock(child, owner, true));
+    }
+  }
+  parts.push(tree);
+  return parts;
+}
+
 // ---- Render ----------------------------------------------------------------------
 
 const TAB_LABEL: Record<Tab, string> = {
   members: 'Members',
   settings: 'Settings',
   promotions: 'Promotions',
+  knowledge: 'Knowledge',
 };
 
 function tabsBar(): HTMLElement {
   const tabs = document.createElement('div');
   tabs.className = 'admin-tabs';
   tabs.setAttribute('role', 'tablist');
-  for (const tab of ['members', 'settings', 'promotions'] as Tab[]) {
+  for (const tab of workspace.isOwner() ? OWNER_TABS : MEMBER_TABS) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'admin-tab';
@@ -827,6 +1143,16 @@ function tabsBar(): HTMLElement {
       count.className = 'admin-tab-count';
       count.textContent = String(promotions.length);
       btn.append(count);
+    }
+    if (tab === 'knowledge') {
+      const updates = knowledge?.flatMap((p) => p.items)
+        .filter((i) => i.update_available || i.doc_status === 'failed').length ?? 0;
+      if (updates > 0) {
+        const count = document.createElement('span');
+        count.className = 'admin-tab-count';
+        count.textContent = String(updates);
+        btn.append(count);
+      }
     }
     btn.addEventListener('click', () => {
       if (activeTab === tab) return;
@@ -863,7 +1189,8 @@ function render(): void {
   const parts =
     activeTab === 'members' ? membersTab()
     : activeTab === 'settings' ? settingsTab()
-    : promotionsTab();
+    : activeTab === 'promotions' ? promotionsTab()
+    : knowledgeTab();
   body.append(...parts);
 
   panel.append(head, tabsBar(), body);

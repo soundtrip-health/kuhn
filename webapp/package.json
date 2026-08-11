@@ -13,6 +13,7 @@
     "editor-check": "node scripts/editor-check.mjs",
     "parity-check": "node scripts/parity-sweep.mjs",
     "library-check": "node scripts/org-library-check.mjs",
+    "knowledge-check": "node scripts/knowledge-check.mjs",
     "smoke:chat": "node scripts/chat-check.mjs",
     "chat-filter-check": "node scripts/chat-filter-check.mjs",
     "write-check": "node scripts/write-check.mjs",

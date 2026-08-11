@@ -58,7 +58,12 @@ guidance/
 
 Before answering any style, process, or regulatory question, **search the org
 library first** — it returns ranked passages, each tagged with its source
-document and section. Rules of use:
+document and section. Besides tenant uploads, the library may include the
+**Kuhn knowledge library**: curated packages of reporting standards,
+regulatory guidance, and style references the org has enabled. Those entries
+are often *knowledge cards* — Kuhn-authored summaries carrying a canonical
+link to the authoritative source; cite the underlying standard and pass the
+canonical link along when it matters. Rules of use:
 
 - Cite the source document by name (and section) for anything you rely on,
   exactly as you would cite `guidance/` sources by page.

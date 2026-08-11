@@ -1,53 +1,60 @@
-# Guidance Docs — curated reference corpus
+# Guidance Docs — the Kuhn knowledge library
 
-A living collection of source guidance and reference documents (regulatory
-guidance, methodology, regulatory precedents), **organized by project type**.
-This is human-curated source material — a candidate corpus for the Advisor agent's
-knowledge base. It is not wired into the app; add and reorganize freely.
+The Kuhn-curated, cross-org knowledge catalog (issue #65): selectable
+**knowledge packages** of reporting standards, regulatory guidance, and style
+references, organized by discipline. The machine-readable manifest,
+[`catalog.json`](catalog.json), is the single source of truth the app consumes
+— the backend seeds `knowledge_packages`/`knowledge_items` from it at startup
+(`agent-backend/src/db/seed.js`), org owners enable packages or individual
+items in the org admin **Knowledge** tab, and enabled items are imported into
+that org's library where `search_org_knowledge` finds them.
 
-> **Issue #65 is changing this.** The corpus is being reorganized into selectable
-> **knowledge packages** (by discipline, with a machine-readable `catalog.json`
-> manifest) — see `docs/specs/065-general-knowledge-library.md`. The per-domain
-> source lists feeding that work live in [`catalog/`](catalog/README.md). The
-> project-type organization below is superseded once the manifest lands.
+See `docs/specs/065-general-knowledge-library.md` for the full design.
 
-## Organization
-
-One folder per project type. Add a document by dropping it in the matching folder
-(create the folder if it doesn't exist yet) and adding a row to the catalog below.
+## Layout
 
 ```
 guidance-docs/
-├── shared/             # Cross-cutting statistical / methodological / writing references  (populated)
-├── grant-application/
-├── manuscript/
-└── sop/                # Standard Operating Procedures
+├── catalog.json                    # THE manifest — packages, items, versions
+├── catalog/                        # curation inputs: per-domain source lists (not app-consumed)
+├── shared/                         # original cross-cutting files, referenced by the manifest
+└── <package-id>/                   # package content: knowledge cards + vendored documents
+    ├── general-scientific-writing/
+    ├── biosciences/  biosciences-regulatory/  biosciences-clinical-trials/  biosciences-drug-development/
+    ├── machine-learning/  robotics/  chemistry/  physics/
+    └── social-sciences/  statistics-reproducible-methods/  environmental-earth-sciences/
 ```
 
+## Item kinds — the licensing rule
+
+- **`document`** — the file itself is vendored here. Only for content Kuhn may
+  redistribute: US-government public-domain works, CC-licensed standards, or
+  Kuhn-authored material (everything under `shared/`).
+- **`knowledge-card`** — a Kuhn-authored markdown summary (scope, key
+  requirements, how to apply it, canonical link) of a document we may **not**
+  redistribute (ICMJE, ISO, ACS, IEEE, ICH…). The card is what gets ingested;
+  readers follow the link for the full text. Cards are first-class items —
+  agents get real searchable content either way.
+
+## Editing the catalog
+
+1. Author or revise content under the package directory (cards are original
+   prose — never paste copyrighted source text).
+2. Update `catalog.json`: add the item (stable `"<package>/<slug>"` id), or
+   **bump its `version`** when an existing file's content changes — that is
+   what surfaces "update available" to orgs holding the old copy.
+3. `cd agent-backend && npm run db:seed` (startup reseeds too).
+
+Items are never deleted from the manifest's history: removing one from
+`catalog.json` marks its row unavailable, because orgs may still hold imported
+copies. Ids are never reused.
+
+The [`catalog/`](catalog/README.md) directory holds the per-domain source
+lists (canonical URLs, publishers, license notes) from the 2026-08 research
+pass — the raw material from which items graduate into `catalog.json` after
+curator verification.
+
 > **Shared corpus, not tenant material.** Everything here is generic, public,
-> product-level guidance available to every tenant. Organization-specific material
-> (a tenant's data-warehouse schema, confidential regulatory examples) must **not**
-> live here — it belongs in that tenant's per-tenant knowledge base. See
-> `docs/architecture.md` §Knowledge Base Tenancy.
-
----
-
-## `shared/`
-
-References that apply across multiple project types.
-
-| File | Key concepts |
-|------|--------------|
-| `stats-principles-estimands-sensitivity.pdf` | ICH E9(R1) estimand framework; intercurrent-event strategies; sensitivity-analysis principles. Cross-cutting — relevant to RWE, RCT, and clinical manuscripts |
-| `consort_diagram_2014.pdf` | CONSORT participant flow diagram — enrollment, allocation, follow-up, and analysis reporting. Cross-cutting — applies to RCT protocols and clinical manuscripts |
-| `scientific-writing-style-guide.md` | Prose craft and claim calibration: calibrate claims to evidence, cut surplusage, active voice, abbreviations at first use, IMRaD, section-based editing, TODO discipline. Applies to every project type |
-| `reporting-guidelines.md` | CONSORT / STROBE / PRISMA / ARRIVE / SPIRIT — which guideline for which study type + key sections; journal/venue format specs |
-| `estimand-framework-and-tte.md` | ICH E9(R1) estimand five-attribute framework and Target Trial Emulation, written out (companion to `stats-principles-estimands-sensitivity.pdf`) |
-
----
-
-## Suggested materials for the empty buckets
-
-- **grant-application/** — NIH Grants Policy Statement, SF 424 (R&R) Guide, SBIR/STTR directive, funder RFAs/PAs
-- **manuscript/** — target-journal author guidelines, ICMJE Recommendations, reporting guidelines (CONSORT/STROBE/PRISMA/ARRIVE)
-- **sop/** — 21 CFR Part 11, GxP, ISO 9001, internal QMS requirements
+> product-level guidance available to every org. Organization-specific
+> material must **not** live here — it belongs in that org's own library via
+> upload or promotion. See `docs/architecture.md` §Knowledge Base Tenancy.

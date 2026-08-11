@@ -124,6 +124,14 @@ export const config = {
     // runaway-tab backstop, not a scaling knob.
     maxSubscribers: parseInt(process.env.PROJECT_EVENTS_MAX_SUBSCRIBERS || '20'),
   },
+  knowledge: {
+    // Kuhn-curated knowledge catalog (issue #65): guidance-docs/catalog.json
+    // plus the package content it points at, shipped in the repo tree and
+    // read-only at runtime. Deploys must ship guidance-docs/ alongside the
+    // backend (or point this elsewhere).
+    catalogRoot: process.env.KUHN_GUIDANCE_DOCS
+      || new URL('../../guidance-docs', import.meta.url).pathname,
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).

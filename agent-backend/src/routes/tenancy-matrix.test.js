@@ -119,8 +119,9 @@ beforeAll(async () => {
   // The full post-session() tenant surface, in index.js mount order.
   for (const mod of [
     './agent.js', './citations.js', './comments.js', './files.js', './history.js',
-    './orgs.js', './org-admin.js', './org-library.js', './pending-edits.js',
-    './projects.js', './promotions.js', './render.js', './review-links.js',
+    './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
+    './pending-edits.js', './projects.js', './promotions.js', './render.js',
+    './review-links.js',
   ]) {
     app.use((await import(mod)).default);
   }
@@ -228,6 +229,7 @@ const ROUTES = [
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/library/999`, ok: { status: 404, error: 'document not found' } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/library/999/content`, ok: { status: 404, error: 'document not found' } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/events`, sse: true },
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/knowledge`, ok: { status: 200 } },
 
   // -- org-scoped (editor writes) --------------------------------------------
   { scope: 'org', minRole: 'editor', method: 'POST', path: `/api/orgs/${ORG_A}/library/upload`, req: () => ({ form: smallUpload }), ok: { status: 201 } },
@@ -246,6 +248,10 @@ const ROUTES = [
   { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/promotions`, ok: { status: 200 } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/promotions/999/approve`, req: () => ({ json: {} }), ok: { status: 404, error: 'promotion request not found' } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/promotions/999/reject`, req: () => ({ json: {} }), ok: { status: 404, error: 'promotion request not found' } },
+  // Issue #65: knowledge selections. Empty batches clear the guard and prove
+  // the threshold without importing anything (the catalog is unseeded here).
+  { scope: 'org', minRole: 'owner', method: 'PUT', path: `/api/orgs/${ORG_A}/knowledge/selections`, req: () => ({ json: { enable: [], disable: [] } }), ok: { status: 200 } },
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/knowledge/reimport`, req: () => ({ json: { items: [] } }), ok: { status: 200 } },
 ];
 
 const RANK = { viewer: 1, editor: 2, owner: 3 };
@@ -386,6 +392,18 @@ describe('super-admin lifecycle surface (011-001)', () => {
     // But the /api/admin surface sees it, with a zero member count.
     const { orgs } = await (await call('GET', '/api/admin/orgs', 'superadmin')).json();
     expect(orgs.find((o) => o.id === org.id)).toMatchObject({ member_count: 0, status: 'active' });
+  });
+});
+
+describe('knowledge catalog is org-independent (issue #65)', () => {
+  // Not a ROUTES row: no org in the path, so the scope-keyed 404 sweeps don't
+  // apply. Any authenticated principal may browse the catalog.
+  it('GET /api/knowledge/catalog serves every principal', async () => {
+    for (const principal of ['owner', 'editor', 'viewer', 'stranger', 'superadmin']) {
+      const res = await call('GET', '/api/knowledge/catalog', principal);
+      expect(res.status, principal).toBe(200);
+      expect(await res.json(), principal).toEqual({ packages: [] }); // unseeded here
+    }
   });
 });
 

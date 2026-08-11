@@ -991,6 +991,9 @@ export interface OrgDocument {
   status_detail: string | null;
   source: 'upload' | 'project-promotion' | 'guidance-import';
   source_project_id: number | null;
+  /** Kuhn knowledge catalog link (issue #65); null for uploads/promotions. */
+  catalog_item_id: string | null;
+  catalog_item_version: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1103,6 +1106,88 @@ export function subscribeOrgEvents(orgId: number, handlers: OrgFeedHandlers): ()
     }
   };
   return () => source.close();
+}
+
+// ---- Kuhn knowledge catalog (issue #65) ----
+
+/** One catalog item as any authenticated user sees it (no org state). */
+export interface KnowledgeItem {
+  id: string;
+  title: string;
+  kind: 'document' | 'knowledge-card';
+  version: number;
+  source_url: string | null;
+  license: string | null;
+  tags: string[];
+  /** False when this deploy lacks the item's content file. */
+  available: boolean;
+}
+
+/** A catalog item merged with one org's selection/import state. */
+export interface OrgKnowledgeItem extends KnowledgeItem {
+  enabled: boolean;
+  doc_id: number | null;
+  doc_status: OrgDocument['status'] | null;
+  doc_status_detail: string | null;
+  imported_version: number | null;
+  /** The catalog moved past the imported copy — offer re-import. */
+  update_available: boolean;
+}
+
+/** A package node; `parent` links one level of nesting (null at top level). */
+export interface KnowledgePackage<TItem extends KnowledgeItem = KnowledgeItem> {
+  id: string;
+  parent: string | null;
+  title: string;
+  description: string | null;
+  available: boolean;
+  items: TItem[];
+}
+
+/** The Kuhn-curated catalog tree. Any authenticated user. */
+export async function getKnowledgeCatalog(): Promise<KnowledgePackage[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/knowledge/catalog`));
+  return ((await res.json()) as { packages: KnowledgePackage[] }).packages;
+}
+
+/** The catalog merged with this org's per-item state. Org members. */
+export async function getOrgKnowledge(orgId: number): Promise<KnowledgePackage<OrgKnowledgeItem>[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/knowledge`));
+  return ((await res.json()) as { packages: KnowledgePackage<OrgKnowledgeItem>[] }).packages;
+}
+
+/**
+ * Enable/disable catalog items for the org (owner-only). Enabling imports the
+ * items into the org library; disabling removes the imported copies. Returns
+ * the refreshed merged state.
+ */
+export async function putKnowledgeSelections(
+  orgId: number,
+  changes: { enable?: string[]; disable?: string[] },
+): Promise<KnowledgePackage<OrgKnowledgeItem>[]> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/knowledge/selections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(changes),
+    }),
+  );
+  return ((await res.json()) as { packages: KnowledgePackage<OrgKnowledgeItem>[] }).packages;
+}
+
+/** Re-import enabled items (failed ingests, catalog version bumps). Owner-only. */
+export async function reimportKnowledgeItems(
+  orgId: number,
+  items: string[],
+): Promise<KnowledgePackage<OrgKnowledgeItem>[]> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/knowledge/reimport`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    }),
+  );
+  return ((await res.json()) as { packages: KnowledgePackage<OrgKnowledgeItem>[] }).packages;
 }
 
 // ---- File activity & project feed (stories 005-001/002/003) ----

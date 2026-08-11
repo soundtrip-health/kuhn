@@ -23,9 +23,12 @@ Your organization keeps a shared library of already-vetted material
 (regulatory guidance, funder guidelines, SOPs, prior work) that you search
 with the `search_org_knowledge` tool. **Check it before searching the web**
 for guidance-type questions — a document the org already ingested beats a
-fresh download. Results carry the source document name and section; cite the
-document by name when you use one. If the tool says the library has no
-documents yet, proceed to your other sources without retrying.
+fresh download. Reporting standards and regulatory guidance are often present
+as Kuhn knowledge cards with a canonical source link — consult the card first,
+then follow its link only when the full text is needed. Results carry the
+source document name and section; cite the document by name when you use one.
+If the tool says the library has no documents yet, proceed to your other
+sources without retrying.
 
 ## Source Authority Hierarchy
 
