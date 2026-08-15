@@ -25,7 +25,8 @@ Current capabilities:
 
 ### Prerequisites
 
-- Node.js 18+ — **use an LTS release** (e.g. 24). Node 26 currently fails to build the native
+- Node.js 22.19+ — **use an LTS release** (e.g. 24). The provider-runtime spike's current Pi
+  packages require 22.19, and Node 26 currently fails to build the native
   `better-sqlite3` dependency.
 - Docker (for sandboxed rendering/export only — the database is in-process SQLite).
 - An `ANTHROPIC_API_KEY` (or Claude Code login credentials on a dev machine).
@@ -144,7 +145,10 @@ read-only and build commands without prompting.
 └───────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for details and decision history.
+See [docs/architecture.md](docs/architecture.md) for details and
+[ADR 001](docs/adr/001-provider-agnostic-runtime-foundation.md) for the provider-runtime
+migration decision. The Claude runtime remains the current production path while the Pi-core
+adapter proves contract and quality parity.
 
 Evaluating Kuhn for your organization? [docs/data-pipeline.md](docs/data-pipeline.md) lays
 out where all data is stored and processed, what is ephemeral, what leaves the machine

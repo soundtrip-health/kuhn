@@ -5,6 +5,33 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Provider-neutral runtime foundation (PLA-222/223, 2026-08-14)
+
+The phase-one provider runtime is an isolated spike; production agent traffic still
+uses the Claude Agent SDK. The contract suite is deterministic, network-free, and
+does not require any provider credential:
+
+```bash
+cd agent-backend
+env -u ANTHROPIC_API_KEY npm run test:runtime-contract
+```
+
+- [ ] Contract suite accepts ordered streaming, tools, cancellation, portable continuation,
+      normalized usage/errors, and provider/model identity
+- [ ] Contract suite rejects the intentionally incomplete adapter fixture
+- [ ] Existing `src/agents/runtime.test.js` regressions still pass for Kuhn-owned product
+      semantics, including role/parent/user attribution, shared budgets, and max dispatch depth
+- [ ] Optional live non-Anthropic check passes with no contract violations:
+      `OPENROUTER_API_KEY=... env -u ANTHROPIC_API_KEY npm run smoke:pi-runtime`
+- [ ] The live smoke output contains provider/model/API, delta count, usage, and violations,
+      but never the credential
+
+See [ADR 001](docs/adr/001-provider-agnostic-runtime-foundation.md) and the
+[provider runtime contract](docs/provider-runtime-contract.md) for the decision and
+the complete behavior matrix.
+
+---
+
 ## Knowledge Library (Issue #65, 2026-08-11)
 
 **Setup:** backend + webapp dev servers (no Docker needed — v1 catalog items are
