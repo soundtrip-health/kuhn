@@ -16,8 +16,9 @@ cd agent-backend
 env -u ANTHROPIC_API_KEY npm run test:runtime-contract
 ```
 
-- [ ] Contract suite accepts ordered streaming, tools, cancellation, portable continuation,
-      normalized usage/errors, and provider/model identity
+- [ ] Contract suite accepts ordered streaming, tools, cancellation, canonical Kuhn continuation
+      (including pre-aborted-turn refusal and cross-instance resume), normalized usage/errors,
+      and provider/model identity
 - [ ] Contract suite rejects the intentionally incomplete adapter fixture
 - [ ] Existing `src/agents/runtime.test.js` regressions still pass for Kuhn-owned product
       semantics, including role/parent/user attribution, shared budgets, and max dispatch depth

@@ -14,7 +14,7 @@
     "smoke": "node scripts/smoke-research.js",
     "smoke:pi-runtime": "node scripts/smoke-pi-runtime.js",
     "test": "vitest run",
-    "test:runtime-contract": "vitest run src/agents/provider-runtime/contract.test.js src/agents/provider-runtime/pi-spike.test.js",
+    "test:runtime-contract": "vitest run src/agents/provider-runtime/",
     "test:watch": "vitest"
   },
   "dependencies": {

@@ -11,11 +11,15 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
 import { EventChannel } from '../events.js';
 import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
+import { assertContinuation, createContinuation } from './continuation.js';
 
 /**
  * Isolated Pi-core spike. It intentionally does not import storage, jobs,
  * questions, pending edits, or any other Kuhn domain module. Those remain the
  * responsibility of runAgentTask() and the future Kuhn-owned tool registry.
+ *
+ * Pi message objects never cross the runtime boundary: continuation is
+ * converted to and from the canonical Kuhn schema in continuation.js.
  */
 export class PiRuntimeSpike {
   constructor({ models, model, systemPrompt = '', tools = [], continuation, thinkingLevel } = {}) {
@@ -28,7 +32,7 @@ export class PiRuntimeSpike {
         model,
         thinkingLevel: thinkingLevel ?? (model.reasoning ? 'medium' : 'off'),
         tools: [...tools],
-        messages: structuredClone(continuation?.messages ?? []),
+        messages: continuation ? piMessagesFromContinuation(assertContinuation(continuation), model) : [],
       },
       streamFn: models.streamSimple.bind(models),
       toolExecution: 'sequential',
@@ -40,7 +44,26 @@ export class PiRuntimeSpike {
   async *runTurn({ input, signal, continuation } = {}) {
     if (this.running) throw new Error('PiRuntimeSpike does not allow concurrent turns');
     if (typeof input !== 'string' || input.length === 0) throw new Error('runTurn input must be a non-empty string');
-    if (continuation) this.agent.state.messages = structuredClone(continuation.messages);
+    if (continuation) {
+      this.agent.state.messages = piMessagesFromContinuation(assertContinuation(continuation), this.model);
+    }
+
+    // Agent.abort() only cancels an active run, so it cannot neutralize a
+    // signal that was aborted before prompt(). Refuse the turn up front:
+    // identity still opens the transcript, then exactly one terminal
+    // cancelled error, and no provider request or tool ever starts.
+    if (signal?.aborted) {
+      yield this.identityEvent();
+      yield {
+        type: 'error',
+        error: normalizeProviderError(
+          signal.reason ?? new DOMException('This operation was aborted', 'AbortError'),
+          { stopReason: 'aborted' },
+        ),
+        usage: normalizeUsage(),
+      };
+      return;
+    }
 
     this.running = true;
     const channel = new EventChannel();
@@ -106,27 +129,14 @@ export class PiRuntimeSpike {
         type: 'done',
         finishReason: lastAssistant?.stopReason ?? 'stop',
         usage,
-        continuation: { version: 1, messages: structuredClone(this.agent.state.messages) },
+        continuation: continuationFromPiMessages(this.agent.state.messages),
       });
     });
 
     const onAbort = () => this.agent.abort();
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener('abort', onAbort, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
 
-    channel.push({
-      type: 'provider',
-      provider: this.model.provider,
-      model: this.model.id,
-      api: this.model.api,
-      endpoint: this.model.baseUrl,
-      capabilities: {
-        reasoning: this.model.reasoning,
-        input: [...this.model.input],
-        contextWindow: this.model.contextWindow,
-        maxTokens: this.model.maxTokens,
-      },
-    });
+    channel.push(this.identityEvent());
 
     const pump = this.agent.prompt(input)
       .catch((error) => finish({ type: 'error', error: normalizeProviderError(error), usage }))
@@ -151,6 +161,117 @@ export class PiRuntimeSpike {
       this.running = false;
     }
   }
+
+  identityEvent() {
+    return {
+      type: 'provider',
+      provider: this.model.provider,
+      model: this.model.id,
+      api: this.model.api,
+      endpoint: this.model.baseUrl,
+      capabilities: {
+        reasoning: this.model.reasoning,
+        input: [...this.model.input],
+        contextWindow: this.model.contextWindow,
+        maxTokens: this.model.maxTokens,
+      },
+    };
+  }
+}
+
+/**
+ * Pi transcript → canonical Kuhn continuation. Thinking blocks, images and
+ * every provider/framework metadata field (api, provider, model, response
+ * ids, usage, stop reasons, timestamps) are deliberately dropped — see
+ * continuation.js for the portability rationale.
+ */
+export function continuationFromPiMessages(piMessages) {
+  const messages = [];
+  for (const message of piMessages) {
+    if (message.role === 'user') {
+      const content = typeof message.content === 'string'
+        ? [{ type: 'text', text: message.content }]
+        : canonicalTextBlocks(message.content);
+      if (content.length > 0) messages.push({ role: 'user', content });
+    } else if (message.role === 'assistant') {
+      const content = [];
+      for (const block of message.content) {
+        if (block.type === 'text' && block.text) content.push({ type: 'text', text: block.text });
+        if (block.type === 'toolCall') {
+          content.push({ type: 'tool_call', id: block.id, name: block.name, arguments: structuredClone(block.arguments ?? {}) });
+        }
+      }
+      if (content.length > 0) messages.push({ role: 'assistant', content });
+    } else if (message.role === 'toolResult') {
+      messages.push({
+        role: 'tool_result',
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+        content: canonicalTextBlocks(message.content),
+        isError: message.isError === true,
+      });
+    }
+  }
+  return createContinuation(messages);
+}
+
+/**
+ * Canonical Kuhn continuation → Pi transcript for the model that will resume
+ * the conversation. Pi requires provider/usage/stopReason metadata on replayed
+ * assistant messages; it is synthesized here because rehydrated history is
+ * context, not accounting — per-turn usage is only ever reported through
+ * `done` events.
+ */
+export function piMessagesFromContinuation(continuation, model) {
+  return continuation.messages.map((message) => {
+    if (message.role === 'user') {
+      return {
+        role: 'user',
+        content: message.content.map((block) => ({ type: 'text', text: block.text })),
+        timestamp: Date.now(),
+      };
+    }
+    if (message.role === 'assistant') {
+      const content = message.content.map((block) => (block.type === 'text'
+        ? { type: 'text', text: block.text }
+        : { type: 'toolCall', id: block.id, name: block.name, arguments: structuredClone(block.arguments) }));
+      return {
+        role: 'assistant',
+        content,
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: emptyPiUsage(),
+        stopReason: content.some((block) => block.type === 'toolCall') ? 'toolUse' : 'stop',
+        timestamp: Date.now(),
+      };
+    }
+    return {
+      role: 'toolResult',
+      toolCallId: message.toolCallId,
+      toolName: message.toolName,
+      content: message.content.map((block) => ({ type: 'text', text: block.text })),
+      isError: message.isError,
+      timestamp: Date.now(),
+    };
+  });
+}
+
+function canonicalTextBlocks(content = []) {
+  return content
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => ({ type: 'text', text: block.text }));
+}
+
+function emptyPiUsage() {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
 }
 
 /** Deterministic Pi model path for tests; no credentials or network. */

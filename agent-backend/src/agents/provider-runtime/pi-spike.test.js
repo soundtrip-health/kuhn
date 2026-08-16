@@ -7,11 +7,13 @@ import {
 } from '@earendil-works/pi-ai';
 
 import { validateRuntimeEventSequence } from './contract.js';
+import { validateContinuation } from './continuation.js';
 import {
   createFauxPiRuntime,
   createOpenAICompatiblePiRuntime,
   createOpenAIPiRuntime,
 } from './pi-spike.js';
+import { ScriptedRuntime } from './scripted-runtime.js';
 
 async function collect(iterable, onEvent) {
   const events = [];
@@ -86,7 +88,7 @@ describe('Pi core/model runtime spike', () => {
     expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 
-  it('represents schema failures as tool errors without calling Kuhn code', async () => {
+  it('reports the attempted tool_call, fails validation in tool_result, and never calls Kuhn code', async () => {
     const execute = vi.fn();
     const { runtime } = createFauxPiRuntime({
       tools: [{
@@ -103,11 +105,22 @@ describe('Pi core/model runtime spike', () => {
     });
 
     const events = await collect(runtime.runTurn({ input: 'Count' }));
-    const result = events.find((event) => event.type === 'tool_result');
 
+    // tool_call means "the model attempted this call with these arguments";
+    // the schema-validation outcome is the matching tool_result.
+    expect(events.find((event) => event.type === 'tool_call')).toMatchObject({
+      id: 'bad-1', name: 'count', arguments: { value: 'not-a-number' },
+    });
+    const callIndex = events.findIndex((event) => event.type === 'tool_call');
+    const resultIndex = events.findIndex((event) => event.type === 'tool_result');
+    expect(callIndex).toBeGreaterThan(-1);
+    expect(resultIndex).toBe(callIndex + 1);
+
+    const result = events[resultIndex];
     expect(execute).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ id: 'bad-1', isError: true });
+    expect(result).toMatchObject({ id: 'bad-1', name: 'count', isError: true });
     expect(result.content[0].text).toMatch(/validation failed/i);
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 
   it('represents thrown Kuhn tool failures as error results and continues', async () => {
@@ -170,6 +183,33 @@ describe('Pi core/model runtime spike', () => {
     expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 
+  it('refuses a pre-aborted signal without starting provider work or tools', async () => {
+    const execute = vi.fn();
+    const { runtime, faux } = createFauxPiRuntime({
+      responses: [fauxAssistantMessage('Should never stream.')],
+      tools: [{
+        name: 'never',
+        label: 'Never',
+        description: 'Must not run',
+        parameters: Type.Object({}),
+        execute,
+      }],
+    });
+    const controller = new AbortController();
+    controller.abort(new Error('caller gave up before the turn'));
+
+    const events = await collect(runtime.runTurn({ input: 'Start', signal: controller.signal }));
+
+    expect(events.map((event) => event.type)).toEqual(['provider', 'error']);
+    expect(events[0]).toMatchObject({ type: 'provider', provider: 'kuhn-faux', model: 'faux-1' });
+    expect(events.at(-1).error).toMatchObject({ code: 'cancelled', retryable: false });
+    // callCount increments inside the faux stream function, so zero proves the
+    // provider stream was never invoked.
+    expect(faux.state.callCount).toBe(0);
+    expect(execute).not.toHaveBeenCalled();
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
+  });
+
   it('normalizes provider errors independently of Pi message wording', async () => {
     const { runtime } = createFauxPiRuntime({
       responses: [fauxAssistantMessage([], { stopReason: 'error', errorMessage: '429 rate limit exceeded' })],
@@ -216,5 +256,114 @@ describe('Pi core/model runtime spike', () => {
     ['not a url', /absolute http\(s\) URL/],
   ])('rejects unsafe custom endpoint %s', (baseUrl, message) => {
     expect(() => createOpenAICompatiblePiRuntime({ baseUrl, modelId: 'm' })).toThrow(message);
+  });
+});
+
+describe('canonical continuation across Pi instances', () => {
+  const echoTool = (execute) => ({
+    name: 'echo',
+    label: 'Echo',
+    description: 'Echo text',
+    parameters: Type.Object({ text: Type.String() }),
+    execute,
+  });
+
+  async function runToolTurn() {
+    const { runtime } = createFauxPiRuntime({
+      tools: [echoTool(async (_id, args) => ({ content: [{ type: 'text', text: args.text.toUpperCase() }] }))],
+      responses: [
+        fauxAssistantMessage([
+          fauxText('Calling echo.'),
+          fauxToolCall('echo', { text: 'safe' }, { id: 'tool-1' }),
+        ], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('Echo done.'),
+      ],
+    });
+    const events = await collect(runtime.runTurn({ input: 'Use echo' }));
+    return events.at(-1).continuation;
+  }
+
+  it('emits only documented Kuhn fields with no Pi metadata leakage', async () => {
+    const continuation = await runToolTurn();
+
+    expect(validateContinuation(continuation)).toEqual([]);
+    expect(Object.keys(continuation).sort()).toEqual(['messages', 'version']);
+
+    const forbidden = new Set([
+      'api', 'provider', 'model', 'usage', 'stopReason', 'timestamp',
+      'responseId', 'responseModel', 'errorMessage', 'thinkingSignature', 'cost',
+    ]);
+    const seen = new Set();
+    JSON.stringify(continuation, (key, value) => {
+      seen.add(key);
+      return value;
+    });
+    expect([...seen].filter((key) => forbidden.has(key))).toEqual([]);
+
+    // Structured, not stringly: tool call and result survive as canonical state.
+    expect(continuation.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Use echo' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Calling echo.' },
+          { type: 'tool_call', id: 'tool-1', name: 'echo', arguments: { text: 'safe' } },
+        ],
+      },
+      { role: 'tool_result', toolCallId: 'tool-1', toolName: 'echo', content: [{ type: 'text', text: 'SAFE' }], isError: false },
+      { role: 'assistant', content: [{ type: 'text', text: 'Echo done.' }] },
+    ]);
+  });
+
+  it('resumes in a fresh Pi instance from JSON-serialized canonical state', async () => {
+    const continuation = await runToolTurn();
+    const revived = JSON.parse(JSON.stringify(continuation));
+
+    const second = createFauxPiRuntime({
+      tools: [echoTool(async () => ({ content: [{ type: 'text', text: 'unused' }] }))],
+      responses: [(context) => {
+        const sawToolResult = context.messages.some((message) => message.role === 'toolResult'
+          && message.toolName === 'echo'
+          && message.content.some((block) => block.type === 'text' && block.text === 'SAFE'));
+        const sawAssistantText = context.messages.some((message) => message.role === 'assistant'
+          && message.content.some?.((block) => block.type === 'text' && block.text === 'Echo done.'));
+        return fauxAssistantMessage(sawToolResult && sawAssistantText ? 'State restored.' : 'State lost.');
+      }],
+    });
+
+    const events = await collect(second.runtime.runTurn({ input: 'What happened?', continuation: revived }));
+
+    expect(events.find((event) => event.type === 'text')).toEqual({ type: 'text', content: 'State restored.' });
+    expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('produces state a different runtime implementation can consume', async () => {
+    const continuation = await runToolTurn();
+    const scripted = new ScriptedRuntime({
+      turns: [{ events: [{ type: 'text', content: 'Continuing elsewhere.' }] }],
+    });
+
+    const events = await collect(scripted.runTurn({ input: 'Carry on', continuation }));
+
+    expect(scripted.requests[0].continuation).toEqual(continuation.messages);
+    expect(events.at(-1).continuation.messages).toEqual([
+      ...continuation.messages,
+      { role: 'user', content: [{ type: 'text', text: 'Carry on' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Continuing elsewhere.' }] },
+    ]);
+    expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('rejects unknown continuation versions and non-canonical messages', async () => {
+    const { runtime } = createFauxPiRuntime({ responses: [fauxAssistantMessage('unused')] });
+
+    await expect(collect(runtime.runTurn({ input: 'Hi', continuation: { version: 99, messages: [] } })))
+      .rejects.toThrow(/unsupported continuation version 99/);
+    await expect(collect(runtime.runTurn({
+      input: 'Hi',
+      continuation: { version: 1, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'x' }], usage: {} }] },
+    }))).rejects.toThrow(/non-canonical field "usage"/);
+    expect(() => createFauxPiRuntime({ continuation: { version: 99, messages: [] } }))
+      .toThrow(/unsupported continuation version 99/);
   });
 });

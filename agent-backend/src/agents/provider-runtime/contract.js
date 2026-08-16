@@ -30,14 +30,25 @@
  * @property {object} parameters JSON Schema supplied by Kuhn
  * @property {(toolCallId: string, args: object, signal?: AbortSignal) => Promise<{content: Array<object>, details?: unknown}>} execute
  *
+ * Tool event semantics: `tool_call` records that the model requested a tool
+ * with particular arguments — an attempted call, before Kuhn's schema
+ * validation. The validation/execution outcome is always the matching
+ * `tool_result`; invalid arguments produce `tool_result.isError === true` and
+ * the Kuhn `execute` implementation is never invoked for them.
+ *
+ * Continuation is the canonical Kuhn schema defined in continuation.js —
+ * never raw provider or framework messages.
+ *
  * @typedef {object} RuntimeTurn
  * @property {string} input
  * @property {AbortSignal} [signal]
- * @property {{version: 1, messages: Array<object>}} [continuation]
+ * @property {{version: 1, messages: Array<object>}} [continuation] canonical Kuhn continuation (continuation.js)
  *
  * @typedef {object} AgentRuntime
  * @property {(turn: RuntimeTurn) => AsyncIterable<object>} runTurn
  */
+
+import { validateContinuation } from './continuation.js';
 
 export const TERMINAL_RUNTIME_EVENTS = new Set(['done', 'error']);
 
@@ -45,6 +56,15 @@ export const TERMINAL_RUNTIME_EVENTS = new Set(['done', 'error']);
  * Normalize incomplete provider usage without inventing zeros. A provider that
  * omits cache fields is observably different from one that reports zero cache
  * tokens, which matters for later accounting work.
+ *
+ * The four component fields are defined as disjoint: `inputTokens` counts
+ * non-cached input, and the cache fields count cached input separately, so a
+ * derived total is the plain sum of known components. Adapters own that
+ * invariant — a provider that reports cached tokens as a subset of its input
+ * count (OpenAI-style `cached_tokens`) must be converted to disjoint fields
+ * before reaching this contract, which Pi's model layer already does. A
+ * provider-reported total always wins over derivation; cost/dollar
+ * reconciliation stays out of scope until PLA-233.
  */
 export function normalizeUsage(usage = {}) {
   const inputTokens = finiteOrNull(usage.inputTokens ?? usage.input);
@@ -52,16 +72,19 @@ export function normalizeUsage(usage = {}) {
   const cacheReadTokens = finiteOrNull(usage.cacheReadTokens ?? usage.cacheRead);
   const cacheWriteTokens = finiteOrNull(usage.cacheWriteTokens ?? usage.cacheWrite);
   const reportedTotal = finiteOrNull(usage.totalTokens);
-  const knownTotal = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens]
-    .filter((value) => value != null)
-    .reduce((sum, value) => sum + value, 0);
+  const knownComponents = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens]
+    .filter((value) => value != null);
 
   return {
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    totalTokens: reportedTotal ?? (knownTotal > 0 ? knownTotal : null),
+    // An explicitly reported zero component must yield totalTokens 0, not
+    // null: null is reserved for "nothing was reported at all".
+    totalTokens: reportedTotal ?? (knownComponents.length > 0
+      ? knownComponents.reduce((sum, value) => sum + value, 0)
+      : null),
   };
 }
 
@@ -171,8 +194,12 @@ export function validateRuntimeEventSequence(events) {
 
   const terminal = events.at(-1);
   if (terminal?.type === 'done') {
-    if (!terminal.continuation || terminal.continuation.version !== 1 || !Array.isArray(terminal.continuation.messages)) {
-      violations.push('done must include portable continuation messages');
+    if (!terminal.continuation) {
+      violations.push('done must include canonical continuation messages');
+    } else {
+      for (const defect of validateContinuation(terminal.continuation)) {
+        violations.push(`done continuation is not canonical: ${defect}`);
+      }
     }
     const usage = normalizeUsage(terminal.usage);
     if (Object.values(usage).some((value) => value !== null && !Number.isFinite(value))) {

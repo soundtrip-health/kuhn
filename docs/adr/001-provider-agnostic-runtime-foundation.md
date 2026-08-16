@@ -59,8 +59,8 @@ The execution kernel must support:
 1. text and token/delta streaming;
 2. caller-supplied tools only, with JSON-schema validation and error results;
 3. tool-call/result loops;
-4. `AbortSignal` cancellation;
-5. serializable, provider-portable conversation continuation;
+4. `AbortSignal` cancellation, including refusing pre-aborted turns before any provider request;
+5. canonical Kuhn-owned conversation continuation that survives serialization and adapter conversion;
 6. direct non-Anthropic providers;
 7. configurable OpenAI-compatible endpoints;
 8. provider/model/capability identity;
@@ -109,12 +109,13 @@ Automated evidence (`npm run test:runtime-contract`):
 
 - ordered text deltas, final text and terminal state;
 - provider/model/API/capability identity;
-- TypeBox tool-argument validation;
+- `tool_call` as the attempted model call, with TypeBox validation reported through `tool_result` and invalid arguments never reaching Kuhn tool code;
 - caller-supplied tool execution, result return and model continuation;
 - thrown tool errors represented as error results;
-- cancellation propagated through `AbortSignal` to Pi;
-- continuation across user turns with serialized messages and no opaque session id;
-- explicit input/output/cache/total usage normalization;
+- cancellation propagated through `AbortSignal` to Pi, and pre-aborted signals refused before any provider request or tool execution;
+- canonical Kuhn continuation (defined in `provider-runtime/continuation.js`): Pi messages converted to and from the versioned Kuhn schema, no provider metadata leakage, JSON round-trip resume in a fresh runtime instance, tool call/result state surviving conversion, and the same representation consumed by the scripted runtime;
+- unknown continuation versions rejected with explicit errors;
+- explicit input/output/cache/total usage normalization over disjoint token fields, preserving reported zeros in derived totals;
 - deterministic faux-provider responses;
 - normalized provider failure categories;
 - configurable OpenAI-compatible model/provider construction without credentials or network;
@@ -203,7 +204,7 @@ Pi normalizes stream termination but provider error messages/statuses still diff
 
 ### Continuation
 
-Pi can replay portable message history and also supports provider session/cache hints. Kuhn will persist portable messages as canonical state. Provider response/session ids may be stored as optional diagnostics or cache hints only.
+Continuation state is the canonical Kuhn schema in `provider-runtime/continuation.js` — user text, assistant text, tool calls and tool results, versioned and strictly validated. Raw Pi (or any framework) messages never cross the runtime boundary; the adapter converts in both directions, and the validator rejects provider metadata structurally. Reasoning/thinking blocks are deliberately excluded in phase one, so resumed conversations re-derive rather than replay reasoning; PLA-230 owns the portable reasoning policy, durable persistence and mid-conversation provider switching. Provider response/session ids may be stored as optional adapter diagnostics or cache hints only, never as correctness-critical state.
 
 ### Model discovery and profiles
 
@@ -241,7 +242,7 @@ The direct Pi package directories are roughly 15 MB installed in this spike and 
 
 ## Escape hatch
 
-Kuhn's interface and tests use only normalized events, portable messages, JSON-compatible schemas, provider/model identity and explicit usage fields. Pi types stay inside `provider-runtime/pi-spike.js` and the future Pi adapter. Kuhn tools and policy never import Pi.
+Kuhn's interface and tests use only normalized events, canonical Kuhn continuation messages, JSON-compatible schemas, provider/model identity and explicit usage fields. Pi types stay inside `provider-runtime/pi-spike.js` and the future Pi adapter. Kuhn tools and policy never import Pi.
 
 If Pi is abandoned, replace the adapter with AI SDK Core or a Kuhn-owned loop. `runAgentTask(...)`, tools, DB schema, storage, authorization, UI events and persisted continuation remain unchanged.
 
