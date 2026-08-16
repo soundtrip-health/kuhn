@@ -1,0 +1,141 @@
+{
+  "catalog_version": 1,
+  "packages": [
+    {
+      "id": "general-scientific-writing",
+      "title": "General scientific writing",
+      "parent": null,
+      "description": "Cross-cutting prose craft, claim calibration, and manuscript structure for every project type.",
+      "items": [
+        {
+          "id": "general-scientific-writing/scientific-writing-style-guide",
+          "title": "Scientific writing — prose craft and claim calibration",
+          "path": "shared/scientific-writing-style-guide.md",
+          "version": 1,
+          "kind": "document",
+          "source_url": null,
+          "license": "Kuhn-authored",
+          "tags": ["style", "prose", "claims"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences",
+      "title": "Biosciences",
+      "parent": null,
+      "description": "Core life-sciences reporting and data standards.",
+      "items": []
+    },
+    {
+      "id": "biosciences-regulatory",
+      "title": "Regulatory (FDA/ICH/EMA)",
+      "parent": "biosciences",
+      "description": "Regulatory guidance for drug, biologic, and device submissions.",
+      "items": []
+    },
+    {
+      "id": "biosciences-clinical-trials",
+      "title": "Clinical trials",
+      "parent": "biosciences",
+      "description": "Trial design, estimands, and transparent reporting of clinical research.",
+      "items": [
+        {
+          "id": "biosciences-clinical-trials/reporting-guidelines",
+          "title": "Reporting guidelines (CONSORT / STROBE / PRISMA / ARRIVE / SPIRIT)",
+          "path": "shared/reporting-guidelines.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.equator-network.org/",
+          "license": "Kuhn-authored",
+          "tags": ["reporting", "checklists"]
+        },
+        {
+          "id": "biosciences-clinical-trials/estimand-framework-and-tte",
+          "title": "ICH E9(R1) estimand framework & Target Trial Emulation",
+          "path": "shared/estimand-framework-and-tte.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.ich.org/page/efficacy-guidelines",
+          "license": "Kuhn-authored",
+          "tags": ["estimands", "statistics", "causal-inference"]
+        },
+        {
+          "id": "biosciences-clinical-trials/stats-principles-estimands-sensitivity",
+          "title": "ICH E9/E9(R1) — statistical principles, estimands and sensitivity analysis",
+          "path": "shared/stats-principles-estimands-sensitivity.pdf",
+          "version": 1,
+          "kind": "document",
+          "source_url": "https://www.ich.org/page/efficacy-guidelines",
+          "license": "ICH — redistribution under review",
+          "tags": ["estimands", "statistics"]
+        },
+        {
+          "id": "biosciences-clinical-trials/consort-diagram-2014",
+          "title": "CONSORT participant flow diagram",
+          "path": "shared/consort_diagram_2014.pdf",
+          "version": 1,
+          "kind": "document",
+          "source_url": "https://www.consort-statement.org/",
+          "license": "CONSORT (freely available)",
+          "tags": ["reporting", "flow-diagram"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences-drug-development",
+      "title": "Drug development",
+      "parent": "biosciences",
+      "description": "Nonclinical-to-clinical development guidance and CMC standards.",
+      "items": []
+    },
+    {
+      "id": "machine-learning",
+      "title": "Machine learning",
+      "parent": null,
+      "description": "ML reporting, reproducibility, and model/dataset documentation standards.",
+      "items": []
+    },
+    {
+      "id": "robotics",
+      "title": "Robotics",
+      "parent": null,
+      "description": "Robotics terminology, benchmarks, and experiment reporting standards.",
+      "items": []
+    },
+    {
+      "id": "chemistry",
+      "title": "Chemistry",
+      "parent": null,
+      "description": "Chemical nomenclature, data standards, and publication conventions.",
+      "items": []
+    },
+    {
+      "id": "physics",
+      "title": "Physics",
+      "parent": null,
+      "description": "Physics notation, units, and publication conventions.",
+      "items": []
+    },
+    {
+      "id": "social-sciences",
+      "title": "Social sciences",
+      "parent": null,
+      "description": "Survey methods, ethics, and reporting standards for social research.",
+      "items": []
+    },
+    {
+      "id": "statistics-reproducible-methods",
+      "title": "Statistics & reproducible methods",
+      "parent": null,
+      "description": "Statistical practice, preregistration, and computational reproducibility.",
+      "items": []
+    },
+    {
+      "id": "environmental-earth-sciences",
+      "title": "Environmental & earth sciences",
+      "parent": null,
+      "description": "Geoscience data standards and environmental reporting guidance.",
+      "items": []
+    }
+  ]
+}
