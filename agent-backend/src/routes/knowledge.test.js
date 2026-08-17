@@ -19,6 +19,7 @@ const ORG = 1;
 const STYLE = 'writing/style';
 const ABSENT = 'writing/absent';
 const EXTRA = 'writing/extra';
+const TWIN = 'writing/twin'; // distinct item whose content can mirror STYLE's
 
 let config; let exec; let querySync;
 let server; let base; let cookies = {};
@@ -63,6 +64,7 @@ beforeAll(async () => {
   await mkdir(join(catalogRoot, 'writing'), { recursive: true });
   await writeFile(join(catalogRoot, 'writing', 'style.md'), '# Style guide\n\nWrite plainly.\n');
   await writeFile(join(catalogRoot, 'writing', 'extra.md'), '# Extra\n\nMore guidance.\n');
+  await writeFile(join(catalogRoot, 'writing', 'twin.md'), '# Twin\n\nRewritten by its suite.\n');
   await writeFile(join(catalogRoot, 'catalog.json'), JSON.stringify({
     catalog_version: 1,
     packages: [{
@@ -73,6 +75,7 @@ beforeAll(async () => {
         { id: STYLE, title: 'Style', path: 'writing/style.md', version: 1, kind: 'document' },
         { id: ABSENT, title: 'Absent', path: 'writing/absent.md', version: 1, kind: 'document' },
         { id: EXTRA, title: 'Extra', path: 'writing/extra.md', version: 1, kind: 'knowledge-card' },
+        { id: TWIN, title: 'Twin', path: 'writing/twin.md', version: 1, kind: 'document' },
       ],
     }],
   }));
@@ -463,5 +466,66 @@ describe('catalog-linked documents refuse the ordinary library delete', () => {
       { disable: [STYLE] });
     expect(res.status).toBe(200);
     expect(importedDoc(STYLE)).toBeNull();
+  });
+});
+
+describe('two catalog items with identical bytes (PLA-255 merge blocker)', () => {
+  // One org_documents row carries one catalog link, so a second item whose
+  // bytes dedupe onto another item's document must be refused outright —
+  // never enabled-but-unbacked, never stealing the first item's link.
+  const enableAudits = () => querySync(
+    "SELECT meta FROM auth_events WHERE type = 'knowledge.enable'").rows;
+  let docA;
+
+  it('enabling the first item succeeds and links its document', async () => {
+    const shared = '# Shared\n\nIdentical bytes served by two catalog items.\n';
+    await writeFile(join(catalogRoot, 'writing', 'style.md'), shared);
+    await writeFile(join(catalogRoot, 'writing', 'twin.md'), shared);
+
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [STYLE] });
+    expect(res.status).toBe(200);
+    docA = importedDoc(STYLE);
+    expect(docA).toMatchObject({ source: 'guidance-import', catalog_item_id: STYLE });
+    expect(selections()).toEqual([STYLE]);
+  });
+
+  it('enabling the second item refuses with a conflict, leaving the first untouched', async () => {
+    const auditsBefore = enableAudits().length;
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [TWIN] });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error)
+      .toBe(`knowledge import refused: content of ${TWIN} is identical to the `
+        + `already-enabled ${STYLE}; disable that item first`);
+
+    // No selection row, no document link, no audit row for the refused item.
+    expect(selections()).toEqual([STYLE]);
+    expect(importedDoc(TWIN)).toBeNull();
+    expect(enableAudits().length).toBe(auditsBefore);
+    expect(enableAudits().some((r) => r.meta.includes(TWIN))).toBe(false);
+
+    // The first item's import is byte-for-byte unchanged and still linked.
+    expect(importedDoc(STYLE)).toMatchObject(
+      { id: docA.id, sha256: docA.sha256, catalog_item_id: STYLE });
+
+    const { packages } = await (await call('GET', `/api/orgs/${ORG}/knowledge`, 'viewer')).json();
+    expect(item(packages, TWIN)).toMatchObject({ enabled: false, doc_id: null });
+    expect(item(packages, STYLE)).toMatchObject({ enabled: true, doc_id: docA.id });
+  });
+
+  it('disabling the first item cleans up normally, with no residual second-item state', async () => {
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { disable: [STYLE] });
+    expect(res.status).toBe(200);
+    expect(selections()).toEqual([]);
+    expect(importedDoc(STYLE)).toBeNull();
+    expect(importedDoc(TWIN)).toBeNull();
+    await expect(stat(join(orgsRoot, String(ORG), 'library', String(docA.id))))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+
+    const { packages } = await (await call('GET', `/api/orgs/${ORG}/knowledge`, 'viewer')).json();
+    expect(item(packages, TWIN)).toMatchObject({ enabled: false, doc_id: null });
+    expect(item(packages, STYLE)).toMatchObject({ enabled: false, doc_id: null });
   });
 });

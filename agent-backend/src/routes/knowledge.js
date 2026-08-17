@@ -165,6 +165,12 @@ function linkCatalogDoc(orgId, docId, item, version) {
  * stamp the link on it so status/update detection work, rather than dropping
  * the import on the floor. The adopted row keeps its original source, which
  * is what marks it user-owned for removeImportedDoc/reimportItem below.
+ *
+ * If the deduped row is already serving a *different* catalog item, refuse:
+ * one org_documents row carries at most one catalog link, so linking it here
+ * would steal the other item's import, and skipping the link would leave this
+ * item enabled with no document behind it. Same invariant as the changed-bytes
+ * refusal in reimportItem.
  */
 async function importItem(orgId, item, userId) {
   const buffer = await readCatalogFile(item.path);
@@ -176,6 +182,11 @@ async function importItem(orgId, item, userId) {
     catalogItemId: item.id,
     catalogItemVersion: item.version,
   });
+  if (deduped && document.catalog_item_id != null && document.catalog_item_id !== item.id) {
+    throw new CatalogError('conflict',
+      `content of ${item.id} is identical to the already-enabled ${document.catalog_item_id}; `
+      + 'disable that item first');
+  }
   if (deduped && document.catalog_item_id == null) {
     linkCatalogDoc(orgId, document.id, item, item.version);
   }
@@ -256,6 +267,17 @@ async function reimportItem(orgId, item, userId) {
     }
   }
   return getOrgDocument(orgId, fresh.id);
+}
+
+/**
+ * Batch-failure HTTP shape, shared by selections and reimport: a deliberate
+ * refusal (CatalogError 'conflict') is a 409 the operator can act on; every
+ * other import failure is a 502.
+ */
+function sendImportFailure(res, err) {
+  const conflict = err instanceof CatalogError && err.code === 'conflict';
+  res.status(conflict ? 409 : 502)
+    .json({ error: `knowledge import ${conflict ? 'refused' : 'failed'}: ${err.message}` });
 }
 
 // ---- routes ------------------------------------------------------------------
@@ -343,7 +365,7 @@ router.put('/api/orgs/:orgId/knowledge/selections', async (req, res) => {
     });
   }
   if (failure) {
-    res.status(502).json({ error: `knowledge import failed: ${failure.message}` });
+    sendImportFailure(res, failure);
     return;
   }
   res.json({ packages: catalogPayload(ctx.orgId) });
@@ -391,7 +413,7 @@ router.post('/api/orgs/:orgId/knowledge/reimport', async (req, res) => {
     });
   }
   if (failure) {
-    res.status(502).json({ error: `knowledge import failed: ${failure.message}` });
+    sendImportFailure(res, failure);
     return;
   }
   res.json({ packages: catalogPayload(ctx.orgId) });
