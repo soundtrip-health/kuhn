@@ -8,14 +8,16 @@
 // Org routes go through requireOrgRole with the standard non-leaking guard
 // contract; selection writes are owner-only and audited (auth_events).
 
+import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 
 import { Router } from 'express';
 
-import { querySync } from '../db.js';
+import { querySync, transaction } from '../db.js';
 import { recordAuthEvent } from '../db/auth-events.js';
 import { CatalogError, readCatalogFile } from '../db/knowledge-catalog.js';
 import { deleteOrgDocument, getOrgDocument } from '../db/org-documents.js';
+import { queueIngest } from '../ingest.js';
 import { StorageError, deleteOrgEntry } from '../storage.js';
 import { requireOrgRole } from './guards.js';
 import { storeOrgDocument } from './org-library.js';
@@ -127,11 +129,42 @@ function importedDoc(orgId, itemId) {
 }
 
 /**
+ * Whether a linked row is catalog-owned: created by a catalog import. A row
+ * whose source is 'upload' or 'project-promotion' existed independently of the
+ * catalog and was merely *adopted* by a selection via (org, sha256) dedupe —
+ * the catalog may borrow it, but never owns (and never deletes) it.
+ */
+const catalogOwned = (doc) => doc.source === 'guidance-import';
+
+/** Drop a row's catalog link, leaving the document itself untouched. */
+function unlinkCatalogDoc(orgId, docId) {
+  querySync(
+    `UPDATE org_documents
+     SET catalog_item_id = NULL, catalog_item_version = NULL,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE org_id = $1 AND id = $2`,
+    [orgId, docId],
+  );
+}
+
+/** Stamp a row as the org's imported copy of `item` at `version`. */
+function linkCatalogDoc(orgId, docId, item, version) {
+  querySync(
+    `UPDATE org_documents
+     SET catalog_item_id = $3, catalog_item_version = $4,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE org_id = $1 AND id = $2`,
+    [orgId, docId, item.id, version],
+  );
+}
+
+/**
  * Import one enabled item into the org library at its current catalog
  * version. Dedupe wrinkle: if the same bytes already live in the library as
  * an upload/promotion, storeOrgDocument returns that row (no catalog link) —
  * stamp the link on it so status/update detection work, rather than dropping
- * the import on the floor.
+ * the import on the floor. The adopted row keeps its original source, which
+ * is what marks it user-owned for removeImportedDoc/reimportItem below.
  */
 async function importItem(orgId, item, userId) {
   const buffer = await readCatalogFile(item.path);
@@ -144,19 +177,23 @@ async function importItem(orgId, item, userId) {
     catalogItemVersion: item.version,
   });
   if (deduped && document.catalog_item_id == null) {
-    querySync(
-      `UPDATE org_documents SET catalog_item_id = $3, catalog_item_version = $4
-       WHERE org_id = $1 AND id = $2`,
-      [orgId, document.id, item.id, item.version],
-    );
+    linkCatalogDoc(orgId, document.id, item, item.version);
   }
   return document;
 }
 
-/** Remove an item's imported copy: bytes, record, chunks (FK cascade), FTS. */
+/**
+ * Undo an item's import. Catalog-owned copies are deleted outright — bytes,
+ * record, chunks (FK cascade), FTS. An adopted upload/promotion is only
+ * unlinked: the user's document, bytes, and ingest state all survive.
+ */
 async function removeImportedDoc(orgId, itemId) {
   const doc = importedDoc(orgId, itemId);
   if (!doc) return;
+  if (!catalogOwned(doc)) {
+    unlinkCatalogDoc(orgId, doc.id);
+    return;
+  }
   try {
     await deleteOrgEntry(orgId, String(doc.id)); // the whole <docId>/ dir
   } catch (err) {
@@ -164,6 +201,61 @@ async function removeImportedDoc(orgId, itemId) {
     // Bytes already gone — still remove the record.
   }
   deleteOrgDocument(orgId, doc.id);
+}
+
+/**
+ * Refresh an item's import to the current catalog content, never destroying
+ * the last known-good copy on failure. Sequence: read the replacement first
+ * (missing file, containment refusal → nothing has been touched); identical
+ * bytes → restamp the version on the existing row; changed bytes → store the
+ * replacement fully, then swap the catalog link in one transaction (the old
+ * copy is deleted only if catalog-owned, an adopted upload is just unlinked)
+ * and clean the old bytes up last, after the swap is committed.
+ */
+async function reimportItem(orgId, item, userId) {
+  const buffer = await readCatalogFile(item.path);
+  const old = importedDoc(orgId, item.id);
+  if (!old) return importItem(orgId, item, userId);
+
+  const sha256 = createHash('sha256').update(buffer).digest('hex');
+  if (sha256 === old.sha256) {
+    // Same bytes — nothing to replace. Restamp the version; retry a failed
+    // ingest (the other reason owners reach for re-import).
+    linkCatalogDoc(orgId, old.id, item, item.version);
+    if (old.status === 'failed') queueIngest(orgId, old.id);
+    return getOrgDocument(orgId, old.id);
+  }
+
+  // Changed bytes: stage the replacement before touching the old copy. Stored
+  // without the catalog link — (org_id, catalog_item_id) is unique while the
+  // old row still holds it. A storage failure here leaves the old import
+  // intact (storeOrgDocument removes its own orphan row on write failure).
+  const { document: fresh } = await storeOrgDocument(orgId, buffer, {
+    filename: basename(item.path),
+    title: item.title,
+    source: 'guidance-import',
+    createdBy: userId,
+  });
+  if (fresh.catalog_item_id != null) {
+    // Dedupe landed on a row already serving a different catalog item (fresh
+    // can't be `old`: the bytes differ). Stealing its link would break that
+    // item's import — refuse, leaving the old copy in place.
+    throw new CatalogError('conflict',
+      `replacement bytes for ${item.id} are already imported as ${fresh.catalog_item_id}`);
+  }
+  transaction(() => {
+    if (catalogOwned(old)) deleteOrgDocument(orgId, old.id);
+    else unlinkCatalogDoc(orgId, old.id);
+    linkCatalogDoc(orgId, fresh.id, item, item.version);
+  });
+  if (catalogOwned(old)) {
+    try {
+      await deleteOrgEntry(orgId, String(old.id));
+    } catch (err) {
+      if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
+    }
+  }
+  return getOrgDocument(orgId, fresh.id);
 }
 
 // ---- routes ------------------------------------------------------------------
@@ -201,6 +293,14 @@ router.put('/api/orgs/:orgId/knowledge/selections', async (req, res) => {
     return;
   }
 
+  // Items are applied one at a time, each all-or-nothing, and the batch stops
+  // at the first failure: a failed import records no selection (the item stays
+  // visibly disabled and re-checkable), a failed removal keeps both selection
+  // and document (retry disables again). The audit rows list exactly the items
+  // that actually changed, whether or not the batch finished.
+  const disabled = [];
+  const enabled = [];
+  let failure = null;
   try {
     for (const item of disable) {
       await removeImportedDoc(ctx.orgId, item.id);
@@ -208,47 +308,52 @@ router.put('/api/orgs/:orgId/knowledge/selections', async (req, res) => {
         'DELETE FROM org_knowledge_selections WHERE org_id = $1 AND item_id = $2',
         [ctx.orgId, item.id],
       );
+      disabled.push(item.id);
     }
     for (const item of enable) {
+      // Idempotent re-enable: an existing import stays as-is (reimport is the
+      // explicit refresh path), a missing one is imported now — before the
+      // selection row, so a failed import leaves the item cleanly disabled.
+      if (!importedDoc(ctx.orgId, item.id)) {
+        await importItem(ctx.orgId, item, req.user.id);
+      }
       querySync(
         `INSERT INTO org_knowledge_selections (org_id, item_id, enabled_by)
          VALUES ($1, $2, $3)
          ON CONFLICT (org_id, item_id) DO NOTHING`,
         [ctx.orgId, item.id, req.user.id],
       );
-      // Idempotent re-enable: an existing import stays as-is (reimport is the
-      // explicit refresh path), a missing one is imported now.
-      if (!importedDoc(ctx.orgId, item.id)) {
-        await importItem(ctx.orgId, item, req.user.id);
-      }
+      enabled.push(item.id);
     }
   } catch (err) {
-    if (err instanceof CatalogError || err instanceof StorageError) {
-      res.status(502).json({ error: `knowledge import failed: ${err.message}` });
-      return;
-    }
-    throw err;
+    if (!(err instanceof CatalogError || err instanceof StorageError)) throw err;
+    failure = err;
   }
 
-  if (enable.length > 0) {
+  if (enabled.length > 0) {
     recordAuthEvent({
       type: 'knowledge.enable', actorUserId: req.user.id, orgId: ctx.orgId,
-      meta: { items: enable.map((i) => i.id) },
+      meta: { items: enabled },
     });
   }
-  if (disable.length > 0) {
+  if (disabled.length > 0) {
     recordAuthEvent({
       type: 'knowledge.disable', actorUserId: req.user.id, orgId: ctx.orgId,
-      meta: { items: disable.map((i) => i.id) },
+      meta: { items: disabled },
     });
+  }
+  if (failure) {
+    res.status(502).json({ error: `knowledge import failed: ${failure.message}` });
+    return;
   }
   res.json({ packages: catalogPayload(ctx.orgId) });
 });
 
 /**
  * POST /api/orgs/:orgId/knowledge/reimport — owner-only `{ items: [itemId…] }`.
- * Re-import enabled items (failed ingests, catalog version bumps): delete the
- * imported copy and store it fresh at the current catalog version.
+ * Re-import enabled items (failed ingests, catalog version bumps) via
+ * reimportItem: the replacement is read and stored before the previous copy is
+ * replaced, so a failed reimport always leaves the last good import usable.
  */
 router.post('/api/orgs/:orgId/knowledge/reimport', async (req, res) => {
   const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
@@ -265,19 +370,30 @@ router.post('/api/orgs/:orgId/knowledge/reimport', async (req, res) => {
     return;
   }
 
+  // Same batch semantics as selections: stop at the first failure, audit what
+  // actually happened. A failed item keeps its previous imported copy.
+  const reimported = [];
+  let failure = null;
   try {
     for (const item of items) {
-      await removeImportedDoc(ctx.orgId, item.id);
-      await importItem(ctx.orgId, item, req.user.id);
+      await reimportItem(ctx.orgId, item, req.user.id);
+      reimported.push(item.id);
     }
   } catch (err) {
-    if (err instanceof CatalogError || err instanceof StorageError) {
-      res.status(502).json({ error: `knowledge import failed: ${err.message}` });
-      return;
-    }
-    throw err;
+    if (!(err instanceof CatalogError || err instanceof StorageError)) throw err;
+    failure = err;
   }
 
+  if (reimported.length > 0) {
+    recordAuthEvent({
+      type: 'knowledge.reimport', actorUserId: req.user.id, orgId: ctx.orgId,
+      meta: { items: reimported },
+    });
+  }
+  if (failure) {
+    res.status(502).json({ error: `knowledge import failed: ${failure.message}` });
+    return;
+  }
   res.json({ packages: catalogPayload(ctx.orgId) });
 });
 

@@ -17,7 +17,7 @@ See `docs/specs/065-general-knowledge-library.md` for the full design.
 guidance-docs/
 ├── catalog.json                    # THE manifest — packages, items, versions
 ├── catalog/                        # curation inputs: per-domain source lists (not app-consumed)
-├── shared/                         # original cross-cutting files, referenced by the manifest
+├── shared/                         # original cross-cutting files; manifest-referenced once license-cleared
 └── <package-id>/                   # package content: knowledge cards + vendored documents
     ├── general-scientific-writing/
     ├── biosciences/  biosciences-regulatory/  biosciences-clinical-trials/  biosciences-drug-development/
@@ -29,7 +29,11 @@ guidance-docs/
 
 - **`document`** — the file itself is vendored here. Only for content Kuhn may
   redistribute: US-government public-domain works, CC-licensed standards, or
-  Kuhn-authored material (everything under `shared/`).
+  Kuhn-authored material. "Freely available" is **not** a redistribution
+  license — a source PDF stays out of `catalog.json` until a curator has
+  recorded verified redistribution rights, even if the file is already vendored
+  in this tree (e.g. the ICH and CONSORT PDFs under `shared/` are curation
+  inputs awaiting that verification, not catalog entries).
 - **`knowledge-card`** — a Kuhn-authored markdown summary (scope, key
   requirements, how to apply it, canonical link) of a document we may **not**
   redistribute (ICMJE, ISO, ACS, IEEE, ICH…). The card is what gets ingested;

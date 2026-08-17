@@ -97,6 +97,22 @@ describe('resolveCatalogFile containment', () => {
     expect(await catalogFileExists('writing/absent.md')).toBe(false);
     expect((await readCatalogFile('writing/style.md')).toString()).toBe('# Style\n');
   });
+
+  it('catalogFileExists shares the read confinement: available ⇔ legally readable', async () => {
+    // Normal in-root file → available.
+    expect(await catalogFileExists('writing/style.md')).toBe(true);
+    // Missing file → unavailable.
+    expect(await catalogFileExists('writing/absent.md')).toBe(false);
+    // A symlink resolving outside the root → unavailable AND never readable:
+    // what the availability check reports must match what a read would allow.
+    expect(await catalogFileExists('writing/sneaky.md')).toBe(false);
+    await expect(readCatalogFile('writing/sneaky.md'))
+      .rejects.toMatchObject({ code: 'outside_root' });
+    // An in-root symlink to an in-root file stays fine both ways.
+    await symlink(join(root, 'writing', 'style.md'), join(root, 'writing', 'alias.md'));
+    expect(await catalogFileExists('writing/alias.md')).toBe(true);
+    expect((await readCatalogFile('writing/alias.md')).toString()).toBe('# Style\n');
+  });
 });
 
 describe('manifest loading and validation', () => {
@@ -196,6 +212,23 @@ describe('seedKnowledgeCatalog', () => {
     await rm(join(root, 'catalog.json'));
     await expect(seedKnowledgeCatalog()).resolves.toBeUndefined();
     expect(packages()).toHaveLength(3); // prior rows untouched
+  });
+
+  it('seeds an item behind an escaping symlink as unavailable', async () => {
+    // writing/sneaky.md (created by the containment suite) resolves outside
+    // the catalog root: stat() would say it exists, but it can never be read
+    // through the confinement boundary — so it must not seed as available.
+    const manifest = structuredClone(MANIFEST);
+    manifest.packages[0].items.push({
+      id: 'writing/sneaky', title: 'Sneaky', path: 'writing/sneaky.md',
+      version: 1, kind: 'document',
+    });
+    await writeManifest(manifest);
+    await seedKnowledgeCatalog();
+    expect(items().find((i) => i.id === 'writing/sneaky'))
+      .toMatchObject({ available: 0 });
+    expect(items().find((i) => i.id === 'writing/style'))
+      .toMatchObject({ available: 1 });
   });
 });
 

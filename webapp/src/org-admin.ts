@@ -172,7 +172,13 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
       return;
     }
     const item = knowledge.flatMap((p) => p.items).find((i) => i.doc_id === event.docId);
-    if (!item) return;
+    if (!item) {
+      // A status event for a document this snapshot doesn't know yet — a fast
+      // ingest can finish before the enable's refreshed payload is applied.
+      // Refetch rather than drop what may be the terminal transition.
+      void reloadKnowledge();
+      return;
+    }
     item.doc_status = event.status;
     item.doc_status_detail = event.statusDetail ?? null;
     if (activeTab === 'knowledge') render();
@@ -885,6 +891,9 @@ async function applyKnowledgeChanges(changes: { enable?: string[]; disable?: str
     else if (disabled > 0) toast(`Removed ${disabled} knowledge item${disabled === 1 ? '' : 's'}`);
   } catch (err) {
     knowledgeError = (err as Error).message;
+    // A failed batch stops at the first failing item, so earlier items may
+    // have applied — re-sync with the server so checkboxes reflect reality.
+    try { knowledge = await getOrgKnowledge(adminOrgId); } catch { /* keep stale */ }
   } finally {
     knowledgeBusy = false;
   }
@@ -901,6 +910,8 @@ async function reimportItems(itemIds: string[]): Promise<void> {
     toast(`Re-importing ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`);
   } catch (err) {
     knowledgeError = (err as Error).message;
+    // Same partial-batch re-sync as applyKnowledgeChanges.
+    try { knowledge = await getOrgKnowledge(adminOrgId); } catch { /* keep stale */ }
   } finally {
     knowledgeBusy = false;
   }

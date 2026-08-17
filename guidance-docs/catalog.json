@@ -58,26 +58,6 @@
           "source_url": "https://www.ich.org/page/efficacy-guidelines",
           "license": "Kuhn-authored",
           "tags": ["estimands", "statistics", "causal-inference"]
-        },
-        {
-          "id": "biosciences-clinical-trials/stats-principles-estimands-sensitivity",
-          "title": "ICH E9/E9(R1) — statistical principles, estimands and sensitivity analysis",
-          "path": "shared/stats-principles-estimands-sensitivity.pdf",
-          "version": 1,
-          "kind": "document",
-          "source_url": "https://www.ich.org/page/efficacy-guidelines",
-          "license": "ICH — redistribution under review",
-          "tags": ["estimands", "statistics"]
-        },
-        {
-          "id": "biosciences-clinical-trials/consort-diagram-2014",
-          "title": "CONSORT participant flow diagram",
-          "path": "shared/consort_diagram_2014.pdf",
-          "version": 1,
-          "kind": "document",
-          "source_url": "https://www.consort-statement.org/",
-          "license": "CONSORT (freely available)",
-          "tags": ["reporting", "flow-diagram"]
         }
       ]
     },

@@ -13,7 +13,7 @@ import { config } from '../config.js';
 const ITEM_KINDS = ['document', 'knowledge-card'];
 
 export class CatalogError extends Error {
-  /** @param {'invalid_path'|'outside_root'|'not_found'|'invalid_manifest'} code */
+  /** @param {'invalid_path'|'outside_root'|'not_found'|'invalid_manifest'|'conflict'} code */
   constructor(code, message) {
     super(message);
     this.name = 'CatalogError';
@@ -52,23 +52,14 @@ export function resolveCatalogFile(relPath) {
   return abs;
 }
 
-/** Whether an item's content file exists in this checkout (seed availability). */
-export async function catalogFileExists(relPath) {
-  const abs = resolveCatalogFile(relPath);
-  try {
-    return (await stat(abs)).isFile();
-  } catch (err) {
-    if (err.code === 'ENOENT') return false;
-    throw err;
-  }
-}
-
 /**
- * Read one catalog content file for import. Re-checks containment on the
- * realpath so a symlink inside guidance-docs/ cannot serve bytes from outside.
- * @returns {Promise<Buffer>}
+ * Resolve a catalog path all the way to its realpath, enforcing containment on
+ * the resolved target so a symlink inside guidance-docs/ cannot reach outside.
+ * The single confinement rule shared by existence checks and reads: a file
+ * that cannot legally be read through this boundary must never be reported as
+ * available either.
  */
-export async function readCatalogFile(relPath) {
+async function realCatalogFile(relPath) {
   const abs = resolveCatalogFile(relPath);
   let real;
   try {
@@ -83,7 +74,33 @@ export async function readCatalogFile(relPath) {
   if (real !== root && !real.startsWith(root + sep)) {
     throw new CatalogError('outside_root', `Catalog path escapes guidance-docs/: ${relPath}`);
   }
-  return readFile(real);
+  return real;
+}
+
+/**
+ * Whether an item's content file exists in this checkout (seed availability).
+ * Same realpath confinement as readCatalogFile: a missing file and a symlink
+ * escaping the catalog root are both simply unavailable.
+ */
+export async function catalogFileExists(relPath) {
+  let real;
+  try {
+    real = await realCatalogFile(relPath);
+  } catch (err) {
+    if (err instanceof CatalogError
+      && (err.code === 'not_found' || err.code === 'outside_root')) return false;
+    throw err;
+  }
+  return (await stat(real)).isFile();
+}
+
+/**
+ * Read one catalog content file for import. Re-checks containment on the
+ * realpath so a symlink inside guidance-docs/ cannot serve bytes from outside.
+ * @returns {Promise<Buffer>}
+ */
+export async function readCatalogFile(relPath) {
+  return readFile(await realCatalogFile(relPath));
 }
 
 const fail = (msg) => { throw new CatalogError('invalid_manifest', `catalog.json: ${msg}`); };

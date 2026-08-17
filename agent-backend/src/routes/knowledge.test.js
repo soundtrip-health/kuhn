@@ -5,7 +5,7 @@
 // reimport, dedupe stamping, validation refusals, audit rows. Real SQLite +
 // real storage in temp dirs; ingestion mocked (006-002 has its own tests).
 
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,7 @@ vi.mock('../ingest.js', () => ({ queueIngest: vi.fn() }));
 const ORG = 1;
 const STYLE = 'writing/style';
 const ABSENT = 'writing/absent';
+const EXTRA = 'writing/extra';
 
 let config; let exec; let querySync;
 let server; let base; let cookies = {};
@@ -61,6 +62,7 @@ beforeAll(async () => {
 
   await mkdir(join(catalogRoot, 'writing'), { recursive: true });
   await writeFile(join(catalogRoot, 'writing', 'style.md'), '# Style guide\n\nWrite plainly.\n');
+  await writeFile(join(catalogRoot, 'writing', 'extra.md'), '# Extra\n\nMore guidance.\n');
   await writeFile(join(catalogRoot, 'catalog.json'), JSON.stringify({
     catalog_version: 1,
     packages: [{
@@ -70,6 +72,7 @@ beforeAll(async () => {
       items: [
         { id: STYLE, title: 'Style', path: 'writing/style.md', version: 1, kind: 'document' },
         { id: ABSENT, title: 'Absent', path: 'writing/absent.md', version: 1, kind: 'document' },
+        { id: EXTRA, title: 'Extra', path: 'writing/extra.md', version: 1, kind: 'knowledge-card' },
       ],
     }],
   }));
@@ -97,6 +100,7 @@ beforeAll(async () => {
   app.use(express.json());
   app.use(session);
   app.use((await import('./knowledge.js')).default);
+  app.use((await import('./org-library.js')).default);
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
 });
@@ -175,13 +179,16 @@ describe('enable → import → disable', () => {
     let { packages } = await (await call('GET', `/api/orgs/${ORG}/knowledge`, 'viewer')).json();
     expect(item(packages, STYLE)).toMatchObject({ imported_version: 1, update_available: true });
 
+    // The catalog content is unchanged, only the version label moved — the
+    // reimport recognizes identical bytes and restamps the existing document
+    // instead of destroying and recreating it.
     const oldDocId = importedDoc(STYLE).id;
     const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
       { items: [STYLE] });
     expect(res.status).toBe(200);
     ({ packages } = await res.json());
     const doc = importedDoc(STYLE);
-    expect(doc.id).not.toBe(oldDocId);
+    expect(doc.id).toBe(oldDocId);
     expect(doc.catalog_item_version).toBe(2);
     expect(item(packages, STYLE)).toMatchObject({ imported_version: 2, update_available: false });
   });
@@ -210,19 +217,64 @@ describe('enable → import → disable', () => {
     ).rows).toMatchObject([{ meta: JSON.stringify({ items: [STYLE] }) }]);
   });
 
-  it('enabling an item whose bytes already exist as an upload stamps the catalog link', async () => {
-    const { readFile } = await import('node:fs/promises');
+  it('a deduped upload is adopted on enable and unlinked — never deleted — on disable (PLA-255 §1)', async () => {
+    // A user uploads bytes identical to the catalog item, before any catalog
+    // involvement. Remember everything about it.
     const bytes = await readFile(join(catalogRoot, 'writing', 'style.md'));
     const { document } = await storeOrgDocument(ORG, bytes, { filename: 'my-copy.md' });
     expect(document.catalog_item_id).toBeNull();
+    expect(document.source).toBe('upload');
+    querySync('INSERT INTO org_document_chunks (doc_id, seq, text) VALUES ($1, 0, $2)',
+      [document.id, 'Write plainly.']);
 
-    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+    // Enabling the catalog item adopts the upload via (org, sha256) dedupe.
+    let res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
       { enable: [STYLE] });
     expect(res.status).toBe(200);
-    expect(importedDoc(STYLE)).toMatchObject({ id: document.id, catalog_item_version: 2 });
+    expect(importedDoc(STYLE)).toMatchObject(
+      { id: document.id, source: 'upload', catalog_item_version: 2 });
 
-    // Cleanup for any later cases.
-    await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner', { disable: [STYLE] });
+    // Disabling removes only the catalog association. The user's document —
+    // row, source, bytes, chunks — survives untouched.
+    res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner', { disable: [STYLE] });
+    expect(res.status).toBe(200);
+    const survivor = querySync(
+      'SELECT * FROM org_documents WHERE org_id = $1 AND id = $2', [ORG, document.id]).rows[0];
+    expect(survivor).toMatchObject({
+      source: 'upload', filename: 'my-copy.md', sha256: document.sha256,
+      catalog_item_id: null, catalog_item_version: null,
+    });
+    await stat(join(orgsRoot, String(ORG), 'library', String(document.id), 'my-copy.md'));
+    expect(querySync(
+      'SELECT COUNT(*) AS n FROM org_document_chunks WHERE doc_id = $1', [document.id],
+    ).rows[0].n).toBe(1);
+    expect(selections()).toEqual([]);
+    expect(importedDoc(STYLE)).toBeNull();
+
+    // Remove the upload so later suites exercise fresh catalog-owned imports.
+    querySync('DELETE FROM org_documents WHERE org_id = $1 AND id = $2', [ORG, document.id]);
+  });
+
+  it('a deduped project promotion survives disable the same way (PLA-255 §1)', async () => {
+    const bytes = await readFile(join(catalogRoot, 'writing', 'extra.md'));
+    const { document } = await storeOrgDocument(ORG, bytes,
+      { filename: 'promoted.md', source: 'project-promotion' });
+    expect(document.source).toBe('project-promotion');
+
+    let res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [EXTRA] });
+    expect(res.status).toBe(200);
+    expect(importedDoc(EXTRA)).toMatchObject({ id: document.id, source: 'project-promotion' });
+
+    res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner', { disable: [EXTRA] });
+    expect(res.status).toBe(200);
+    expect(querySync(
+      'SELECT * FROM org_documents WHERE org_id = $1 AND id = $2', [ORG, document.id]).rows[0])
+      .toMatchObject({ source: 'project-promotion', catalog_item_id: null });
+    await stat(join(orgsRoot, String(ORG), 'library', String(document.id), 'promoted.md'));
+    expect(importedDoc(EXTRA)).toBeNull();
+
+    querySync('DELETE FROM org_documents WHERE org_id = $1 AND id = $2', [ORG, document.id]);
   });
 });
 
@@ -241,5 +293,175 @@ describe('validation refusals (post-guard)', () => {
     expect((await res.json()).error).toBeTruthy();
     // Refusals are all-or-nothing: no partial state was written.
     expect(selections()).toEqual([]);
+  });
+});
+
+describe('reimport preserves the last good import (PLA-255 §2)', () => {
+  const stylePath = () => join(catalogRoot, 'writing', 'style.md');
+  const docDir = (id) => join(orgsRoot, String(ORG), 'library', String(id));
+  let original; // the catalog-owned import every failure case must preserve
+
+  it('setup: enable creates a fresh catalog-owned import', async () => {
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [STYLE] });
+    expect(res.status).toBe(200);
+    original = importedDoc(STYLE);
+    expect(original).toMatchObject({ source: 'guidance-import', catalog_item_version: 2 });
+    await stat(join(docDir(original.id), 'style.md'));
+  });
+
+  it('missing replacement file → 502, previous import intact', async () => {
+    await rename(stylePath(), `${stylePath()}.bak`);
+    const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+      { items: [STYLE] });
+    await rename(`${stylePath()}.bak`, stylePath());
+    expect(res.status).toBe(502);
+    expect(importedDoc(STYLE)).toMatchObject({ id: original.id, sha256: original.sha256 });
+    await stat(join(docDir(original.id), 'style.md'));
+    expect(selections()).toEqual([STYLE]);
+  });
+
+  it('containment failure (escaping symlink) → 502, previous import intact', async () => {
+    const outside = join(tmpdir(), 'kuhn-knowledge-outside.md');
+    await writeFile(outside, 'bytes outside the catalog root');
+    await symlink(outside, join(catalogRoot, 'writing', 'escape.md'));
+    querySync("UPDATE knowledge_items SET path = 'writing/escape.md' WHERE id = $1", [STYLE]);
+    const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+      { items: [STYLE] });
+    querySync("UPDATE knowledge_items SET path = 'writing/style.md' WHERE id = $1", [STYLE]);
+    await rm(outside, { force: true });
+    expect(res.status).toBe(502);
+    expect(importedDoc(STYLE)).toMatchObject({ id: original.id, sha256: original.sha256 });
+    await stat(join(docDir(original.id), 'style.md'));
+  });
+
+  it('storage write failure on changed bytes → 502, previous import intact, no orphan row', async () => {
+    await writeFile(stylePath(), '# Style guide v3\n\nDifferent bytes this time.\n');
+    const savedMax = config.storage.maxFileBytes;
+    config.storage.maxFileBytes = 4; // replacement write must fail
+    const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+      { items: [STYLE] });
+    config.storage.maxFileBytes = savedMax;
+    expect(res.status).toBe(502);
+    expect(importedDoc(STYLE)).toMatchObject({ id: original.id, sha256: original.sha256 });
+    await stat(join(docDir(original.id), 'style.md'));
+    expect(querySync(
+      `SELECT COUNT(*) AS n FROM org_documents WHERE org_id = ${ORG}`,
+    ).rows[0].n).toBe(1);
+    // Back to the original bytes for the identical-bytes case below.
+    await writeFile(stylePath(), '# Style guide\n\nWrite plainly.\n');
+  });
+
+  it('identical bytes: reimport restamps the version, keeping the same document', async () => {
+    querySync('UPDATE knowledge_items SET version = 3 WHERE id = $1', [STYLE]);
+    const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+      { items: [STYLE] });
+    expect(res.status).toBe(200);
+    expect(importedDoc(STYLE)).toMatchObject(
+      { id: original.id, sha256: original.sha256, catalog_item_version: 3 });
+    expect(querySync(
+      `SELECT COUNT(*) AS n FROM org_documents WHERE org_id = ${ORG}`,
+    ).rows[0].n).toBe(1);
+    // Two successful reimports so far (the version-bump case above and this
+    // one); the three failed attempts in between audited nothing.
+    const audited = querySync(
+      "SELECT meta FROM auth_events WHERE type = 'knowledge.reimport'").rows;
+    expect(audited).toHaveLength(2);
+    expect(audited.every((r) => r.meta === JSON.stringify({ items: [STYLE] }))).toBe(true);
+  });
+
+  it('changed bytes: replacement is stored before the old catalog-owned copy is removed', async () => {
+    await writeFile(stylePath(), '# Style guide v4\n\nGenuinely new content.\n');
+    const res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+      { items: [STYLE] });
+    expect(res.status).toBe(200);
+    const doc = importedDoc(STYLE);
+    expect(doc.id).not.toBe(original.id);
+    expect(doc.sha256).not.toBe(original.sha256);
+    expect(doc).toMatchObject({ source: 'guidance-import', catalog_item_version: 3 });
+    await stat(join(docDir(doc.id), 'style.md'));
+    // The old catalog-owned copy is gone — row and bytes.
+    expect(querySync(
+      `SELECT COUNT(*) AS n FROM org_documents WHERE org_id = ${ORG}`,
+    ).rows[0].n).toBe(1);
+    await expect(stat(docDir(original.id))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('an adopted upload is unlinked, not deleted, by a changed-bytes reimport', async () => {
+    // Turn the current import into an adopted upload: disable (removes the
+    // catalog-owned copy), upload identical bytes, re-enable (adopts).
+    await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner', { disable: [STYLE] });
+    const bytes = await readFile(stylePath());
+    const { document: mine } = await storeOrgDocument(ORG, bytes, { filename: 'adopted.md' });
+    let res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [STYLE] });
+    expect(res.status).toBe(200);
+    expect(importedDoc(STYLE)).toMatchObject({ id: mine.id, source: 'upload' });
+
+    await writeFile(stylePath(), '# Style guide v5\n\nNewer still.\n');
+    res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner', { items: [STYLE] });
+    expect(res.status).toBe(200);
+    const doc = importedDoc(STYLE);
+    expect(doc.id).not.toBe(mine.id);
+    expect(doc.source).toBe('guidance-import');
+    // The user's upload survives, merely unlinked.
+    expect(querySync(
+      'SELECT * FROM org_documents WHERE org_id = $1 AND id = $2', [ORG, mine.id]).rows[0])
+      .toMatchObject({ source: 'upload', catalog_item_id: null, catalog_item_version: null });
+    await stat(join(docDir(mine.id), 'adopted.md'));
+  });
+});
+
+describe('batch failure semantics (PLA-255 §6)', () => {
+  const extraPath = () => join(catalogRoot, 'writing', 'extra.md');
+
+  it('a failed enable records no selection and no audit row', async () => {
+    // EXTRA is available per the catalog rows, but its file vanishes on disk.
+    await rename(extraPath(), `${extraPath()}.bak`);
+    const before = querySync(
+      "SELECT COUNT(*) AS n FROM auth_events WHERE type = 'knowledge.enable'").rows[0].n;
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [EXTRA] });
+    await rename(`${extraPath()}.bak`, extraPath());
+    expect(res.status).toBe(502);
+    expect(selections()).not.toContain(EXTRA); // no half-written selection
+    expect(importedDoc(EXTRA)).toBeNull();
+    expect(querySync(
+      "SELECT COUNT(*) AS n FROM auth_events WHERE type = 'knowledge.enable'").rows[0].n)
+      .toBe(before);
+  });
+
+  it('a mixed batch stops at the failure and audits exactly what happened', async () => {
+    // STYLE is enabled from the previous suite; EXTRA's file goes missing.
+    await rename(extraPath(), `${extraPath()}.bak`);
+    const res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { disable: [STYLE], enable: [EXTRA] });
+    await rename(`${extraPath()}.bak`, extraPath());
+    expect(res.status).toBe(502);
+    // The disable half really happened and is audited…
+    expect(selections()).toEqual([]);
+    expect(querySync(
+      "SELECT meta FROM auth_events WHERE type = 'knowledge.disable' ORDER BY id DESC LIMIT 1",
+    ).rows[0].meta).toBe(JSON.stringify({ items: [STYLE] }));
+    // …the enable half cleanly did not.
+    expect(importedDoc(EXTRA)).toBeNull();
+  });
+});
+
+describe('catalog-linked documents refuse the ordinary library delete', () => {
+  it('DELETE /library/:docId → 409 while linked; disabling remains the way out', async () => {
+    let res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [STYLE] });
+    expect(res.status).toBe(200);
+    const doc = importedDoc(STYLE);
+
+    res = await call('DELETE', `/api/orgs/${ORG}/library/${doc.id}`, 'owner');
+    expect(res.status).toBe(409);
+    expect(importedDoc(STYLE)).toMatchObject({ id: doc.id });
+
+    res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { disable: [STYLE] });
+    expect(res.status).toBe(200);
+    expect(importedDoc(STYLE)).toBeNull();
   });
 });

@@ -155,6 +155,16 @@ router.delete('/api/orgs/:orgId/library/:docId', async (req, res) => {
     res.status(404).json({ error: 'document not found' });
     return;
   }
+  if (doc.catalog_item_id != null) {
+    // Issue #65: a catalog-linked document is managed through the Knowledge
+    // tab — deleting the copy while the selection stands would desync the
+    // two. Disabling the selection deletes (or, for an adopted upload,
+    // unlinks) it through routes/knowledge.js.
+    res.status(409).json({
+      error: 'document is managed by the knowledge catalog — disable the catalog selection instead',
+    });
+    return;
+  }
   try {
     await deleteOrgEntry(orgId, String(doc.id)); // the whole <docId>/ dir
   } catch (err) {
