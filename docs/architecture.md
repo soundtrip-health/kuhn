@@ -22,7 +22,10 @@ A Node.js backend hosts the agent runtime, project storage, rendering/export, an
 collaboration servers.
 
 For the operator's view — where data is persisted, how it is processed, and what leaves
-the machine — see [data-pipeline.md](data-pipeline.md) (story 040).
+the machine — see [data-pipeline.md](data-pipeline.md) (story 040). For the production
+security model (trust boundaries, principals, data classification, threat inventory) see
+the [threat model](security/threat-model.md), and for the intended production topology
+and scale boundary see [ADR 002](adr/002-production-deployment-topology.md).
 
 ## Document Format Strategy
 

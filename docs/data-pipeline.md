@@ -10,6 +10,12 @@ database, and a data directory on the host you run it on. There is no Kuhn
 cloud service. Data leaves your machine only through the four egress paths in
 [§5](#5-what-leaves-the-machine).
 
+> This page is the operator's data inventory. The production **threat model**
+> (trust boundaries, data-class sensitivity/encryption/backup/egress table, and
+> the threat→remediation map) builds on it in
+> [security/threat-model.md](security/threat-model.md); the production
+> **deployment topology** is [ADR 002](adr/002-production-deployment-topology.md).
+
 ```mermaid
 flowchart LR
   subgraph Browser

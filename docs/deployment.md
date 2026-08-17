@@ -6,6 +6,16 @@ port (default **3002**), so a deployment needs exactly one service exposed to
 the network — typically behind a TLS-terminating tunnel or reverse proxy such
 as a Cloudflare Tunnel.
 
+> **Production architecture:** this page documents how to run the current
+> single-process build. For the *intended* production topology for the first
+> real-team pilot — the worker/sandbox split, database and file-storage
+> decisions, backup/restore ownership, and the scale ceiling — see
+> [ADR 002: production deployment topology](adr/002-production-deployment-topology.md).
+> For the security model (trust boundaries, data classification, threats), see
+> the [threat model](security/threat-model.md). Several hardening items called
+> out below (fail-closed auth, backups, sandbox isolation) are tracked work, not
+> yet implemented on `main`.
+
 ## Requirements
 
 - **Node.js LTS** (e.g. 24). Node 26 currently fails to build the native
