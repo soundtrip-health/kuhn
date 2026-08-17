@@ -1,6 +1,7 @@
 # Kuhn production threat model & data classification
 
-> **Status:** Baseline — first production-pilot revision, 2026-08-16 (PLA-224).
+> **Status:** Baseline — first production-pilot revision, 2026-08-16; revised
+> 2026-08-17 after architecture review (PLA-224).
 > **Scope:** the small-team, single-deployment production pilot defined in
 > [ADR 002 — production deployment topology](../adr/002-production-deployment-topology.md).
 > **Companion documents:** [architecture.md](../architecture.md) (what the system is),
@@ -42,7 +43,14 @@ a deliberate pilot choice (ADR 002), but it means **almost every trust boundary 
 logical boundary inside one OS process**, not a network boundary — a property this
 model returns to repeatedly.
 
-### 1.1 Trust-boundary diagram
+### 1.1 Trust-boundary diagram — current implementation
+
+This diagram shows the system **as implemented today**: one Node process, direct
+Docker invocation, in-memory registries. The **target production-pilot topology**
+(web + worker + sandbox service, DB-backed event/control seam) is a different,
+deliberate picture — see the "Pilot topology (target state)" diagram in
+[ADR 002](../adr/002-production-deployment-topology.md) and the target boundaries
+in §1.3 below.
 
 ```mermaid
 flowchart TB
@@ -127,7 +135,7 @@ flowchart TB
 | B17 | Docker/container control plane | Host privilege | `spawn('docker', …)` `sandbox.js:56` | **The web process holds host-root-equivalent Docker access.** This is the sharpest topology boundary — see T-24, PLA-240. |
 | B18 | SMTP | Network | `mailer.js:10-15` | Optional; unset → links printed to stdout. |
 | B19 | Future OIDC / identity provider | Network | *Not built* — PLA-237 | Magic-link is the only real-auth mode today. |
-| B20 | Reverse proxy / TLS boundary | Network | Operator-provided; `trust proxy` **trusts all hops** `index.js:38` | See T-25 (host-header injection). |
+| B20 | Reverse proxy / TLS boundary | Network | Operator-provided; `trust proxy` **trusts all hops** `index.js:38` | See T-27 (host-header injection). |
 | B21 | Backups | Storage | *Not built* — PLA-242 | No backup/restore/retention exists. |
 | B22 | Deployment / operator access | Host | `.env`, DB file, `git pull` upgrade | `.env` edit + restart ⇒ self-provisioned super-admin (T-05). |
 
@@ -136,7 +144,24 @@ single OS process and its host*. There is no network or privilege separation bet
 the request handler, the agent runtime, the SQLite file, the project files, and the
 Docker socket. Compromise of the web process is compromise of everything the host can
 reach, including host-root via Docker. The production topology (ADR 002) narrows the
-worst of these — chiefly B17 — but the pilot deliberately keeps B6/B10/B11 co-resident.
+worst of these — chiefly B17 — and replaces B10 with the cross-process seam below.
+
+### 1.3 Target production-pilot boundaries (ADR 002)
+
+Once ADR 002's worker/sandbox split is implemented (PLA-244/240/243), the boundary
+inventory grows these rows. They are targets — reviews of the implementing PRs must
+check them, and this table supersedes B10/B17's "in-process" characterization for the
+target state:
+
+| # | Boundary | Kind | Contract | Security relevance |
+|---|---|---|---|---|
+| TB-1 | **Web ↔ worker: durable event/control seam** | Cross-process via shared SQLite | Ordered append-only job/domain event rows (worker→web); persisted `ask_user` replies, cancellation, suspension flags (web→worker); optional local wakeup that correctness never depends on (ADR 002 §2.3) | This is job events, question/reply delivery, and Yjs/reviewer-room invalidation becoming **integrity/authorization-bearing state**: event rows drive what the web shows and closes, control rows drive what the worker executes. Replay must be idempotent; durable mutations execute exactly once in the originating process (ADR 002 §2.4). Audit/idempotency: PLA-243. |
+| TB-2 | **Web/worker ↔ sandbox service** | Local RPC (Unix socket/loopback) | Narrow enumerated render/ingest request types; never arbitrary commands; web calls it synchronously for render/export, worker for ingestion | The web and worker processes hold **no Docker access**; only the sandbox service touches the daemon (closes T-25). PLA-240. |
+| TB-3 | **Sandbox service ↔ Docker daemon** | Host privilege | The single Docker client; hardened flags, digest-pinned images, own concurrency cap | Replaces B17. A web/worker compromise can *request* enumerated jobs, not run containers. |
+| TB-4 | **Worker ↔ model provider / research APIs** | Network egress | Provider/model calls move to the worker; egress policy per §4 | Egress concentration in one non-request-serving process; spend controls (PLA-238) live here. |
+| TB-5 | **Web + worker ↔ shared SQLite + files** | Multi-process file access | WAL + `busy_timeout`; `storage.js` chokepoint in both processes; same service user | Two processes now trust the same durable stores; tenancy invariants must hold identically in both (PLA-243 matrix). |
+| TB-6 | **Data backup destination** | Storage (off-host) | Encrypted online-backup DB destination + files/orgs under a write barrier (ADR 002 §8.1–8.5) | Contains Confidential data, **no secrets** (T-32). PLA-242. |
+| TB-7 | **Secret escrow** | Separate security domain | `KUHN_SESSION_SECRET`, future master key; provider credentials preferably reissued (ADR 002 §8.3) | Never co-located with the data backup — ciphertext and key stay in different domains. |
 
 ---
 
@@ -222,7 +247,7 @@ Columns: **Tier** · **Scope** · **Persistence** · **Enc-at-rest expectation**
 | **Citations / bibliographic metadata** | Internal→Confidential | Tenant/project | `bib_references` (incl. PubMed abstracts) | Standard | Required | With project | Query text may | If read | **Query text + PMIDs to PubMed/arXiv** | `.bib` in workspace |
 | **User identity / membership** | Internal | User / deployment | `users`, `memberships`, `organizations` — **email + display name only PII** | Standard | Required | User delete keeps content with attribution nulled (`ON DELETE SET NULL`) | Email appears in login-link logs | Reviewer display name server-stamped into Yjs awareness | No | No |
 | **Auth tokens / session cookies** | **Secret** | User | `sessions`, `auth_tokens` — **sha256 hashes only**, never raw `db/auth.js` | **Required** | Required (but rotating `SESSION_SECRET` invalidates all) | Expired pruned opportunistically; **no revoke on role change** | **Raw token must never log** (does today if SMTP unset — T-08) | **Never** | Never | Never |
-| **Invitation / review-link secrets** | **Secret** | Org / link | `invitations`, `review_links` — sha256 only | **Required** | Required | Single-use / TTL; revoke deletes sessions | **Raw token logs today when SMTP unset** (T-08); also in URL path (T-15) | Never | Never | Never |
+| **Invitation / review-link secrets** | **Secret** | Org / link | `invitations`, `review_links` — sha256 only | **Required** | Required | Single-use / TTL; revoke deletes sessions | **Invitation** raw token logs today when SMTP unset (T-08). **Review-link** raw tokens are *never* mailed or printed — returned once in the mint response only (`routes/review-links.js:56`); their exposure is the URL path/history/proxy logs (T-15) | Never | Never | Never |
 | **Provider credentials** (`ANTHROPIC_API_KEY`, SMTP URL) | **Secret** | Deployment | `agent-backend/.env` only | **Required** (host) | **Required, isolated** | Manual | **Never** (code never sees them) | Never | Never | Never |
 | **Provider/model configuration** | Internal | Deployment (today) / future org BYOK | `agents.model`, `config.js` | Standard | Required | Config | Non-secret | n/a | n/a | n/a |
 | **Audit events** | Internal | Org/user | `auth_events` (`invite.*`, `org.*`, `knowledge.*`) | Standard | Required | Kept; **nothing reads them today** `db/auth-events.js:2` | Safe fields | No | No | No |
@@ -245,7 +270,9 @@ Columns: **Tier** · **Scope** · **Persistence** · **Enc-at-rest expectation**
 - **Secrets are correctly hashed at rest in the DB** (`db/auth.js`) and correctly kept
   out of the container environment (`sandbox.js` passes **no** `-e`/`--env-file`;
   verified). The two secret-handling defects are *transport*, not storage: raw tokens
-  to stdout when SMTP is unset (T-08) and review tokens in the URL path (T-15).
+  login/invite tokens to stdout when SMTP is unset (T-08) and review tokens in the URL
+  path (T-15). Review-link tokens never pass through the mailer/stdout fallback at
+  all — the raw token appears only in the mint response (`routes/review-links.js:56`).
 
 ---
 
@@ -327,7 +354,7 @@ tracked, not built.
 | ID | Threat | Sev | Attacker / prereq | Impact | Current control | Evidence | Residual | Issue |
 |---|---|---|---|---|---|---|---|---|
 | **T-07** | **Cross-tenant access / IDOR** — reference another org's project/doc by id | **High** (baseline risk) | Authenticated member | Read/write another tenant's content | **Strong**: single chokepoint `checkOrgAccess`; org derived from project row, not client input; non-leaking 404; last-owner invariant | `db/orgs.js:33-59`, `routes/guards.js:26-64`, matrix `tenancy-matrix.test.js:175-335` | **Well-controlled today**; the risk is *regression* as provider/worker surfaces are added | **PLA-243** (extend matrix + audit) |
-| **T-08** | **Auth/invite/review secrets to stdout** — SMTP unset ⇒ live single-use login & invite links printed to server console | **High** | Operator runs magic-link without `KUHN_SMTP_URL`; anyone who reads logs | Account takeover from log aggregation | Documented as intended dev behaviour | `mailer.js:19-22,41-44`, `deployment.md:130-137` | **Not fixed** — nothing ties SMTP-configured to auth mode | **PLA-236** (fail-closed), PLA-245 (log hygiene) |
+| **T-08** | **Auth/invite secrets to stdout** — SMTP unset ⇒ live single-use login & invite links printed to server console (review-link tokens are *not* affected: they never pass through the mailer — minted and returned in-response only, `routes/review-links.js:56`; their URL-exposure risk is T-15) | **High** | Operator runs magic-link without `KUHN_SMTP_URL`; anyone who reads logs | Account takeover from log aggregation | Documented as intended dev behaviour | `mailer.js:19-22,41-44`, `deployment.md:130-137` | **Not fixed** — nothing ties SMTP-configured to auth mode | **PLA-236** (fail-closed), PLA-245 (log hygiene) |
 | **T-09** | **Stale authorization on long-lived streams** — open SSE feed / running job authorized once | Medium | Member removed mid-stream | Continues receiving live project events / agent output until disconnect | Per-request re-auth covers new requests; Yjs swept | `routes/projects.js:316-343`, `routes/agent.js:47-55` | SSE & jobs not re-checked | PLA-244, PLA-237 |
 | **T-10** | **Guest review-link abuse** — guest escapes the linked document | Medium | Holder of a review link | Reach other docs / projects | **Strong**: no path/project parameter; scope from link row; comment ops constrained to the linked doc; per-request DB re-validation; suspension-checked | `review-auth.js:44-51`, `routes/review.js:9-11,84-99`, `db/review-links.js:166-187` | Well-controlled; residual is link-in-URL exposure (T-15) and unthrottled claim (T-18) | PLA-238 |
 | **T-11** | **Super-admin reads tenant content** | — (non-threat) | — | — | **Structurally impossible**: flag read only in `requireSuperadmin`; chokepoint ignores it | `routes/guards.js:71-75`, `tenancy-matrix.test.js:296-305,380-395` | Invariant holds; keep the matrix test green | PLA-243 |
@@ -361,7 +388,7 @@ tracked, not built.
 | **T-24** | **Sandbox escape → host** — container escape from Typst/Pandoc/poppler | **High** | Malicious document + a container 0-day | Reach the host; the web process runs as a Docker-privileged user | `--network none`, `:ro` project mount, cpu/mem/pids caps, 60 s kill, **zero credentials in env** | `sandbox.js:23-36`, verified no `-e` | **Hardening gaps**: no `--user`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--tmpfs`, `--ulimit fsize` | **PLA-240** |
 | **T-25** | **Web-process compromise ⇒ host-root via Docker** — the public Node process directly invokes the `docker` CLI; Docker socket access is host-root-equivalent | **Critical** | Any RCE foothold in the web process (e.g. via a dependency) | Full host compromise | None — Docker control is co-resident with request serving | `sandbox.js:56` | **Not fixed** — the central topology finding | **PLA-240** (isolate behind a narrow sandbox service; ADR 002 §6) |
 | **T-26** | **Supply-chain / unpinned images** — `:latest` for Typst/Pandoc/poppler; no digest pinning | Medium | Upstream image compromise between pulls | Malicious parser runs on untrusted docs | Sandbox contains network; images process untrusted input | `config.js:152-155` | **Not fixed** | PLA-240 (pin), PLA-247/248 (build gates) |
-| **T-27** | **Reverse-proxy / trusted-header mistake** — `trust proxy` trusts *all* hops; magic-link/invite/review URLs built from `req.protocol`+`Host` | High | Direct origin reach, or a proxy that forwards client `X-Forwarded-*` | **Host-header injection**: trigger `request-link` for a victim, emailed login link points at attacker host | Correct behind a proxy that sets the headers and blocks direct reach | `index.js:38`, `routes/auth.js:48`, `routes/orgs.js:109`, `routes/review-links.js:80` | **Not fixed** — `trust proxy` should be a bounded production policy | **PLA-236**, ADR 002 §7 |
+| **T-27** | **Reverse-proxy / trusted-header mistake** — `trust proxy` trusts *all* hops; magic-link/invite/review URLs built from `req.protocol`+`Host` | High | Direct origin reach, or a proxy that forwards client `X-Forwarded-*` | **Host-header injection**: trigger `request-link` for a victim, emailed login link points at attacker host | Correct behind a proxy that sets the headers and blocks direct reach | `index.js:38`, `routes/auth.js:48`, `routes/orgs.js:109`, `routes/review-links.js:80` | **Not fixed** — production credential URLs must be minted from the canonical configured origin (`KUHN_APP_URL`), removing request Host from the path entirely; bounded `trust proxy` remains defense-in-depth for request metadata | **PLA-236**, ADR 002 §7 |
 | **T-28** | **Stale/uncontrolled jobs after suspension/removal** — org suspension does **not** kill in-flight agent runs; parked `ask_user` runs live indefinitely with unbounded event buffers | High | Suspended tenant with a run in flight; or any run parked on a question | Suspended tenant keeps mutating files + spending budget until the run ends; memory growth from parked runs | Suspension stops *new* dispatch and `search_org_knowledge`; documented gap | `runtime.js:1029-1033`, `config.js:87-90`, `runtime.js:179-184` | **Not fixed** | **PLA-244** |
 | **T-29** | **Provider outage / retry storm** — 5-attempt exponential backoff per turn; resume-on-retry can re-stream a half-completed turn | Medium | Provider degradation | Amplified load; duplicated partial output | Full-jitter backoff, cap 30 s; transient classification | `runtime.js:287-307,459-474` | No circuit breaker; no wall-clock run timeout | PLA-244/245 |
 
@@ -373,7 +400,7 @@ tracked, not built.
 | **T-31** | **SQLite/file corruption or partial upgrade** — startup runs `DROP TABLE`-based rebuilds on live data; no version table; `initDb` failure **starts the server anyway** | **High** | Any restart after a schema change; crash mid-rebuild | Corrupt/half-migrated DB; a running-but-broken service a supervisor won't catch | Rebuilds are transactional + `foreign_key_check`; WAL | `db/init.js:82-183,211-227`, `index.js:116-119` | **Not fixed** — no migration ledger, no pre-migration backup, no fail-closed | **PLA-241**, PLA-236 |
 | **T-32** | **Backup leakage** — future backups will contain Confidential + Secret data | High (future) | Backup store compromise | Whole-tenant disclosure incl. secrets | *Not built* | — | Design must isolate & encrypt backups; retain tenant isolation | **PLA-242** |
 | **T-33** | **Operator mistakes during deploy/restore** — upgrade is `git pull && npm install && npm run build`; no reproducible artifact, no rollback, no graceful shutdown (no SIGTERM handler; pending git commits `unref`'d and lost) | High | Routine operations | Lost coalesced edits; phantom `running` jobs; inconsistent state | systemd `Restart=on-failure` | `deployment.md:184-193`, no shutdown handler (grep) | **Not fixed** | **PLA-248**, PLA-246, PLA-244 |
-| **T-34** | **Backup consistency (WAL)** — 2.7 MB WAL against a 4 KB main DB locally; copying `kuhn.sqlite` alone backs up an essentially empty DB; no `busy_timeout` so external tools hit `SQLITE_BUSY` | Medium | Naive `cp` backup | Silent data loss on restore | WAL integrity survives crashes | `db.js:14-21` (no busy_timeout), `render`/backup notes | Design requires a hot-backup method (`.backup`/`VACUUM INTO`) | **PLA-242** |
+| **T-34** | **Backup consistency (WAL)** — 2.7 MB WAL against a 4 KB main DB locally; copying `kuhn.sqlite` alone backs up an essentially empty DB; no `busy_timeout` so external tools hit `SQLITE_BUSY` | Medium | Naive `cp` backup | Silent data loss on restore | WAL integrity survives crashes | `db.js:14-21` (no busy_timeout), `render`/backup notes | Design requires the SQLite online-backup method (`db.backup()`/`VACUUM INTO`) producing a standalone destination DB — ADR 002 §8.1 | **PLA-242** |
 | **T-35** | **Malicious/compromised dependency** — RCE via npm supply chain; ADR 001 notes 6 known `npm audit` findings on `main` | Medium | Upstream compromise | Web-process RCE ⇒ §1 cascade incl. Docker host-root | None beyond version pinning | ADR 001 §"Package and version policy" | Remediation independent of provider work | PLA-247 (CI gates) |
 | **T-36** | **Unauthenticated `/health` info leak** — echoes `db.error` to unauthenticated callers | Low | Anyone | Minor internal detail disclosure | Minimal payload otherwise | `routes/health.js:6-14` | Low | PLA-246 |
 
@@ -412,10 +439,14 @@ whether it **holds today** or is a **target** the owning issue must deliver.
    `ANTHROPIC_API_KEY`; the sandbox environment carries no credentials. *(Holds for the
    Anthropic key; PLA-239 extends it to BYOK/redaction. T-08's raw-token logging is the
    live violation to close — PLA-236.)*
-8. **Backups retain tenant isolation and encryption expectations.** A backup must
-   capture all three SQLite files (hot), `data/files/` including every `.git`,
-   `data/orgs/`, `.env`, and `guidance-docs/`, be encrypted, be access-controlled, and
-   restore consistently under a known binary version. *(Target — PLA-242.)*
+8. **Backups retain tenant isolation and encryption expectations — and never contain
+   secrets.** The data backup captures a consistent SQLite **online-backup
+   destination** database, `data/files/` including every `.git`, and `data/orgs/`,
+   taken under a brief write barrier; it is encrypted, access-controlled, and restores
+   under the recorded application/schema version. Secret material lives in a
+   **separate escrow domain** — the ciphertext and its key never share a security
+   domain — and `guidance-docs/` restores from the versioned application artifact,
+   not from tenant data. *(Target — PLA-242; ADR 002 §8.)*
 9. **Authorization is re-evaluated for the lifetime of a grant, not only at its start.**
    Long-lived streams (SSE), running jobs, and collaboration sockets must honour role
    removal and suspension within a bounded window; suspension must terminate in-flight

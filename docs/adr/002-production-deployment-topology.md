@@ -55,21 +55,98 @@ trigger that forces a revisit.
 | Area | Pilot decision | Hard trigger to revisit |
 |---|---|---|
 | Web/API | **Single instance**, single port, behind a reverse proxy | Need for a second web replica for availability, or CPU-bound request serving |
-| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases | Worker CPU saturation; need for multiple workers |
+| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases **and a DB-backed durable event/control seam** (§2.3) | Worker CPU saturation; need for multiple workers |
 | Database | **Keep SQLite** (WAL, single writer), accessed by web + worker on one host | Sustained write contention / `SQLITE_BUSY`; need for a second host to touch data → **Postgres** |
 | File storage | **Local durable disk**, backed up with the DB | Multi-host access to files; capacity beyond one volume → network/object storage |
 | Collaboration (Yjs) | **Single-instance in-memory rooms**, durability via autosave | Any second web instance that terminates WebSockets |
-| Sandbox | **Dedicated local sandbox worker/service** with a narrow invocation surface; web process loses direct Docker access | — (this is itself the hardening; larger isolation only if multi-host) |
-| Reverse proxy / TLS | **Required**; bounded `trust proxy`; WS/SSE forwarding; body/timeout limits | Multi-instance → real load balancer |
-| Backup/restore | **One consistent snapshot** of DB(hot)+files+orgs+`.env`+guidance, versioned | Backup window exceeds tolerance → incremental/streaming |
-| Deployment artifact | **Immutable container image** for the server components + pinned sandbox images | — |
-| Observability | Structured logs + readiness/liveness that fail when persistence/worker/sandbox are unhealthy | — |
+| Sandbox | **Dedicated local sandbox service** with a narrow enumerated request surface; the *only* Docker client; web/worker call it over local RPC; **interactive render/export stays synchronous** (§6) | — (this is itself the hardening; larger isolation only if multi-host) |
+| Reverse proxy / TLS | **Required**; credential URLs minted from the **canonical configured origin**, never request Host; bounded `trust proxy` for request metadata only | Multi-instance → real load balancer |
+| Backup/restore | **Two recovery domains**: encrypted data backup (SQLite online-backup destination + files + orgs, under a brief write barrier) and a **separate secret escrow**; app version recorded (§8) | Backup window exceeds tolerance → incremental/streaming |
+| Deployment artifact | **Immutable container image** for the server components (incl. `guidance-docs/`) + digest-pinned sandbox images | — |
+| Observability | Structured logs + **component-specific** readiness: web stays ready when worker/sandbox/provider degrade; affected endpoints 503 (§10) | — |
 
 The through-line: **keep request-serving simple and single-instance; separate the two
 things that are genuinely unsafe or unreliable co-resident — durable background
 execution (PLA-244) and host-privileged Docker control (PLA-240); make persistence
 recoverable (PLA-241/242); and build the *seam* for multi-instance later rather than
 paying its cost now.**
+
+## Pilot topology (target state)
+
+The diagram below is the **target production-pilot topology** this ADR decides —
+three processes on one host, coordinating through SQLite as the durable seam. (The
+*current-implementation* trust-boundary diagram — one process, direct Docker — is in
+the [threat model §1.1](../security/threat-model.md); the two are deliberately
+different pictures.)
+
+```mermaid
+flowchart TB
+  subgraph Clients["Untrusted network"]
+    Member["Member browser"]
+    Guest["External reviewer browser"]
+  end
+
+  RP["Reverse proxy (operator-provided)<br/>TLS termination, WS/SSE forwarding,<br/>body/timeout limits, strips client X-Forwarded-*"]
+
+  subgraph Host["Single production host"]
+    subgraph Web["Web/API process — no Docker access"]
+      API["HTTP/REST + static webapp<br/>member/guest auth<br/>credential URLs from canonical origin"]
+      Live["Web-local live state:<br/>SSE hubs · Yjs rooms · reviewer sockets<br/>move tombstones (projections only)"]
+    end
+    subgraph Worker["Worker process — no Docker access"]
+      Jobs["Durable agent jobs: leases, provider turns,<br/>Kuhn-owned continuation, background ingestion,<br/>git-history commits<br/>bounded per-class concurrency"]
+    end
+    subgraph SbxSvc["Sandbox service — the only Docker client"]
+      SbxAPI["Narrow enumerated request types:<br/>render · export · ingest-extract<br/>own concurrency cap + queue"]
+    end
+    DB[("SQLite (WAL)<br/>domain data · jobs + leases<br/>ordered job/domain event rows<br/>pending questions · replies<br/>cancel + suspension flags")]
+    Files[["data/files/ + per-project .git<br/>data/orgs/ originals"]]
+    Env["agent-backend/.env<br/>(secrets — never in data backup)"]
+    Docker{{"Docker daemon"}}
+    Cont["Sandboxed containers<br/>Typst / Pandoc / poppler<br/>--network none · :ro mounts · digest-pinned"]
+  end
+
+  subgraph Egress["Outbound egress"]
+    Provider["Model provider API"]
+    Research["PubMed / arXiv"]
+    SMTP["SMTP relay (login/invite mail)"]
+  end
+
+  subgraph Recovery["Recovery domains — separate trust zones"]
+    Backup[("Encrypted data backup<br/>online-backup DB destination,<br/>files, orgs, recorded app version")]
+    Escrow[("Secret escrow<br/>KUHN_SESSION_SECRET, future master key;<br/>provider creds preferably reissued")]
+  end
+
+  Member --> RP
+  Guest --> RP
+  RP --> API
+  API --> Live
+  API <-->|"web-originated mutations<br/>+ their event appends"| DB
+  DB -->|"ordered durable event tail<br/>(drives SSE + Yjs/reviewer invalidation)"| Live
+  API -->|"persist reply / cancel<br/>(+ optional local wakeup)"| DB
+  Jobs <-->|"claim/lease · append events<br/>read replies, cancel, suspension"| DB
+  API <--> Files
+  Jobs <--> Files
+  API -->|"synchronous render/export RPC"| SbxAPI
+  Jobs -->|"ingest-extract RPC"| SbxAPI
+  SbxAPI --> Docker --> Cont
+  Cont -.->|":ro mounts"| Files
+  Jobs --> Provider
+  Jobs --> Research
+  API --> SMTP
+  Web -.reads at boot.-> Env
+  Worker -.reads at boot.-> Env
+  DB -.->|"write barrier §8.5"| Backup
+  Files -.->|"write barrier §8.5"| Backup
+  Env -.->|"separate domain §8.3"| Escrow
+```
+
+What the picture pins down: the **web↔worker seam is SQLite** — ordered durable
+event rows flowing worker→web, persisted control state flowing web→worker (§2.3);
+the web process alone owns live connections (SSE, Yjs, reviewer sockets); the worker
+alone talks to the model provider and research APIs; the sandbox service alone talks
+to Docker; and the backup and secret-escrow destinations are separate trust
+domains.
 
 ---
 
@@ -111,12 +188,13 @@ ADR deliberately defers it.
 
 ---
 
-## 2. Background jobs
+## 2. Background jobs — the worker and the web↔worker seam
 
-**Decision:** move agent/background execution into a **dedicated worker process** on the
-**same host**, sharing the same SQLite database and the same file volume, coordinating
-through **DB-backed job leases**. Not a separate service tier, not a message broker — a
-second Node process supervised alongside the web process.
+**Decision:** move durable agent/background execution into a **dedicated worker
+process** on the **same host**, sharing the same SQLite database and the same file
+volume, coordinating through **DB-backed job leases and a DB-backed, append-only
+durable event/control seam** (§2.3). SQLite *is* the channel; no broker, no Redis. Not
+a separate service tier — a second Node process supervised alongside the web process.
 
 **Why:** durable execution is the one part of the runtime that is unsafe co-resident with
 request serving. Today a deploy/restart or a crash loses in-flight runs, parked
@@ -125,7 +203,112 @@ request serving. Today a deploy/restart or a crash loses in-flight runs, parked
 (`runtime.js:1029-1033`). A worker with an explicit lifecycle fixes all three without a
 broker.
 
-**This gives PLA-244 its topology** without re-deciding everything:
+### 2.1 Process ownership
+
+| Process | Owns |
+|---|---|
+| **Web/API** | HTTP/API; member/guest auth; SSE connections; Yjs/WebSocket rooms and the signaling endpoint; reviewer socket registries; move tombstones and every other client-facing **live projection**; web-originated durable mutations (editor uploads/moves/deletes, org-library writes, admin/review state) |
+| **Worker** | Durable agent-job execution; provider/model calls; research-API calls; job leases and lifecycle; resumable Kuhn-owned continuation (ADR 001); background ingestion; git-history commit execution (§2.4); appending job/domain events for its own work |
+| **Sandbox service** | Docker/container invocation **only** — a narrow, enumerated set of render/ingest request types (§6); never an arbitrary command interface |
+
+### 2.2 Why "just move `runAgentTask`" is not enough
+
+Current job/event semantics are **process-local**, and naively relocating the runtime
+would break product behavior. A top-level `runAgentTask()` constructs an `EventChannel`
+whose `onEvent` calls `publishProjectEvent()` (`project-events.js:64`), and that hub
+owns real product invariants, not just UI fan-out: file-activity persistence
+(`recordFileEvent`), path-keyed DB rewrites on moves (`applyMove`, transactional with
+the activity row), review-link revocation on delete, closing the revoked links' live
+reviewer connections, Yjs room eviction, move tombstones and clearing them on new
+writes, reviewer-only-room refresh, git-history scheduling and terminal-job commits,
+and finally SSE fan-out to in-memory subscribers. Separately, `runs.js` holds live run
+handles and `questions.js` holds pending `ask_user` waiters in in-memory `Map`s, and
+`/reply`, `/pending`, and `/reconnect` execute against those maps in the web process
+(`routes/agent.js:122-167`). Move the runtime to a second process without replacing
+these seams and the worker's copy of the hub has no subscribers, no rooms, and no
+reviewer sockets — while the web process can no longer deliver replies or reconnects
+to the run. The contract below is what PLA-244/243 build to.
+
+### 2.3 The durable event/control seam (the pilot contract)
+
+DB-backed in both directions. **Correctness never depends on an ephemeral channel;
+restart correctness comes from persisted state.**
+
+- **Worker → web: ordered durable events.** The worker appends job/domain events —
+  job lifecycle transitions, agent output, `file_change`, question-asked, org
+  `doc_status`, terminal state — as **append-only rows with a per-job monotonic
+  sequence** (project/org events additionally ordered per scope). The web process
+  tails these rows and serves its SSE/client projections and room invalidations from
+  them. A local wakeup (Unix domain socket or similar) MAY be used to shorten tail
+  latency, but it is an optimization only: a dropped wakeup or a dead socket loses
+  nothing, because the next tail read sees the rows.
+- **Web → worker: persisted control state.** `ask_user` replies, cancellation, and
+  project/org suspension are **persisted control rows/flags** the worker reads at
+  defined points — before each provider turn, on lease renewal/heartbeat, and when
+  unparking a question. `POST /jobs/:id/reply` becomes "persist the reply, then wake
+  the worker"; `GET /pending` and `POST /jobs/:id/reconnect` read durable
+  question/job state instead of the in-memory maps. The pending-question row (question
+  text, asking agent, asked-at) is itself durable state, published as an event and
+  queryable.
+- **Delivery is at-least-once; every replayable consumer effect is idempotent.** The
+  web tracks the last event sequence it projected; SSE clients carry a cursor
+  (`Last-Event-ID`-style) so a browser reload replays from where it left off. Nothing
+  correctness-bearing lives only in web-process memory.
+- **Restart matrix:**
+  - *Browser reload:* the client resubscribes with its cursor; the pending question is
+    re-emitted from the durable question row.
+  - *Web-process restart:* live connections drop; on restart the web re-tails the event
+    rows and rebuilds projections; clients reconnect with cursors. No event is lost.
+  - *Worker restart / reclaim:* the lease expires; the job is reclaimed and resumes
+    from Kuhn-owned continuation (ADR 001). The continuation checkpoint records the
+    last appended event sequence, so a resumed job continues the sequence instead of
+    double-appending. A parked question survives as durable state across the restart.
+  - *Terminal state:* the terminal job event row is the durable truth; the live-run
+    registry (`runs.js`) becomes a derived cache over jobs + events, not the authority.
+
+### 2.4 Exactly one authoritative side-effect path
+
+`publishProjectEvent()` today conflates two kinds of effect. The corrected split:
+
+1. **Authoritative durable mutations** — `recordFileEvent`, `applyMove`'s path-keyed
+   rewrites, review-link revocation (the DB half), git-history commits — are performed
+   **exactly once, in the process that originates the mutation**, coupled atomically
+   (same SQLite transaction wherever possible) with appending the corresponding domain
+   event row. Worker-originated file changes: the worker. Web-originated editor/REST
+   mutations: the web process, as today. **Neither process ever re-executes the
+   other's durable mutations when consuming an event row** — the row is the *record*
+   that the mutation already happened, never an instruction to redo it. This is what
+   rules out double-application (a move applied twice, a link revoked twice against a
+   recreated path, a file event recorded twice).
+2. **Web-local live projections** — Yjs room eviction, move tombstones and their
+   clearing, closing reviewer sockets after a revocation, reviewer-only-room refresh,
+   SSE fan-out — happen **only in the web process**, which owns those live
+   connections: inline for web-originated events, via the durable tail for
+   worker-originated ones. All are idempotent against live connection state (evicting
+   an absent room, closing an already-closed socket, re-planting a tombstone are
+   no-ops), which is what makes at-least-once delivery safe.
+
+**Git history is the one effect that changes owner.** Two processes running git against
+the same workspace would race the per-project commit serialization that is in-process
+today (`history.js:97-103`). Commit *execution* therefore moves to the worker as a
+lightweight job class: web-originated changes mark the project commit-pending
+(durable), the worker coalesces and commits on the existing debounce semantics, and
+terminal-job commits are emitted by the worker inline with the run. A worker outage
+degrades history *granularity* (pending commits flush when it returns) without losing
+any file content.
+
+**The crash window, named.** A mutation crosses up to four steps: **filesystem
+mutation → SQLite mutation + event append (one transaction) → wakeup/tail → web-local
+projection.** Each gap is bounded: fs-then-DB is the same window that exists today,
+and `applyMove`'s throw-to-producer compensation contract (the producer renames back
+on a failed rewrite) is preserved; DB-commit-then-notification is safe because the
+event row is durable and the next tail read delivers it; notification-then-projection
+is safe because projections are idempotent. What the contract forbids: performing a
+durable mutation in one process and its event append in another, or letting both
+processes apply the same durable mutation. PLA-244 implements the seam; PLA-243's
+audit/idempotency work verifies these invariants.
+
+### 2.5 Leases, cancellation, suspension
 
 - **Claim/lease:** a job row is claimed by `UPDATE … SET worker_id, lease_expires_at
   WHERE status='pending' AND lease IS NULL`-style atomic guard (the codebase already
@@ -137,27 +320,51 @@ broker.
   reclaimed, and it must be scoped so it is safe when web and worker start independently
   (today it is a blanket `UPDATE` unscoped by host — dangerous the moment two processes
   share the DB).
-- **Cancellation:** client disconnect / job cancel must reach the worker. With a shared
-  DB, a `cancel_requested` flag the worker polls (or a lightweight local IPC) is
-  sufficient at pilot scale; no broker.
+- **Cancellation:** persisted control state (§2.3), observed at turn boundaries and on
+  lease renewal — not an ephemeral signal.
 - **Resume/recovery:** continuation is Kuhn-owned and serializable per ADR 001 (#69), so
   a reclaimed job resumes from persisted state, not an opaque provider session.
-- **Org suspension:** the worker checks suspension at turn boundaries and on lease
-  renewal, terminating in-flight runs — closing T-28. (Today only *new* dispatch and
-  `search_org_knowledge` refuse.)
-- **Provider calls, ingestion, render jobs:** all move to the worker, so a burst of agent
-  turns or a 200-page PDF ingest never competes with request latency on the web event
-  loop. This also gives spend/concurrency controls (PLA-238) one place to live.
+- **Org/project suspension:** the same control channel; the worker checks at turn
+  boundaries and on lease renewal, terminating in-flight runs — closing T-28. (Today
+  only *new* dispatch and `search_org_knowledge` refuse.)
 - **Operational isolation:** worker crashes don't take down request serving, and vice
   versa; each is supervised independently.
 
+### 2.6 Worker execution model and concurrency
+
+"One worker process" is a supervision statement, **not** a serialization claim — a
+Node process runs many asynchronous jobs concurrently. The pilot execution model:
+
+- **One worker process** with **bounded, configurable concurrency**, enforced as
+  explicit slot pools per job class — agent runs and ingestion at minimum — not as an
+  accident of the event loop. This ADR deliberately sets no fixed numbers (there is no
+  evidence to support any); it fixes the *mechanism* (config-driven caps, measured
+  under PLA-245 telemetry) and PLA-244 sets defaults from observed load.
+- **A parked `ask_user` job does not consume an execution slot.** It retains its lease
+  and durable state (question row, continuation) but releases its provider-turn slot;
+  otherwise one question the user stepped away from starves every other job — the
+  failure mode strict concurrency=1 creates. Active provider turns count against the
+  agent-concurrency pool; parked jobs are reaped by the parked-run TTL (T-28).
+- **Ingestion is bounded independently** with its own pool, replacing today's
+  unbounded `setImmediate` fan-out (`ingest.js:186-188`).
+- **The sandbox service enforces its own container concurrency cap and queue** (§6) —
+  worker slots and container slots are separate budgets, so a render burst cannot
+  starve agent turns or vice versa.
+- **What runs where:** provider calls and background ingestion move to the worker —
+  spend/concurrency controls (PLA-238) get one home, and a 200-page PDF ingest never
+  competes with request latency on the web event loop. **Interactive render/export
+  does not move** — it stays a synchronous web→sandbox-service call (§6).
+
 **Alternatives considered:** (a) keep jobs in the web process — rejected: the durability
 and suspension gaps are real production risks, and heavy agent/ingest work on the request
-event loop is a latency problem. (b) External queue (Redis/BullMQ, SQS) — rejected for
-the pilot: a DB-backed lease on the SQLite we already run is sufficient for a handful of
-concurrent jobs, and adding Redis is exactly the "distributed infrastructure for
-aesthetics" this ADR refuses. The lease design keeps the *option* open — moving to a
-broker later is a worker-internal change.
+event loop is a latency problem. (b) External queue/broker (Redis/BullMQ, SQS) —
+rejected for the pilot: durable ordered events and control flags on the SQLite we
+already run are sufficient at this concurrency, and adding Redis is exactly the
+"distributed infrastructure for aesthetics" this ADR refuses. The seam keeps the
+*option* open — moving events to a broker later is a change inside the seam, not a
+product rewrite. (c) Ephemeral IPC (socket/pipe) as the primary channel — rejected:
+restart correctness would then depend on both processes being up and connected;
+demoted to an optional wakeup optimization (§2.3).
 
 **Tradeoff:** two processes now share one SQLite file. SQLite handles multi-process
 access under WAL, but **without `busy_timeout` a writer collision throws immediately**
@@ -183,8 +390,11 @@ deployment.
   (`yjs-websocket.js:8-10`); durability is the editor's debounced autosave writing files
   (`routes/files.js:106-137`), not DB writes. The high-frequency collaboration path
   therefore does not load the database at all — a key reason SQLite is sufficient.
-- **The heavy writes are transcripts and chunks**, which are append-mostly and bounded by
-  agent/ingest concurrency, which the worker (§2) serializes anyway.
+- **The heavy writes are transcripts, event rows, and chunks**, which are append-mostly
+  and bounded by the worker's explicit per-class concurrency caps (§2.6). SQLite is
+  appropriate because write concurrency is **bounded and measured** — few writers,
+  short transactions, `busy_timeout` set — *not* because "one worker process"
+  serializes writes (it doesn't; a Node worker runs jobs concurrently).
 - **Migration safety and operational simplicity.** One file, no DB service to run,
   secure, back up, patch, or tune. For a small team this is a feature, not a compromise.
 - **Postgres is not automatically "more production."** It would add a service to operate,
@@ -196,10 +406,11 @@ deployment.
 - **Access topology:** at most the web process and one worker, **on the same host**,
   against one DB file. No third writer, no networked filesystem for the DB, no second
   host. Set **`busy_timeout`** (PLA-241) so brief contention waits instead of throwing.
-- **Backup method:** a **hot** backup — `sqlite3 .backup` / `VACUUM INTO` /
-  better-sqlite3 `db.backup()` — never a naive `cp` of `kuhn.sqlite` alone. The WAL
-  carries uncheckpointed data (observed locally: 2.7 MB WAL vs 4 KB main DB); a
-  main-file-only copy backs up essentially nothing (T-34). See §8.
+- **Backup method:** the SQLite **Online Backup API** — better-sqlite3 `db.backup()`
+  (or `VACUUM INTO`) — producing a consistent standalone destination database; never a
+  naive `cp` of the live `kuhn.sqlite` alone. The WAL carries uncheckpointed data
+  (observed locally: 2.7 MB WAL vs 4 KB main DB); a main-file-only copy backs up
+  essentially nothing (T-34). See §8.1.
 - **Filesystem requirements:** a POSIX filesystem with correct `fsync`/locking — **local
   disk**, not NFS/SMB (SQLite locking over network filesystems is unreliable).
 - **Schema evolution:** replace the startup-time ad-hoc DDL — a hand-maintained
@@ -314,6 +525,22 @@ validation is already shaped for this: Pandoc extra-args are allowlisted by rege
 documented as never-user-input (`sandbox.js:158-166`); the render service composes fixed
 arguments (`render.js:45-49`). PLA-240 formalizes that into the service's request schema.
 
+**Interactive render/export stays synchronous.** `POST /api/projects/:id/render` and
+`GET /api/projects/:id/export` return PDF/export bytes in the response today
+(`routes/render.js:52,68`), and this ADR deliberately preserves that product
+semantic — they are **not** converted into background jobs. The web process makes a
+**bounded synchronous request/reply call to the sandbox service** over the narrow
+local RPC and streams the result back to the caller; the web process itself still has
+no Docker access, and the service's concurrency cap/queue and resource limits protect
+the host from render bursts (T-22). If the sandbox service is down or saturated, the
+render/export endpoints return a clear **503/degraded** response — the editor and the
+rest of the app stay available (§10). Routing interactive render through the job
+worker was considered and rejected: it would add a request/reply RPC hop through the
+worker for no isolation gain (the worker has no Docker access either), and couple
+editor-facing latency to the job queue. **Background ingestion** extraction, by
+contrast, is naturally asynchronous and is invoked by the worker through the same
+sandbox service.
+
 **Specification for PLA-240:**
 
 - **Trust boundary:** only the sandbox service talks to the Docker daemon; the
@@ -360,14 +587,23 @@ Requirements:
   flag is derived from `KUHN_APP_URL` (`routes/auth.js:29-31`), so **`KUHN_APP_URL` must
   be the real https origin** or cookies ship non-Secure (T-02) — PLA-236 validates this
   at boot.
-- **Proxy identity & trusted headers:** today `app.set('trust proxy', true)` trusts *all*
-  hops (`index.js:38`), and magic-link/invite/review URLs are built from `req.protocol` +
-  `req.get('host')` (`routes/auth.js:48`, `routes/orgs.js:109`, `routes/review-links.js:80`).
-  That is a **host-header injection → credential-exfiltration** path if the origin is
-  directly reachable or the proxy forwards client `X-Forwarded-*` (T-27). Production
-  policy: **bound `trust proxy` to the known proxy** (hop count or subnet), ensure the
-  proxy **sets** `X-Forwarded-Proto`/`Host` and **strips** client-supplied forwarding
-  headers, and **block direct origin reachability**. (PLA-236.)
+- **Canonical public origin for credential URLs:** today magic-link/invite/review URLs
+  are built from `req.protocol` + `req.get('host')` (`routes/auth.js:48`,
+  `routes/orgs.js:109`, `routes/review-links.js:80`) with `app.set('trust proxy',
+  true)` trusting *all* hops (`index.js:38`) — a **host-header injection →
+  credential-exfiltration** path if the origin is directly reachable or the proxy
+  forwards client `X-Forwarded-*` (T-27). The production fix is not primarily proxy
+  discipline: **credential-bearing URLs are generated from the validated, configured
+  canonical public origin — `KUHN_APP_URL` — never from request protocol/Host.** That
+  removes Host-header choice from the credential-minting path entirely, instead of
+  making proxy correctness the security root. (PLA-236 validates `KUHN_APP_URL` as a
+  real https origin at boot; no separate canonical-origin setting is needed unless a
+  deployment ever serves the app on an origin other than `KUHN_APP_URL`.)
+- **Proxy identity & trusted headers (defense-in-depth):** still **bound `trust proxy`
+  to the known proxy** (hop count or subnet) for request metadata that genuinely needs
+  proxy awareness (client IP for rate limiting/audit, scheme for redirects and logs);
+  ensure the proxy **sets** `X-Forwarded-Proto`/`Host` and **strips** client-supplied
+  forwarding headers; and **block direct origin reachability**. (PLA-236.)
 - **WebSocket & SSE support:** the proxy must forward WS upgrades (Yjs) and not buffer SSE
   (`X-Accel-Buffering: no` is already set — `routes/sse.js`); the job-scoped agent stream
   has **no heartbeat**, so proxy idle timeouts must accommodate long turns or PLA-245/246
@@ -387,47 +623,112 @@ Requirements:
 
 ## 8. Backup and restore ownership
 
-**Decision:** "one recoverable Kuhn deployment" is a **single consistent snapshot** of
-everything below. This is the consistency contract PLA-242 implements.
+**Decision:** recovery is split into **two coordinated domains** — an encrypted **data
+backup** and a separately protected **secret escrow** — plus the **versioned
+application artifact** (§9). "One recoverable Kuhn deployment" = data backup + the
+matching application artifact + secrets re-bound from escrow or reissued. This is the
+contract PLA-242 implements. (An earlier draft of this section both put `.env` inside
+the recoverable snapshot *and* required secrets isolated from the data — a
+contradiction, now resolved as §8.3.)
 
-**What one recoverable deployment contains:**
+### 8.1 The supported backup method (one, chosen)
 
-1. **Database** — all three SQLite files via a **hot** backup (`.backup`/`VACUUM INTO`/
-   `db.backup()`), never `kuhn.sqlite` alone (WAL carries uncommitted data — T-34).
-2. **Project files** — `data/files/` **including every `.git`** (history lives inside the
-   workspace; a naive filter drops it).
-3. **Org library** — `data/orgs/` originals (**not** reconstructible from the DB).
-4. **Git histories** — captured with (2), inside the workspaces.
-5. **Configuration** — `agent-backend/.env`: the only home for `ANTHROPIC_API_KEY`,
-   `KUHN_SESSION_SECRET`, and `KUHN_SMTP_URL` (`deployment.md:50-51`).
-6. **Secret / master-key dependencies** — **`KUHN_SESSION_SECRET` is a restore-critical
-   secret**: losing it invalidates every live session; rotating it logs everyone out.
-   Back it up **isolated from the data** (a backup that contains both the encrypted data
-   and the key that protects it defeats the point — T-32).
-7. **`guidance-docs/`** — required at runtime, not just build time; a deploy missing it
-   *silently* degrades the catalog (`db/seed.js:112-115`) rather than failing.
-8. **Application version/commit** — because migrations are forward-only with no version
-   table today (§3), restoring a DB under an *older* binary is undefined. Record the
-   commit with the snapshot; PLA-241's migration ledger makes this checkable.
+The pilot's supported DB backup method is the **SQLite Online Backup API** —
+better-sqlite3 `db.backup()` (or `VACUUM INTO` as its equivalent) — which produces a
+**consistent, standalone destination database file** while the source stays live. To
+be precise about what that means: the destination is a *single complete database*; the
+live `kuhn.sqlite` / `-wal` / `-shm` files are **never captured raw**, and "online
+backup" does **not** mean "hot-copy all three SQLite files." A naive `cp kuhn.sqlite`
+alone remains forbidden (the WAL carries uncheckpointed data — T-34).
 
-**Required consistency model (the contract for PLA-242):** the DB hot-backup and the file
-snapshot should be taken close together, ideally with the **worker paused/drained** so no
-job is mid-write across the DB/filesystem boundary (there is no cross-store transaction).
-Acceptable skew for the pilot: a few seconds, bounded by pausing new job claims during the
-snapshot. Backups are **encrypted and access-controlled**, and **retain tenant isolation**
-(a restore reproduces the same per-tenant boundaries). Restore must be **drill-tested**
+**Raw filesystem snapshotting is a different method, not the supported pilot path.**
+If a deployment uses volume/filesystem snapshots anyway, that procedure has its own
+rules — quiesce writers, checkpoint the WAL, and snapshot main+WAL+SHM atomically on
+one filesystem — and must be documented as a separate method. It is not what this
+contract means by "DB backup."
+
+### 8.2 What the data backup contains
+
+1. **Database** — the online-backup **destination** file (§8.1), staged then encrypted.
+2. **Project files** — `data/files/` **including every per-project `.git`** (history
+   lives inside the workspace; a "user content only" filter silently drops it).
+3. **Org library** — `data/orgs/` originals (**not** reconstructible from the DB —
+   only sha256 + chunks persist, `schema.sql:290-315`).
+4. **Mutable deployment metadata** — the recorded **application version/commit and
+   schema/migration version**, so restore selects the matching artifact (§9) and
+   PLA-241's ledger can verify compatibility (restoring a DB under an older binary is
+   undefined).
+
+**Deliberately not in the data backup:** secret material (§8.3) and `guidance-docs/`
+(§8.4). Backups are **encrypted, access-controlled, tenant-isolation-preserving** (a
+restore reproduces the same per-tenant boundaries), and restore is **drill-tested**
 (PLA-242 acceptance), not assumed.
 
-**Scale trigger:** when a full consistent snapshot's **backup window** exceeds the
-tolerable pause/skew, move to incremental/streaming backup (WAL archiving for SQLite, or
-Postgres PITR after the DB migration).
+### 8.3 Secret recovery is a separate domain
+
+The data backup never contains secret material; the ciphertext and the key that
+protects it never share a security domain (T-32). Two secret classes:
+
+- **Escrowed (must survive loss of the host):** `KUHN_SESSION_SECRET`; a future
+  encryption/master key, if one is introduced, is *truly* restore-critical and lives
+  only here; the SMTP credential if it cannot simply be reissued.
+- **Reissued/rotated at recovery (preferred wherever possible):** provider API
+  credentials — `ANTHROPIC_API_KEY` today, org BYOK secrets later — are re-entered or
+  rotated during restore rather than archived forever. The DB (and therefore the data
+  backup) stores credential *references* only; restore re-binds them to secrets from
+  escrow or reissue.
+
+**Restore semantics when a secret is unavailable, stated in the runbook:** losing
+`KUHN_SESSION_SECRET` invalidates every session — users log in again; acceptable, and
+sometimes even desirable after an incident. A missing provider credential pauses agent
+execution until re-entered/rotated — acceptable. A lost future master key would be
+unrecoverable data — which is exactly why it is escrowed under independent protection
+rather than living beside the data it protects.
+
+### 8.4 `guidance-docs/` is application content, not tenant data
+
+`guidance-docs/` is immutable Kuhn-shipped product content. It **ships inside the
+versioned application artifact** (§9); the data backup records the application version
+(§8.2 item 4); restore obtains the catalog by restoring the matching artifact. It is
+*not* backed up as mutable tenant data. (Today a deploy missing it silently degrades
+the catalog — `db/seed.js:112-115` — which the §9 artifact makes impossible: the image
+either has it or is not the recorded version.) If a deployment ever intentionally
+overrides `guidance-docs/` at runtime, that override becomes explicit configuration
+and is backed up as configuration — no silent middle ground.
+
+### 8.5 Consistency: the maintenance write barrier
+
+Pausing only the worker is **not enough** for a consistent DB + filesystem capture:
+the web process also mutates state — project files through editor autosave PUTs and
+uploads, org-library files, Yjs-backed documents, review/admin DB state. The snapshot
+therefore runs under a brief **maintenance write barrier**:
+
+1. Enter the barrier: refuse or queue new mutating requests (reads and open
+   editors stay up; autosave retries harmlessly after release).
+2. Stop new worker job claims; bring active jobs to a checkpoint/requeue boundary
+   (bounded wait — the continuation seam in §2.3 is what makes this cheap).
+3. Flush editor/Yjs persistence as practical (trigger the debounced autosaves).
+4. Flush pending git-history commits (the worker's commit-pending queue, §2.4).
+5. Run the online backup (§8.1) to a staging destination.
+6. Capture `data/files/` and `data/orgs/` while the barrier holds.
+7. Record application/schema version (§8.2 item 4).
+8. Release the barrier.
+
+At pilot scale the barrier window is seconds. There is still no cross-store
+transaction — the barrier is what bounds DB↔filesystem skew to effectively zero for
+the capture.
+
+**Scale trigger:** when the barrier window / backup window exceeds tolerance, move to
+incremental/streaming backup (WAL archiving for SQLite, or Postgres PITR after the DB
+migration).
 
 ---
 
 ## 9. Deployment artifact
 
-**Decision:** package the server components (backend + built webapp) as an **immutable
-container image**, with the three sandbox images **pinned by digest**. Replace the current
+**Decision:** package the server components (backend + built webapp + the
+`guidance-docs/` catalog content, per §8.4) as an **immutable container image**, with
+the three sandbox images **pinned by digest**. Replace the current
 `git pull && npm install && npm run build` upgrade (`deployment.md:184-193`) with a
 versioned artifact and a documented rollback.
 
@@ -455,19 +756,33 @@ readiness), and how the DB/file volumes and `.env` are mounted into the containe
 
 ## 10. Observability and health boundaries
 
-**Decision:** define the health/observability topology so PLA-245/246 have concrete
-targets. Not implemented here.
+**Decision:** health is **component-specific**. Defining global readiness as "every
+subsystem is healthy" would turn partial degradation into full outage — the scientific
+editor, collaboration, and read experience must not disappear because agent execution
+or rendering is temporarily unavailable. Targets for PLA-245/246; not implemented here.
 
-- **Which processes expose readiness/liveness:** both the **web** and the **worker**.
-  Today `/health` is unauthenticated (correct) but reports only `db: SELECT 1` + uptime
-  (`routes/health.js:6-14`) and leaks `db.error` (T-36).
-- **Liveness vs readiness:** liveness = the process can be supervised; **readiness must
-  fail** when a required dependency is unhealthy — DB schema/migration state, the job
-  worker/lease heartbeat, the sandbox service, and (for the worker) provider
-  reachability. A ready web process that cannot actually serve safely is worse than a
-  failed one (it takes traffic).
-- **"Ready" means:** DB open at the expected migration version; worker leases current;
-  sandbox service reachable; static assets present.
+- **Web process.** *Liveness:* the process/event loop is alive — nothing more.
+  *Readiness* requires what the core web/API needs to serve safely: **valid production
+  configuration** (PLA-236), **DB reachable at the expected migration version**,
+  **required persistent storage usable**, and **static application assets present**.
+  The web **remains ready** while the model provider, the worker, or the sandbox
+  service is unavailable: those states surface as **degraded subsystem health**
+  (visible in health detail and metrics), and the affected endpoints — agent dispatch,
+  render/export — return **503** while the editor/collaboration/read experience keeps
+  serving.
+- **Worker process.** *Readiness:* DB/schema at the expected version; the
+  lease/control-plane tables (§2.3) accessible; required runtime configuration and
+  secrets present. **Transient provider reachability is not a readiness gate** — a
+  provider outage is an operational/degraded state handled through retries,
+  circuit-breaking, and telemetry, not a reason for a supervisor or load balancer to
+  repeatedly restart or withdraw an otherwise-healthy worker (that only adds flapping
+  to an upstream outage).
+- **Sandbox service.** Its **own** health/readiness: Docker daemon/runtime accessible;
+  the required digest-pinned images available; its queue not irrecoverably broken.
+  Web and worker treat sandbox unhealthiness as degraded rendering/ingestion (503 on
+  those endpoints), never as their own unreadiness.
+- **Today's `/health`** is unauthenticated (correct) but reports only `db: SELECT 1` +
+  uptime (`routes/health.js:6-14`) and leaks `db.error` (T-36) — trim the leak.
 - **Structured logs:** JSON to stdout (collected by the platform), **with secrets and
   content redacted** — closing the raw-token-to-stdout hazard (T-08) is a log-hygiene
   requirement, not just an SMTP one.
@@ -496,8 +811,9 @@ this stage; these are the real signals):
 - **Worker concurrency.** One worker is the pilot limit; more workers need a shared DB
   reachable from multiple processes safely. Trigger: agent/ingest backlog a single worker
   can't clear. Forces: Postgres (multi-writer) and possibly a real queue.
-- **Backup windows.** A full consistent snapshot requires a brief worker pause. Trigger:
-  data volume makes that pause unacceptable. Forces: incremental/streaming backup (§8).
+- **Backup windows.** A full consistent snapshot requires a brief maintenance write
+  barrier (§8.5). Trigger: data volume makes that window unacceptable. Forces:
+  incremental/streaming backup (§8).
 - **Storage capacity.** One local volume. Trigger: files/org-library outgrow it. Forces:
   network/object storage (§4).
 - **Cross-region / multi-host.** Not supported: SQLite and local files are single-host by
@@ -517,13 +833,16 @@ so the multi-instance step later is an addition, not a rewrite.
 ## Consequences
 
 - **Downstream issues get concrete direction** without re-deciding topology: PLA-244
-  (worker + leases), PLA-240 (sandbox service + hardening), PLA-241 (migration ledger +
-  `busy_timeout` + fail-closed init), PLA-242 (consistent snapshot contract), PLA-236
-  (boot-time config validation incl. `trust proxy`/`KUHN_APP_URL`/SMTP), PLA-246
-  (readiness/shutdown), PLA-248 (immutable artifact), PLA-245 (correlated logs/metrics).
+  (worker + leases + the durable event/control seam of §2.3–2.4), PLA-243 (the
+  replay/idempotency and audit invariants of §2.4), PLA-240 (sandbox service +
+  hardening + synchronous render RPC), PLA-241 (migration ledger + `busy_timeout` +
+  fail-closed init), PLA-242 (two-domain recovery + write barrier), PLA-236 (boot-time
+  config validation incl. canonical-origin URL generation/`KUHN_APP_URL`/`trust
+  proxy`/SMTP), PLA-246 (component-specific readiness/shutdown), PLA-248 (immutable
+  artifact incl. `guidance-docs/`), PLA-245 (correlated logs/metrics).
 - **The pilot keeps SQLite and local files** because the workload — one deployment, low
-  concurrency, Yjs off the DB, worker-serialized heavy writes — makes them technically
-  sound, not merely convenient.
+  concurrency, Yjs off the DB, bounded-and-measured worker write concurrency — makes
+  them technically sound, not merely convenient.
 - **The two genuinely unsafe co-residencies are separated:** durable background execution
   (PLA-244) and host-privileged Docker control (PLA-240). Everything else stays simple.
 - **Multi-instance is deferred as one coherent step** (Yjs + registries + Postgres + LB),
