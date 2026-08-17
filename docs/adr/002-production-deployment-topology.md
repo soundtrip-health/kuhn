@@ -55,7 +55,7 @@ trigger that forces a revisit.
 | Area | Pilot decision | Hard trigger to revisit |
 |---|---|---|
 | Web/API | **Single instance**, single port, behind a reverse proxy | Need for a second web replica for availability, or CPU-bound request serving |
-| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases **and a DB-backed durable event/control seam** (§2.3) | Worker CPU saturation; need for multiple workers |
+| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases, **a DB-backed durable event/control seam** (§2.3), and **operation-level idempotency/recovery for mutating tool calls** (§2.4) | Worker CPU saturation; need for multiple workers |
 | Database | **Keep SQLite** (WAL, single writer), accessed by web + worker on one host | Sustained write contention / `SQLITE_BUSY`; need for a second host to touch data → **Postgres** |
 | File storage | **Local durable disk**, backed up with the DB | Multi-host access to files; capacity beyond one volume → network/object storage |
 | Collaboration (Yjs) | **Single-instance in-memory rooms**, durability via autosave | Any second web instance that terminates WebSockets |
@@ -262,24 +262,36 @@ restart correctness comes from persisted state.**
   - *Worker restart / reclaim:* the lease expires; the job is reclaimed and resumes
     from Kuhn-owned continuation (ADR 001). The continuation checkpoint records the
     last appended event sequence, so a resumed job continues the sequence instead of
-    double-appending. A parked question survives as durable state across the restart.
+    double-appending. Any mutating tool operation the crash left `prepared`/ambiguous
+    is reconciled against actual state per §2.4 **before** the run resumes. A parked
+    question survives as durable state across the restart.
   - *Terminal state:* the terminal job event row is the durable truth; the live-run
     registry (`runs.js`) becomes a derived cache over jobs + events, not the authority.
 
-### 2.4 Exactly one authoritative side-effect path
+### 2.4 Exactly-once *logical* effect — operation identity, idempotency, reconciliation
+
+**The production invariant, stated precisely:** a mutating tool call has an
+**exactly-once logical effect**, achieved through **stable operation identity,
+durable operation state and results, idempotent finalization, and reconciliation on
+recovery** — *not* through cross-store atomicity, which does not exist here: a
+filesystem mutation and a SQLite transaction cannot commit atomically together. (An
+earlier draft said durable mutations "execute exactly once in the originating
+process, coupled atomically with their event append." That is achievable for DB-only
+mutations and impossible for filesystem-backed ones — and lease reclaim is exactly
+where the imprecision would bite, because a reclaimed job must decide whether an
+interrupted operation already ran.)
 
 `publishProjectEvent()` today conflates two kinds of effect. The corrected split:
 
 1. **Authoritative durable mutations** — `recordFileEvent`, `applyMove`'s path-keyed
-   rewrites, review-link revocation (the DB half), git-history commits — are performed
-   **exactly once, in the process that originates the mutation**, coupled atomically
-   (same SQLite transaction wherever possible) with appending the corresponding domain
-   event row. Worker-originated file changes: the worker. Web-originated editor/REST
-   mutations: the web process, as today. **Neither process ever re-executes the
-   other's durable mutations when consuming an event row** — the row is the *record*
-   that the mutation already happened, never an instruction to redo it. This is what
-   rules out double-application (a move applied twice, a link revoked twice against a
-   recreated path, a file event recorded twice).
+   rewrites, review-link revocation (the DB half), git-history commits — are owned by
+   **the process that originates the mutation**, executed under the operation
+   protocol below. Worker-originated file changes: the worker. Web-originated
+   editor/REST mutations: the web process, as today. **Neither process ever
+   re-executes the other's durable mutations when consuming an event row** — the row
+   is the *record* that the mutation already happened, never an instruction to redo
+   it. This is what rules out double-application (a move applied twice, a link
+   revoked twice against a recreated path, a file event recorded twice).
 2. **Web-local live projections** — Yjs room eviction, move tombstones and their
    clearing, closing reviewer sockets after a revocation, reviewer-only-room refresh,
    SSE fan-out — happen **only in the web process**, which owns those live
@@ -287,6 +299,45 @@ restart correctness comes from persisted state.**
    worker-originated ones. All are idempotent against live connection state (evicting
    an absent room, closing an already-closed socket, re-planting a tombstone are
    no-ops), which is what makes at-least-once delivery safe.
+
+**The operation protocol (what PLA-244 builds; PLA-243 verifies):**
+
+- **Stable operation identity.** Every mutating tool call carries a stable
+  operation/idempotency identity, normally derived from the **job identity plus the
+  canonical provider-neutral tool-call id**. The provider-neutral tool work
+  (PLA-226/227, ADR 001) must preserve a stable tool-call id across
+  retry/resume for exactly this reason — a requirement on that work, recorded here,
+  not implemented here.
+- **Durable operation state.** Conceptually, persisted operation state carries: the
+  operation id; the job id; the tool/capability; the arguments (or a safe arguments
+  hash); a state such as `prepared` / `applied` / `failed`; the stored tool result;
+  and the associated event sequence. This ADR deliberately does **not** fix the final
+  schema — it fixes the *protocol*: state is persisted before or with the effect, and
+  a replayed call is answered from the stored result.
+- **DB-only mutations.** Where a tool's side effect is entirely SQLite-backed,
+  operation finalization + the mutation + the domain-event append commit in **one
+  SQLite transaction** — here (and only here) "exactly once in the originating
+  process" is literally true. On replay or reclaim, an already-`applied` operation
+  **returns its stored result and is never re-executed**.
+- **Filesystem-backed mutations** follow a durable **prepare → execute →
+  reconcile/finalize** contract: persist the `prepared` operation first; perform the
+  filesystem effect; then finalize — the path-keyed DB mutation, the event append,
+  the operation's `applied` state, and its stored result in one transaction. A worker
+  recovering a `prepared`/ambiguous operation after lease reclaim **inspects actual
+  state before doing anything**:
+  - `write_file`: compare the target path and content hash against the prepared
+    intent; finalize if the write already landed, re-execute if it did not.
+  - `move_file` (the canonical case): inspect the canonical source/destination state
+    and reconcile deterministically — the rename happened (finalize the DB rewrite)
+    or it did not (re-execute, or compensate). Today's throw-to-producer
+    compensation (`applyMove` fails → the producer renames back) only works while
+    the process is alive; the prepared-operation record is what makes *crash*
+    recovery decidable.
+  - delete/create reason from actual filesystem state the same way.
+- **Tool-specific reconciliation logic is required** wherever the durable store and
+  the filesystem cannot transact together — a structural obligation of the worker
+  contract, not an edge case. **Never blindly rerun a mutating operation after lease
+  reclaim.**
 
 **Git history is the one effect that changes owner.** Two processes running git against
 the same workspace would race the per-project commit serialization that is in-process
@@ -297,16 +348,24 @@ terminal-job commits are emitted by the worker inline with the run. A worker out
 degrades history *granularity* (pending commits flush when it returns) without losing
 any file content.
 
-**The crash window, named.** A mutation crosses up to four steps: **filesystem
-mutation → SQLite mutation + event append (one transaction) → wakeup/tail → web-local
-projection.** Each gap is bounded: fs-then-DB is the same window that exists today,
-and `applyMove`'s throw-to-producer compensation contract (the producer renames back
-on a failed rewrite) is preserved; DB-commit-then-notification is safe because the
-event row is durable and the next tail read delivers it; notification-then-projection
-is safe because projections are idempotent. What the contract forbids: performing a
-durable mutation in one process and its event append in another, or letting both
-processes apply the same durable mutation. PLA-244 implements the seam; PLA-243's
-audit/idempotency work verifies these invariants.
+**The crash window, named.** The `move_file` sequence that motivates the protocol:
+(1) the filesystem rename succeeds; (2) the process dies before the path-keyed DB
+rewrite / event append / continuation checkpoint; (3) the worker lease expires;
+(4) the reclaimed job cannot safely assume whether the tool operation should be
+rerun. Without a prepared-operation record, neither rerunning nor skipping is safe.
+With it, recovery is deterministic: `applied` → return the stored result; `prepared`
+→ reconcile against actual filesystem state, then finalize or compensate — and the
+event append and continuation checkpoint land exactly once because they commit with
+finalization. The remaining gaps are bounded the same way as before:
+DB-commit-then-notification is safe because the event row is durable and the next
+tail read delivers it; notification-then-projection is safe because projections are
+idempotent. What the contract forbids: performing a durable mutation in one process
+and its event append in another; letting both processes apply the same durable
+mutation; and re-executing a mutating operation whose outcome is unknown without
+reconciling first. PLA-244 implements the seam and the operation store; PLA-243's
+replay/failure-injection work verifies these invariants at each crash boundary
+(before effect · after fs effect, before DB finalize · after finalize, before wakeup
+· after event append, before continuation checkpoint).
 
 ### 2.5 Leases, cancellation, suspension
 
@@ -518,12 +577,27 @@ control from the internet-facing process. **No orchestration system** (no Kubern
 Nomad). This is the boundary PLA-240 implements.
 
 **The narrow surface:** the sandbox service accepts only a small, enumerated set of
-render/ingest job kinds with typed parameters — never an arbitrary `docker run` command
-line. The web/worker processes call it over a **local-only** channel (Unix domain socket
-or loopback), and it is the *only* component with Docker access. The existing argument
-validation is already shaped for this: Pandoc extra-args are allowlisted by regex and
-documented as never-user-input (`sandbox.js:158-166`); the render service composes fixed
-arguments (`render.js:45-49`). PLA-240 formalizes that into the service's request schema.
+render/ingest operation types. A request carries the **operation type, logical
+project/org/document identifiers as appropriate, workspace-relative paths, and
+bounded operation-specific options** — never an absolute host path, a mount
+specification, an image name, Docker argv, or an arbitrary command. The web/worker
+processes call it over a **local-only** channel (Unix domain socket or loopback), and
+it is the *only* component with Docker access. The existing argument validation is
+already shaped for this: Pandoc extra-args are allowlisted by regex and documented as
+never-user-input (`sandbox.js:158-166`); the render service composes fixed arguments
+(`render.js:45-49`). PLA-240 formalizes that into the service's request schema.
+
+**Containment is enforced by the service, independently of its caller.** The service
+exists to constrain a *compromised* web or worker process, so nothing the caller
+sends may choose what part of the host filesystem Docker touches: the service itself
+resolves logical identifiers to filesystem roots, canonicalizes every path and
+enforces containment under the configured Kuhn data roots (rejecting `..` traversal,
+symlink escapes, and absolute host paths), constructs every container mount
+internally, selects the fixed digest-pinned image internally, and constructs the
+container command internally. The resulting property, stated once: **a web-process
+compromise may invoke an allowed sandbox capability over data the app is already
+entitled to expose, but it cannot use that capability to obtain arbitrary Docker
+control or arbitrary host-filesystem mounts.**
 
 **Interactive render/export stays synchronous.** `POST /api/projects/:id/render` and
 `GET /api/projects/:id/export` return PDF/export bytes in the response today
@@ -546,6 +620,16 @@ sandbox service.
 - **Trust boundary:** only the sandbox service talks to the Docker daemon; the
   web/API process does not have Docker socket access. A web-process RCE can *request* a
   render, not run arbitrary containers.
+- **Caller-independent request surface:** requests are enumerated operation types
+  with logical resource identifiers, workspace-relative paths, and bounded options
+  only. The service rejects absolute host paths, `..` traversal, and symlink
+  escapes after canonicalizing against the configured data roots, and it alone
+  constructs mounts, chooses images, and composes container commands — the caller
+  can never influence which part of the host filesystem is mounted.
+- **Service identity:** run the sandbox service under a **distinct least-privilege
+  OS/service identity** where practical, with Docker socket access confined to that
+  identity — the web/worker service user holds no Docker group membership or socket
+  access.
 - **Filesystem mounts:** project mounted **read-only** at `/work`; a single writable
   scratch out-dir at `/out`; nothing else (as today, `sandbox.js:30-31`). Ingestion
   already narrows the mount to one document's directory (`ingest.js:41-43`) — keep that.
@@ -696,27 +780,50 @@ either has it or is not the recorded version.) If a deployment ever intentionall
 overrides `guidance-docs/` at runtime, that override becomes explicit configuration
 and is backed up as configuration — no silent middle ground.
 
-### 8.5 Consistency: the maintenance write barrier
+### 8.5 Consistency: the maintenance write barrier — and what the backup guarantees
+
+**The guarantee, stated first: the backup captures the last durably persisted Kuhn
+state** — everything that has reached the database or the file store. Kuhn's
+Markdown durability is **client-driven**: the browser schedules a debounced
+`writeFile()` when the editor changes (`editor-core.ts`); the server has no
+mechanism to make connected clients flush, and this contract does not pretend one
+exists. **In-memory Yjs/client keystrokes that have not yet autosaved are outside
+the backup guarantee — exactly as they are outside crash durability today (§5).**
+The backup never claims state that has never reached durable storage.
 
 Pausing only the worker is **not enough** for a consistent DB + filesystem capture:
 the web process also mutates state — project files through editor autosave PUTs and
-uploads, org-library files, Yjs-backed documents, review/admin DB state. The snapshot
-therefore runs under a brief **maintenance write barrier**:
+uploads, org-library files, review/admin DB state. The snapshot therefore runs under
+a brief **maintenance write barrier**:
 
-1. Enter the barrier: refuse or queue new mutating requests (reads and open
-   editors stay up; autosave retries harmlessly after release).
-2. Stop new worker job claims; bring active jobs to a checkpoint/requeue boundary
-   (bounded wait — the continuation seam in §2.3 is what makes this cheap).
-3. Flush editor/Yjs persistence as practical (trigger the debounced autosaves).
-4. Flush pending git-history commits (the worker's commit-pending queue, §2.4).
-5. Run the online backup (§8.1) to a staging destination.
-6. Capture `data/files/` and `data/orgs/` while the barrier holds.
-7. Record application/schema version (§8.2 item 4).
-8. Release the barrier.
+1. Stop new worker job claims; bring active jobs to a checkpoint or requeue
+   boundary (bounded wait — the continuation seam in §2.3 is what makes this cheap).
+2. Enter maintenance mode.
+3. Drain already-in-flight mutating HTTP requests (bounded).
+4. Freeze new mutating HTTP requests and Yjs/WS-originated writes. Reads and open
+   editors stay up; a client autosave arriving during the freeze is refused and
+   retried harmlessly after release — its content lands in the *next* backup, the
+   same window a crash at that moment would give it.
+5. Flush durable pending git-history work (the worker's commit-pending queue, §2.4).
+6. Run the online backup (§8.1) to a staging destination.
+7. Capture `data/files/` and `data/orgs/` while the barrier holds.
+8. Record application/schema version (§8.2 item 4).
+9. Release the barrier.
 
 At pilot scale the barrier window is seconds. There is still no cross-store
-transaction — the barrier is what bounds DB↔filesystem skew to effectively zero for
-the capture.
+transaction — the barrier bounds DB↔filesystem skew for *persisted* state to
+effectively zero for the capture; it does not (and cannot) pull unpersisted editor
+state into the snapshot.
+
+**Alternative considered and deferred — a pre-barrier client flush handshake:**
+announce pending maintenance to connected editors; clients flush their current
+Markdown while writes are still allowed; clients ACK; after all ACKs or a bounded
+timeout, the strict barrier begins. That would narrow the boundary to "every
+visible client edit at barrier time," at the cost of a new client/server protocol
+plus timeout semantics for absent clients. The pilot deliberately does not build
+it: the backup durability boundary is kept **identical to the crash-durability
+boundary users already live with**. PLA-242 records this as the trigger — build the
+handshake only if the product later requires keystroke-complete snapshots.
 
 **Scale trigger:** when the barrier window / backup window exceeds tolerance, move to
 incremental/streaming backup (WAL archiving for SQLite, or Postgres PITR after the DB
@@ -833,9 +940,10 @@ so the multi-instance step later is an addition, not a rewrite.
 ## Consequences
 
 - **Downstream issues get concrete direction** without re-deciding topology: PLA-244
-  (worker + leases + the durable event/control seam of §2.3–2.4), PLA-243 (the
-  replay/idempotency and audit invariants of §2.4), PLA-240 (sandbox service +
-  hardening + synchronous render RPC), PLA-241 (migration ledger + `busy_timeout` +
+  (worker + leases + the durable event/control seam and mutating-operation store of
+  §2.3–2.4), PLA-243 (the replay/idempotency, operation-recovery, and audit
+  invariants of §2.4), PLA-240 (sandbox service with caller-independent containment
+  + hardening + synchronous render RPC), PLA-241 (migration ledger + `busy_timeout` +
   fail-closed init), PLA-242 (two-domain recovery + write barrier), PLA-236 (boot-time
   config validation incl. canonical-origin URL generation/`KUHN_APP_URL`/`trust
   proxy`/SMTP), PLA-246 (component-specific readiness/shutdown), PLA-248 (immutable
