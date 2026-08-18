@@ -1,7 +1,9 @@
 # System Architecture
 
-> **Status:** Active — revised 2026-06-11. Markdown-first editor (Milkdown), agent runtime on the
-> Claude Agent SDK, and multi-tenancy invariants adopted. This supersedes the TeXlyre-based
+> **Status:** Active — revised 2026-08-14. Markdown-first editor (Milkdown), transitional agent
+> runtime on the Claude Agent SDK, and multi-tenancy invariants adopted. The provider-neutral
+> execution direction is recorded in [ADR 001](adr/001-provider-agnostic-runtime-foundation.md).
+> This supersedes the TeXlyre-based
 > architecture finalized 2026-04-17 ([Epic 001](epics/001-editor-foundation-research/index.md));
 > see [Decision Revisions](#decision-revisions-2026-06-11) below.
 
@@ -106,10 +108,15 @@ Consequences:
 
 ## Agent Runtime
 
-**Decision (2026-06-11):** Build agent execution on the **Claude Agent SDK** rather than a custom
-router + provider-agnostic LLM interface. The SDK provides the agent loop, tool use, subagent
-spawning, MCP, sessions, and streaming — the same runtime the `agents/` workspaces already run on
-(Claude Code).
+**Original decision (2026-06-11):** Build agent execution on the **Claude Agent SDK** rather than
+a custom router + provider-agnostic LLM interface. The SDK provides the agent loop, tool use,
+subagent spawning, MCP, sessions, and streaming.
+
+**Migration decision (2026-08-14):** Preserve the Claude implementation as the transitional
+reference path while introducing a narrower provider-neutral execution seam underneath
+`runAgentTask(...)`. [ADR 001](adr/001-provider-agnostic-runtime-foundation.md) selects Pi's
+lower-level model/agent-core primitives for phased implementation after Kuhn-owned tool behavior
+is frozen. Kuhn is not adopting Pi's coding-agent product or filesystem/shell environment.
 
 **Lock-in hedge — abstract at the agent-task boundary, not the LLM-call boundary.** The backend's
 internal contract is:
@@ -124,11 +131,11 @@ runAgentTask({
                           question_expired | done | error }   (+ stage markers from pipelines)
 ```
 
-Everything above this interface (routes, UI, job model, logging) is provider-neutral. The Claude
-Agent SDK is an implementation detail behind it; a second implementation can be added later
-without touching callers. We do **not** abstract chat-completion calls — that triples surface
-area (tool formats, streaming, caching semantics) and forfeits the provider features that
-determine agent quality.
+Everything above this interface (routes, UI, job model, logging and product policy) is intended
+to be provider-neutral. Today `runtime.js` still translates Claude events, MCP wrappers, session
+ids, cache usage and provider errors directly. The migration adds one normalized execution
+adapter below this application boundary; it does not expose raw chat-completion calls to product
+code.
 
 **Kept from the original design:**
 
@@ -138,20 +145,22 @@ determine agent quality.
   future semantic search)
 - **Markdown files as agent handoffs** — the filesystem is shared memory; the project directory
   is the coordination medium (battle-tested in the CLI workflow)
-- **Deterministic orchestration** — multi-agent pipelines (e.g., seeding: interview → advisor
-  ingest → RA search → skeleton) are code that dispatches agent tasks, not an agent improvising
-  control flow
+- **Deterministic orchestration** — multi-agent pipelines (e.g., setup wizard → parallel RA and
+  Advisor research → Writer skeleton) are code that dispatches agent tasks, not an agent
+  improvising control flow
 
 **Added:**
 
 - **Durable job model** — long-running agent work (seeding, full review) is a persisted job with
   task state, progress streaming to the UI, resumability after crash, and per-run token budgets
 
-**Dropped/superseded:**
+**Historical consequences, now under revision:**
 
-- Custom agent loop and tool registry (the SDK's tool/MCP mechanism replaces it; project file
-  tools are enforced by the Storage API, see below)
-- Provider-agnostic chat-completion interface (story 008 — superseded)
+- The first implementation used SDK tool/MCP wrappers rather than a neutral tool registry;
+  PLA-226 extracts Kuhn's tool definitions without changing their storage/domain behavior.
+- A raw provider-agnostic chat-completion interface remains rejected. The new seam is an agent
+  execution contract with normalized events, tools, abort, usage, errors and canonical
+  Kuhn-owned continuation messages.
 
 ## Multi-Tenancy Invariants
 
@@ -254,11 +263,12 @@ Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
 | LaTeX primary / Typst supported | Markdown canonical; Typst renders; LaTeX + docx are exports | Formatting is automatable; deliverables are often Word |
 | Two separate apps (AGPL isolation) | Single app | Isolation rationale was the AGPL license; gone with Milkdown |
 | Custom agent router + provider-agnostic LLM interface | Claude Agent SDK behind an agent-task boundary | Don't rebuild an agent runtime; hedge lock-in at the task interface |
+| Claude Agent SDK as the only execution kernel | Keep Claude as transitional reference; adopt Pi core/model primitives behind a Kuhn-owned execution contract ([ADR 001](adr/001-provider-agnostic-runtime-foundation.md)) | Freeze product semantics first, then gain multiple providers and custom endpoints without moving Kuhn policy into a framework |
 | Multi-tenancy fully deferred | Three invariants now (scoping, storage API, sandboxing) + per-tenant KB / shared guidance corpus | Cheap now, expensive to retrofit; isolation is a sales blocker in target market |
 
 ## Open Questions
 
 - [ ] Typst template library: which journal/funder targets first?
-- [ ] Tracked changes / suggestion mode in Milkdown (ProseMirror has prior art) — needed for PI review workflows
-- [ ] Auth provider choice when multi-user lands
+- [x] Suggestion-mode agent edits for protected draft paths
+- [ ] Enterprise identity/SSO provider beyond the current magic-link system
 - [ ] Server-side vs. client-side Typst rendering (server default; WASM later for offline)

@@ -2,6 +2,9 @@
   "name": "kuhn-agent-backend",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
@@ -9,7 +12,9 @@
     "import:guidance": "node scripts/import-guidance.mjs",
     "eval:org-search": "node scripts/eval-org-search.mjs",
     "smoke": "node scripts/smoke-research.js",
+    "smoke:pi-runtime": "node scripts/smoke-pi-runtime.js",
     "test": "vitest run",
+    "test:runtime-contract": "vitest run src/agents/provider-runtime/",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -28,6 +33,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
     "vitest": "^4.1.4"
   }
 }

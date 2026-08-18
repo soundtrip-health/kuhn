@@ -707,6 +707,47 @@ describe('user attribution (story 007-001)', () => {
     await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
 
     expect(createJob.mock.calls.map(([j]) => [j.role, j.userId])).toEqual([['pm', 5], ['ra', 5]]);
+    expect(createJob.mock.calls.map(([j]) => j.parentJobId)).toEqual([null, 42]);
+  });
+});
+
+describe('dispatch_agent product contract', () => {
+  const success = (input = 1, output = 1) => [
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: input, output_tokens: output } } },
+    { type: 'result', subtype: 'success', usage: { input_tokens: input, output_tokens: output } },
+  ];
+
+  it('shares one budget object between parent and child jobs', async () => {
+    const budget = { used: 0, limit: 10_000, baseWeight: 5 };
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'pm', model: 'claude-opus', tools: ['spawn_agent'] });
+    sdkState.messages = success(10, 5);
+    for await (const _event of runAgentTask(
+      { role: 'pm', projectId: 1, input: 'delegate' },
+      { budget },
+    )) { /* drain */ }
+    const parentUsage = budget.used;
+
+    const dispatch = createSdkMcpServer.mock.calls[0][0].tools.find((t) => t.name === 'dispatch_agent');
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku' });
+    sdkState.messages = success(20, 10);
+    await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
+
+    expect(budget.used).toBeGreaterThan(parentUsage);
+    expect(createJob.mock.calls[1][0]).toMatchObject({ role: 'ra', parentJobId: 42 });
+  });
+
+  it('removes dispatch_agent at the configured maximum depth', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'writer', tools: ['spawn_agent'] });
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+
+    for await (const _event of runAgentTask(
+      { role: 'writer', projectId: 1, input: 'go' },
+      { depth: 2, parentJobId: 9, budget: { used: 0, limit: 100, baseWeight: 5 } },
+    )) { /* drain */ }
+
+    const options = sdkQuery.mock.calls[0][0].options;
+    expect(options.allowedTools).not.toContain('mcp__kuhn__dispatch_agent');
+    expect(options.mcpServers).toBeUndefined();
   });
 });
 
