@@ -1,0 +1,481 @@
+{
+  "catalog_version": 1,
+  "packages": [
+    {
+      "id": "general-scientific-writing",
+      "title": "General scientific writing",
+      "parent": null,
+      "description": "Cross-discipline writing craft, authorship standards, and reporting-guideline discovery.",
+      "items": [
+        {
+          "id": "general-scientific-writing/scientific-writing-style-guide",
+          "title": "Scientific writing — prose craft and claim calibration",
+          "path": "shared/scientific-writing-style-guide.md",
+          "version": 1,
+          "kind": "document",
+          "source_url": null,
+          "license": "Kuhn-authored (sources cited within)",
+          "tags": ["style", "claims", "prose", "citations"]
+        },
+        {
+          "id": "general-scientific-writing/icmje-recommendations",
+          "title": "ICMJE Recommendations",
+          "path": "general-scientific-writing/icmje-recommendations.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.icmje.org/",
+          "license": "Freely accessible; ICMJE text copyrighted — card is a summary",
+          "tags": ["authorship", "publication-ethics", "conflicts-of-interest", "medical-journals"]
+        },
+        {
+          "id": "general-scientific-writing/equator-network",
+          "title": "EQUATOR Network: choosing reporting guidelines",
+          "path": "general-scientific-writing/equator-network.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.equator-network.org/",
+          "license": "Free, open access",
+          "tags": ["reporting-guidelines", "CONSORT", "PRISMA", "STROBE", "checklists"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences",
+      "title": "Biosciences",
+      "parent": null,
+      "description": "Core life-sciences reporting and data standards.",
+      "items": [
+        {
+          "id": "biosciences/arrive-2-0",
+          "title": "ARRIVE 2.0 — animal research reporting",
+          "path": "biosciences/arrive-2-0.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.arriveguidelines.org/",
+          "license": "Open access (CC BY, PLOS Biology 2020)",
+          "tags": ["animal-research", "in-vivo", "preclinical", "reporting-guidelines", "reproducibility"]
+        },
+        {
+          "id": "biosciences/fair-data-principles",
+          "title": "FAIR Guiding Principles for scientific data",
+          "path": "biosciences/fair-data-principles.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://doi.org/10.1038/sdata.2016.18",
+          "license": "Open access (CC BY)",
+          "tags": ["data-sharing", "FAIR", "data-availability", "repositories", "metadata"]
+        },
+        {
+          "id": "biosciences/miame",
+          "title": "MIAME and the minimum-information family",
+          "path": "biosciences/miame.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.ncbi.nlm.nih.gov/geo/info/MIAME.html",
+          "license": "Open access via NCBI (US government site)",
+          "tags": ["microarray", "omics", "MIxS", "MINSEQE", "GEO", "data-standards"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences-regulatory",
+      "title": "Regulatory (FDA / ICH / EMA)",
+      "parent": "biosciences",
+      "description": "Regulatory submission structure and guidance discovery for drugs and biologics.",
+      "items": [
+        {
+          "id": "biosciences-regulatory/ctd-organization-m4",
+          "title": "Common Technical Document (ICH M4) organization",
+          "path": "biosciences-regulatory/ctd-organization-m4.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents/m4-organization-common-technical-document-registration-pharmaceuticals-human-use-guidance-industry",
+          "license": "US government work, public domain",
+          "tags": ["CTD", "eCTD", "ICH-M4", "NDA", "BLA", "regulatory-submissions"]
+        },
+        {
+          "id": "biosciences-regulatory/fda-guidance-database",
+          "title": "Finding and citing FDA guidance documents",
+          "path": "biosciences-regulatory/fda-guidance-database.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents",
+          "license": "US government works, public domain",
+          "tags": ["FDA", "guidance-for-industry", "draft-vs-final", "citation", "regulatory-writing"]
+        },
+        {
+          "id": "biosciences-regulatory/ich-guidelines-overview",
+          "title": "ICH guideline families (Q/S/E/M)",
+          "path": "biosciences-regulatory/ich-guidelines-overview.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.ich.org/page/ich-guidelines",
+          "license": "Freely downloadable; ICH text copyrighted — card is a summary",
+          "tags": ["ICH", "quality", "safety", "efficacy", "GCP", "regulatory-harmonization"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences-clinical-trials",
+      "title": "Clinical trials",
+      "parent": "biosciences",
+      "description": "Trial, protocol, and evidence-synthesis reporting standards plus the estimand framework.",
+      "items": [
+        {
+          "id": "biosciences-clinical-trials/reporting-guidelines",
+          "title": "Reporting guidelines (CONSORT / STROBE / PRISMA / ARRIVE / SPIRIT)",
+          "path": "shared/reporting-guidelines.md",
+          "version": 1,
+          "kind": "document",
+          "source_url": "https://www.equator-network.org/",
+          "license": "Kuhn-authored summary table",
+          "tags": ["reporting-guidelines", "CONSORT", "STROBE", "PRISMA", "SPIRIT"]
+        },
+        {
+          "id": "biosciences-clinical-trials/estimand-framework-and-tte",
+          "title": "ICH E9(R1) estimand framework & Target Trial Emulation",
+          "path": "shared/estimand-framework-and-tte.md",
+          "version": 1,
+          "kind": "document",
+          "source_url": "https://www.ema.europa.eu/en/documents/scientific-guideline/ich-e9-r1-addendum-estimands-and-sensitivity-analysis-clinical-trials-guideline-statistical-principles-clinical-trials-step-5_en.pdf",
+          "license": "Kuhn-authored summary of ICH E9(R1)",
+          "tags": ["estimands", "ICH-E9", "target-trial-emulation", "intercurrent-events"]
+        },
+        {
+          "id": "biosciences-clinical-trials/consort-2025",
+          "title": "CONSORT 2025 — reporting randomized controlled trials",
+          "path": "biosciences-clinical-trials/consort-2025.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1004587",
+          "license": "Free, open access (PLOS Medicine)",
+          "tags": ["randomized-controlled-trial", "reporting-guideline", "CONSORT", "flow-diagram"]
+        },
+        {
+          "id": "biosciences-clinical-trials/prisma-2020",
+          "title": "PRISMA 2020 — systematic reviews and meta-analyses",
+          "path": "biosciences-clinical-trials/prisma-2020.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8005924/",
+          "license": "Free, open access (BMJ 2021, CC BY)",
+          "tags": ["systematic-review", "meta-analysis", "reporting-guideline", "PRISMA"]
+        },
+        {
+          "id": "biosciences-clinical-trials/spirit-2025",
+          "title": "SPIRIT 2025 — reporting clinical trial protocols",
+          "path": "biosciences-clinical-trials/spirit-2025.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(25)00770-6/fulltext",
+          "license": "Free, open access (The Lancet)",
+          "tags": ["trial-protocol", "reporting-guideline", "SPIRIT", "estimands"]
+        }
+      ]
+    },
+    {
+      "id": "biosciences-drug-development",
+      "title": "Drug development",
+      "parent": "biosciences",
+      "description": "Nonclinical safety, bioanalytical validation, and data-integrity regulation for drug programs.",
+      "items": [
+        {
+          "id": "biosciences-drug-development/ich-m3-r2-nonclinical",
+          "title": "ICH M3(R2) — nonclinical safety studies",
+          "path": "biosciences-drug-development/ich-m3-r2-nonclinical.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.fda.gov/media/71542/download",
+          "license": "FDA-issued guidance, US government work (public domain)",
+          "tags": ["nonclinical-safety", "toxicology", "IND", "ICH", "first-in-human"]
+        },
+        {
+          "id": "biosciences-drug-development/fda-bioanalytical-method-validation",
+          "title": "FDA Bioanalytical Method Validation / ICH M10",
+          "path": "biosciences-drug-development/fda-bioanalytical-method-validation.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.fda.gov/files/drugs/published/Bioanalytical-Method-Validation-Guidance-for-Industry.pdf",
+          "license": "FDA guidance, public domain",
+          "tags": ["bioanalytical", "method-validation", "LC-MS", "pharmacokinetics", "ICH-M10"]
+        },
+        {
+          "id": "biosciences-drug-development/21-cfr-part-11",
+          "title": "21 CFR Part 11 — electronic records and signatures",
+          "path": "biosciences-drug-development/21-cfr-part-11.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.ecfr.gov/current/title-21/part-11",
+          "license": "US regulatory text, public domain",
+          "tags": ["electronic-records", "data-integrity", "audit-trail", "FDA", "GxP", "ALCOA"]
+        }
+      ]
+    },
+    {
+      "id": "machine-learning",
+      "title": "Machine learning",
+      "parent": null,
+      "description": "ML reporting and reproducibility: model cards, datasheets, conference checklists.",
+      "items": [
+        {
+          "id": "machine-learning/model-cards",
+          "title": "Model Cards for Model Reporting",
+          "path": "machine-learning/model-cards.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://arxiv.org/abs/1810.03993",
+          "license": "Open-access arXiv preprint",
+          "tags": ["model-card", "model-documentation", "fairness", "responsible-AI"]
+        },
+        {
+          "id": "machine-learning/datasheets-for-datasets",
+          "title": "Datasheets for Datasets",
+          "path": "machine-learning/datasheets-for-datasets.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://arxiv.org/abs/1803.09010",
+          "license": "Open-access arXiv preprint",
+          "tags": ["dataset-documentation", "datasheet", "data-provenance", "responsible-AI"]
+        },
+        {
+          "id": "machine-learning/neurips-checklist",
+          "title": "NeurIPS paper checklist — ML reproducibility",
+          "path": "machine-learning/neurips-checklist.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://neurips.cc/public/guides/PaperChecklist",
+          "license": "Free, public conference guidelines",
+          "tags": ["reproducibility", "NeurIPS", "checklist", "compute-reporting", "limitations"]
+        }
+      ]
+    },
+    {
+      "id": "robotics",
+      "title": "Robotics",
+      "parent": null,
+      "description": "Robotics terminology, IEEE manuscript conventions, and reproducible experiment reporting.",
+      "items": [
+        {
+          "id": "robotics/iso-8373-vocabulary",
+          "title": "ISO 8373:2021 robotics vocabulary",
+          "path": "robotics/iso-8373-vocabulary.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.iso.org/standard/75539.html",
+          "license": "Paywalled ISO standard — card is a paraphrased summary",
+          "tags": ["robotics", "terminology", "iso-8373", "definitions", "autonomy"]
+        },
+        {
+          "id": "robotics/ieee-author-guidelines",
+          "title": "IEEE editorial style and robotics manuscript conventions",
+          "path": "robotics/ieee-author-guidelines.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.ieee.org/publications-standards/publications/authors/index.html",
+          "license": "Freely available via IEEE Author Center; IEEE-copyrighted text paraphrased",
+          "tags": ["robotics", "ieee", "manuscript-style", "icra", "iros", "references"]
+        },
+        {
+          "id": "robotics/robotics-reproducibility",
+          "title": "Reproducible robotics experiment reporting",
+          "path": "robotics/robotics-reproducibility.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.nist.gov/publications/benchmarking-protocols-evaluating-small-parts-robotic-assembly-systems",
+          "license": "NIST public domain; MIRRER open-access preprint",
+          "tags": ["robotics", "reproducibility", "benchmarking", "nist", "sim-to-real"]
+        }
+      ]
+    },
+    {
+      "id": "chemistry",
+      "title": "Chemistry",
+      "parent": null,
+      "description": "IUPAC terminology, chemical identifiers, and compound characterization norms.",
+      "items": [
+        {
+          "id": "chemistry/iupac-gold-book",
+          "title": "IUPAC Gold Book — chemical terminology",
+          "path": "chemistry/iupac-gold-book.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://goldbook.iupac.org/",
+          "license": "Free online access; IUPAC-copyrighted definitions paraphrased",
+          "tags": ["chemistry", "iupac", "terminology", "nomenclature", "gold-book"]
+        },
+        {
+          "id": "chemistry/inchi-identifiers",
+          "title": "Chemical identifiers: InChI, InChIKey, SMILES, CAS",
+          "path": "chemistry/inchi-identifiers.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://iupac.org/who-we-are/divisions/division-details/inchi/",
+          "license": "InChI is a free open IUPAC standard",
+          "tags": ["chemistry", "inchi", "smiles", "cas", "identifiers", "cheminformatics"]
+        },
+        {
+          "id": "chemistry/acs-compound-characterization",
+          "title": "Compound characterization and spectroscopic data reporting",
+          "path": "chemistry/acs-compound-characterization.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://pubsapp.acs.org/paragonplus/submission/acs_nmr_guidelines.pdf",
+          "license": "Freely downloadable ACS PDF; ACS-copyrighted text paraphrased",
+          "tags": ["chemistry", "acs", "nmr", "hrms", "purity", "characterization"]
+        }
+      ]
+    },
+    {
+      "id": "physics",
+      "title": "Physics",
+      "parent": null,
+      "description": "SI unit style, measurement uncertainty, and APS notation conventions.",
+      "items": [
+        {
+          "id": "physics/nist-sp-811-si-units",
+          "title": "NIST SP 811 — guide for the use of the SI",
+          "path": "physics/nist-sp-811-si-units.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.nist.gov/pml/special-publication-811",
+          "license": "Public domain (US government work)",
+          "tags": ["physics", "si-units", "nist", "unit-style", "prefixes", "typography"]
+        },
+        {
+          "id": "physics/measurement-uncertainty-gum",
+          "title": "Expressing measurement uncertainty (GUM / NIST TN 1297)",
+          "path": "physics/measurement-uncertainty-gum.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.bipm.org/documents/20126/2071204/JCGM_100_2008_E.pdf",
+          "license": "GUM freely downloadable (JCGM); NIST TN 1297 public domain",
+          "tags": ["physics", "uncertainty", "gum", "metrology", "coverage-factor"]
+        },
+        {
+          "id": "physics/aps-style-notation",
+          "title": "APS / Physical Review style and notation",
+          "path": "physics/aps-style-notation.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://journals.aps.org/authors",
+          "license": "Freely accessible APS author guidance; text paraphrased",
+          "tags": ["physics", "aps", "physical-review", "notation", "revtex"]
+        }
+      ]
+    },
+    {
+      "id": "social-sciences",
+      "title": "Social sciences",
+      "parent": null,
+      "description": "Human-subjects ethics and quantitative/qualitative reporting standards.",
+      "items": [
+        {
+          "id": "social-sciences/belmont-report",
+          "title": "The Belmont Report",
+          "path": "social-sciences/belmont-report.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://history.nih.gov/display/history/Belmont+Report",
+          "license": "US government work, public domain",
+          "tags": ["research-ethics", "human-subjects", "informed-consent", "IRB"]
+        },
+        {
+          "id": "social-sciences/apa-jars",
+          "title": "APA Journal Article Reporting Standards (JARS)",
+          "path": "social-sciences/apa-jars.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://apastyle.apa.org/jars",
+          "license": "Freely accessible; APA-copyrighted content paraphrased",
+          "tags": ["reporting-standards", "psychology", "quantitative", "qualitative", "APA"]
+        },
+        {
+          "id": "social-sciences/coreq-srqr-qualitative",
+          "title": "Qualitative research reporting: COREQ and SRQR",
+          "path": "social-sciences/coreq-srqr-qualitative.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.equator-network.org/reporting-guidelines/coreq/",
+          "license": "Checklists freely accessible via EQUATOR; articles paraphrased",
+          "tags": ["qualitative", "COREQ", "SRQR", "interviews", "reflexivity"]
+        }
+      ]
+    },
+    {
+      "id": "statistics-reproducible-methods",
+      "title": "Statistics & reproducible methods",
+      "parent": null,
+      "description": "Statistical reporting, p-value practice, and transparency/open-science standards.",
+      "items": [
+        {
+          "id": "statistics-reproducible-methods/top-guidelines",
+          "title": "TOP Guidelines (Transparency and Openness Promotion)",
+          "path": "statistics-reproducible-methods/top-guidelines.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.cos.io/initiatives/top-guidelines",
+          "license": "CC BY 4.0",
+          "tags": ["open-science", "transparency", "preregistration", "data-sharing", "TOP"]
+        },
+        {
+          "id": "statistics-reproducible-methods/asa-p-value-statement",
+          "title": "ASA statement on statistical significance and p-values",
+          "path": "statistics-reproducible-methods/asa-p-value-statement.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.stat.berkeley.edu/~aldous/Real_World/ASA_statement.pdf",
+          "license": "Freely accessible; ASA-copyrighted text paraphrased",
+          "tags": ["p-values", "statistical-significance", "effect-sizes", "results-wording"]
+        },
+        {
+          "id": "statistics-reproducible-methods/sampl-guidelines",
+          "title": "SAMPL statistical reporting guidelines",
+          "path": "statistics-reproducible-methods/sampl-guidelines.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.equator-network.org/reporting-guidelines/sampl/",
+          "license": "Freely accessible via EQUATOR; article paraphrased",
+          "tags": ["statistical-reporting", "SAMPL", "regression", "methods-section"]
+        }
+      ]
+    },
+    {
+      "id": "environmental-earth-sciences",
+      "title": "Environmental & earth sciences",
+      "parent": null,
+      "description": "Geoscience report writing, calibrated uncertainty language, and earth-data sharing.",
+      "items": [
+        {
+          "id": "environmental-earth-sciences/usgs-suggestions-to-authors",
+          "title": "USGS Suggestions to Authors (7th ed.)",
+          "path": "environmental-earth-sciences/usgs-suggestions-to-authors.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://www.usgs.gov/publications/suggestions-authors-reports-united-states-geological-survey",
+          "license": "US government work, public domain (DOI 10.3133/7000088)",
+          "tags": ["geoscience", "report-writing", "style-guide", "USGS", "peer-review"]
+        },
+        {
+          "id": "environmental-earth-sciences/ipcc-uncertainty-language",
+          "title": "IPCC calibrated uncertainty language",
+          "path": "environmental-earth-sciences/ipcc-uncertainty-language.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://archive.ipcc.ch/pdf/supporting-material/uncertainty-guidance-note.pdf",
+          "license": "Freely accessible IPCC supporting material",
+          "tags": ["uncertainty", "confidence", "likelihood", "IPCC", "assessment-writing"]
+        },
+        {
+          "id": "environmental-earth-sciences/agu-data-sharing",
+          "title": "AGU data and software sharing guidance",
+          "path": "environmental-earth-sciences/agu-data-sharing.md",
+          "version": 1,
+          "kind": "knowledge-card",
+          "source_url": "https://data.agu.org/resources/agu-data-software-sharing-guidance",
+          "license": "CC BY 4.0",
+          "tags": ["data-availability", "software-citation", "repositories", "FAIR", "AGU"]
+        }
+      ]
+    }
+  ]
+}
