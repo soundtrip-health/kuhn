@@ -116,6 +116,11 @@ export function validateContinuation(continuation) {
       }
     }
   }
+  for (const [id, resulted] of calls) {
+    // A transcript ending in an unanswered tool_call is exactly the state
+    // provider APIs reject at resume, so it is never canonical.
+    if (!resulted) violations.push(`assistant tool_call ${id} has no tool_result`);
+  }
 
   return [...new Set(violations)];
 }

@@ -167,8 +167,17 @@ describe('provider-neutral runtime contract', () => {
     [{ status: 408, message: 'Request timed out' }, 'timeout', true],
     [{ message: 'maximum context length exceeded' }, 'context_overflow', false],
     [{ message: 'bad request' }, 'provider_error', false],
+    // Abort wording in a provider message must not shadow the real category.
+    [{ status: 429, message: 'request cancelled due to rate limit' }, 'rate_limit', true],
+    [{ code: 'ECONNRESET', message: 'stream aborted unexpectedly' }, 'network', true],
+    [new DOMException('The operation was aborted', 'AbortError'), 'cancelled', false],
   ])('normalizes provider failure %o as %s', (error, code, retryable) => {
     expect(normalizeProviderError(error)).toMatchObject({ code, retryable });
+  });
+
+  it('classifies cancellation on an aborted stop reason regardless of message wording', () => {
+    expect(normalizeProviderError(new Error('mid-stream failure'), { stopReason: 'aborted' }))
+      .toMatchObject({ code: 'cancelled', retryable: false });
   });
 
   it('keeps omitted usage explicit instead of inventing provider fields', () => {
@@ -219,6 +228,54 @@ describe('provider-neutral runtime contract', () => {
       'tool_call orphan-1 has no tool_result',
       'done must include canonical continuation messages',
     ]));
+  });
+
+  it('does not require delta closure when an error terminal interrupts streaming', () => {
+    const violations = validateRuntimeEventSequence([
+      { type: 'provider', provider: 'flaky', model: 'flaky-1' },
+      { type: 'text_delta', content: 'partial answ' },
+      { type: 'error', error: { code: 'server', message: 'upstream died mid-stream', retryable: true, status: 502 } },
+    ]);
+
+    expect(violations).toEqual([]);
+  });
+
+  it('still requires delta closure before a done terminal', () => {
+    const violations = validateRuntimeEventSequence([
+      { type: 'provider', provider: 'flaky', model: 'flaky-1' },
+      { type: 'text_delta', content: 'partial answ' },
+      { type: 'done', usage: {}, continuation: { version: 1, messages: [] } },
+    ]);
+
+    expect(violations).toContain('text deltas must conclude with a final text event');
+  });
+
+  it('rejects non-numeric raw usage on done instead of normalizing it away', () => {
+    const violations = validateRuntimeEventSequence([
+      { type: 'provider', provider: 'sloppy', model: 'sloppy-1' },
+      { type: 'text', content: 'ok' },
+      {
+        type: 'done',
+        usage: { inputTokens: 'twelve', outputTokens: {} },
+        continuation: { version: 1, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }] },
+      },
+    ]);
+
+    expect(violations).toContain('done usage fields must be finite numbers or null');
+  });
+
+  it('accepts finite, null, and absent raw usage fields on done', () => {
+    const violations = validateRuntimeEventSequence([
+      { type: 'provider', provider: 'tidy', model: 'tidy-1' },
+      { type: 'text', content: 'ok' },
+      {
+        type: 'done',
+        usage: { inputTokens: 12, outputTokens: null, totalTokens: 12 },
+        continuation: { version: 1, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }] },
+      },
+    ]);
+
+    expect(violations).toEqual([]);
   });
 
   it('rejects a done event whose continuation leaks provider message fields', () => {
@@ -295,6 +352,15 @@ describe('canonical continuation schema', () => {
     const doubled = canonical();
     doubled.messages.push(structuredClone(doubled.messages[2]));
     expect(validateContinuation(doubled)).toContain('tool_result c1 is duplicated');
+
+    // Ending in a bare tool_call is exactly the state providers reject at resume.
+    const unanswered = canonical();
+    unanswered.messages.splice(2, 2);
+    expect(unanswered.messages.at(-1).content).toEqual([
+      { type: 'tool_call', id: 'c1', name: 'echo', arguments: { text: 'x' } },
+    ]);
+    expect(validateContinuation(unanswered))
+      .toContain('assistant tool_call c1 has no tool_result');
   });
 
   it('round-trips through JSON serialization', () => {

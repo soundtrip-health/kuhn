@@ -52,6 +52,15 @@ import { validateContinuation } from './continuation.js';
 
 export const TERMINAL_RUNTIME_EVENTS = new Set(['done', 'error']);
 
+/** Raw usage fields (canonical names plus adapter aliases) read by normalizeUsage(). */
+const USAGE_FIELDS = [
+  'inputTokens', 'input',
+  'outputTokens', 'output',
+  'cacheReadTokens', 'cacheRead',
+  'cacheWriteTokens', 'cacheWrite',
+  'totalTokens',
+];
+
 /**
  * Normalize incomplete provider usage without inventing zeros. A provider that
  * omits cache fields is observably different from one that reports zero cache
@@ -107,7 +116,11 @@ export function normalizeProviderError(error, { stopReason } = {}) {
   const code = String(error?.code ?? '').toLowerCase();
   const haystack = `${code} ${message}`.toLowerCase();
 
-  if (stopReason === 'aborted' || error?.name === 'AbortError' || /\babort(?:ed)?\b|\bcancel(?:led|ed)?\b/.test(haystack)) {
+  // Cancellation is classified only on strong signals (explicit abort types
+  // and stop reasons), never on message wording: provider messages routinely
+  // contain "cancelled"/"aborted" while describing rate limits or dropped
+  // connections, and those must keep their retryable categories.
+  if (stopReason === 'aborted' || error?.name === 'AbortError' || code === 'abort_err') {
     return runtimeError('cancelled', message, false, status);
   }
   if (status === 429 || /rate.?limit|too many requests/.test(haystack)) {
@@ -182,7 +195,11 @@ export function validateRuntimeEventSequence(events) {
     if (TERMINAL_RUNTIME_EVENTS.has(event.type)) terminalIndexes.push(index);
   });
 
-  if (pendingDeltas) violations.push('text deltas must conclude with a final text event');
+  // Delta closure is only required of a completed turn: an error terminal may
+  // legally interrupt an open delta run (mid-stream provider failure).
+  if (pendingDeltas && events.at(-1)?.type === 'done') {
+    violations.push('text deltas must conclude with a final text event');
+  }
   for (const [id, call] of toolCalls) {
     if (!call.resulted) violations.push(`tool_call ${id} has no tool_result`);
   }
@@ -201,8 +218,11 @@ export function validateRuntimeEventSequence(events) {
         violations.push(`done continuation is not canonical: ${defect}`);
       }
     }
-    const usage = normalizeUsage(terminal.usage);
-    if (Object.values(usage).some((value) => value !== null && !Number.isFinite(value))) {
+    // Validate the raw usage fields, not normalizeUsage() output: the
+    // normalizer coerces garbage to null, which would make this unreachable.
+    const rawUsage = terminal.usage ?? {};
+    const rawUsageValues = USAGE_FIELDS.map((field) => rawUsage[field]);
+    if (rawUsageValues.some((value) => value !== undefined && value !== null && !Number.isFinite(value))) {
       violations.push('done usage fields must be finite numbers or null');
     }
   }

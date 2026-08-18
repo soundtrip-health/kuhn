@@ -25,6 +25,8 @@ Every turn must emit provider identity first and exactly one terminal event last
 
 `tool_call` records the model's attempt **before** Kuhn's schema validation — it is a faithful transcript of what the model requested, not a promise that the arguments are valid. The validation and execution outcome is always the matching `tool_result`: invalid arguments produce `tool_result.isError = true`, and the Kuhn tool implementation is never invoked for them. Every emitted `tool_call` is followed by exactly one matching `tool_result`.
 
+A run of `text_delta` events must be closed by its final `text` event before a `done` terminal. An `error` terminal may legally interrupt an open delta run: a mid-stream provider failure is reported as the error it is, not additionally as a delta-closure violation.
+
 A turn whose `AbortSignal` is already aborted before execution still emits provider identity first, then exactly one terminal `error` with `code: 'cancelled'` — and must not start a provider request or execute a tool.
 
 Provider-native session/response ids are optional diagnostics and cache hints. They are not canonical continuation.
