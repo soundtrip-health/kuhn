@@ -44,7 +44,7 @@
           "title": "Reporting guidelines (CONSORT / STROBE / PRISMA / ARRIVE / SPIRIT)",
           "path": "shared/reporting-guidelines.md",
           "version": 1,
-          "kind": "knowledge-card",
+          "kind": "document",
           "source_url": "https://www.equator-network.org/",
           "license": "Kuhn-authored",
           "tags": ["reporting", "checklists"]
@@ -54,7 +54,7 @@
           "title": "ICH E9(R1) estimand framework & Target Trial Emulation",
           "path": "shared/estimand-framework-and-tte.md",
           "version": 1,
-          "kind": "knowledge-card",
+          "kind": "document",
           "source_url": "https://www.ich.org/page/efficacy-guidelines",
           "license": "Kuhn-authored",
           "tags": ["estimands", "statistics", "causal-inference"]

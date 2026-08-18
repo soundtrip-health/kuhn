@@ -5,7 +5,7 @@
 // reimport, dedupe stamping, validation refusals, audit rows. Real SQLite +
 // real storage in temp dirs; ingestion mocked (006-002 has its own tests).
 
-import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -137,6 +137,17 @@ describe('catalog views', () => {
       enabled: false, doc_id: null, doc_status: null,
       imported_version: null, update_available: false,
     });
+  });
+
+  it('a malformed tags value in the DB degrades to [], not a 500', async () => {
+    const before = querySync(
+      'SELECT tags FROM knowledge_items WHERE id = $1', [EXTRA]).rows[0].tags;
+    querySync('UPDATE knowledge_items SET tags = $2 WHERE id = $1', [EXTRA, '{not json']);
+    const res = await call('GET', '/api/knowledge/catalog', 'viewer');
+    querySync('UPDATE knowledge_items SET tags = $2 WHERE id = $1', [EXTRA, before]);
+    expect(res.status).toBe(200);
+    const { packages } = await res.json();
+    expect(item(packages, EXTRA).tags).toEqual([]);
   });
 });
 
@@ -527,5 +538,68 @@ describe('two catalog items with identical bytes (PLA-255 merge blocker)', () =>
     const { packages } = await (await call('GET', `/api/orgs/${ORG}/knowledge`, 'viewer')).json();
     expect(item(packages, TWIN)).toMatchObject({ enabled: false, doc_id: null });
     expect(item(packages, STYLE)).toMatchObject({ enabled: false, doc_id: null });
+  });
+});
+
+describe('post-commit cleanup failure is non-fatal (review fix)', () => {
+  // Once the link swap has committed the reimport IS live — a failure to
+  // delete the replaced bytes afterwards must not turn the response into a
+  // 502 or drop the item from the knowledge.reimport audit (a retry takes the
+  // identical-bytes branch, so nothing would ever reattempt this delete).
+  const stylePath = () => join(catalogRoot, 'writing', 'style.md');
+  const docDir = (id) => join(orgsRoot, String(ORG), 'library', String(id));
+
+  it('reimport still succeeds, audits, and serves the new import', async () => {
+    await writeFile(stylePath(), '# Cleanup case\n\nOriginal import.\n');
+    let res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { enable: [STYLE] });
+    expect(res.status).toBe(200);
+    const old = importedDoc(STYLE);
+    expect(old).toMatchObject({ source: 'guidance-import' });
+
+    await writeFile(stylePath(), '# Cleanup case v2\n\nReplacement bytes.\n');
+    const auditsBefore = querySync(
+      "SELECT COUNT(*) AS n FROM auth_events WHERE type = 'knowledge.reimport'").rows[0].n;
+    // Strip write permission from the old copy's directory so the post-commit
+    // deleteOrgEntry fails with a non-not_found error.
+    await chmod(docDir(old.id), 0o555);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let loggedCleanupFailure = false;
+    try {
+      res = await call('POST', `/api/orgs/${ORG}/knowledge/reimport`, 'owner',
+        { items: [STYLE] });
+      loggedCleanupFailure = logged.mock.calls.length > 0;
+    } finally {
+      await chmod(docDir(old.id), 0o755);
+      logged.mockRestore();
+    }
+
+    // The reimport reports success and the audit row was recorded.
+    expect(res.status).toBe(200);
+    expect(querySync(
+      "SELECT COUNT(*) AS n FROM auth_events WHERE type = 'knowledge.reimport'").rows[0].n)
+      .toBe(auditsBefore + 1);
+
+    // The new import is live: linked row, new bytes on disk, old row gone.
+    const doc = importedDoc(STYLE);
+    expect(doc.id).not.toBe(old.id);
+    expect(doc).toMatchObject({ source: 'guidance-import', catalog_item_id: STYLE });
+    await stat(join(docDir(doc.id), 'style.md'));
+    expect(querySync(
+      'SELECT COUNT(*) AS n FROM org_documents WHERE org_id = $1 AND id = $2',
+      [ORG, old.id],
+    ).rows[0].n).toBe(0);
+    const { packages } = await res.json();
+    expect(item(packages, STYLE)).toMatchObject({ enabled: true, doc_id: doc.id });
+
+    // The failure was real: the old directory leaked, and was logged.
+    await stat(join(docDir(old.id), 'style.md'));
+    expect(loggedCleanupFailure).toBe(true);
+
+    // Tidy up the leak and the selection so reruns stay readable.
+    await rm(docDir(old.id), { recursive: true, force: true });
+    res = await call('PUT', `/api/orgs/${ORG}/knowledge/selections`, 'owner',
+      { disable: [STYLE] });
+    expect(res.status).toBe(200);
   });
 });

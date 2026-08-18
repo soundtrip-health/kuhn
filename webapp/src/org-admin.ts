@@ -165,6 +165,12 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   // Live import status for the Knowledge tab: doc_status events land on the
   // shared org feed; a poll tick (feed down) refetches the merged state.
   stopKnowledgeFeed?.();
+  // The feed also carries ordinary library documents (uploads, promotions),
+  // which never appear in the knowledge payload. Refetch at most once per
+  // unknown docId: ids the refreshed payload still doesn't claim are foreign
+  // — remember them so a colleague's bulk upload doesn't trigger a refetch
+  // for every subsequent status transition.
+  const foreignDocIds = new Set<number>();
   stopKnowledgeFeed = addOrgFeedListener(org.id, (event) => {
     if (!knowledge) return;
     if (event.type === 'poll') {
@@ -173,10 +179,18 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
     }
     const item = knowledge.flatMap((p) => p.items).find((i) => i.doc_id === event.docId);
     if (!item) {
+      if (foreignDocIds.has(event.docId)) return;
+      foreignDocIds.add(event.docId); // also debounces while the refetch is in flight
       // A status event for a document this snapshot doesn't know yet — a fast
       // ingest can finish before the enable's refreshed payload is applied.
-      // Refetch rather than drop what may be the terminal transition.
-      void reloadKnowledge();
+      // Refetch rather than drop what may be the terminal transition; if the
+      // refreshed payload claims the doc it was ours after all, so forget it
+      // and let later events apply normally.
+      void reloadKnowledge().then(() => {
+        if (knowledge?.some((p) => p.items.some((i) => i.doc_id === event.docId))) {
+          foreignDocIds.delete(event.docId);
+        }
+      });
       return;
     }
     item.doc_status = event.status;

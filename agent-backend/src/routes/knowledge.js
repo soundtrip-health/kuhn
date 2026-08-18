@@ -26,6 +26,16 @@ const router = Router();
 
 // ---- catalog views -----------------------------------------------------------
 
+/** Tags are stored as a JSON array string; a malformed row degrades to []. */
+function parseTags(raw) {
+  try {
+    const tags = JSON.parse(raw || '[]');
+    return Array.isArray(tags) ? tags : [];
+  } catch {
+    return [];
+  }
+}
+
 const publicItem = (row) => ({
   id: row.id,
   title: row.title,
@@ -33,7 +43,7 @@ const publicItem = (row) => ({
   version: row.version,
   source_url: row.source_url,
   license: row.license,
-  tags: JSON.parse(row.tags || '[]'),
+  tags: parseTags(row.tags),
   available: !!row.available,
 });
 
@@ -221,7 +231,7 @@ async function removeImportedDoc(orgId, itemId) {
  * bytes → restamp the version on the existing row; changed bytes → store the
  * replacement fully, then swap the catalog link in one transaction (the old
  * copy is deleted only if catalog-owned, an adopted upload is just unlinked)
- * and clean the old bytes up last, after the swap is committed.
+ * and clean the old bytes up last (best-effort), after the swap is committed.
  */
 async function reimportItem(orgId, item, userId) {
   const buffer = await readCatalogFile(item.path);
@@ -260,10 +270,19 @@ async function reimportItem(orgId, item, userId) {
     linkCatalogDoc(orgId, fresh.id, item, item.version);
   });
   if (catalogOwned(old)) {
+    // The swap is committed and the new import is live — from here on, a
+    // failure to delete the replaced bytes must not fail the reimport (a
+    // retry would take the identical-bytes branch and never reach this
+    // delete again). Log the leaked directory and move on.
     try {
       await deleteOrgEntry(orgId, String(old.id));
     } catch (err) {
-      if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
+      if (!(err instanceof StorageError && err.code === 'not_found')) {
+        console.error(
+          `[knowledge] Failed to remove replaced import ${old.id} (org ${orgId}, item ${item.id}):`,
+          err,
+        );
+      }
     }
   }
   return getOrgDocument(orgId, fresh.id);
