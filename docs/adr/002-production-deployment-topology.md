@@ -1,16 +1,33 @@
 # ADR 002: Production deployment topology and scale boundary
 
-- **Status:** Accepted for the first-team pilot
-- **Date:** 2026-08-16
-- **Issues:** PLA-225 (this ADR); informs PLA-236, PLA-240, PLA-241, PLA-242,
-  PLA-244, PLA-245, PLA-246, PLA-248
-- **Companion:** [threat-model.md](../security/threat-model.md) (PLA-224) — the
+- **Status:** Proposed for human architecture review
+- **Date:** 2026-08-17
+- **Issues:** STH-3 (this ADR); informs STH-17, STH-21, STH-22, STH-23,
+  STH-24, STH-25, STH-26, STH-27, STH-29
+- **Companion:** [threat-model.md](../security/threat-model.md) (STH-2) — the
   security model and this topology constrain each other and were written as one pass.
 - **Relationship to ADR 001:** ADR 001 (provider-neutral runtime) is **pending in
   [PR #69](https://github.com/soundtrip-health/kuhn/pull/69)**, not yet on `main`; it
   lands at `docs/adr/001-provider-agnostic-runtime-foundation.md` when #69 merges. This
-  ADR references its accepted direction (a narrow `AgentRuntime` seam beneath
+  ADR references its proposed direction (a narrow `AgentRuntime` seam beneath
   `runAgentTask`) but does not depend on its implementation details.
+
+## Review orientation
+
+This PR changes architecture documentation only. It does not make the current build
+production-ready.
+
+| State | Topology | Meaning |
+|---|---|---|
+| **Current implementation** | One Node process owns HTTP, agent execution, live SSE/Yjs state, SQLite access, local files, and direct Docker invocation | Useful development baseline, with the security and durability gaps catalogued in the companion threat model |
+| **Proposed first-team target** | One host; one web process, one durable-job worker, and one narrowly scoped sandbox service; shared SQLite and local files | The smallest supported production topology this ADR asks a human reviewer to approve |
+| **Later scale topology** | Multiple web/worker hosts, Postgres, shared/object storage, externalized collaboration/event coordination | Deferred until measured contention, availability, or capacity triggers require it |
+
+The consequential review questions are whether the worker seam is recoverable, the
+sandbox boundary removes arbitrary Docker control from the web process, SQLite is an
+honest supported boundary for the pilot, and the backup contract can be implemented and
+tested by the owning STH issues. Provider replacement, multi-region operation, and
+generic multi-tenant SaaS scale are non-goals here.
 
 ## Context
 
@@ -31,9 +48,12 @@ load-bearing and set the terms of every decision below:
    file, the project files, and the **host-root-equivalent Docker socket** all live in
    one OS process on one host. (Threat model §1, T-25.)
 2. **The database is synchronous and single-writer.** better-sqlite3 blocks the event
-   loop on every query (`db.js:63-65`); there is no `busy_timeout` (`db.js:14-21`), so a
-   second writer throws `SQLITE_BUSY` rather than waiting. This is the concrete ceiling
-   the scale triggers key off.
+   loop on every query (`db.js:63-65`). Kuhn does not configure a timeout explicitly,
+   so the library's current 5-second default applies (`db.js:19`;
+   [better-sqlite3 `Database` constructor](https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md#new-databasepath-options)).
+   A competing writer can therefore block the process and may
+   still end in `SQLITE_BUSY`. That latency/contention boundary — not an immediate-fail
+   assumption — is what the scale triggers key off.
 
 ### First production target
 
@@ -55,8 +75,8 @@ trigger that forces a revisit.
 | Area | Pilot decision | Hard trigger to revisit |
 |---|---|---|
 | Web/API | **Single instance**, single port, behind a reverse proxy | Need for a second web replica for availability, or CPU-bound request serving |
-| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases, **a DB-backed durable event/control seam** (§2.3), and **operation-level idempotency/recovery for mutating tool calls** (§2.4) | Worker CPU saturation; need for multiple workers |
-| Database | **Keep SQLite** (WAL, single writer), accessed by web + worker on one host | Sustained write contention / `SQLITE_BUSY`; need for a second host to touch data → **Postgres** |
+| Background jobs | **Split into a dedicated worker process** on the same host, sharing the DB and files, with DB-backed leases, **a DB-backed durable event/control seam** (§2.3), and **deduplication/recovery protocols for mutating tool calls** (§2.4) | Worker CPU saturation or measured DB contention; additional workers remain a deliberate post-pilot topology |
+| Database | **Keep SQLite** (WAL, single writer), accessed by web + worker on one host | Sustained write contention / latency or need for a second host to touch data → **Postgres** |
 | File storage | **Local durable disk**, backed up with the DB | Multi-host access to files; capacity beyond one volume → network/object storage |
 | Collaboration (Yjs) | **Single-instance in-memory rooms**, durability via autosave | Any second web instance that terminates WebSockets |
 | Sandbox | **Dedicated local sandbox service** with a narrow enumerated request surface; the *only* Docker client; web/worker call it over local RPC; **interactive render/export stays synchronous** (§6) | — (this is itself the hardening; larger isolation only if multi-host) |
@@ -67,8 +87,8 @@ trigger that forces a revisit.
 
 The through-line: **keep request-serving simple and single-instance; separate the two
 things that are genuinely unsafe or unreliable co-resident — durable background
-execution (PLA-244) and host-privileged Docker control (PLA-240); make persistence
-recoverable (PLA-241/242); and build the *seam* for multi-instance later rather than
+execution (STH-25) and host-privileged Docker control (STH-21); make persistence
+recoverable (STH-22/STH-23); and build the *seam* for multi-instance later rather than
 paying its cost now.**
 
 ## Pilot topology (target state)
@@ -227,7 +247,7 @@ handles and `questions.js` holds pending `ask_user` waiters in in-memory `Map`s,
 (`routes/agent.js:122-167`). Move the runtime to a second process without replacing
 these seams and the worker's copy of the hub has no subscribers, no rooms, and no
 reviewer sockets — while the web process can no longer deliver replies or reconnects
-to the run. The contract below is what PLA-244/243 build to.
+to the run. The contract below is what STH-25/STH-24 build to.
 
 ### 2.3 The durable event/control seam (the pilot contract)
 
@@ -253,7 +273,12 @@ restart correctness comes from persisted state.**
 - **Delivery is at-least-once; every replayable consumer effect is idempotent.** The
   web tracks the last event sequence it projected; SSE clients carry a cursor
   (`Last-Event-ID`-style) so a browser reload replays from where it left off. Nothing
-  correctness-bearing lives only in web-process memory.
+  correctness-bearing lives only in web-process memory. This requires a deliberate
+  wire-protocol change: the current project/org feeds emit `data:` frames but no stable
+  SSE `id:` and the client relies only on `EventSource` auto-reconnect
+  (`routes/projects.js` project-event route; `webapp/src/api.ts` project-event
+  subscription). STH-25 must add event IDs, retention/cursor rules, and
+  `Last-Event-ID` resume behavior before replay is a valid claim.
 - **Restart matrix:**
   - *Browser reload:* the client resubscribes with its cursor; the pending question is
     re-emitted from the durable question row.
@@ -268,23 +293,20 @@ restart correctness comes from persisted state.**
   - *Terminal state:* the terminal job event row is the durable truth; the live-run
     registry (`runs.js`) becomes a derived cache over jobs + events, not the authority.
 
-### 2.4 Exactly-once *logical* effect — operation identity, idempotency, reconciliation
+### 2.4 Durable mutation effects — identity, deduplication, reconciliation
 
-**The production invariant, stated precisely:** a mutating tool call has an
-**exactly-once logical effect**, achieved through **stable operation identity,
-durable operation state and results, idempotent finalization, and reconciliation on
-recovery** — *not* through cross-store atomicity, which does not exist here: a
-filesystem mutation and a SQLite transaction cannot commit atomically together. (An
-earlier draft said durable mutations "execute exactly once in the originating
-process, coupled atomically with their event append." That is achievable for DB-only
-mutations and impossible for filesystem-backed ones — and lease reclaim is exactly
-where the imprecision would bite, because a reclaimed job must decide whether an
-interrupted operation already ran.)
+**The production invariant:** recovery never blindly repeats a mutating operation.
+Kuhn guarantees one committed DB effect/result/event per Kuhn-owned operation identity
+for DB-only work. For filesystem-backed work, SQLite and the filesystem cannot commit
+atomically, so the honest target is narrower: persist intent and preconditions, fence
+concurrent mutation, reconcile an ambiguous outcome, and either finalize, safely retry,
+or stop for repair. The architecture does **not** promise generic exactly-once
+filesystem effects.
 
 `publishProjectEvent()` today conflates two kinds of effect. The corrected split:
 
 1. **Authoritative durable mutations** — `recordFileEvent`, `applyMove`'s path-keyed
-   rewrites, review-link revocation (the DB half), git-history commits — are owned by
+   rewrites, and review-link revocation (the DB half) — are owned by
    **the process that originates the mutation**, executed under the operation
    protocol below. Worker-originated file changes: the worker. Web-originated
    editor/REST mutations: the web process, as today. **Neither process ever
@@ -300,44 +322,48 @@ interrupted operation already ran.)
    an absent room, closing an already-closed socket, re-planting a tombstone are
    no-ops), which is what makes at-least-once delivery safe.
 
-**The operation protocol (what PLA-244 builds; PLA-243 verifies):**
+**The operation protocol (what STH-25 builds; STH-24 verifies):**
 
-- **Stable operation identity.** Every mutating tool call carries a stable
-  operation/idempotency identity, normally derived from the **job identity plus the
-  canonical provider-neutral tool-call id**. The provider-neutral tool work
-  (PLA-226/227, ADR 001) must preserve a stable tool-call id across
-  retry/resume for exactly this reason — a requirement on that work, recorded here,
-  not implemented here.
+- **Kuhn-owned operation identity.** Kuhn mints the logical operation id from durable
+  job/step state and reuses it only when resuming that same recorded operation. A
+  provider tool-call id is useful transcript evidence, but is not the idempotency key:
+  rerunning a provider turn may produce a different id, and two different logical
+  attempts must not collide merely because a provider reuses one. STH-1 and STH-7
+  must carry the Kuhn operation context through the neutral tool boundary; PR #69's
+  canonical tool-call ids alone do not establish replay identity.
 - **Durable operation state.** Conceptually, persisted operation state carries: the
-  operation id; the job id; the tool/capability; the arguments (or a safe arguments
-  hash); a state such as `prepared` / `applied` / `failed`; the stored tool result;
-  and the associated event sequence. This ADR deliberately does **not** fix the final
-  schema — it fixes the *protocol*: state is persisted before or with the effect, and
-  a replayed call is answered from the stored result.
+  operation id; job and durable step; tool/capability; normalized arguments (or a safe
+  hash); required precondition/version; intended postcondition; a state such as
+  `prepared` / `applied` / `ambiguous` / `failed`; stored result; and associated event
+  sequence. This ADR does not fix the final schema. It fixes the protocol: preparation
+  precedes the effect, and an applied operation returns its stored result.
 - **DB-only mutations.** Where a tool's side effect is entirely SQLite-backed,
   operation finalization + the mutation + the domain-event append commit in **one
-  SQLite transaction** — here (and only here) "exactly once in the originating
-  process" is literally true. On replay or reclaim, an already-`applied` operation
-  **returns its stored result and is never re-executed**.
+  SQLite transaction**. A uniqueness constraint on the Kuhn operation id makes replay
+  return the stored result without applying a second DB mutation. Review-link
+  mint/revoke and other web/admin mutations remain web-owned DB operations; if an API
+  endpoint promises safe client retries, the web must assign or accept a Kuhn request
+  id and apply the same uniqueness/result rule rather than borrowing a provider id.
 - **Filesystem-backed mutations** follow a durable **prepare → execute →
-  reconcile/finalize** contract: persist the `prepared` operation first; perform the
-  filesystem effect; then finalize — the path-keyed DB mutation, the event append,
-  the operation's `applied` state, and its stored result in one transaction. A worker
-  recovering a `prepared`/ambiguous operation after lease reclaim **inspects actual
-  state before doing anything**:
-  - `write_file`: compare the target path and content hash against the prepared
-    intent; finalize if the write already landed, re-execute if it did not.
-  - `move_file` (the canonical case): inspect the canonical source/destination state
-    and reconcile deterministically — the rename happened (finalize the DB rewrite)
-    or it did not (re-execute, or compensate). Today's throw-to-producer
-    compensation (`applyMove` fails → the producer renames back) only works while
-    the process is alive; the prepared-operation record is what makes *crash*
-    recovery decidable.
-  - delete/create reason from actual filesystem state the same way.
-- **Tool-specific reconciliation logic is required** wherever the durable store and
-  the filesystem cannot transact together — a structural obligation of the worker
-  contract, not an edge case. **Never blindly rerun a mutating operation after lease
-  reclaim.**
+  reconcile/finalize** contract. Preparation records the exact precondition (for
+  example absent/existing path, content hash or version, and destination state) and
+  acquires a project/path mutation fence. After the filesystem effect, one DB
+  transaction records path-keyed DB changes, event rows, operation result, and the
+  continuation checkpoint that follows the tool result. Recovery then compares both
+  the precondition and intended postcondition:
+  - `write_file`: desired content at the path is evidence only while the recorded
+    path/version fence excludes a later writer; a matching hash by itself cannot prove
+    which operation wrote it.
+  - `move_file`: source identity and destination precondition must be recorded before
+    rename. Source-missing/destination-present is not automatically attributable when
+    another actor could have changed either path.
+  - create/delete use the same precondition rule; absence alone is not proof that a
+    particular delete ran.
+- **Ambiguity is a supported recovery state.** If current state cannot prove that the
+  recorded effect landed or did not land, the worker marks the operation
+  `ambiguous`/dead-letter and requires a tool-specific repair path. It does not guess.
+  STH-25 builds these protocols; STH-24 and STH-30 verify them with crash and
+  concurrency injection.
 
 **Git history is the one effect that changes owner.** Two processes running git against
 the same workspace would race the per-project commit serialization that is in-process
@@ -353,16 +379,16 @@ any file content.
 rewrite / event append / continuation checkpoint; (3) the worker lease expires;
 (4) the reclaimed job cannot safely assume whether the tool operation should be
 rerun. Without a prepared-operation record, neither rerunning nor skipping is safe.
-With it, recovery is deterministic: `applied` → return the stored result; `prepared`
-→ reconcile against actual filesystem state, then finalize or compensate — and the
-event append and continuation checkpoint land exactly once because they commit with
-finalization. The remaining gaps are bounded the same way as before:
+With it, recovery is bounded: `applied` returns the stored result; `prepared` is
+reconciled against the recorded precondition and actual state, then finalized, safely
+retried, compensated, or stopped as ambiguous. The DB finalization transaction commits
+the event append and continuation checkpoint metadata once. The remaining gaps are:
 DB-commit-then-notification is safe because the event row is durable and the next
 tail read delivers it; notification-then-projection is safe because projections are
 idempotent. What the contract forbids: performing a durable mutation in one process
 and its event append in another; letting both processes apply the same durable
 mutation; and re-executing a mutating operation whose outcome is unknown without
-reconciling first. PLA-244 implements the seam and the operation store; PLA-243's
+reconciling first. STH-25 implements the seam and the operation store; STH-24's
 replay/failure-injection work verifies these invariants at each crash boundary
 (before effect · after fs effect, before DB finalize · after finalize, before wakeup
 · after event append, before continuation checkpoint).
@@ -398,7 +424,7 @@ Node process runs many asynchronous jobs concurrently. The pilot execution model
   explicit slot pools per job class — agent runs and ingestion at minimum — not as an
   accident of the event loop. This ADR deliberately sets no fixed numbers (there is no
   evidence to support any); it fixes the *mechanism* (config-driven caps, measured
-  under PLA-245 telemetry) and PLA-244 sets defaults from observed load.
+  under STH-26 telemetry) and STH-25 sets defaults from observed load.
 - **A parked `ask_user` job does not consume an execution slot.** It retains its lease
   and durable state (question row, continuation) but releases its provider-turn slot;
   otherwise one question the user stepped away from starves every other job — the
@@ -410,7 +436,7 @@ Node process runs many asynchronous jobs concurrently. The pilot execution model
   worker slots and container slots are separate budgets, so a render burst cannot
   starve agent turns or vice versa.
 - **What runs where:** provider calls and background ingestion move to the worker —
-  spend/concurrency controls (PLA-238) get one home, and a 200-page PDF ingest never
+  spend/concurrency controls (STH-19) get one home, and a 200-page PDF ingest never
   competes with request latency on the web event loop. **Interactive render/export
   does not move** — it stays a synchronous web→sandbox-service call (§6).
 
@@ -425,14 +451,16 @@ product rewrite. (c) Ephemeral IPC (socket/pipe) as the primary channel — reje
 restart correctness would then depend on both processes being up and connected;
 demoted to an optional wakeup optimization (§2.3).
 
-**Tradeoff:** two processes now share one SQLite file. SQLite handles multi-process
-access under WAL, but **without `busy_timeout` a writer collision throws immediately**
-(`db.js:14-21`); PLA-241/244 must set a `busy_timeout` and keep write transactions short.
-This is the first place the single-writer property bites, and it is the leading edge of
-the Postgres trigger (§3).
+**Tradeoff:** two processes now share one SQLite file. SQLite supports this under WAL,
+but a competing write waits synchronously and can still fail after better-sqlite3's
+implicit timeout; while it waits, that process's event loop is blocked. STH-22 and
+STH-25 must make the timeout explicit, keep write transactions short, and instrument
+wait/failure latency. This is the leading edge of the Postgres trigger (§3).
 
-**Scale trigger:** multiple workers, or a worker on a *different host* from the DB, forces
-Postgres (§3) — SQLite is single-host by construction.
+**Supported pilot boundary:** one web process and one worker on the DB host. SQLite does
+not technically prohibit a second same-host worker; Kuhn declines to support one until
+load/failure testing proves contention and lease behavior remain acceptable. A worker on
+a different host is incompatible with WAL/local-disk requirements and triggers Postgres.
 
 ---
 
@@ -445,15 +473,18 @@ deployment.
 **Why — evaluated against the actual workload, not aesthetics:**
 
 - **One deployment, low concurrency.** A small team generates few writes per second.
-- **Yjs traffic never touches the DB.** Live collaboration is in-memory
-  (`yjs-websocket.js:8-10`); durability is the editor's debounced autosave writing files
-  (`routes/files.js:106-137`), not DB writes. The high-frequency collaboration path
-  therefore does not load the database at all — a key reason SQLite is sufficient.
+- **Yjs document updates do not write the DB.** Live document state is in-memory
+  (`yjs-websocket.js` room map); durability is the editor's debounced autosave writing
+  files (`routes/files.js:106-137`). Room joins and authorization/lifecycle sweeps still
+  read membership or review-link state from SQLite (`collab-auth.js`; authorization
+  sweeps in `yjs-websocket.js`). The high-frequency update path therefore creates low
+  DB write pressure, not zero database traffic.
 - **The heavy writes are transcripts, event rows, and chunks**, which are append-mostly
   and bounded by the worker's explicit per-class concurrency caps (§2.6). SQLite is
-  appropriate because write concurrency is **bounded and measured** — few writers,
-  short transactions, `busy_timeout` set — *not* because "one worker process"
-  serializes writes (it doesn't; a Node worker runs jobs concurrently).
+  appropriate only while write concurrency is **bounded and measured** — few writers,
+  short transactions, an explicit timeout, and contention telemetry — *not* because
+  "one worker process" serializes writes (it does not; a Node worker runs jobs
+  concurrently).
 - **Migration safety and operational simplicity.** One file, no DB service to run,
   secure, back up, patch, or tune. For a small team this is a feature, not a compromise.
 - **Postgres is not automatically "more production."** It would add a service to operate,
@@ -462,12 +493,13 @@ deployment.
 
 **If SQLite stays (it does), this ADR fixes the supported envelope:**
 
-- **Access topology:** at most the web process and one worker, **on the same host**,
-  against one DB file. No third writer, no networked filesystem for the DB, no second
-  host. Set **`busy_timeout`** (PLA-241) so brief contention waits instead of throwing.
-- **Backup method:** the SQLite **Online Backup API** — better-sqlite3 `db.backup()`
-  (or `VACUUM INTO`) — producing a consistent standalone destination database; never a
-  naive `cp` of the live `kuhn.sqlite` alone. The WAL carries uncheckpointed data
+- **Access topology:** the supported pilot has the web process and one worker, **on the
+  same host**, against one DB file. No networked filesystem and no second host. Make the
+  timeout explicit and observable rather than relying on better-sqlite3's default.
+- **Backup method:** the SQLite **Online Backup API** through better-sqlite3
+  `db.backup()`, producing a consistent standalone destination database; never a naive
+  `cp` of the live `kuhn.sqlite` alone. `VACUUM INTO` can also create a consistent copy,
+  but it is a different, non-incremental procedure and is not the pilot runbook. The WAL carries uncheckpointed data
   (observed locally: 2.7 MB WAL vs 4 KB main DB); a main-file-only copy backs up
   essentially nothing (T-34). See §8.1.
 - **Filesystem requirements:** a POSIX filesystem with correct `fsync`/locking — **local
@@ -475,13 +507,14 @@ deployment.
 - **Schema evolution:** replace the startup-time ad-hoc DDL — a hand-maintained
   `COLUMN_MIGRATIONS` list plus `DROP TABLE`-based rebuilds that run on live data with no
   version table (`db/init.js:14-42,82-183`) — with a **versioned migration ledger** and a
-  **pre-migration backup gate** (PLA-241). Today `initDb` failure *starts the server
-  anyway* (`index.js:116-119`); production must fail closed (PLA-236).
+  **pre-migration backup gate** (STH-22). Today `initDb` failure *starts the server
+  anyway* (`index.js:116-119`); production must fail closed (STH-17).
 
 **When Postgres becomes mandatory (any one):**
 
-- a **second worker**, or any process that must touch the data from a **different host**;
-- sustained **write contention** — recurring `SQLITE_BUSY`/lease churn under normal load;
+- any process that must touch the data from a **different host**;
+- sustained **write contention or event-loop blocking** — recurring `SQLITE_BUSY`,
+  lease churn, or unacceptable p95/p99 write latency under normal load;
 - **multiple web replicas** (which SQLite cannot back across hosts);
 - the org-library corpus or transcript volume outgrowing single-file practicality, or
   backup windows (§8) becoming unacceptable.
@@ -553,7 +586,7 @@ instances* — which the pilot does not have.
   multi-instance web — explicitly out of pilot scope (§1).
 - **Graceful shutdown gap:** there is no SIGTERM handler today, so a deploy drops rooms
   and abandons up-to-120 s of coalesced git commits (`unref`'d timers, `history.js:142`).
-  PLA-246 must add draining + a commit flush on shutdown.
+  STH-27 must add draining + a commit flush on shutdown.
 
 **Trigger for Redis/shared coordination:** the first time a second web instance
 terminates WebSockets. At that point rooms must move to a shared coordinator (Redis
@@ -574,30 +607,35 @@ T-25, the one Critical topology finding).
 behind a **dedicated local sandbox worker/service** with a **deliberately narrow
 invocation surface** — the simplest robust isolation that removes host-root-equivalent
 control from the internet-facing process. **No orchestration system** (no Kubernetes, no
-Nomad). This is the boundary PLA-240 implements.
+Nomad). This is the boundary STH-21 implements.
 
 **The narrow surface:** the sandbox service accepts only a small, enumerated set of
 render/ingest operation types. A request carries the **operation type, logical
 project/org/document identifiers as appropriate, workspace-relative paths, and
 bounded operation-specific options** — never an absolute host path, a mount
 specification, an image name, Docker argv, or an arbitrary command. The web/worker
-processes call it over a **local-only** channel (Unix domain socket or loopback), and
-it is the *only* component with Docker access. The existing argument validation is
+processes call it over an authenticated **local-only** channel (prefer a Unix domain
+socket with restrictive ownership and peer-credential checks; loopback requires mutual
+authentication), and it is the *only* component with Docker access. The existing argument validation is
 already shaped for this: Pandoc extra-args are allowlisted by regex and documented as
 never-user-input (`sandbox.js:158-166`); the render service composes fixed arguments
-(`render.js:45-49`). PLA-240 formalizes that into the service's request schema.
+(`render.js:45-49`). STH-21 formalizes that into the service's request schema.
 
-**Containment is enforced by the service, independently of its caller.** The service
-exists to constrain a *compromised* web or worker process, so nothing the caller
-sends may choose what part of the host filesystem Docker touches: the service itself
-resolves logical identifiers to filesystem roots, canonicalizes every path and
-enforces containment under the configured Kuhn data roots (rejecting `..` traversal,
-symlink escapes, and absolute host paths), constructs every container mount
-internally, selects the fixed digest-pinned image internally, and constructs the
-container command internally. The resulting property, stated once: **a web-process
-compromise may invoke an allowed sandbox capability over data the app is already
-entitled to expose, but it cannot use that capability to obtain arbitrary Docker
-control or arbitrary host-filesystem mounts.**
+**Containment is enforced by the service, independently of its caller.** Nothing the
+caller sends chooses a host mount, image, or Docker command. The service resolves
+logical identifiers, validates paths beneath configured Kuhn roots, and stages input
+into a service-owned directory using no-follow/file-descriptor-safe operations before
+mounting that staging directory read-only. Canonicalize-then-mount alone is insufficient:
+a caller that can mutate the source tree could swap a symlink between those steps. The
+service constructs every mount and command, owns writable scratch/output directories,
+and selects digest-pinned images.
+
+This boundary has a precise limit. It removes **arbitrary Docker control and arbitrary
+host-filesystem mounts** from a compromised web/worker process; it does not preserve
+tenant confidentiality after that process is compromised. The web process still has its
+normal tenant-file authority, and the worker has job-file authority. Normal member/guest
+authorization therefore remains the caller's responsibility; the sandbox service
+validates operation/resource shape and method permissions, not end-user membership.
 
 **Interactive render/export stays synchronous.** `POST /api/projects/:id/render` and
 `GET /api/projects/:id/export` return PDF/export bytes in the response today
@@ -615,21 +653,26 @@ editor-facing latency to the job queue. **Background ingestion** extraction, by
 contrast, is naturally asynchronous and is invoked by the worker through the same
 sandbox service.
 
-**Specification for PLA-240:**
+**Specification for STH-21:**
 
 - **Trust boundary:** only the sandbox service talks to the Docker daemon; the
   web/API process does not have Docker socket access. A web-process RCE can *request* a
   render, not run arbitrary containers.
+- **Caller authentication and method authorization:** prefer a Unix socket owned by a
+  dedicated group; validate peer credentials and give web and worker separate service
+  identities/method allowlists (web: render/export; worker: ingestion). If loopback is
+  used, mutual authentication and replay-resistant request credentials are mandatory;
+  an unauthenticated local HTTP port is not a boundary.
 - **Caller-independent request surface:** requests are enumerated operation types
   with logical resource identifiers, workspace-relative paths, and bounded options
   only. The service rejects absolute host paths, `..` traversal, and symlink
-  escapes after canonicalizing against the configured data roots, and it alone
-  constructs mounts, chooses images, and composes container commands — the caller
-  can never influence which part of the host filesystem is mounted.
-- **Service identity:** run the sandbox service under a **distinct least-privilege
-  OS/service identity** where practical, with Docker socket access confined to that
-  identity — the web/worker service user holds no Docker group membership or socket
-  access.
+  escapes. Resolve/stage with no-follow semantics into service-owned paths so a
+  symlink/rename race cannot change what Docker mounts. The service alone constructs
+  mounts, chooses images, and composes commands.
+- **Service identity:** run the sandbox service under a **distinct OS/service identity**
+  with Docker control confined to that identity — the web/worker service users hold no
+  Docker group membership or socket access. Docker access is still host-privileged, so
+  this identity is isolated, narrowly reachable, and treated as a high-value service.
 - **Filesystem mounts:** project mounted **read-only** at `/work`; a single writable
   scratch out-dir at `/out`; nothing else (as today, `sandbox.js:30-31`). Ingestion
   already narrows the mount to one document's directory (`ingest.js:41-43`) — keep that.
@@ -639,24 +682,30 @@ sandbox service.
   documents (T-26).
 - **Resource limits:** keep cpu/memory/pids caps and the 60 s kill; **add** `--ulimit
   fsize` so a renderer cannot fill the host disk through `/out`, and enforce a
-  **concurrency cap / queue** on sandbox jobs (today ingestion fans out via bare
+  bounded input/output/stream size, request deadline, **concurrency cap / finite queue**,
+  and per-caller quotas on sandbox jobs (today ingestion fans out via bare
   `setImmediate` with no limit — `ingest.js:186-188`; render is viewer-triggerable —
   `routes/render.js:52`; T-22).
 - **Privilege expectations:** add `--user` (non-root in-container), `--read-only` root
   fs with a `--tmpfs /tmp`, `--cap-drop=ALL`, and `--security-opt=no-new-privileges` —
   all absent today (T-24).
-- **Credentials/data visibility:** the sandbox environment carries **no credentials**
-  today (verified: no `-e`/`--env-file` in `buildDockerArgs`) — preserve this exactly.
-  Sandbox jobs see only the mounted project bytes and their parameters; never `.env`,
-  never the DB, never another tenant's files.
+- **Scratch/output lifecycle:** use unique service-owned directories, cap their size,
+  reject unexpected output names/types, and remove them on success, failure, timeout,
+  and startup recovery.
+- **Credentials/data visibility:** the container receives **no credential environment**
+  today (no `-e`/`--env-file` in `buildDockerArgs`) — preserve this. The host-side Docker
+  CLI currently inherits the parent process environment; the new service should pass a
+  minimal explicit environment to all child processes. Each container sees only its
+  staged input and bounded parameters, never `.env` or the DB.
 
 **Alternatives considered:** (a) keep direct Docker with only flag hardening — rejected:
 flag hardening (T-24) is necessary but does not remove host-root-equivalent control from
 the internet-facing process (T-25). (b) A full orchestrator or per-tenant VM isolation —
 rejected for the pilot: disproportionate operational weight; a local sandbox service with
-a narrow surface achieves the essential property (web-process compromise ≠ host root).
+a narrow surface removes direct Docker control from the web process without claiming
+full containment of a compromised application process.
 (c) gVisor/Kata/rootless-Docker as the runtime under the service — **compatible** with
-this decision and worth evaluating inside PLA-240, but orthogonal to moving the boundary.
+this decision and worth evaluating inside STH-21, but orthogonal to moving the boundary.
 
 ---
 
@@ -669,7 +718,7 @@ Requirements:
 
 - **TLS termination** at the proxy; HTTPS only. The session/reviewer cookie `secure`
   flag is derived from `KUHN_APP_URL` (`routes/auth.js:29-31`), so **`KUHN_APP_URL` must
-  be the real https origin** or cookies ship non-Secure (T-02) — PLA-236 validates this
+  be the real https origin** or cookies ship non-Secure (T-02) — STH-17 validates this
   at boot.
 - **Canonical public origin for credential URLs:** today magic-link/invite/review URLs
   are built from `req.protocol` + `req.get('host')` (`routes/auth.js:48`,
@@ -678,19 +727,23 @@ Requirements:
   credential-exfiltration** path if the origin is directly reachable or the proxy
   forwards client `X-Forwarded-*` (T-27). The production fix is not primarily proxy
   discipline: **credential-bearing URLs are generated from the validated, configured
-  canonical public origin — `KUHN_APP_URL` — never from request protocol/Host.** That
+  canonical public origin — `KUHN_APP_URL` — never from request protocol/Host.** The
+  supported pilot is same-origin, so that URL is both the application and public API
+  origin. That
   removes Host-header choice from the credential-minting path entirely, instead of
-  making proxy correctness the security root. (PLA-236 validates `KUHN_APP_URL` as a
-  real https origin at boot; no separate canonical-origin setting is needed unless a
-  deployment ever serves the app on an origin other than `KUHN_APP_URL`.)
+  making proxy correctness the security root. (STH-17 validates `KUHN_APP_URL` as a
+  real https origin at boot.) The current split-origin recipe is outside this production
+  baseline. Supporting it safely later requires a separately validated public API origin
+  for verification/review URLs plus explicit cookie/CORS tests; do not silently reuse the
+  webapp redirect origin for API credential URLs.
 - **Proxy identity & trusted headers (defense-in-depth):** still **bound `trust proxy`
   to the known proxy** (hop count or subnet) for request metadata that genuinely needs
   proxy awareness (client IP for rate limiting/audit, scheme for redirects and logs);
   ensure the proxy **sets** `X-Forwarded-Proto`/`Host` and **strips** client-supplied
-  forwarding headers; and **block direct origin reachability**. (PLA-236.)
+  forwarding headers; and **block direct origin reachability**. (STH-17.)
 - **WebSocket & SSE support:** the proxy must forward WS upgrades (Yjs) and not buffer SSE
   (`X-Accel-Buffering: no` is already set — `routes/sse.js`); the job-scoped agent stream
-  has **no heartbeat**, so proxy idle timeouts must accommodate long turns or PLA-245/246
+  has **no heartbeat**, so proxy idle timeouts must accommodate long turns or STH-26/STH-27
   must add one.
 - **Upload/body limits:** JSON body is 100 KB (`express.json()`, `index.js:42`); raw file
   bodies and uploads are capped at 20 MB × 20 (`config.js:107`, `routes/uploads.js:14-18`).
@@ -711,19 +764,27 @@ Requirements:
 backup** and a separately protected **secret escrow** — plus the **versioned
 application artifact** (§9). "One recoverable Kuhn deployment" = data backup + the
 matching application artifact + secrets re-bound from escrow or reissued. This is the
-contract PLA-242 implements. (An earlier draft of this section both put `.env` inside
+contract STH-23 implements. (An earlier draft of this section both put `.env` inside
 the recoverable snapshot *and* required secrets isolated from the data — a
 contradiction, now resolved as §8.3.)
 
 ### 8.1 The supported backup method (one, chosen)
 
-The pilot's supported DB backup method is the **SQLite Online Backup API** —
-better-sqlite3 `db.backup()` (or `VACUUM INTO` as its equivalent) — which produces a
-**consistent, standalone destination database file** while the source stays live. To
-be precise about what that means: the destination is a *single complete database*; the
-live `kuhn.sqlite` / `-wal` / `-shm` files are **never captured raw**, and "online
-backup" does **not** mean "hot-copy all three SQLite files." A naive `cp kuhn.sqlite`
-alone remains forbidden (the WAL carries uncheckpointed data — T-34).
+The pilot's supported DB backup method is the **SQLite Online Backup API** through
+better-sqlite3 `db.backup()`. It produces a consistent, standalone destination database
+while the source remains open, and it can advance incrementally. For Kuhn's composite
+DB+filesystem snapshot, the maintenance barrier in §8.5 prevents concurrent web/worker
+writes and avoids backup restart/starvation from a second connection.
+
+The destination is a *single complete database*; the live `kuhn.sqlite` / `-wal` /
+`-shm` files are not captured raw, and "online backup" does not mean "hot-copy all
+three SQLite files." A naive `cp kuhn.sqlite` alone remains forbidden because the WAL
+may contain committed pages not yet checkpointed (T-34).
+
+`VACUUM INTO` is an SQLite-supported alternative that creates a compact, logically
+equivalent database copy, purges free/deleted pages, uses more CPU, and is not
+incremental. It is not interchangeable with `db.backup()` in the Kuhn runbook. A future
+operator may adopt it only as a separately specified and restore-tested procedure.
 
 **Raw filesystem snapshotting is a different method, not the supported pilot path.**
 If a deployment uses volume/filesystem snapshots anyway, that procedure has its own
@@ -740,13 +801,13 @@ contract means by "DB backup."
    only sha256 + chunks persist, `schema.sql:290-315`).
 4. **Mutable deployment metadata** — the recorded **application version/commit and
    schema/migration version**, so restore selects the matching artifact (§9) and
-   PLA-241's ledger can verify compatibility (restoring a DB under an older binary is
+   STH-22's ledger can verify compatibility (restoring a DB under an older binary is
    undefined).
 
 **Deliberately not in the data backup:** secret material (§8.3) and `guidance-docs/`
 (§8.4). Backups are **encrypted, access-controlled, tenant-isolation-preserving** (a
 restore reproduces the same per-tenant boundaries), and restore is **drill-tested**
-(PLA-242 acceptance), not assumed.
+(STH-23 acceptance), not assumed.
 
 ### 8.3 Secret recovery is a separate domain
 
@@ -775,8 +836,8 @@ rather than living beside the data it protects.
 versioned application artifact** (§9); the data backup records the application version
 (§8.2 item 4); restore obtains the catalog by restoring the matching artifact. It is
 *not* backed up as mutable tenant data. (Today a deploy missing it silently degrades
-the catalog — `db/seed.js:112-115` — which the §9 artifact makes impossible: the image
-either has it or is not the recorded version.) If a deployment ever intentionally
+the catalog — `db/seed.js:112-115`. The §9 artifact build must fail when the catalog is
+absent, and restore verification must check that the recorded image contains it.) If a deployment ever intentionally
 overrides `guidance-docs/` at runtime, that override becomes explicit configuration
 and is backed up as configuration — no silent middle ground.
 
@@ -801,9 +862,11 @@ a brief **maintenance write barrier**:
 2. Enter maintenance mode.
 3. Drain already-in-flight mutating HTTP requests (bounded).
 4. Freeze new mutating HTTP requests and Yjs/WS-originated writes. Reads and open
-   editors stay up; a client autosave arriving during the freeze is refused and
-   retried harmlessly after release — its content lands in the *next* backup, the
-   same window a crash at that moment would give it.
+   editors may stay up, but a save that reaches today's client during a 503 is **not**
+   automatically retried (`editor-core.ts` save engine). Until STH-23 adds explicit
+   maintenance/read-only UI or retry semantics, the backup procedure must surface the
+   unsaved state and must not describe the write as harmlessly deferred. Those bytes
+   remain outside this backup until a later successful save.
 5. Flush durable pending git-history work (the worker's commit-pending queue, §2.4).
 6. Run the online backup (§8.1) to a staging destination.
 7. Capture `data/files/` and `data/orgs/` while the barrier holds.
@@ -822,12 +885,33 @@ timeout, the strict barrier begins. That would narrow the boundary to "every
 visible client edit at barrier time," at the cost of a new client/server protocol
 plus timeout semantics for absent clients. The pilot deliberately does not build
 it: the backup durability boundary is kept **identical to the crash-durability
-boundary users already live with**. PLA-242 records this as the trigger — build the
+boundary users already live with**. STH-23 records this as the trigger — build the
 handshake only if the product later requires keystroke-complete snapshots.
 
 **Scale trigger:** when the barrier window / backup window exceeds tolerance, move to
 incremental/streaming backup (WAL archiving for SQLite, or Postgres PITR after the DB
 migration).
+
+### 8.6 Restore order and acceptance
+
+Restore is a staged replacement, not an in-place overwrite of a running deployment:
+
+1. Isolate the target and keep web/worker stopped. Verify backup authenticity, decrypt
+   into service-owned staging, and select the exact recorded application/schema version.
+2. Restore the standalone DB destination, project files (including `.git`), and org
+   originals into an empty staging data root with restrictive ownership. Re-bind
+   reissued provider credentials and the separately escrowed session/master secrets.
+3. Before any upgrade migration, boot the matching recorded artifact in verification
+   mode and run SQLite integrity/foreign-key checks, file/catalog presence checks, and
+   tenant-isolation smoke tests. Preserve the restored backup before STH-22 advances its
+   migration ledger; never open a newer DB with an older binary.
+4. Promote the staged data root atomically or during a documented maintenance window.
+   Start the web with the worker paused, verify readiness and representative tenant/file
+   access, then enable worker claims and verify one sandbox and one provider path.
+
+A restore is successful only after these checks and a recorded drill result. A missing
+artifact version, secret, original file, or incompatible schema stops the restore rather
+than starting a partially recovered service (STH-22/STH-23/STH-27/STH-29).
 
 ---
 
@@ -852,10 +936,10 @@ no reproducibility, no rollback (T-33).
 **Nuance — this does *not* mean "containerize everything now."** The web and worker
 processes as an image is the recommendation; the **sandbox** already uses containers
 (that's the isolation boundary, §6). Running the whole app in an image is a packaging
-choice for PLA-248, not a mandate to move persistence or collaboration into containers —
+choice for STH-29, not a mandate to move persistence or collaboration into containers —
 the DB and files stay on host-mounted durable storage regardless.
 
-**What PLA-248 owns (not implemented here):** the image build, digest pinning, the
+**What STH-29 owns (not implemented here):** the image build, digest pinning, the
 upgrade/rollback runbook, migration preflight ordering (image up → migration gate →
 readiness), and how the DB/file volumes and `.env` are mounted into the container.
 
@@ -866,11 +950,11 @@ readiness), and how the DB/file volumes and `.env` are mounted into the containe
 **Decision:** health is **component-specific**. Defining global readiness as "every
 subsystem is healthy" would turn partial degradation into full outage — the scientific
 editor, collaboration, and read experience must not disappear because agent execution
-or rendering is temporarily unavailable. Targets for PLA-245/246; not implemented here.
+or rendering is temporarily unavailable. Targets for STH-26/STH-27; not implemented here.
 
 - **Web process.** *Liveness:* the process/event loop is alive — nothing more.
   *Readiness* requires what the core web/API needs to serve safely: **valid production
-  configuration** (PLA-236), **DB reachable at the expected migration version**,
+  configuration** (STH-17), **DB reachable at the expected migration version**,
   **required persistent storage usable**, and **static application assets present**.
   The web **remains ready** while the model provider, the worker, or the sandbox
   service is unavailable: those states surface as **degraded subsystem health**
@@ -894,11 +978,11 @@ or rendering is temporarily unavailable. Targets for PLA-245/246; not implemente
   content redacted** — closing the raw-token-to-stdout hazard (T-08) is a log-hygiene
   requirement, not just an SMTP one.
 - **Correlation:** request id, safe internal user id, org, project, job, worker, and
-  provider-profile ids threaded across HTTP, WS, jobs, and provider calls (PLA-245).
+  provider-profile ids threaded across HTTP, WS, jobs, and provider calls (STH-26).
 - **Shutdown/draining:** SIGTERM must drain connections, stop claiming new jobs, let
   in-flight turns reach a checkpoint or re-queue, **flush pending git commits**, and close
   the DB — none of which exists today (no signal handler; `unref`'d commit timers lost).
-  (PLA-246, PLA-244.)
+  (STH-27, STH-25.)
 
 ---
 
@@ -915,9 +999,10 @@ this stage; these are the real signals):
 - **Write contention.** SQLite is single-writer; the web+worker pair is the supported
   limit. Trigger: recurring `SQLITE_BUSY` / lease churn under normal load. Forces:
   Postgres.
-- **Worker concurrency.** One worker is the pilot limit; more workers need a shared DB
-  reachable from multiple processes safely. Trigger: agent/ingest backlog a single worker
-  can't clear. Forces: Postgres (multi-writer) and possibly a real queue.
+- **Worker concurrency.** One worker is the chosen supported pilot limit, not a SQLite
+  law. Trigger: agent/ingest backlog a single worker cannot clear. Before adding another,
+  use STH-30 load/failure evidence to decide whether same-host SQLite contention remains
+  acceptable; otherwise move to Postgres and possibly a real queue.
 - **Backup windows.** A full consistent snapshot requires a brief maintenance write
   barrier (§8.5). Trigger: data volume makes that window unacceptable. Forces:
   incremental/streaming backup (§8).
@@ -939,20 +1024,20 @@ so the multi-instance step later is an addition, not a rewrite.
 
 ## Consequences
 
-- **Downstream issues get concrete direction** without re-deciding topology: PLA-244
+- **Downstream issues get concrete direction** without re-deciding topology: STH-25
   (worker + leases + the durable event/control seam and mutating-operation store of
-  §2.3–2.4), PLA-243 (the replay/idempotency, operation-recovery, and audit
-  invariants of §2.4), PLA-240 (sandbox service with caller-independent containment
-  + hardening + synchronous render RPC), PLA-241 (migration ledger + `busy_timeout` +
-  fail-closed init), PLA-242 (two-domain recovery + write barrier), PLA-236 (boot-time
+  §2.3–2.4), STH-24 (the replay/idempotency, operation-recovery, and audit
+  invariants of §2.4), STH-21 (sandbox service with caller-independent containment
+  + hardening + synchronous render RPC), STH-22 (migration ledger + `busy_timeout` +
+  fail-closed init), STH-23 (two-domain recovery + write barrier), STH-17 (boot-time
   config validation incl. canonical-origin URL generation/`KUHN_APP_URL`/`trust
-  proxy`/SMTP), PLA-246 (component-specific readiness/shutdown), PLA-248 (immutable
-  artifact incl. `guidance-docs/`), PLA-245 (correlated logs/metrics).
+  proxy`/SMTP), STH-27 (component-specific readiness/shutdown), STH-29 (immutable
+  artifact incl. `guidance-docs/`), STH-26 (correlated logs/metrics).
 - **The pilot keeps SQLite and local files** because the workload — one deployment, low
   concurrency, Yjs off the DB, bounded-and-measured worker write concurrency — makes
   them technically sound, not merely convenient.
 - **The two genuinely unsafe co-residencies are separated:** durable background execution
-  (PLA-244) and host-privileged Docker control (PLA-240). Everything else stays simple.
+  (STH-25) and host-privileged Docker control (STH-21). Everything else stays simple.
 - **Multi-instance is deferred as one coherent step** (Yjs + registries + Postgres + LB),
   behind explicit triggers, rather than partially and prematurely.
 - **This ADR does not implement anything.** It is the reference the milestone-3/4 issues
@@ -962,5 +1047,5 @@ so the multi-instance step later is an addition, not a rewrite.
 ## References
 
 - ADR 001 — provider-agnostic runtime foundation: pending in [PR #69](https://github.com/soundtrip-health/kuhn/pull/69); lands at `docs/adr/001-provider-agnostic-runtime-foundation.md` on merge
-- [Threat model & data classification](../security/threat-model.md) (PLA-224)
+- [Threat model & data classification](../security/threat-model.md) (STH-2)
 - [architecture.md](../architecture.md), [deployment.md](../deployment.md), [data-pipeline.md](../data-pipeline.md)
