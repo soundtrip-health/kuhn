@@ -161,7 +161,7 @@ code.
 **Historical consequences, now under revision:**
 
 - The first implementation used SDK tool/MCP wrappers rather than a neutral tool registry;
-  PLA-226 extracts Kuhn's tool definitions without changing their storage/domain behavior.
+  STH-1 extracts Kuhn's tool definitions without changing their storage/domain behavior.
 - A raw provider-agnostic chat-completion interface remains rejected. The new seam is an agent
   execution contract with normalized events, tools, abort, usage, errors and canonical
   Kuhn-owned continuation messages.

@@ -6,11 +6,13 @@
   STH-24, STH-25, STH-26, STH-27, STH-29
 - **Companion:** [threat-model.md](../security/threat-model.md) (STH-2) — the
   security model and this topology constrain each other and were written as one pass.
-- **Relationship to ADR 001:** ADR 001 (provider-neutral runtime) is **pending in
-  [PR #69](https://github.com/soundtrip-health/kuhn/pull/69)**, not yet on `main`; it
-  lands at `docs/adr/001-provider-agnostic-runtime-foundation.md` when #69 merges. This
-  ADR references its proposed direction (a narrow `AgentRuntime` seam beneath
-  `runAgentTask`) but does not depend on its implementation details.
+- **Relationship to ADR 001:** ADR 001 (provider-neutral runtime) is **landed on
+  `main`** at [`docs/adr/001-provider-agnostic-runtime-foundation.md`](001-provider-agnostic-runtime-foundation.md)
+  (merged in [PR #69](https://github.com/soundtrip-health/kuhn/pull/69), which added
+  the provider-runtime contract, continuation, and Pi spike under
+  `agent-backend/src/agents/provider-runtime/`). This ADR references its direction (a
+  narrow `AgentRuntime` seam beneath `runAgentTask`, implemented in phases under
+  STH-1/STH-7) but does not depend on that implementation's internal details.
 
 ## Review orientation
 
@@ -196,7 +198,7 @@ ceiling to raise deliberately, not a load limit to discover.
 
 - **Durable background/agent execution** — today live runs are in-memory objects on the
   request event loop (`runs.js:22-42`); a restart marks them `interrupted`
-  (`jobs.js:135-141`) and loses in-flight work. → dedicated worker, §2.
+  (`db/jobs.js:135-141`) and loses in-flight work. → dedicated worker, §2.
 - **Docker control** — direct `docker` CLI invocation makes the web process host-root
   equivalent (`sandbox.js:56`). → sandbox worker, §6.
 
@@ -309,7 +311,8 @@ filesystem effects.
    rewrites, and review-link revocation (the DB half) — are owned by
    **the process that originates the mutation**, executed under the operation
    protocol below. Worker-originated file changes: the worker. Web-originated
-   editor/REST mutations: the web process, as today. **Neither process ever
+   editor/REST mutations: the web process (reconciled at web startup — see "Recovery
+   ownership and trigger" below). **Neither process ever
    re-executes the other's durable mutations when consuming an event row** — the row
    is the *record* that the mutation already happened, never an instruction to redo
    it. This is what rules out double-application (a move applied twice, a link
@@ -329,8 +332,9 @@ filesystem effects.
   provider tool-call id is useful transcript evidence, but is not the idempotency key:
   rerunning a provider turn may produce a different id, and two different logical
   attempts must not collide merely because a provider reuses one. STH-1 and STH-7
-  must carry the Kuhn operation context through the neutral tool boundary; PR #69's
-  canonical tool-call ids alone do not establish replay identity.
+  must carry the Kuhn operation context through the neutral tool boundary; the
+  runtime's canonical provider tool-call ids (landed in #69) alone do not establish
+  replay identity.
 - **Durable operation state.** Conceptually, persisted operation state carries: the
   operation id; job and durable step; tool/capability; normalized arguments (or a safe
   hash); required precondition/version; intended postcondition; a state such as
@@ -360,10 +364,52 @@ filesystem effects.
   - create/delete use the same precondition rule; absence alone is not proof that a
     particular delete ran.
 - **Ambiguity is a supported recovery state.** If current state cannot prove that the
-  recorded effect landed or did not land, the worker marks the operation
+  recorded effect landed or did not land, the reconciling process marks the operation
   `ambiguous`/dead-letter and requires a tool-specific repair path. It does not guess.
   STH-25 builds these protocols; STH-24 and STH-30 verify them with crash and
   concurrency injection.
+
+**Recovery ownership and trigger — every prepared operation has a finder.** The
+operation store carries an **originator** column (`web` | `worker`); each process
+reconciles only the operations it owns, so the two never race to recover the same row.
+The reconciliation *trigger* differs by originator, because only worker jobs are leased:
+
+- **Worker-originated operations** recover through the **lease lifecycle** (§2.5): a
+  dead worker's lease expires, the job is reclaimed, and the reclaiming worker
+  reconciles any `prepared`/`ambiguous` operation for that job *before* the run
+  resumes. The lease expiry is the trigger.
+- **Web-originated operations have no lease** — editor autosave PUTs, uploads,
+  moves/deletes, org-library writes, and review/admin mutations are synchronous
+  request/response work, not leased jobs — so their recovery is owned by the **web
+  process at its own startup**. On boot, *before it opens any mutating endpoint*, the
+  web process runs a **web-owned reconciliation scan**: it selects every
+  `originator='web'` operation still `prepared`/`ambiguous` and applies the same §2.4
+  rules — finalize and return the stored result where the recorded precondition and
+  postcondition prove the effect landed, safely retry where they prove it did not,
+  otherwise mark `ambiguous`/dead-letter for the tool-specific repair path. It never
+  touches worker-owned rows.
+- **Before normal mutations resume:** the scan is a **boot-time safety gate**. Until it
+  completes the web process is *live but not write-ready* — reads, static assets, and
+  open editors keep serving, while web-originated mutating endpoints return **503
+  (starting)**. "Web-originated operation recovery complete" is therefore an explicit
+  web-readiness precondition (§10), mirroring how the worker withholds job claims until
+  its own reclaim pass runs. The existing boot-time `markOrphanedJobsInterrupted()`
+  (`db/jobs.js:135-141`) must likewise be split by originator and made lease-aware
+  (§2.5) so a web restart never rewrites a live worker's in-flight jobs, or vice versa.
+
+**Alternative considered — fail-to-manual instead of reconciliation.** The simplest
+alternative to prepare → execute → reconcile is to attempt no automated reconciliation
+at all: if any operation outcome is ambiguous after a crash or reclaim, **fail the job
+and surface it for manual intervention.** It is rejected as the *default* because the
+common cases are provably safe without a human — DB-only effects deduplicate
+transactionally on the Kuhn operation id, and filesystem effects with a recorded
+precondition/version fence can be finalized or safely retried — and failing every
+crash-interrupted job to a person would make ordinary restarts operationally expensive
+and routinely discard already-completed work. Kuhn nonetheless **keeps exactly that
+fail-to-manual behavior as the fallback** for the residual cases the fences cannot
+disambiguate: the `ambiguous`/dead-letter state above *is* the manual-repair path. The
+protocol reconciles what is provable and stops for a human where it is not; it does
+**not** claim generic exactly-once filesystem effects.
 
 **Git history is the one effect that changes owner.** Two processes running git against
 the same workspace would race the per-project commit serialization that is in-process
@@ -401,13 +447,13 @@ replay/failure-injection work verifies these invariants at each crash boundary
   links — `db/auth.js:62-70`, `db/invitations.js:105-111`). Leases are renewed on a
   heartbeat and expire so a dead worker's jobs are reclaimable.
 - **Process restarts:** the existing boot-time `markOrphanedJobsInterrupted()`
-  (`jobs.js:135-141`) becomes lease-aware — only jobs whose lease has expired are
+  (`db/jobs.js:135-141`) becomes lease-aware — only jobs whose lease has expired are
   reclaimed, and it must be scoped so it is safe when web and worker start independently
   (today it is a blanket `UPDATE` unscoped by host — dangerous the moment two processes
   share the DB).
 - **Cancellation:** persisted control state (§2.3), observed at turn boundaries and on
   lease renewal — not an ephemeral signal.
-- **Resume/recovery:** continuation is Kuhn-owned and serializable per ADR 001 (#69), so
+- **Resume/recovery:** continuation is Kuhn-owned and serializable per ADR 001, so
   a reclaimed job resumes from persisted state, not an opaque provider session.
 - **Org/project suspension:** the same control channel; the worker checks at turn
   boundaries and on lease renewal, terminating in-flight runs — closing T-28. (Today
@@ -955,8 +1001,10 @@ or rendering is temporarily unavailable. Targets for STH-26/STH-27; not implemen
 - **Web process.** *Liveness:* the process/event loop is alive — nothing more.
   *Readiness* requires what the core web/API needs to serve safely: **valid production
   configuration** (STH-17), **DB reachable at the expected migration version**,
-  **required persistent storage usable**, and **static application assets present**.
-  The web **remains ready** while the model provider, the worker, or the sandbox
+  **required persistent storage usable**, **static application assets present**, and
+  the **web-originated operation recovery scan complete** (§2.4) — until it finishes,
+  the process is live but web-originated mutating endpoints return 503. The web
+  **remains ready** while the model provider, the worker, or the sandbox
   service is unavailable: those states surface as **degraded subsystem health**
   (visible in health detail and metrics), and the affected endpoints — agent dispatch,
   render/export — return **503** while the editor/collaboration/read experience keeps
@@ -1046,6 +1094,6 @@ so the multi-instance step later is an addition, not a rewrite.
 
 ## References
 
-- ADR 001 — provider-agnostic runtime foundation: pending in [PR #69](https://github.com/soundtrip-health/kuhn/pull/69); lands at `docs/adr/001-provider-agnostic-runtime-foundation.md` on merge
+- [ADR 001 — provider-agnostic runtime foundation](001-provider-agnostic-runtime-foundation.md): landed on `main` (merged in [PR #69](https://github.com/soundtrip-health/kuhn/pull/69))
 - [Threat model & data classification](../security/threat-model.md) (STH-2)
 - [architecture.md](../architecture.md), [deployment.md](../deployment.md), [data-pipeline.md](../data-pipeline.md)

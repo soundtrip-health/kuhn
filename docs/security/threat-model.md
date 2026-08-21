@@ -1,7 +1,7 @@
 # Kuhn production threat model & data classification
 
 > **Status:** Proposed production-pilot baseline, awaiting human review; revised
-> 2026-08-17 (STH-2).
+> 2026-08-20 (STH-2).
 > **Scope:** the small-team, single-deployment production pilot defined in
 > [ADR 002 — production deployment topology](../adr/002-production-deployment-topology.md).
 > **Companion documents:** [architecture.md](../architecture.md) (what the system is),
@@ -17,20 +17,20 @@ ranges only where useful); missing controls point to their owning STH issue.
 
 ## 0. Reading this document
 
-Three states are distinguished throughout, because the roadmap is mid-flight:
+Two states are distinguished throughout, because the roadmap is mid-flight:
 
-- **On `main` today** — behavior verifiable in the current tree. `main` at `4ed5edf`
-  does not boot on its own because it imports absent `routes/knowledge.js` and
-  `db/knowledge-catalog.js`. [PR #70](https://github.com/soundtrip-health/kuhn/pull/70)
-  (STH-4) proposes the repair; it remains separate from this PR and is not treated as
-  landed or silently combined.
-- **Pending in an open PR** — proposed direction not yet on `main`. Two are open:
-  [#69](https://github.com/soundtrip-health/kuhn/pull/69) (provider-neutral runtime
-  foundation, ADR 001 — lands at `docs/adr/001-provider-agnostic-runtime-foundation.md`
-  when #69 merges) and
-  [#70](https://github.com/soundtrip-health/kuhn/pull/70) (knowledge catalog).
-- **Future decision / open issue** — owned by a Linear issue (STH-16…STH-29), not
+- **On `main` today** — behavior verifiable in the current tree. `main` boots and
+  includes the provider-neutral runtime foundation (ADR 001, landed at
+  [`docs/adr/001-provider-agnostic-runtime-foundation.md`](../adr/001-provider-agnostic-runtime-foundation.md)
+  via [PR #69](https://github.com/soundtrip-health/kuhn/pull/69)) and the restored
+  knowledge-catalog modules (`routes/knowledge.js`, `db/knowledge-catalog.js`, seeded
+  from `guidance-docs/catalog.json` — [PR #70](https://github.com/soundtrip-health/kuhn/pull/70)).
+- **Future decision / open issue** — owned by a Linear issue (STH-16…STH-30), not
   yet designed or not yet built.
+
+Separately, ADR 002 describes a **proposed production-pilot target** topology that is
+not yet implemented; where this document cites it (§1.3, TB-rows, §6 invariants), the
+target is marked as such and is not described as already built.
 
 The threat inventory (§5) maps each significant threat to its owning issue.
 
@@ -124,7 +124,7 @@ flowchart TB
 | B4 | Yjs collaboration WebSocket (doc-sync) | Trust (cookie at upgrade) | `collab-auth.js:229-278`; per-message read-only gate `yjs-websocket.js:618-626` | Authorized once at upgrade; 60 s sweep re-checks. |
 | B5 | Yjs **signaling** WebSocket (y-webrtc) | Trust (member cookie) | `yjs-signaling.js:42-59` | **Live but no client uses it** — see T-23. Per-connection auth cache is never invalidated. |
 | B6 | Agent orchestration / product layer | In-process | `runAgentTask` `runtime.js:78-133` | The `runAgentTask` boundary is the provider-neutral seam; everything above it is Kuhn policy. |
-| B7 | Provider/model runtime adapter | In-process (SDK) | Claude Agent SDK `runtime.js:310-331` | `permissionMode: 'bypassPermissions'`; the DB tool allowlist is the only gate. ADR 001 (#69) plans a normalized `AgentRuntime` seam beneath this. |
+| B7 | Provider/model runtime adapter | In-process (SDK) | Claude Agent SDK `runtime.js:310-331` | `permissionMode: 'bypassPermissions'`; the DB tool allowlist is the only gate. ADR 001 (landed in #69) defines a normalized `AgentRuntime` seam beneath this; its phased implementation is STH-1/STH-7. |
 | B8 | Model/provider network egress | Network | SDK → Anthropic API | Deployment credential comes from process environment and is consumed by the SDK in the application process; it is not intentionally sent to the browser/model or logged (`data-pipeline.md` §5). |
 | B9 | Kuhn-owned research/search APIs | Network | `agents/search.js`, `citations.js` | PubMed/arXiv, query text only. |
 | B10 | Background job execution | In-process | Agent route calls `runAgentTask` inline (`routes/agent.js` task route; `agents/runtime.js` `runAgentTask`) | No separate worker; `agents/runs.js` is only the reconnect cache for question-parked runs. |
@@ -134,7 +134,7 @@ flowchart TB
 | B14 | Per-project git history | Filesystem (`<dir>/.git`) | `history.js:31-37` (`execFile`, no shell) | Inherits full `process.env` into the git child `history.js:33`. |
 | B15 | Rendering / ingestion | In-process → sandbox | `render.js`, `ingest.js` → `sandbox.js` | All execution goes through the sandbox; never in-process Typst/Pandoc. |
 | B16 | Sandbox execution | Container | `sandbox.js:23-36` | `--network none`, `:ro` project mount, cpu/mem/pids caps, 60 s kill. |
-| B17 | Docker/container control plane | Host privilege | `spawn('docker', …)` `sandbox.js:56` | **The web process holds host-root-equivalent Docker access.** This is the sharpest topology boundary — see T-24, STH-21. |
+| B17 | Docker/container control plane | Host privilege | `spawn('docker', …)` `sandbox.js:56` | **The web process holds host-root-equivalent Docker access.** This is the sharpest topology boundary — see T-25, STH-21. |
 | B18 | SMTP | Network | `mailer.js:10-15` | Optional; unset → links printed to stdout. |
 | B19 | Future OIDC / identity provider | Network | *Not built* — STH-18 | Magic-link is the only real-auth mode today. |
 | B20 | Reverse proxy / TLS boundary | Network | Operator-provided; `trust proxy` **trusts all hops** `index.js:38` | See T-27 (host-header injection). |
@@ -174,7 +174,7 @@ target state:
 | **Unauthenticated visitor** | none | `/health`, static SPA, `POST /api/auth/request-link`, `POST /api/review/lookup`/`claim` (token-bearing) | `index.js:43-49` |
 | **Member — viewer** | `kuhn_session` cookie | Read project/org content; render/export previews; list jobs/traces | matrix `tenancy-matrix.test.js:175-255` |
 | **Member — editor** | same | All viewer + write/move/upload files, dispatch agents, answer agent questions, mint/revoke review links, upload to org library, promote to library | `routes/guards.js`, `routes/agent.js:47` |
-| **Member — owner** | same | All editor + member/invitation/settings management, org-library delete, promotion approvals; catalog selection is pending in PR #70/STH-4 | `routes/org-admin.js`; PR #70 `routes/knowledge.js` (not in this tree) |
+| **Member — owner** | same | All editor + member/invitation/settings management, org-library delete, promotion approvals; knowledge-catalog selection/reimport | `routes/org-admin.js`, `routes/knowledge.js` (owner-only `PUT …/knowledge/selections`, `POST …/knowledge/reimport`) |
 | **External reviewer (guest)** | `kuhn_review_session` cookie | One document, one link; mode `view`/`comment`/`edit`; confined to `/api/review/*` | `review-auth.js:44-51`, `routes/review.js` |
 | **Super-admin (platform)** | member cookie **+** `is_superadmin` | Create/rename/suspend/unsuspend orgs. **No tenant-content access.** | `routes/guards.js:71-75`, `db/orgs.js:33-59` |
 | **Agent role** | server-side, within a job | The tool set granted to its seeded role; project-scoped | `db/seed-data.js:96-116`, `runtime.js:266` |
@@ -286,8 +286,9 @@ Columns: **Tier** · **Scope** · **Persistence** · **Enc-at-rest expectation**
 
 ## 4. Provider egress policy
 
-Provider agnosticism (ADR 001, in-flight via #69) must not become "anything can send
-anything anywhere." This section states the **architectural expectation**; it does not
+Provider agnosticism (ADR 001, landed via #69; implementation phased under STH-1/STH-7)
+must not become "anything can send anything anywhere." This section states the
+**architectural expectation**; it does not
 implement provider configuration (that is STH-9/STH-20/STH-15).
 
 ### 4.1 Egress surfaces that exist today
@@ -360,7 +361,7 @@ tracked, not built.
 | **T-03** | **Session theft / no revocation on role change** — sessions never invalidated on demotion, member removal, or org suspension | High | Stolen cookie, or removed user | 30-day valid cookie; removed member keeps open SSE feeds and (≤60 s) Yjs writes | Per-request re-auth for *new* requests; 60 s Yjs sweep | `db/orgs.js:136-153`, `routes/orgs.js:170-175`, `yjs-websocket.js:325-340` | Open SSE feeds & running jobs **not** re-checked; no "log out everywhere" | **STH-18**, STH-25 |
 | **T-04** | **Login-CSRF / session fixation** — `GET /api/auth/verify` is a state-changing GET that sets the cookie; no CSRF token | Medium | Trick victim into clicking attacker's verify link | Victim lands in attacker-chosen session | `SameSite=Lax` + single-use token limits it | `routes/auth.js:106-125` | Login-CSRF reachable; hardened session lifecycle owes a fix | **STH-18** |
 | **T-05** | **Operator self-promotes to super-admin** — `KUHN_SUPERADMIN_EMAILS` synced from env every boot | Medium | Host/`.env` write + restart | Attacker becomes platform admin; can create orgs, suspend others | By design; **still cannot read existing tenant content** (super-admin invariant) | `db/users.js:14-34`, `db/init.js:226`, `db/orgs.js:33-59` | Host access already implies DB read; audit of `.env` changes is external | STH-17/STH-24 (config validation, audit) |
-| **T-06** | **Invitation abuse** — invite link is *also* an auth credential; intercept = session as invitee | Medium | Read the emailed link or the stdout log line | Account takeover of the invitee's new membership | Single-use, hashed, TTL, one-live-per-(org,email), suspension-aware | `db/invitations.js:35-118`, `mailer.js:41-44` | Link-in-transit and log exposure (see T-08); redeeming as existing member burns token without changing role | STH-19 (rate/abuse), STH-17 |
+| **T-06** | **Invitation abuse** — invite link is *also* an auth credential; intercept = session as invitee | Medium | Read the emailed link or the stdout log line | Account takeover of the invitee's new membership | Single-use, hashed, TTL, one-live-per-(org,email), suspension-aware | `db/invitations.js:35-118`, `mailer.js:41-44` | Link-in-transit and log exposure (see T-08); redeeming as existing member burns token without changing role | STH-18 (invite/session lifecycle), STH-19 (rate/abuse) |
 
 ### 5.2 Authorization & tenancy
 
@@ -369,7 +370,7 @@ tracked, not built.
 | **T-07** | **Cross-tenant access / IDOR** — reference another org's project/doc by id | **High** (baseline risk) | Authenticated member | Read/write another tenant's content | **Strong**: single chokepoint `checkOrgAccess`; org derived from project row, not client input; non-leaking 404; last-owner invariant | `db/orgs.js:33-59`, `routes/guards.js:26-64`, matrix `tenancy-matrix.test.js:175-335` | **Well-controlled today**; the risk is *regression* as provider/worker surfaces are added | **STH-24** (extend matrix + audit) |
 | **T-08** | **Auth/invite secrets to stdout** — SMTP unset ⇒ live single-use login & invite links printed to server console (review-link tokens are *not* affected: they never pass through the mailer — minted and returned in-response only, `routes/review-links.js:56`; their URL-exposure risk is T-15) | **High** | Operator runs magic-link without `KUHN_SMTP_URL`; anyone who reads logs | Account takeover from log aggregation | Documented as intended dev behaviour | `mailer.js:19-22,41-44`, `deployment.md:130-137` | **Not fixed** — nothing ties SMTP-configured to auth mode | **STH-17** (fail-closed), STH-26 (log hygiene) |
 | **T-09** | **Stale authorization on long-lived streams** — open SSE feed / running job authorized once | Medium | Member removed mid-stream | Continues receiving live project events / agent output until disconnect | Per-request re-auth covers new requests; Yjs swept | `routes/projects.js:316-343`, `routes/agent.js:47-55` | SSE & jobs not re-checked | STH-25, STH-18 |
-| **T-10** | **Guest review-link abuse** — guest escapes the linked document | Medium | Holder of a review link | Reach other docs / projects | **Strong**: no path/project parameter; scope from link row; comment ops constrained to the linked doc; per-request DB re-validation; suspension-checked | `review-auth.js:44-51`, `routes/review.js:9-11,84-99`, `db/review-links.js:166-187` | Well-controlled; residual is link-in-URL exposure (T-15) and unthrottled claim (T-18) | STH-19 |
+| **T-10** | **Guest review-link abuse** — guest escapes the linked document | Medium | Holder of a review link | Reach other docs / projects | **Strong**: no path/project parameter; scope from link row; comment ops constrained to the linked doc; per-request DB re-validation; suspension-checked | `review-auth.js:44-51`, `routes/review.js:9-11,84-99`, `db/review-links.js:166-187` | Well-controlled; residual is link-in-URL exposure (T-15) and unthrottled claim attempts (rate/abuse — STH-19) | STH-19 |
 | **T-11** | **Super-admin reads tenant content through application authorization** | — (controlled application path) | — | — | The flag is read only in `requireSuperadmin`; the tenant-content chokepoint ignores it | `routes/guards.js:71-75`, `tenancy-matrix.test.js:296-305,380-395` | The invariant holds for application routes; a host operator can still read the underlying DB/files and is outside this application-level guarantee | STH-24 |
 
 ### 5.3 Active content, browser origin, uploads
@@ -404,6 +405,8 @@ tracked, not built.
 | **T-27** | **Reverse-proxy / trusted-header mistake** — `trust proxy` trusts *all* hops; magic-link/invite/review URLs built from `req.protocol`+`Host` | High | Direct origin reach, or a proxy that forwards client `X-Forwarded-*` | **Host-header injection**: trigger `request-link` for a victim, emailed login link points at attacker host | Correct behind a proxy that sets the headers and blocks direct reach | `index.js:38`, `routes/auth.js:48`, `routes/orgs.js:109`, `routes/review-links.js:80` | **Not fixed** — production credential URLs must be minted from the canonical configured origin (`KUHN_APP_URL`), removing request Host from the path entirely; bounded `trust proxy` remains defense-in-depth for request metadata | **STH-17**, ADR 002 §7 |
 | **T-28** | **Stale/uncontrolled jobs after suspension/removal** — org suspension does **not** kill in-flight agent runs; parked `ask_user` runs live indefinitely with unbounded event buffers | High | Suspended tenant with a run in flight; or any run parked on a question | Suspended tenant keeps mutating files + spending budget until the run ends; memory growth from parked runs | Suspension stops *new* dispatch and `search_org_knowledge`; documented gap | `runtime.js:1029-1033`, `config.js:87-90`, `runtime.js:179-184` | **Not fixed** | **STH-25** |
 | **T-29** | **Provider outage / retry storm** — 5-attempt exponential backoff per turn; resume-on-retry can re-stream a half-completed turn | Medium | Provider degradation | Amplified load; duplicated partial output | Full-jitter backoff, cap 30 s; transient classification | `runtime.js:287-307,459-474` | No circuit breaker; no wall-clock run timeout | STH-25/STH-26 |
+| **T-39** | **Yjs / WebSocket resource exhaustion** — no doc-sync message-size cap, no per-room memory bound, no per-member connection/room-creation cap; a member can open many rooms or push oversized updates | Medium | Authenticated member (or removed member within the 60 s sweep window) | Web-process memory/CPU growth from oversized Yjs updates and unbounded room/connection creation; degrades the single web instance for every tenant | Auth at upgrade + 60 s sweep; SSE subscriber cap 20/project; only a close-reason byte cap on the WS path | `yjs-websocket.js` (no `maxPayload`/room cap), `config.js:125` (SSE cap), no per-member WS quota (grep) | **Not fixed** — needs WS message-size limits, per-room/connection caps, and matching proxy body limits | **STH-19**, STH-26 |
+| **T-40** | **Aggregate storage exhaustion** — per-request upload caps (20 MB × 20) are not a per-tenant storage quota; sustained uploads/imports grow `data/files/` + `data/orgs/` without bound | Medium | Authenticated editor over time; org-library imports | Host disk exhaustion → DB writes, renders, and ingestion fail service-wide; no tenant fair-share | Per-file / per-request size limits only | `config.js:107` (`maxFileBytes`), `routes/uploads.js:14-18` (per-request cap), no aggregate quota (grep) | **Not fixed** — no per-tenant storage quota or retention | **STH-19** (quotas), STH-23 (retention) |
 
 ### 5.6 Persistence, durability, operations
 
@@ -418,6 +421,7 @@ tracked, not built.
 | **T-36** | **Unauthenticated `/health` info leak** — echoes `db.error` to unauthenticated callers | Low | Anyone | Minor internal detail disclosure | Minimal payload otherwise | `routes/health.js:6-14` | Low | STH-27 |
 | **T-37** | **Configurable provider endpoint SSRF** — future custom base URLs could reach loopback, private/link-local networks, cloud metadata, or unsafe schemes | High (future) | Org owner configures or is tricked into configuring a hostile endpoint | Credential disclosure, internal service access, or data exfiltration from the worker | *Not built*; current deployment-managed Anthropic mode has no user-configurable endpoint | §4.2; `data-pipeline.md` §5 | Require `https`, reject embedded credentials and redirects across policy boundaries, resolve and validate every address, block private/link-local/metadata destinations by default, and make operator-approved local endpoints an explicit deployment policy | **STH-9**, STH-20, STH-24 |
 | **T-38** | **Secret propagation to host child processes** — `git` and `docker` children inherit the backend's complete environment | Medium | Compromised child binary, diagnostic dump, or unexpected subprocess behavior | Provider/SMTP/session credentials become visible beyond the code that needs them | Containers receive no credential `-e` flags | `history.js:33`, `sandbox.js:56`; Node child-process environment inheritance | Spawn children with a minimal explicit environment; move provider credentials to the worker and Docker authority to the sandbox service | **STH-20**, STH-21 |
+| **T-41** | **Backup integrity / authenticity** — a corrupt or tampered backup could be restored as authentic, silently reintroducing damaged or attacker-chosen state | High (future) | Corruption in transit/at-rest, or write access to the backup destination | Silent data corruption or attacker-controlled content on restore; undermines DR trust | *Not built* — no backup system yet | ADR 002 §8.6 (restore must "verify backup authenticity"); TB-6 | Restore must verify integrity **and** authenticity (keyed digest/signature) before decrypt/apply, and fail closed on mismatch | **STH-23** |
 
 ---
 
@@ -485,16 +489,16 @@ gaps this analysis found. The mapping:
 | Owning issue | Threats it closes |
 |---|---|
 | **STH-16** — block stored active content | T-12, T-13, T-15 |
-| **STH-17** — fail closed in production, validate config at boot | T-01, T-02, T-08, T-27, T-31 |
-| **STH-18** — production identity adapter + hardened sessions | T-03, T-04, T-06 |
-| **STH-19** — rate limits, quotas, abuse controls | T-21, T-22, T-06, T-18 (spend), T-15 |
+| **STH-17** — fail closed in production, validate config at boot | T-01, T-02, T-05 (config), T-08, T-27, T-31 |
+| **STH-18** — production identity adapter + hardened sessions | T-03, T-04, T-06, T-09 |
+| **STH-19** — rate limits, quotas, abuse controls | T-21 (spend/concurrency), T-22, T-06, T-10, T-15, T-39, T-40 |
 | **STH-20** — provider credential storage, scoping, rotation, redaction | T-17 (egress), T-37, T-38, invariants 2 & 7 |
-| **STH-21** — isolate/harden sandbox; remove Docker root-equivalent exposure | T-24, T-25, T-14, T-26, T-38 |
+| **STH-21** — isolate/harden sandbox; remove Docker root-equivalent exposure | T-24, T-25, T-14, T-22, T-26, T-38 |
 | **STH-22** — versioned migrations + upgrade safety | T-31 |
-| **STH-23** — backups, restore, retention, deletion, export | T-30, T-32, T-34 |
-| **STH-24** — tenancy regression coverage + audit trail | T-07, T-09, T-11, T-16, T-23, T-37, invariants 1/2/10 |
-| **STH-25** — durable, leased, cancellable, suspension-aware jobs | T-28, T-09, T-29, T-33 |
-| **STH-26/STH-27** — observability; readiness/health/shutdown | T-33, T-36, T-29, T-08 (log hygiene) |
+| **STH-23** — backups, restore, retention, deletion, export | T-30, T-32, T-34, T-40, T-41 |
+| **STH-24** — tenancy regression coverage + audit trail | T-05 (audit), T-07, T-11, T-16, T-23, T-37, invariants 1/2/10 |
+| **STH-25** — durable, leased, cancellable, suspension-aware jobs | T-03, T-28, T-09, T-29, T-33 |
+| **STH-26/STH-27** — observability; readiness/health/shutdown | T-33, T-36, T-29, T-39, T-08 (log hygiene) |
 | **STH-28/STH-29** — CI gates; reproducible artifacts/rollback | T-33, T-35, T-26 |
 | **STH-1/STH-7** — Kuhn tool registry + `AgentRuntime` seam | T-16, T-18, T-19, T-20 |
 | **STH-11** — Kuhn-owned research tools (replace hosted WebSearch/WebFetch) | T-17 (web-fetch egress) |
