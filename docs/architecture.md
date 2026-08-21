@@ -3,8 +3,8 @@
 > **Status:** Active — revised 2026-08-14. Markdown-first editor (Milkdown), transitional agent
 > runtime on the Claude Agent SDK, and multi-tenancy invariants adopted. The provider-neutral
 > execution direction is recorded in [ADR 001](adr/001-provider-agnostic-runtime-foundation.md).
-> This supersedes the TeXlyre-based
-> architecture finalized 2026-04-17 ([Epic 001](epics/001-editor-foundation-research/index.md));
+> This supersedes the TeXlyre-based architecture finalized 2026-04-17 (historical Epic 001
+> editor-foundation research; preserved in git history);
 > see [Decision Revisions](#decision-revisions-2026-06-11) below.
 
 ## Overview
@@ -22,7 +22,10 @@ A Node.js backend hosts the agent runtime, project storage, rendering/export, an
 collaboration servers.
 
 For the operator's view — where data is persisted, how it is processed, and what leaves
-the machine — see [data-pipeline.md](data-pipeline.md) (story 040).
+the machine — see [data-pipeline.md](data-pipeline.md) (story 040). For the production
+security model (trust boundaries, principals, data classification, threat inventory) see
+the [threat model](security/threat-model.md), and for the intended production topology
+and scale boundary see [ADR 002](adr/002-production-deployment-topology.md).
 
 ## Document Format Strategy
 
@@ -94,8 +97,9 @@ Why Milkdown:
   retrofit used for `/cite` in the TeXlyre fork.
 - **Yjs binding** — we already run y-webrtc signaling and y-websocket servers; collaboration
   carries over.
-- **MIT license** — dissolves the AGPL open-core apparatus entirely (see
-  [strategy.md](../strategy.md)). No public-fork obligation, no legally mandated app split.
+- **MIT license** — dissolves the earlier AGPL open-core apparatus entirely (the
+  superseded strategy document is preserved in git history). No public-fork obligation,
+  no legally mandated app split.
 
 Consequences:
 
@@ -157,7 +161,7 @@ code.
 **Historical consequences, now under revision:**
 
 - The first implementation used SDK tool/MCP wrappers rather than a neutral tool registry;
-  PLA-226 extracts Kuhn's tool definitions without changing their storage/domain behavior.
+  STH-1 extracts Kuhn's tool definitions without changing their storage/domain behavior.
 - A raw provider-agnostic chat-completion interface remains rejected. The new seam is an agent
   execution contract with normalized events, tools, abort, usage, errors and canonical
   Kuhn-owned continuation messages.
@@ -208,7 +212,8 @@ The advisor's knowledge base is **per-tenant by default**:
 - **Tenant KB** — guidance summaries, source docs, and project knowledge belong to the tenant
   that uploaded them. Never shared across tenants. This is a sales requirement in the target
   market (FDA/clinical/grant writers will ask about data isolation before uploading a protocol).
-- **Kuhn knowledge library** (issue #65, implemented) — a separate, Kuhn-curated, read-only
+- **Kuhn knowledge library** (issue #65 spec; catalog modules restored in
+  [PR #70](https://github.com/soundtrip-health/kuhn/pull/70)) — a separate, Kuhn-curated, read-only
   catalog of public guidance organized as selectable **knowledge packages** (reporting
   standards, FDA/ICH regulatory guidance, style references), defined by
   `guidance-docs/catalog.json` and seeded into `knowledge_packages`/`knowledge_items` at

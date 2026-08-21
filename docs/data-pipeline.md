@@ -10,6 +10,12 @@ database, and a data directory on the host you run it on. There is no Kuhn
 cloud service. Data leaves your machine only through the four egress paths in
 [§5](#5-what-leaves-the-machine).
 
+> This page is the operator's data inventory. The production **threat model**
+> (trust boundaries, data-class sensitivity/encryption/backup/egress table, and
+> the threat→remediation map) builds on it in
+> [security/threat-model.md](security/threat-model.md); the production
+> **deployment topology** is [ADR 002](adr/002-production-deployment-topology.md).
+
 ```mermaid
 flowchart LR
   subgraph Browser
@@ -137,7 +143,7 @@ leaked), an insufficient role or a suspended org gets a 403.
 
 | Destination | When | What is sent |
 |---|---|---|
-| **Anthropic API** (via the Claude Agent SDK) | Every agent turn (chat, `/write`, seeding, review…) | The agent's system prompt, your message + editor context, prior turns, and **any project file contents the model reads with its tools** (`read_file`, `search_files`, org-library search results). Agents `ra`/`advisor` also have Anthropic-side `WebSearch`/`WebFetch`, which fetch model-chosen URLs. Provider-side retention/training is governed by **your Anthropic account settings**, not this repo. Credentials come from the environment (`ANTHROPIC_API_KEY` in `agent-backend/.env`); the code never sees or logs them. |
+| **Anthropic API** (via the Claude Agent SDK) | Every agent turn (chat, `/write`, seeding, review…) | The agent's system prompt, your message + editor context, prior turns, and **any project file contents the model reads with its tools** (`read_file`, `search_files`, org-library search results). Agents `ra`/`advisor` also have Anthropic-side `WebSearch`/`WebFetch`, which fetch model-chosen URLs. Provider-side retention/training is governed by **your Anthropic account settings**, not this repo. The credential is process environment (`ANTHROPIC_API_KEY` in `agent-backend/.env`) consumed by the SDK in the application process; it is not intentionally logged, sent to the browser/model, or passed into sandbox containers. Unrelated host child processes currently inherit `process.env`, an exposure STH-20/STH-21 must remove with minimal explicit environments. |
 | **NCBI PubMed** | `/cite` picker, `pubmed_search`, `add_citation` | Search query text and PMIDs. No API key; rate-limited ~3 req/s. |
 | **arXiv API** | `arxiv_search` tool | Query string. |
 | **SMTP** (only if `KUHN_SMTP_URL` is set) | Magic-link login | Recipient email + login URL. **Without SMTP the link is printed to the server console** — fine for dev, not for shared logs. |
