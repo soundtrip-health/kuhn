@@ -3,7 +3,8 @@
 // Types are the fixed enum in the tenancy plan §4.4: org.created, org.renamed,
 // org.suspended, org.unsuspended, invite.issued, invite.redeemed,
 // invite.revoked, member.role_changed, member.removed, promotion.approved,
-// promotion.rejected.
+// promotion.rejected — plus the invite-only sign-in door (STH-35):
+// access.requested, access.approved, access.denied, access.throttled.
 
 import { querySync } from '../db.js';
 

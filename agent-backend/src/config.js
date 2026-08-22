@@ -62,6 +62,24 @@ export const config = {
     // console instead of sending mail (the dev transport).
     smtpUrl: process.env.KUHN_SMTP_URL || '',
     mailFrom: process.env.KUHN_MAIL_FROM || 'Kuhn <login@kuhn.local>',
+    // Rate limits on POST /api/auth/request-link — the one unauthenticated
+    // endpoint that sends mail and writes rows (STH-35). Two keys, because
+    // they stop different things:
+    //   perEmail — how often ONE address can be mailed. This is the limit
+    //     that matters: it is keyed on the victim, so it cannot be sidestepped
+    //     and it is what stops the endpoint being used to flood someone's
+    //     inbox. Three in a token lifetime is already generous.
+    //   perIp — how many attempts one client may make, whatever addresses it
+    //     names. Best-effort only (see docs/deployment.md): req.ip comes from
+    //     X-Forwarded-For under `trust proxy`, so a determined attacker can
+    //     rotate it. Set generously — a whole institution can share one NAT
+    //     address — and treat it as a guard against noise, not adversaries.
+    requestLink: {
+      perEmailMax: parseInt(process.env.KUHN_LOGIN_MAX_PER_EMAIL || '3'),
+      perEmailWindowMs: parseInt(process.env.KUHN_LOGIN_EMAIL_WINDOW_MS || String(15 * 60 * 1000)),
+      perIpMax: parseInt(process.env.KUHN_LOGIN_MAX_PER_IP || '20'),
+      perIpWindowMs: parseInt(process.env.KUHN_LOGIN_IP_WINDOW_MS || String(60 * 60 * 1000)),
+    },
   },
   agent: {
     // Root directory under which per-project workspaces live; agent file

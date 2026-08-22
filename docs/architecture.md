@@ -191,8 +191,11 @@ suspended org → 403 `organization suspended`. Reads need viewer; anything that
 project, its files, or org content needs editor; member management, invitations, org settings
 (rename + `default_member_role` / `library_seeding` / `promotion_policy`), shared-library
 deletion, and the promotion-approval queue are owner-only. Invitations are the only door into
-an org outside dev mode (single-use hashed tokens through the magic-link verify endpoint);
-an org must always keep at least one owner. Separately, `users.is_superadmin` is a **platform**
+an org outside dev mode (single-use hashed tokens through the magic-link verify endpoint) —
+and since STH-35 they are the only door into the **install** as well: sign-in is invite-only,
+a magic link is issued only to an address that already holds a membership (or the super-admin
+flag), and everyone else lands in a super-admin-reviewed `access_requests` queue instead of
+get-or-creating an account. An org must always keep at least one owner. Separately, `users.is_superadmin` is a **platform**
 flag (synced from `KUHN_SUPERADMIN_EMAILS` at boot), not a role: super-admins provision,
 rename, suspend, and unsuspend orgs via `POST /api/orgs` + `/api/admin/orgs`, but **no tenancy
 guard consults the flag** — a super-admin without a membership is a stranger to every org's

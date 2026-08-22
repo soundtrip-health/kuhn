@@ -269,6 +269,10 @@ body {
 .login-note { font: var(--ui-small); color: var(--warn); margin: 0; }
 .login-error { font: var(--ui-small); color: var(--warn); margin: 0; }
 .login-sent { font: var(--ui-body); color: var(--ink-2); margin: 0; line-height: 1.45; }
+/* Invite-only copy + the optional self-introduction (STH-35). */
+.login-hint { font: var(--ui-small); color: var(--ink-3); margin: -4px 0 2px; line-height: 1.4; }
+.om-optional { color: var(--ink-3); font-weight: 400; }
+.login-intro { flex: none; resize: vertical; min-height: 44px; line-height: 1.4; font: var(--ui-small); }
 
 /* Live status in the top bar (seeding chip / saved check) */
 .topbar-activity {
@@ -1538,6 +1542,14 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .admin-member-name { font: var(--ui-title); color: var(--ink); overflow-wrap: anywhere; }
 .admin-member-email { font: var(--ui-small); color: var(--ink-3); overflow-wrap: anywhere; }
 .admin-row-actions { text-align: right; white-space: nowrap; }
+/* Access-request queue rows (STH-35): the self-introduction wraps, the
+   org/role pair stays on one line beside it. */
+.admin-request-note {
+  font: var(--ui-small); color: var(--ink-2); line-height: 1.4;
+  margin-top: 3px; overflow-wrap: anywhere; max-width: 34ch;
+}
+.admin-request-target { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.admin-request-target .pb-select { flex: none; min-width: 8.5rem; }
 .admin-form-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .admin-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
 .role-badge, .status-badge {

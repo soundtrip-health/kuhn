@@ -229,13 +229,20 @@ export async function fetchMe(): Promise<Me | null> {
   return me;
 }
 
-/** Ask the backend to email a magic sign-in link (dev: logged to its console). */
-export async function requestLoginLink(email: string): Promise<void> {
+/**
+ * Ask the backend to email a sign-in link (dev: logged to its console). Kuhn
+ * is invite-only (STH-35), so what actually arrives depends on the address —
+ * a magic link, a re-issued invitation, or "your request is queued". The
+ * response is identical either way and says nothing about which, so the UI
+ * cannot report it and must not pretend to. `note` is an optional
+ * self-introduction kept only if the attempt becomes an access request.
+ */
+export async function requestLoginLink(email: string, note?: string): Promise<void> {
   await expectOk(
     await apiFetch(`${BACKEND_URL}/api/auth/request-link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(note ? { email, note } : { email }),
     }),
   );
 }
@@ -432,6 +439,62 @@ export async function adminUpdateOrg(
     }),
   );
   return ((await res.json()) as { org: AdminOrg }).org;
+}
+
+// ---- Access requests (STH-35): the super-admin queue ----
+
+export interface AccessRequest {
+  id: number;
+  email: string;
+  note: string | null;
+  status: 'pending' | 'approved' | 'denied';
+  request_count: number;
+  last_requested_at: string;
+  decided_by: number | null;
+  decided_by_email: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  invitation_id: number | null;
+  created_at: string;
+}
+
+/** The access-request queue, optionally filtered by status (super-admin). */
+export async function adminListAccessRequests(
+  status?: AccessRequest['status'],
+): Promise<AccessRequest[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/admin/access-requests${query}`));
+  return ((await res.json()) as { requests: AccessRequest[] }).requests;
+}
+
+/** Approve a request: mints and mails an ordinary invitation to org+role. */
+export async function adminApproveAccessRequest(
+  id: number,
+  body: { orgId: number; role: Role; note?: string },
+): Promise<AccessRequest> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/admin/access-requests/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
+  return ((await res.json()) as { request: AccessRequest }).request;
+}
+
+/** Deny a request. The requester is not notified. */
+export async function adminDenyAccessRequest(
+  id: number,
+  note?: string,
+): Promise<AccessRequest> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/admin/access-requests/${id}/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+  );
+  return ((await res.json()) as { request: AccessRequest }).request;
 }
 
 /** The org's promotion requests, optionally filtered by status (owner-only). */

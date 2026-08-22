@@ -28,6 +28,7 @@ import {
   SettingsValidationError,
 } from '../db/org-settings.js';
 import { recordAuthEvent } from '../db/auth-events.js';
+import { resolvePendingRequestsFor } from '../db/access-requests.js';
 import { sendInviteLink } from '../mailer.js';
 
 const router = Router();
@@ -165,6 +166,10 @@ router.post('/api/orgs/:orgId/invitations', async (req, res) => {
   });
   const verifyUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?invite=${encodeURIComponent(token)}`;
   await sendInviteLink(email, verifyUrl, { orgName: ctx.org.name });
+  // An owner inviting someone directly settles any queued access request from
+  // that address (STH-35) — the super-admin queue should not still show work
+  // an org owner has already done.
+  resolvePendingRequestsFor(email, { decidedBy: req.user.id, invitationId: invitation.id });
   recordAuthEvent({
     type: 'invite.issued',
     actorUserId: req.user.id,

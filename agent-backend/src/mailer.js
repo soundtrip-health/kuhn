@@ -1,4 +1,4 @@
-// Story 007-002: magic-link delivery. Two transports, picked by config:
+// Mail delivery. Two transports, picked by config:
 // KUHN_SMTP_URL set → SMTP via nodemailer (lazy-imported so dev and tests
 // never load it); unset → the link is printed to the server console, which is
 // the whole dev login flow. No mail-provider SDKs.
@@ -56,6 +56,39 @@ export async function sendInviteLink(email, url, { orgName }) {
       '',
       `The link is valid for ${Math.round(config.auth.inviteTtlMs / 86400000)} day(s) and can be used once.`,
       'If you were not expecting this invitation, ignore this message.',
+    ].join('\n'),
+  });
+}
+
+/**
+ * Tell a stranger their access request is queued (STH-35). This is what an
+ * uninvited address gets INSTEAD of a magic link — the install is invite-only,
+ * and the copy has to say so rather than leaving someone waiting for a link
+ * that is never coming.
+ */
+export async function sendAccessRequestReceived(email) {
+  if (!config.auth.smtpUrl) {
+    console.log(`[auth] Access request queued for ${email} (no link sent — invite-only)`);
+    return;
+  }
+  const transport = await smtpTransport();
+  await transport.sendMail({
+    from: config.auth.mailFrom,
+    to: email,
+    subject: 'Your Kuhn access request',
+    text: [
+      'Thanks for your interest in Kuhn.',
+      '',
+      'Kuhn is invite-only, so we have not sent a sign-in link. Your request',
+      'has been added to the queue for an administrator to review. If it is',
+      'approved you will receive a separate invitation email with a link to',
+      'join an organization.',
+      '',
+      'If you already belong to an organization here, sign in with the address',
+      'your administrator used to invite you.',
+      '',
+      'If you did not request this, no account was created and you can ignore',
+      'this message.',
     ].join('\n'),
   });
 }

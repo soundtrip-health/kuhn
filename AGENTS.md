@@ -139,7 +139,10 @@ These rules are about keeping that record honest:
 
 ## Claude Code permissions
 
-`.claude/settings.json` (committed) pre-allows low-risk read-only and build commands
-(git read ops, `npm test`/`build`/`lint`, `node`, `python3`, `grep`/`rg`, file tools)
-so Claude Code can iterate without prompting. Add personal allowances in
-`~/.claude/settings.json` (never committed). Toggle modes with `/permissions`.
+The whole `.claude/` directory is gitignored — the repo ships no shared permission
+allowlist, so each checkout starts from Claude Code's defaults and grants are personal.
+
+Pre-allow the low-risk commands you get prompted for repeatedly (git read ops,
+`npm test`/`build`/`lint`, `node`, `python3`, `grep`/`rg`, file tools) in either
+`.claude/settings.json` (this checkout only) or `~/.claude/settings.json` (all your
+projects). Neither is committed. Toggle modes with `/permissions`.
