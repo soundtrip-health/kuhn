@@ -147,3 +147,25 @@ export function acceptInvitedMembership(userId, invitation) {
   );
   return rowCount > 0;
 }
+
+/**
+ * The newest LIVE invitation for an email, across every org (STH-35). The
+ * sign-in door uses it to re-issue a lost invitation rather than dumping an
+ * already-approved invitee into the access-request queue. Suspended orgs are
+ * not excluded — redeemInvitation refuses those with a reason that says the
+ * link stays valid, which is the honest answer.
+ * @returns {object|undefined} the invitation row plus org_name/org_slug
+ */
+export function findLiveInvitationByEmail(email) {
+  const normalized = String(email).trim().toLowerCase();
+  const { rows } = querySync(
+    `SELECT i.*, o.name AS org_name, o.slug AS org_slug
+     FROM invitations i JOIN organizations o ON o.id = i.org_id
+     WHERE i.email = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL
+       AND i.expires_at >= ${NOW}
+     ORDER BY i.created_at DESC, i.id DESC
+     LIMIT 1`,
+    [normalized],
+  );
+  return rows[0];
+}

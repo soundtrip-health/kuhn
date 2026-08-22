@@ -1,9 +1,13 @@
 // Story 007-002: minimal magic-link login screen. Shown when the backend
 // answers 401 (real auth mode with no valid session) — a blocking overlay,
 // not a route: the app behind it has nothing to show an anonymous user.
-// Reuses the project-browser overlay/modal classes; no design-system
-// additions. In dev auth mode this module resolves silently and the overlay
-// never appears.
+// Reuses the project-browser overlay/modal classes. In dev auth mode this
+// module resolves silently and the overlay never appears.
+//
+// STH-35 made the install invite-only, and that shapes the copy here: this
+// screen is a sign-in box AND an access-request form, because it cannot know
+// which one you need without telling you whether your address has an account.
+// Every branch therefore ends on the same confirmation screen.
 
 import { fetchMe, requestLoginLink, logout, type Me } from './api';
 
@@ -19,6 +23,7 @@ export const currentUser = (): Me['user'] | null => me?.user ?? null;
  *  dead magic links, and invitation redemption failures (epic 011). */
 const LOGIN_NOTICES: Record<string, string> = {
   'expired': 'That sign-in link has expired or was already used. Request a fresh one.',
+  'no-access': 'That sign-in link is no longer valid because the account it belongs to has no organization. If you think this is a mistake, ask your organization admin to invite you again.',
   'invite-expired': 'That invitation has expired. Ask your organization admin to send a new one.',
   'invite-revoked': 'That invitation was revoked. Ask your organization admin to send a new one.',
   'invite-used': 'That invitation was already used. If that was you, sign in with your email below.',
@@ -89,16 +94,23 @@ function renderEmailStep(root: HTMLElement, notice?: string): void {
 
   const form = document.createElement('form');
   form.className = 'om-form';
+  // One field for both audiences. The note is shown to everyone because the
+  // form CANNOT know which you are without disclosing it (STH-35) — the
+  // backend decides, and only your mailbox learns the answer.
   form.innerHTML =
     `<p class="login-note" hidden></p>` +
     `<label class="om-label" for="login-email">Email</label>` +
     `<input id="login-email" class="pb-input" type="email" required autocomplete="email" placeholder="you@lab.org" />` +
+    `<p class="login-hint">Kuhn is invite-only. Members get a sign-in link; everyone else is queued for review.</p>` +
+    `<label class="om-label" for="login-intro">Requesting access? Tell us who you are <span class="om-optional">(optional)</span></label>` +
+    `<textarea id="login-intro" class="pb-input login-intro" rows="2" maxlength="500" placeholder="Your name, institution, and who invited you"></textarea>` +
     `<p class="login-error" role="alert" hidden></p>` +
-    `<div class="om-actions"><button type="submit" class="btn btn-accent">Email me a sign-in link</button></div>`;
+    `<div class="om-actions"><button type="submit" class="btn btn-accent">Continue</button></div>`;
 
   const noticeEl = form.querySelector('.login-note') as HTMLElement;
   if (notice) { noticeEl.textContent = notice; noticeEl.hidden = false; }
   const input = form.querySelector('#login-email') as HTMLInputElement;
+  const intro = form.querySelector('#login-intro') as HTMLTextAreaElement;
   const errorEl = form.querySelector('.login-error') as HTMLElement;
   const submit = form.querySelector('button') as HTMLButtonElement;
 
@@ -108,7 +120,7 @@ function renderEmailStep(root: HTMLElement, notice?: string): void {
     if (!email) return;
     submit.disabled = true;
     errorEl.hidden = true;
-    requestLoginLink(email).then(
+    requestLoginLink(email, intro.value.trim() || undefined).then(
       () => renderSentStep(root, email),
       (err: Error) => {
         errorEl.textContent = err.message || 'Could not send the link — try again.';
@@ -122,11 +134,19 @@ function renderEmailStep(root: HTMLElement, notice?: string): void {
   input.focus();
 }
 
+/**
+ * Deliberately vague (STH-35): the backend answers identically whether it
+ * mailed a link, re-sent an invitation, or queued a request, so this screen
+ * covers every case rather than leaking which one happened.
+ */
 function renderSentStep(root: HTMLElement, email: string): void {
   const body = shell(root, 'Check your email');
   const p = document.createElement('p');
   p.className = 'login-sent';
-  p.textContent = `A sign-in link is on its way to ${email}. It works once and expires in 15 minutes.`;
+  p.textContent =
+    `We've sent a message to ${email}. If you already belong to an organization here, ` +
+    `it contains a sign-in link that works once and expires in 15 minutes. ` +
+    `If you don't, it confirms that your access request is queued for review.`;
   const back = document.createElement('button');
   back.type = 'button';
   back.className = 'btn btn-ghost';

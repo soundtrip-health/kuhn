@@ -65,11 +65,12 @@ Authentication is controlled by `KUHN_AUTH_MODE` in `agent-backend/.env`:
 
 - **`dev` (default)** — no login. Requests resolve to a seeded dev user and the sign-in
   screen never appears. Intended for local development and the token-free check scripts.
-- **`magic-link`** — passwordless email login (requires `KUHN_SESSION_SECRET` at startup).
-  A user enters their email on the sign-in screen and receives a single-use link (15-minute
-  expiry); the first login creates the user in the default organization. With no
-  `KUHN_SMTP_URL` configured, links are printed to the backend console
-  (`[auth] Magic link for …`) instead of emailed. See
+- **`magic-link`** — passwordless email login (requires `KUHN_SESSION_SECRET` at startup),
+  and **invite-only**: a user enters their email on the sign-in screen, and an address that
+  already belongs to an organization receives a single-use link (15-minute expiry). An
+  address that does not is queued as an access request for a super-admin to review — no
+  account is created and no link is sent. With no `KUHN_SMTP_URL` configured, links are
+  printed to the backend console (`[auth] Magic link for …`) instead of emailed. See
   [docs/deployment.md](docs/deployment.md) for the full configuration.
 
 ### Running the packages individually
