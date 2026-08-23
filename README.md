@@ -2,24 +2,28 @@
 
 A web-based scientific and technical writing tool with integrated AI assistance.
 
-Kuhn is a browser-based WYSIWYG markdown editor where AI agents deliver real-time help as you
-write manuscripts, protocols, and grant applications. You author in friendly markdown with
-BibTeX; the toolchain renders to PDF via Typst and exports to Word/LaTeX via Pandoc — so LaTeX
-is an export target, never a prerequisite.
+Kuhn pairs a WYSIWYG markdown editor with AI agents that assist in real time as you write
+manuscripts, protocols, and grant applications. You author in plain markdown with BibTeX;
+the toolchain renders to PDF via Typst and exports to Word/LaTeX via Pandoc — LaTeX is an
+export target, never a prerequisite.
+
+![The Kuhn editor: agent chat, WYSIWYG manuscript editing, and project files side by side](docs/images/kuhn-editor.png)
 
 Current capabilities:
 
 - **Agent-integrated editing** — six specialized agents (PM, Writer, Research Assistant,
   Advisor, Reviewer, Analyst) embedded in the editor, with token-streaming chat, mid-task
   questions, and transcript restore on reload.
-- **Milkdown editor** — WYSIWYG markdown with Yjs real-time collaboration and a `/cite` slash
-  command that inserts grounded references.
+- **Milkdown editor** — WYSIWYG markdown with Yjs real-time collaboration, anchored margin
+  comments that agents can answer and resolve, and a `/cite` slash command that inserts
+  grounded references.
 - **One-click project seeding** — a deterministic pipeline runs a PM interview → parallel
   research (Research Assistant + Advisor) → Writer skeleton draft.
 - **Live preview & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations)
   plus one-click docx/LaTeX export, all sandboxed.
-- **Tenant-safe by design** — project-scoped storage, sandboxed execution, and per-tenant
-  knowledge bases over a shared curated guidance corpus.
+- **Multi-tenant by design** — organizations with role-based membership and invitation-only
+  sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
+  a shared curated guidance corpus.
 
 ## Quick start
 
