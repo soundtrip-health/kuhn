@@ -52,8 +52,45 @@ export function subscribe(fn: Listener): () => void {
 }
 
 function emit(change: WorkspaceChange): void {
+  saveLastSelection();
   syncSuspendedBanner();
   for (const fn of [...listeners]) fn(change);
+}
+
+// ---- Last-visited restore ----------------------------------------------------
+//
+// A reload lands the user back on the org + project they were working in, via
+// one JSON localStorage key (reads and writes guarded per the tree-state.ts
+// convention — anything absent, foreign or malformed degrades to the
+// first-org/first-project default). The DOCUMENT is deliberately not stored
+// here: it already persists server-side per project (config.activeDocument),
+// and switchToActiveProject restores it once the right project is open.
+
+const LAST_KEY = 'kuhn-last-workspace';
+
+function readLastSelection(): { orgId: number; projectId: number | null } | null {
+  try {
+    const raw = localStorage.getItem(LAST_KEY);
+    if (!raw) return null;
+    const val = JSON.parse(raw) as { orgId?: unknown; projectId?: unknown } | null;
+    if (typeof val?.orgId !== 'number') return null;
+    return { orgId: val.orgId, projectId: typeof val.projectId === 'number' ? val.projectId : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Called from emit(), so every selection change persists from one place. */
+function saveLastSelection(): void {
+  if (!state.bootstrapped || state.activeOrgId == null) return;
+  try {
+    localStorage.setItem(
+      LAST_KEY,
+      JSON.stringify({ orgId: state.activeOrgId, projectId: state.activeProjectId }),
+    );
+  } catch {
+    /* quota / private mode — the next boot falls back to the default pick */
+  }
 }
 
 // ---- Getters ----------------------------------------------------------------
@@ -137,13 +174,16 @@ if (typeof window !== 'undefined') {
 // ---- Loading / switching ----------------------------------------------------
 
 /**
- * Bootstrap the workspace: load the user's orgs, pick the first as active, load
- * its projects, and pick the first project. Fires 'init'. Throws if the backend
- * is unreachable (the caller shows the connection error).
+ * Bootstrap the workspace: load the user's orgs, pick the last-visited one
+ * (falling back to the first), load its projects, and pick a project the same
+ * way. Fires 'init'. Throws if the backend is unreachable (the caller shows
+ * the connection error).
  */
 export async function initWorkspace(): Promise<void> {
   state.orgs = await listOrgs();
-  state.activeOrgId = state.orgs[0]?.id ?? null;
+  const last = readLastSelection();
+  state.activeOrgId =
+    state.orgs.find((o) => o.id === last?.orgId)?.id ?? state.orgs[0]?.id ?? null;
   state.bootstrapped = true;
   await loadProjects();
   // Boot keeps its throw-on-unreachable contract (main shows the banner).
@@ -171,7 +211,12 @@ async function loadProjects(): Promise<void> {
   }
   const next = activeProject();
   if (!next || next.org_id !== state.activeOrgId) {
-    state.activeProjectId = state.projects[0]?.id ?? null;
+    // Prefer the last-visited project when it is in this org's list (the
+    // bootstrap restore); an explicit org switch saved projectId: null before
+    // loading, so it still lands on the first project.
+    const last = readLastSelection();
+    state.activeProjectId =
+      state.projects.find((p) => p.id === last?.projectId)?.id ?? state.projects[0]?.id ?? null;
     state.activeDocPath = activeProject()?.config?.activeDocument ?? '';
   }
 }
