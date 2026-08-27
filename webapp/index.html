@@ -88,7 +88,13 @@
           <span id="editor-path" class="editor-path">untitled.md</span>
           <div class="editor-meta">
             <span id="editor-wordcount">0 words</span>
-            <span class="slash-hint-chip"><kbd>/</kbd> commands</span>
+            <!-- Slash-command help (STH-38) — slash-help.ts owns it -->
+            <span class="slash-hint">
+              <button id="slash-help-btn" type="button" class="slash-hint-chip"
+                aria-expanded="false" aria-haspopup="true"
+                title="What can I type after / ?"><kbd>/</kbd> commands</button>
+              <div id="slash-help-menu" class="slash-help-menu" hidden></div>
+            </span>
             <!-- External review links (epic 013) — share-links.ts owns it -->
             <button id="editor-share-btn" type="button" class="btn btn-quiet btn-sm"
               title="Share this document with an external reviewer">Share</button>

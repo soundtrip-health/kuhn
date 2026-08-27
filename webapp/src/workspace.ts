@@ -252,6 +252,22 @@ export function applyProjectUpdate(project: Project): void {
   if (project.id === state.activeProjectId) emit('project');
 }
 
+/** Switch into an org just joined through the platform console (STH-36):
+ *  the membership is new, so re-fetch the org list before activating it. */
+export async function switchToJoinedOrg(orgId: number): Promise<void> {
+  state.orgs = await listOrgs();
+  emit('orgs');
+  state.activeOrgId = orgId;
+  state.activeProjectId = null;
+  state.projects = [];
+  state.projectsLoading = true;
+  state.projectsError = null;
+  emit('projects');
+  await loadProjects();
+  emit('projects');
+  emit('project');
+}
+
 /** Create an organization and switch to it (super-admin only since epic 011;
  *  `ownerEmail` names the first admin — pass your own email to keep access). */
 export async function createNewOrg(name: string, ownerEmail?: string): Promise<Org> {

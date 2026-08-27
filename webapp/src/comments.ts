@@ -520,6 +520,10 @@ function threadCard(ctx: Attached, t: CommentThread): HTMLElement {
   // Click-to-focus (panel → document); buttons/inputs handle themselves.
   card.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).closest('button, textarea, input, details')) return;
+    // A drag-select ends in a click too; focusing would re-render the panel
+    // and destroy the selection before the user can copy it (STH-39).
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && (card.contains(sel.anchorNode) || card.contains(sel.focusNode))) return;
     focusThread(t.id, { scrollEditor: true });
   });
   return card;
@@ -663,6 +667,12 @@ function focusThread(id: number, opts: { scrollEditor?: boolean; scrollPanel?: b
         .scrollIntoView();
       ctx.view.dispatch(tr);
       ctx.view.focus();
+      // tr.scrollIntoView() is a no-op while the DOM selection sits outside
+      // the editor (it always does on a panel click — STH-40), so scroll the
+      // decoration's own element.
+      ctx.view.dom
+        .querySelector(`[data-mc="${id}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   }
   if (opts.scrollPanel) {

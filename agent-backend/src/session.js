@@ -10,11 +10,15 @@
 //     flow (routes/auth.js) is the ONLY accepted identity; the header and
 //     dev-user fallback are inert. No/invalid/expired cookie → 401.
 //
-// The user row is created on first sight (get-or-create at dev-request /
-// verify time). DEV MODE ONLY: an identity with no org yet is attached to the
-// seeded default organization so local development always has a workspace.
-// Outside dev the door into an org is an invitation (story 011-002) — a plain
-// magic-link sign-in yields a session with zero memberships. Swapping in SSO
+// DEV MODE ONLY: the user row is created on first sight and an identity with
+// no org yet is attached to the seeded default organization, so local
+// development always has a workspace.
+//
+// Outside dev the install is INVITE-ONLY (STH-35): an invitation is the only
+// thing that mints an account, and a magic link is only ever issued to an
+// address that already has a membership (or the super-admin flag) —
+// findEligibleUser below is that gate. Strangers go to the access-request
+// queue instead of getting a session with zero memberships. Swapping in SSO
 // later still means replacing only this resolver.
 
 import { query } from './db.js';
@@ -61,10 +65,12 @@ export function assertAuthConfig() {
 }
 
 /**
- * Get-or-create a user by email. Called at magic-link verify time (007-002)
- * and per-request in dev mode. Deliberately does NOT grant any membership —
- * dev mode's default-org auto-join is ensureDefaultMembership, and outside
- * dev an invitation is the only door into an org (story 011-002).
+ * Get-or-create a user by email. Callers are invitation redemption (the only
+ * door that may mint an account — STH-35 removed self-registration, so
+ * magic-link verify now looks users up instead) and per-request dev mode.
+ * Deliberately does NOT grant any membership — dev mode's default-org
+ * auto-join is ensureDefaultMembership, and outside dev an invitation is the
+ * only door into an org (story 011-002).
  * @param {string} email
  * @returns {Promise<{id: number, email: string, display_name: string|null, is_superadmin: number}>}
  */
@@ -79,6 +85,34 @@ export async function resolveUser(email) {
     [normalized, normalized.split('@')[0]],
   );
   return rows[0];
+}
+
+/**
+ * The sign-in gate (STH-35): resolve an email to a user who may be issued a
+ * magic link. Self-registration is gone, so "existing account" is not enough
+ * — the account must actually belong somewhere:
+ *
+ *   • at least one membership, or
+ *   • the platform super-admin flag (who has no membership by design and must
+ *     never be able to lock themselves out).
+ *
+ * Everyone else is a stranger to this install and goes to the access-request
+ * queue. Checked at BOTH doors — link issuance and token verify — so a
+ * membership revoked in between cannot be ridden in on an in-flight link.
+ * @returns {Promise<object|null>} the users row, or null if not eligible
+ */
+export async function findEligibleUser(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const { rows } = await query(
+    `SELECT u.id, u.email, u.display_name, u.is_superadmin
+     FROM users u
+     WHERE u.email = $1
+       AND (u.is_superadmin != 0
+            OR EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id))`,
+    [normalized],
+  );
+  return rows[0] ?? null;
 }
 
 /**

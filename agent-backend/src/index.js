@@ -11,6 +11,7 @@ import { markOrphanedJobsInterrupted } from './db/jobs.js';
 import { session, assertAuthConfig } from './session.js';
 import healthRouter from './routes/health.js';
 import { authRouter, meRouter } from './routes/auth.js';
+import accessRequestsRouter from './routes/access-requests.js';
 import agentRouter from './routes/agent.js';
 import citationsRouter from './routes/citations.js';
 import commentsRouter from './routes/comments.js';
@@ -76,6 +77,7 @@ if (serveWebapp) {
 // Story 005: resolve req.user before any tenant-scoped route runs.
 app.use(session);
 app.use(meRouter);
+app.use(accessRequestsRouter); // super-admin access-request queue (STH-35)
 app.use(agentRouter);
 app.use(citationsRouter);
 app.use(commentsRouter);

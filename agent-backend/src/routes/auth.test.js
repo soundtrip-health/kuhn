@@ -8,14 +8,20 @@ import express from 'express';
 // Must be set before db.js is imported.
 process.env.KUHN_SQLITE_PATH = ':memory:';
 
-// Capture magic links instead of logging/sending them.
-vi.mock('../mailer.js', () => ({ sendLoginLink: vi.fn(async () => {}) }));
+// Capture outbound mail instead of logging/sending it. Which of the three
+// gets called IS the assertion for STH-35 — the HTTP response is uniform.
+vi.mock('../mailer.js', () => ({
+  sendLoginLink: vi.fn(async () => {}),
+  sendInviteLink: vi.fn(async () => {}),
+  sendAccessRequestReceived: vi.fn(async () => {}),
+}));
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let config; let exec; let querySync;
-let sendLoginLink;
+let sendLoginLink; let sendInviteLink; let sendAccessRequestReceived;
 let session; let assertAuthConfig;
+let resetLoginRateLimits;
 let server; let base;
 
 beforeAll(async () => {
@@ -24,9 +30,10 @@ beforeAll(async () => {
   config.auth.sessionSecret = 'test-secret';
 
   ({ exec, querySync } = await import('../db.js'));
-  ({ sendLoginLink } = await import('../mailer.js'));
+  ({ sendLoginLink, sendInviteLink, sendAccessRequestReceived } = await import('../mailer.js'));
   ({ session, assertAuthConfig } = await import('../session.js'));
-  const { authRouter, meRouter } = await import('./auth.js');
+  const { authRouter, meRouter, resetLoginRateLimits: reset } = await import('./auth.js');
+  resetLoginRateLimits = reset;
   exec(readFileSync(resolve(__dirname, '../db/schema.sql'), 'utf-8'));
 
   const app = express();
@@ -48,6 +55,10 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The limiter is process-wide, not per-test — without this every test after
+  // the first few would 429 on a budget the previous ones spent.
+  resetLoginRateLimits();
+  querySync('DELETE FROM access_requests');
   querySync('DELETE FROM auth_tokens');
   querySync('DELETE FROM auth_events');
   querySync('DELETE FROM invitations');
@@ -58,8 +69,34 @@ beforeEach(() => {
   querySync("INSERT INTO organizations (name, slug) VALUES ('Default', 'default')");
 });
 
+/**
+ * Make an address eligible for a magic link (STH-35): a user row plus a
+ * membership. Every pre-existing login test assumed request-link would create
+ * the account for it; invite-only means the test has to say who belongs.
+ */
+function seedMember(email, { superadmin = false } = {}) {
+  const { rows } = querySync(
+    'INSERT INTO users (email, display_name, is_superadmin) VALUES ($1, $2, $3) RETURNING id',
+    [email, email.split('@')[0], superadmin ? 1 : 0],
+  );
+  if (!superadmin) {
+    const orgId = querySync("SELECT id FROM organizations WHERE slug = 'default'").rows[0].id;
+    querySync('INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, $3)',
+      [rows[0].id, orgId, 'editor']);
+  }
+  return rows[0].id;
+}
+
+const requestLink = (email, note) =>
+  fetch(`${base}/api/auth/request-link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note === undefined ? { email } : { email, note }),
+  });
+
 /** Run the full request-link → verify flow; returns the session cookie value. */
-async function login(email = 'pi@lab.org') {
+async function login(email = 'pi@lab.org', { seed = true } = {}) {
+  if (seed) seedMember(email);
   const req = await fetch(`${base}/api/auth/request-link`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -92,12 +129,12 @@ describe('magic-link login (story 007-002)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ email: 'pi@lab.org' });
 
-    // Invitation-only door (epic 011): a plain magic-link first login yields
-    // a session but ZERO org memberships — invitations are the way in.
+    // The link is a RE-entry door, never a registration: it signs in the
+    // membership that already existed and grants nothing new (STH-35).
     const { rows } = querySync(
-      "SELECT m.org_id FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = 'pi@lab.org'",
+      "SELECT m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = 'pi@lab.org'",
     );
-    expect(rows).toEqual([]);
+    expect(rows).toEqual([{ role: 'editor' }]);
 
     const me = await fetch(`${base}/api/auth/me`, {
       headers: { Cookie: `kuhn_session=${encodeURIComponent(cookie)}` },
@@ -113,6 +150,8 @@ describe('magic-link login (story 007-002)', () => {
     });
     expect(res.status).toBe(400);
     expect(sendLoginLink).not.toHaveBeenCalled();
+    expect(sendAccessRequestReceived).not.toHaveBeenCalled();
+    expect(querySync('SELECT COUNT(*) AS n FROM access_requests').rows[0].n).toBe(0);
   });
 
   it('a token is single-use: the second verify redirects to login=expired', async () => {
@@ -124,11 +163,8 @@ describe('magic-link login (story 007-002)', () => {
   });
 
   it('an expired token is rejected', async () => {
-    await fetch(`${base}/api/auth/request-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'pi@lab.org' }),
-    });
+    seedMember('pi@lab.org');
+    await requestLink('pi@lab.org');
     querySync("UPDATE auth_tokens SET expires_at = '2020-01-01T00:00:00.000Z'");
     const [, url] = sendLoginLink.mock.calls.at(-1);
     const verify = await fetch(url, { redirect: 'manual' });
@@ -180,6 +216,203 @@ describe('invitation redemption via the verify door (story 011-002)', () => {
     expect(bad.status).toBe(302);
     expect(bad.headers.get('location')).toBe(`${config.auth.appUrl}/?login=invite-invalid`);
     expect(bad.headers.get('set-cookie')).toBeNull();
+  });
+});
+
+describe('invite-only sign-in door (STH-35)', () => {
+  it('a stranger gets a queued request — no link, no token, no account', async () => {
+    const res = await requestLink('stranger@evil.example', '  I heard about Kuhn  ');
+    // The answer is identical to a member's: the login box must not disclose
+    // who has an account here.
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    expect(sendLoginLink).not.toHaveBeenCalled();
+    expect(sendInviteLink).not.toHaveBeenCalled();
+    expect(sendAccessRequestReceived).toHaveBeenCalledWith('stranger@evil.example');
+
+    expect(querySync('SELECT COUNT(*) AS n FROM users').rows[0].n).toBe(0);
+    expect(querySync('SELECT COUNT(*) AS n FROM auth_tokens').rows[0].n).toBe(0);
+    expect(querySync('SELECT email, note, status, request_count FROM access_requests').rows)
+      .toEqual([{
+        email: 'stranger@evil.example',
+        note: 'I heard about Kuhn', // trimmed
+        status: 'pending',
+        request_count: 1,
+      }]);
+    expect(querySync('SELECT type FROM auth_events').rows).toEqual([{ type: 'access.requested' }]);
+  });
+
+  it('asking again bumps the existing row instead of queueing duplicates', async () => {
+    await requestLink('stranger@evil.example');
+    await requestLink('STRANGER@Evil.Example'); // same address, different case
+    await requestLink('stranger@evil.example', 'let me in');
+
+    const { rows } = querySync('SELECT email, note, request_count FROM access_requests');
+    expect(rows).toEqual([
+      { email: 'stranger@evil.example', note: 'let me in', request_count: 3 },
+    ]);
+    // Only the first ask is an event; the rest are noise.
+    expect(querySync("SELECT COUNT(*) AS n FROM auth_events WHERE type = 'access.requested'")
+      .rows[0].n).toBe(1);
+  });
+
+  it('an account with no membership is a stranger, not a member', async () => {
+    // The pre-STH-35 dead end: a user row from the old self-registration flow.
+    querySync("INSERT INTO users (email, display_name) VALUES ('orphan@lab.org', 'orphan')");
+    await requestLink('orphan@lab.org');
+
+    expect(sendLoginLink).not.toHaveBeenCalled();
+    expect(sendAccessRequestReceived).toHaveBeenCalledWith('orphan@lab.org');
+    expect(querySync("SELECT status FROM access_requests WHERE email = 'orphan@lab.org'")
+      .rows).toEqual([{ status: 'pending' }]);
+  });
+
+  it('a super-admin has no membership but still gets a link', async () => {
+    seedMember('root@kuhn.local', { superadmin: true });
+    await requestLink('root@kuhn.local');
+    expect(sendLoginLink).toHaveBeenCalledTimes(1);
+    expect(querySync('SELECT COUNT(*) AS n FROM access_requests').rows[0].n).toBe(0);
+  });
+
+  it('a pending invitation is re-issued rather than queued', async () => {
+    const { createInvitation } = await import('../db/invitations.js');
+    querySync("INSERT INTO organizations (id, name, slug) VALUES (7, 'Lab', 'lab')");
+    const { token: original } = createInvitation({
+      orgId: 7, email: 'invitee@lab.org', role: 'viewer', ttlMs: 60_000,
+    });
+
+    await requestLink('invitee@lab.org');
+    expect(sendLoginLink).not.toHaveBeenCalled();
+    expect(sendAccessRequestReceived).not.toHaveBeenCalled();
+    const [to, url, opts] = sendInviteLink.mock.calls.at(-1);
+    expect(to).toBe('invitee@lab.org');
+    expect(opts).toEqual({ orgName: 'Lab' });
+
+    // The fresh link works and carries the ORIGINALLY invited role — a lost
+    // invitation is recoverable without widening who may join, or at what level.
+    const verify = await fetch(url, { redirect: 'manual' });
+    expect(verify.headers.get('location')).toBe(`${config.auth.appUrl}/`);
+    expect(querySync(
+      `SELECT m.org_id, m.role FROM memberships m
+       JOIN users u ON u.id = m.user_id WHERE u.email = 'invitee@lab.org'`,
+    ).rows).toEqual([{ org_id: 7, role: 'viewer' }]);
+
+    // ...and the superseded token is dead, so only one link is ever live.
+    const stale = await fetch(
+      `${base}/api/auth/verify?invite=${encodeURIComponent(original)}`,
+      { redirect: 'manual' },
+    );
+    expect(stale.headers.get('location')).toBe(`${config.auth.appUrl}/?login=invite-revoked`);
+  });
+
+  it('an in-flight link dies when the last membership is revoked', async () => {
+    seedMember('ex@lab.org');
+    await requestLink('ex@lab.org');
+    const [, url] = sendLoginLink.mock.calls.at(-1);
+
+    // Removed from the org after the link was mailed but before it was clicked.
+    querySync('DELETE FROM memberships');
+
+    const verify = await fetch(url, { redirect: 'manual' });
+    expect(verify.status).toBe(302);
+    expect(verify.headers.get('location')).toBe(`${config.auth.appUrl}/?login=no-access`);
+    expect(verify.headers.get('set-cookie')).toBeNull();
+    expect(querySync('SELECT COUNT(*) AS n FROM sessions').rows[0].n).toBe(0);
+  });
+
+  it('redeeming an invitation settles that address\'s queued request', async () => {
+    const { createInvitation } = await import('../db/invitations.js');
+    querySync("INSERT INTO organizations (id, name, slug) VALUES (7, 'Lab', 'lab')");
+    await requestLink('later@lab.org'); // asked first...
+    const { token } = createInvitation({   // ...and an admin invited them after
+      orgId: 7, email: 'later@lab.org', role: 'editor', ttlMs: 60_000,
+    });
+    await fetch(`${base}/api/auth/verify?invite=${encodeURIComponent(token)}`, { redirect: 'manual' });
+
+    expect(querySync('SELECT status, decision_note FROM access_requests').rows)
+      .toEqual([{ status: 'approved', decision_note: 'Invited directly' }]);
+  });
+});
+
+describe('request-link rate limiting (STH-35)', () => {
+  const LIMIT = 3;  // config.auth.requestLink.perEmailMax default
+  const IP_LIMIT = 20;
+
+  it('refuses a fourth attempt on one address with 429 + Retry-After', async () => {
+    seedMember('pi@lab.org');
+    for (let i = 0; i < LIMIT; i++) {
+      expect((await requestLink('pi@lab.org')).status).toBe(200);
+    }
+    expect(sendLoginLink).toHaveBeenCalledTimes(LIMIT);
+
+    const res = await requestLink('pi@lab.org');
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await res.json()).error).toMatch(/too many sign-in attempts/i);
+    // The refusal is real: no fourth mail went out.
+    expect(sendLoginLink).toHaveBeenCalledTimes(LIMIT);
+  });
+
+  it('spends case and whitespace variants from the same budget', async () => {
+    seedMember('pi@lab.org');
+    await requestLink('pi@lab.org');
+    await requestLink('  PI@Lab.ORG  ');
+    await requestLink('Pi@LAB.org');
+    expect((await requestLink('pi@lab.org')).status).toBe(429);
+    expect(sendLoginLink).toHaveBeenCalledTimes(LIMIT);
+  });
+
+  it('exhausting one address leaves every other address alone', async () => {
+    seedMember('pi@lab.org');
+    seedMember('other@lab.org');
+    for (let i = 0; i <= LIMIT; i++) await requestLink('pi@lab.org');
+    expect((await requestLink('other@lab.org')).status).toBe(200);
+  });
+
+  it('throttles a stranger and a member identically', async () => {
+    // If the limit behaved differently for an unknown address, 429-vs-200
+    // would be an account oracle — the exact thing the uniform 200 avoids.
+    for (let i = 0; i < LIMIT; i++) await requestLink('stranger@evil.example');
+    const stranger = await requestLink('stranger@evil.example');
+
+    seedMember('pi@lab.org');
+    for (let i = 0; i < LIMIT; i++) await requestLink('pi@lab.org');
+    const member = await requestLink('pi@lab.org');
+
+    expect(stranger.status).toBe(member.status);
+    expect(await stranger.json()).toEqual(await member.json());
+    // ...and the queue stopped growing when the budget ran out.
+    expect(querySync('SELECT request_count FROM access_requests').rows)
+      .toEqual([{ request_count: LIMIT }]);
+  });
+
+  it('audits a tripped limit once per window, not once per attempt', async () => {
+    for (let i = 0; i < LIMIT + 3; i++) await requestLink('stranger@evil.example');
+    expect(querySync("SELECT COUNT(*) AS n FROM auth_events WHERE type = 'access.throttled'")
+      .rows[0].n).toBe(1);
+  });
+
+  it('counts malformed attempts too, so 400s are not a free channel', async () => {
+    for (let i = 0; i < IP_LIMIT; i++) {
+      expect((await requestLink('not-an-email')).status).toBe(400);
+    }
+    // The IP budget is spent on garbage — the next well-formed attempt is
+    // refused before it can reach the mailer.
+    seedMember('pi@lab.org');
+    const res = await requestLink('pi@lab.org');
+    expect(res.status).toBe(429);
+    expect(sendLoginLink).not.toHaveBeenCalled();
+  });
+
+  it('caps one client across many different addresses', async () => {
+    for (let i = 0; i < IP_LIMIT; i++) {
+      expect((await requestLink(`user${i}@lab.org`)).status).toBe(200);
+    }
+    // Per-email budgets are all untouched; it is the per-IP cap that bites.
+    const res = await requestLink('yet-another@lab.org');
+    expect(res.status).toBe(429);
+    expect(querySync('SELECT COUNT(*) AS n FROM access_requests').rows[0].n).toBe(IP_LIMIT);
   });
 });
 

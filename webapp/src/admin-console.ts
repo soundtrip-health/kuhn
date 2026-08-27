@@ -9,8 +9,24 @@
 // platform flag is NOT a membership: creating an org for someone else leaves
 // the caller with no access to it (member:false), which is why the console
 // never switches the workspace into an org it creates.
+//
+// It also owns the access-request queue (STH-35). That lives here rather than
+// in org-admin.ts because a stranger who asked for access belongs to no org
+// yet — deciding who gets in at all is a platform call, not an org owner's.
 
-import { adminCreateOrg, adminListOrgs, adminUpdateOrg, type AdminOrg } from './api';
+import {
+  adminApproveAccessRequest,
+  adminCreateOrg,
+  adminDenyAccessRequest,
+  adminJoinOrg,
+  adminListAccessRequests,
+  adminListOrgs,
+  adminUpdateOrg,
+  type AccessRequest,
+  type AdminOrg,
+  type Role,
+} from './api';
+import * as workspace from './workspace';
 import { trapFocus } from './a11y';
 import { icon } from './icons';
 import { currentUser } from './login';
@@ -24,6 +40,13 @@ let loading = false;
 /** Inline refusals (load failures, rename/suspend errors). */
 let listError: string | null = null;
 let createError: string | null = null;
+
+/** The pending access-request queue (STH-35) and its own inline refusal. */
+let requests: AccessRequest[] = [];
+let requestsLoading = false;
+let requestsError: string | null = null;
+/** Ids with a decision in flight — keeps a double-click from double-inviting. */
+const deciding = new Set<number>();
 
 const isSuperadmin = (): boolean => currentUser()?.is_superadmin === true;
 
@@ -60,11 +83,15 @@ export function openAdminConsole(): void {
   root.hidden = false;
 
   orgs = [];
+  requests = [];
   listError = null;
   createError = null;
+  requestsError = null;
+  deciding.clear();
 
   render();
   void reloadOrgs();
+  void reloadRequests();
 
   if (wasHidden) {
     releaseFocus?.();
@@ -94,7 +121,38 @@ async function reloadOrgs(): Promise<void> {
   render();
 }
 
+async function reloadRequests(): Promise<void> {
+  requestsLoading = requests.length === 0;
+  render();
+  try {
+    requests = await adminListAccessRequests('pending');
+    requestsError = null;
+  } catch (err) {
+    requestsError = (err as Error).message;
+  } finally {
+    requestsLoading = false;
+  }
+  render();
+}
+
 // ---- Actions --------------------------------------------------------------------
+
+/**
+ * Open an org from the console (STH-36): join as owner if not yet a member —
+ * the explicit, audited membership the platform-flag invariant requires —
+ * then switch the workspace into it and close the console.
+ */
+async function openOrg(org: AdminOrg): Promise<void> {
+  try {
+    const { joined, role } = await adminJoinOrg(org.id);
+    await workspace.switchToJoinedOrg(org.id);
+    closeAdminConsole();
+    toast(joined ? `Joined ${org.name} as owner` : `Switched to ${org.name} (${role})`);
+  } catch (err) {
+    listError = `Could not open ${org.name}: ${(err as Error).message}`;
+    render();
+  }
+}
 
 async function renameOrg(org: AdminOrg): Promise<void> {
   // Native prompt/confirm, same accessibility rationale as org-admin.ts
@@ -159,6 +217,49 @@ async function createOrgFromForm(name: string, ownerEmail: string): Promise<bool
   return true;
 }
 
+/**
+ * Approve: mint an invitation to the chosen org+role. The server does the
+ * real work (and the real refusing) — this only reports the outcome and drops
+ * the settled row out of the pending queue.
+ */
+async function approveRequest(request: AccessRequest, orgId: number, role: Role): Promise<void> {
+  if (deciding.has(request.id)) return;
+  deciding.add(request.id);
+  render();
+  try {
+    await adminApproveAccessRequest(request.id, { orgId, role });
+    requests = requests.filter((r) => r.id !== request.id);
+    requestsError = null;
+    const org = orgs.find((o) => o.id === orgId);
+    toast(`Invited ${request.email} to ${org?.name ?? 'the organization'} as ${role}`);
+  } catch (err) {
+    requestsError = (err as Error).message;
+  } finally {
+    deciding.delete(request.id);
+  }
+  render();
+}
+
+async function denyRequest(request: AccessRequest): Promise<void> {
+  if (deciding.has(request.id)) return;
+  // Native confirm/prompt, same documented exception as renameOrg above.
+  if (!window.confirm(`Deny access for ${request.email}? They are not notified.`)) return;
+  const note = window.prompt('Reason (optional, for the record):', '') ?? '';
+  deciding.add(request.id);
+  render();
+  try {
+    await adminDenyAccessRequest(request.id, note.trim() || undefined);
+    requests = requests.filter((r) => r.id !== request.id);
+    requestsError = null;
+    toast(`Denied ${request.email}`);
+  } catch (err) {
+    requestsError = (err as Error).message;
+  } finally {
+    deciding.delete(request.id);
+  }
+  render();
+}
+
 // ---- Render ----------------------------------------------------------------------
 
 function formatDate(iso: string): string {
@@ -216,6 +317,13 @@ function orgsTable(): HTMLElement {
 
     const actions = document.createElement('td');
     actions.className = 'admin-row-actions';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'btn btn-quiet btn-sm';
+    open.textContent = 'Open';
+    open.title = 'Switch the workspace into this org (joins you as owner if you are not yet a member)';
+    open.setAttribute('aria-label', `Open ${org.name}`);
+    open.addEventListener('click', () => void openOrg(org));
     const rename = document.createElement('button');
     rename.type = 'button';
     rename.className = 'btn btn-quiet btn-sm';
@@ -233,9 +341,108 @@ function orgsTable(): HTMLElement {
     toggle.addEventListener('click', () =>
       void setOrgStatus(org, org.status === 'suspended' ? 'active' : 'suspended'),
     );
-    actions.append(rename, toggle);
+    actions.append(open, rename, toggle);
 
     tr.append(who, status, members, created, actions);
+    body.append(tr);
+  }
+  table.append(body);
+  return table;
+}
+
+/**
+ * One pending request per row: who asked, what they said about themselves,
+ * and the two choices that turn it into an invitation. Approving REQUIRES
+ * picking an org — there is no default landing place, and inventing one is
+ * how people end up somewhere they should not be.
+ */
+function requestsTable(): HTMLElement {
+  const table = document.createElement('table');
+  table.className = 'admin-table';
+  table.innerHTML =
+    '<thead><tr><th scope="col">Requester</th><th scope="col">Asked</th>' +
+    '<th scope="col">Invite to</th><th></th></tr></thead>';
+  const body = document.createElement('tbody');
+  const active = orgs.filter((o) => o.status === 'active');
+
+  for (const request of requests) {
+    const tr = document.createElement('tr');
+    const busy = deciding.has(request.id);
+
+    const who = document.createElement('td');
+    const email = document.createElement('div');
+    email.className = 'admin-member-name';
+    email.textContent = request.email;
+    who.append(email);
+    if (request.note) {
+      const note = document.createElement('div');
+      note.className = 'admin-request-note';
+      note.textContent = request.note;
+      who.append(note);
+    }
+
+    const asked = document.createElement('td');
+    asked.className = 'admin-member-email';
+    asked.textContent = request.request_count > 1
+      ? `${formatDate(request.last_requested_at)} (×${request.request_count})`
+      : formatDate(request.last_requested_at);
+
+    const target = document.createElement('td');
+    target.className = 'admin-request-target';
+    const org = document.createElement('select');
+    org.className = 'pb-select';
+    org.setAttribute('aria-label', `Organization to invite ${request.email} to`);
+    org.disabled = busy || active.length === 0;
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = active.length ? 'Choose…' : 'No active organizations';
+    org.append(placeholder);
+    for (const o of active) {
+      const option = document.createElement('option');
+      option.value = String(o.id);
+      option.textContent = o.name;
+      org.append(option);
+    }
+    const role = document.createElement('select');
+    role.className = 'pb-select';
+    role.setAttribute('aria-label', `Role for ${request.email}`);
+    role.disabled = busy;
+    for (const r of ['viewer', 'editor', 'owner'] as Role[]) {
+      const option = document.createElement('option');
+      option.value = r;
+      option.textContent = r;
+      if (r === 'editor') option.selected = true; // the ordinary case
+      role.append(option);
+    }
+    target.append(org, role);
+
+    const actions = document.createElement('td');
+    actions.className = 'admin-row-actions';
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'btn btn-accent btn-sm';
+    approve.textContent = busy ? 'Working…' : 'Approve & invite';
+    approve.disabled = busy;
+    approve.setAttribute('aria-label', `Approve and invite ${request.email}`);
+    approve.addEventListener('click', () => {
+      if (!org.value) {
+        requestsError = `Choose an organization to invite ${request.email} to.`;
+        render();
+        org.focus();
+        return;
+      }
+      void approveRequest(request, Number(org.value), role.value as Role);
+    });
+    const deny = document.createElement('button');
+    deny.type = 'button';
+    deny.className = 'btn btn-quiet btn-sm';
+    deny.textContent = 'Deny';
+    deny.disabled = busy;
+    deny.setAttribute('aria-label', `Deny access for ${request.email}`);
+    deny.addEventListener('click', () => void denyRequest(request));
+    actions.append(approve, deny);
+
+    tr.append(who, asked, target, actions);
     body.append(tr);
   }
   table.append(body);
@@ -308,6 +515,21 @@ function render(): void {
     body.append(emptyRow('No organizations yet.'));
   } else if (orgs.length > 0) {
     body.append(orgsTable());
+  }
+
+  const queueTitle = document.createElement('div');
+  queueTitle.className = 'admin-section-title';
+  queueTitle.textContent = requests.length
+    ? `Access requests (${requests.length})`
+    : 'Access requests';
+  body.append(queueTitle);
+  if (requestsError) body.append(inlineError(requestsError));
+  if (requestsLoading) {
+    body.append(emptyRow('Loading access requests…'));
+  } else if (requests.length === 0) {
+    body.append(emptyRow('No one is waiting for access.'));
+  } else {
+    body.append(requestsTable());
   }
 
   const title = document.createElement('div');

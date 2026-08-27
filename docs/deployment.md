@@ -85,10 +85,16 @@ KUHN_SUPERADMIN_EMAILS=you@example.com
 # Optional: how long org-invitation links stay valid (default 7 days).
 # KUHN_INVITE_TTL_MS=604800000
 
-# Email delivery for sign-in links. Required for a shared/production magic-link
-# deployment. If unset, raw login/invitation links are printed to the server console;
-# that fallback is development-only (see "Inviting users" below).
-KUHN_SMTP_URL=smtps://user:pass@host:465
+# Optional: sign-in form rate limits (see "Rate limits on the sign-in form").
+# Defaults are 3 attempts per address per 15 min, 20 per client IP per hour.
+# KUHN_LOGIN_MAX_PER_EMAIL=3
+# KUHN_LOGIN_EMAIL_WINDOW_MS=900000
+# KUHN_LOGIN_MAX_PER_IP=20
+# KUHN_LOGIN_IP_WINDOW_MS=3600000
+
+# Email delivery for sign-in links. If unset, links are printed to the server
+# console instead (see "Inviting users" below).
+# KUHN_SMTP_URL=smtps://user:pass@host:465
 
 # Data root: SQLite DB and uploaded project files. Defaults to ./data in the
 # repo. Point it at backed-up, access-controlled storage in production.
@@ -134,13 +140,73 @@ ingress:
 
 ## Authentication and inviting users
 
-`KUHN_AUTH_MODE=magic-link` enables passwordless email login. A visitor
-enters their email address on the sign-in screen and receives a single-use
-link (15-minute expiry). Signing in creates the user but grants **no
-organization membership** — an uninvited user lands on an empty workspace
-that tells them to ask their admin for an invitation.
+`KUHN_AUTH_MODE=magic-link` enables passwordless email login. The install is
+**invite-only** (STH-35): there is no self-registration, because agent runs
+and sandboxed execution cost real money and anyone who can reach the login
+box would otherwise be able to spend it.
 
-Membership is invitation-only (epic 011):
+One form handles everyone. A visitor enters their email address on the
+sign-in screen and always sees the same confirmation — the response never
+reveals whether that address has an account — but three different things can
+land in the mailbox:
+
+| The address | What is sent |
+| --- | --- |
+| Belongs to an organization (or is a super-admin) | A single-use sign-in link, 15-minute expiry |
+| Has a pending, unredeemed invitation | That invitation, re-issued (the older link is revoked) |
+| Anything else | "Your access request is queued" — no link, and **no account is created** |
+
+Queued requests appear in the **platform console** (breadcrumb org menu,
+super-admins only). Approving one asks for an organization and a role and
+sends an ordinary invitation; denying one settles it silently — the requester
+is not notified, so the login box cannot be used to probe which addresses an
+administrator recognizes. An owner who invites the address directly settles
+its queued request too.
+
+Eligibility is re-checked when the link is clicked, not just when it is
+mailed: if the last membership behind an account is removed while a link is
+in flight, the link is dead on arrival (`?login=no-access`).
+
+### Rate limits on the sign-in form
+
+`POST /api/auth/request-link` is the only unauthenticated endpoint that sends
+mail and writes rows, so it carries a budget. Over-budget attempts get
+`429` with a `Retry-After` header — keyed on request volume, never on whether
+the address exists, so the refusal discloses no more than the uniform `200`
+it replaces.
+
+| Env var | Default | Limits |
+| --- | --- | --- |
+| `KUHN_LOGIN_MAX_PER_EMAIL` | `3` | Attempts naming one address |
+| `KUHN_LOGIN_EMAIL_WINDOW_MS` | `900000` (15 min) | …per this window |
+| `KUHN_LOGIN_MAX_PER_IP` | `20` | Attempts from one client, any address |
+| `KUHN_LOGIN_IP_WINDOW_MS` | `3600000` (60 min) | …per this window |
+
+The two do different jobs, and it is worth knowing which one you are relying
+on:
+
+- **Per-email is the load-bearing limit.** It is keyed on the address being
+  mailed, so nothing the sender controls can sidestep it. This is what stops
+  the form being used to flood someone's inbox.
+- **Per-IP is best-effort.** `req.ip` is derived from `X-Forwarded-For`
+  because the backend runs with Express `trust proxy` enabled (it has to, to
+  mint links on the public hostname). Proxies generally *append* to that
+  header rather than replace it, so a client that sends its own
+  `X-Forwarded-For` can rotate the key and get a fresh budget. Treat the
+  per-IP cap as a guard against noise and accidents, not against a determined
+  attacker, and size it generously — an entire institution can share one NAT
+  address.
+
+Malformed submissions count against the per-IP budget too, so the `400` path
+is not a free channel. Limits are held in memory, per process: they reset on
+restart, and an install running more than one backend process would give each
+its own budget.
+
+The first refusal in each window is recorded as an `access.throttled` row in
+`auth_events`; the rest of that window is not, so a sustained flood leaves one
+audit row per offender per window rather than one per attempt.
+
+Membership itself is invitation-only (epic 011):
 
 - A **super-admin** (`KUHN_SUPERADMIN_EMAILS`) creates organizations from the
   admin console, naming a first admin by email — an existing user becomes
@@ -155,6 +221,7 @@ backend log instead of emailed:
 ```
 [auth] Magic link for alice@example.com: https://kuhn.example.com/api/auth/verify?token=...
 [auth] Invitation to Example Lab for alice@example.com: https://kuhn.example.com/api/auth/verify?invite=...
+[auth] Access request queued for stranger@example.com (no link sent — invite-only)
 ```
 
 This fallback is for local development only. It exposes live authentication secrets to
@@ -238,3 +305,28 @@ assignment is deliberately conservative and needs one operator step:
   invitations are the only door in (see "Authentication and inviting users").
 - New optional env vars: `KUHN_SUPERADMIN_EMAILS` (no production default) and
   `KUHN_INVITE_TTL_MS` (invitation link lifetime, default 7 days).
+
+### Upgrading an install that predates invite-only sign-in (STH-35)
+
+Removing self-registration is a **breaking change for accounts that never
+joined an org** — the ones that used to sign in and land on an empty
+workspace. They now get an access request instead of a link. Nothing is
+deleted; they simply cannot sign in until someone invites them.
+
+No migration runs, so check before you upgrade:
+
+```sql
+SELECT u.email FROM users u
+WHERE u.is_superadmin = 0
+  AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id);
+```
+
+Anyone listed who should keep access needs an invitation (from an org owner,
+or by approving their request in the platform console once they ask again).
+Confirm `KUHN_SUPERADMIN_EMAILS` is set to a real operator address first:
+super-admins are exempt from the membership requirement precisely so that
+tightening this rule cannot lock you out of your own install.
+
+The sign-in form is also rate limited from this release on. The defaults suit
+a lab-sized install; raise `KUHN_LOGIN_MAX_PER_IP` if your users share one
+outbound address and report being refused.

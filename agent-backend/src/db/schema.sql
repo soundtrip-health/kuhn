@@ -544,3 +544,32 @@ CREATE TABLE IF NOT EXISTS auth_events (
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_auth_events_org ON auth_events(org_id, created_at DESC);
+
+-- ============================================================
+-- Access requests (STH-35): the queue that replaced self-registration.
+-- Sign-in is invite-only, so an email with no membership and no pending
+-- invitation lands here instead of get-or-creating a user. Holds no secret
+-- and grants nothing — approval mints an ordinary invitation, and the
+-- invitation remains the only door into an org.
+--
+-- The partial unique index keeps at most one PENDING row per email: asking
+-- again bumps request_count/last_requested_at rather than filling the queue
+-- with duplicates. Deciding a row frees the email to request again later.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS access_requests (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  email             TEXT NOT NULL,           -- normalized lower-case
+  note              TEXT,                    -- optional self-introduction
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
+  request_count     INTEGER NOT NULL DEFAULT 1,
+  last_requested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  decided_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at        TEXT,
+  decision_note     TEXT,
+  invitation_id     INTEGER REFERENCES invitations(id) ON DELETE SET NULL,  -- set on approve
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_access_requests_pending
+  ON access_requests(email) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_access_requests_status
+  ON access_requests(status, last_requested_at DESC);
