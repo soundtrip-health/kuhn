@@ -153,3 +153,7 @@ Environment variables (see `src/config.js`; `.env` supported):
 | `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `ghcr.io/typst/typst:latest` / `pandoc/core:latest` |
 | `SANDBOX_TIMEOUT_MS` / `SANDBOX_CPUS` / `SANDBOX_MEMORY` | `60000` / `1` / `512m` |
 | `SANDBOX_MAX_OUTPUT_BYTES` | `33554432` (32 MB) |
+| `SANDBOX_R_IMAGE` | `kuhn/r-analysis:latest` (Kuhn-built — `docker build docker/r-analysis`; issue #68b) |
+| `SCRIPT_TIMEOUT_MS` / `SCRIPT_CPUS` / `SCRIPT_MEMORY` | `300000` / `2` / `2g` (run_script limits) |
+| `SCRIPT_MAX_OUTPUT_BYTES` / `SCRIPT_MAX_CONCURRENT` / `SCRIPT_MAX_OUTPUT_FILES` | `67108864` (64 MB) / `2` / `50` |
+| `KUHN_SHARED_SCRIPTS` / `SCRIPTS_MAX_BYTES` | repo `shared-scripts/` / `262144` (script catalog root & size cap) |

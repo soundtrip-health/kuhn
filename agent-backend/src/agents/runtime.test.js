@@ -67,6 +67,24 @@ vi.mock('../db/projects.js', () => ({
 // Same reason as file-activity.js: the real module imports db.js. The SQL
 // substance is covered in db/org-agent-prompts.test.js.
 vi.mock('../db/org-agent-prompts.js', () => ({ getOrgAgentPrompt: vi.fn(() => null) }));
+// Issue #68b: the script library SQL is covered in db/org-scripts.test.js /
+// db/script-runs.test.js; the sandbox mechanics in sandbox-script.test.js.
+vi.mock('../db/org-scripts.js', () => ({
+  getOrgScript: vi.fn(() => null),
+  getScriptVersion: vi.fn(() => null),
+  listOrgScripts: vi.fn(() => []),
+}));
+vi.mock('../db/script-runs.js', () => ({ recordScriptRun: vi.fn() }));
+vi.mock('../sandbox.js', () => {
+  class SandboxError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.name = 'SandboxError';
+      this.code = code;
+    }
+  }
+  return { SandboxError, RUNNABLE_LANGUAGES: ['r'], runScriptSandboxed: vi.fn() };
+});
 // Like file-activity.js above: the real module imports db.js, which needs a
 // real config.db.path at import time (story 006-003).
 vi.mock('../db/org-documents.js', () => ({
@@ -120,6 +138,9 @@ import { listThreads, addReply, setResolved } from '../db/comments.js';
 import { subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
+import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-scripts.js';
+import { recordScriptRun } from '../db/script-runs.js';
+import { SandboxError, runScriptSandboxed } from '../sandbox.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { updateProjectConfig } from '../db/projects.js';
@@ -1370,5 +1391,121 @@ describe('move_file tool (story 012-002)', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/a\.md could NOT be restored and is now at dir\/a\.md/);
+  });
+});
+
+describe('run_script tools (issue #68b)', () => {
+  const ANALYST = {
+    slug: 'analyst', name: 'Analyst',
+    system_prompt: 'You are the analyst.',
+    tools: ['file_read', 'file_write', 'run_script'],
+  };
+
+  async function scriptTools() {
+    getAgentWithTools.mockResolvedValue(ANALYST);
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    await collect({ role: 'analyst', projectId: 9, input: 'go' });
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    return {
+      list: tools.find((t) => t.name === 'list_scripts'),
+      run: tools.find((t) => t.name === 'run_script'),
+    };
+  }
+
+  it('is granted only through the run_script slug', async () => {
+    getAgentWithTools.mockResolvedValue({ ...ANALYST, tools: ['file_read'] });
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    await collect({ role: 'analyst', projectId: 9, input: 'go' });
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    expect(tools.some((t) => t.name === 'run_script' || t.name === 'list_scripts')).toBe(false);
+  });
+
+  it('list_scripts renders the active org library with args contracts', async () => {
+    listOrgScripts.mockReturnValue([{
+      slug: 'gamm-fit', title: 'GAMM fit', language: 'r', current_version: 2,
+      description: 'Smooth trends',
+      args_json: JSON.stringify([{ name: '--input', required: true, description: 'CSV path' }]),
+    }]);
+    const { list } = await scriptTools();
+    const result = await list.handler({});
+    expect(listOrgScripts).toHaveBeenCalledWith(3, { status: 'active' }); // org from the project
+    expect(result.content[0].text).toContain('gamm-fit (v2, r)');
+    expect(result.content[0].text).toContain('--input (required) — CSV path');
+    listOrgScripts.mockReturnValue([]);
+  });
+
+  it('runs an org script, copies outputs through storage, and records provenance', async () => {
+    getOrgScript.mockReturnValue({ id: 5, slug: 'gamm-fit', status: 'active', language: 'r' });
+    getScriptVersion.mockReturnValue({ version: 2, entrypoint: 'fit.R', content: 'library(mgcv)' });
+    runScriptSandboxed.mockResolvedValue({
+      exitCode: 0, stdout: 'fitted', stderr: '', truncated: false, durationMs: 1500,
+      outputs: [{ path: 'summary.csv', buffer: Buffer.from('a,b') }],
+      skippedOutputs: 0,
+    });
+
+    const { run } = await scriptTools();
+    const result = await run.handler({ script: 'gamm-fit', args: ['--input', 'data.csv'] });
+
+    expect(runScriptSandboxed).toHaveBeenCalledWith(9, {
+      language: 'r', entrypoint: 'fit.R', scriptContent: 'library(mgcv)',
+      args: ['--input', 'data.csv'],
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('exit code 0');
+    expect(result.content[0].text).toContain('analyst/output/run-42-1/summary.csv');
+    expect(writeProjectFile).toHaveBeenCalledWith(9, 'analyst/output/run-42-1/summary.csv', Buffer.from('a,b'));
+    // Copied outputs land in the persisted activity log (real project-events hub)
+    expect(recordFileEvent).toHaveBeenCalledWith(9, expect.objectContaining({
+      path: 'analyst/output/run-42-1/summary.csv', kind: 'create', agentSlug: 'analyst',
+    }));
+    expect(recordScriptRun).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 9, jobId: 42, orgScriptId: 5, scriptVersion: 2, status: 'ok',
+      exitCode: 0, outputDir: 'analyst/output/run-42-1',
+    }));
+    getOrgScript.mockReturnValue(null);
+    getScriptVersion.mockReturnValue(null);
+  });
+
+  it('returns nonzero exits as isError with the stderr tail and records status error', async () => {
+    runScriptSandboxed.mockResolvedValue({
+      exitCode: 1, stdout: '', stderr: 'Error: object not found', truncated: false,
+      durationMs: 300, outputs: [], skippedOutputs: 0,
+    });
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/fit.R', args: [] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('exit code 1');
+    expect(result.content[0].text).toContain('object not found');
+    expect(recordScriptRun).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'error', scriptPath: 'analyst/fit.R', outputDir: null,
+    }));
+  });
+
+  it('maps sandbox timeouts to a clean error and records status timeout', async () => {
+    runScriptSandboxed.mockRejectedValue(new SandboxError('timeout', 'Sandbox timed out after 300000ms'));
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/fit.R', args: [] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('timeout');
+    expect(recordScriptRun).toHaveBeenCalledWith(expect.objectContaining({ status: 'timeout' }));
+    runScriptSandboxed.mockReset();
+  });
+
+  it('refuses python paths, unknown slugs, and ambiguous input', async () => {
+    const { run } = await scriptTools();
+
+    const py = await run.handler({ path: 'analyst/fit.py', args: [] });
+    expect(py.isError).toBe(true);
+    expect(py.content[0].text).toContain('R only');
+
+    const unknown = await run.handler({ script: 'nope', args: [] });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain('list_scripts');
+
+    const both = await run.handler({ script: 'a', path: 'b.R', args: [] });
+    expect(both.isError).toBe(true);
+    const neither = await run.handler({ args: [] });
+    expect(neither.isError).toBe(true);
+    expect(runScriptSandboxed).not.toHaveBeenCalled();
   });
 });

@@ -12,17 +12,7 @@ The PM configures which workflow to use at project initialization.
 
 ### Direct editing (default)
 
-Use `scripts/read_sections.py` to decompose and reassemble the document:
-
-```bash
-# 1. Decompose into per-section files
-python3 scripts/read_sections.py draft/main.md --split /tmp/sections
-
-# 2. Read and edit only the sections you need in /tmp/sections/
-
-# 3. Reassemble back into the primary document
-python3 scripts/read_sections.py draft/main.md --assemble /tmp/sections
-```
+Edit `draft/main.md` with the file tools: `read_file` to load it (or the sections you need), `edit_file` for targeted string replacements, `write_file` only when replacing the whole document is genuinely warranted.
 
 **Edit surgically.** When asked for a small change (a few words, one sentence), change exactly that and reproduce every other sentence of the section byte-for-byte — do not re-flow paragraphs, re-hyphenate, or "improve" untouched prose in passing. The PI reviews your edits as diffs; every sentence you needlessly rewrite is noise they must rule out as unintended drift.
 
@@ -32,28 +22,9 @@ Save revised sections to `draft/edits.md` as a staging area. The PI reviews and 
 
 ## Context Management
 
-- **Section-based editing** for focused work: use `scripts/read_sections.py` to get the outline, extract specific sections, audit TODOs and citations.
+- **Section-based editing** for focused work: `search_files` for the heading locates a section; read just that span rather than the whole document. Audit TODOs with `search_files` for `TODO`.
 - **Full document read** is appropriate for holistic tasks: finding gaps, checking internal consistency, overall assessment.
-- If completing a task requires sections the user has not specified, generate the outline to identify candidates, then suggest them to the user rather than reading the whole document.
-
-### Section parser reference
-
-```bash
-# Print full outline
-python3 scripts/read_sections.py draft/main.md
-
-# Extract specific sections (by number or title)
-python3 scripts/read_sections.py draft/main.md 3.4 4.2
-python3 scripts/read_sections.py draft/main.md "Methods"
-
-# Export all TODOs
-python3 scripts/read_sections.py draft/main.md --todos
-
-# Citation audit (produces CSV + bibliography without loading full text)
-python3 scripts/read_sections.py draft/main.md --citations --bib draft/references.bib
-```
-
-Section arguments starting with a digit are matched by number; all others are matched by title (case-insensitive partial match), which allows extracting unnumbered headings such as "Executive Summary".
+- If completing a task requires sections the user has not specified, skim the headings to identify candidates, then suggest them to the user rather than reading the whole document.
 
 ## What You Produce
 

@@ -27,7 +27,13 @@ as a Cloudflare Tunnel.
 
   ```bash
   docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest
+  docker build -t kuhn/r-analysis:latest docker/r-analysis   # analyst R runtime (issue #68b) — built, not pulled
   ```
+
+  The R image is Kuhn-built because the sandbox runs with `--network none`:
+  every package the analyst can use is baked into `docker/r-analysis/Dockerfile`
+  (rocker/r-ver + mgcv/lme4/tidyverse/etc., ~2 GB). Adding a package = editing
+  that Dockerfile and rebuilding; there are no runtime installs.
 
 - An **`ANTHROPIC_API_KEY`** with sufficient quota for agent runs.
 - A public hostname with TLS. The examples below use a Cloudflare Tunnel. The current

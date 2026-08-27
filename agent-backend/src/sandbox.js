@@ -6,8 +6,8 @@
 // out of the sandbox as untrusted.
 
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 
 import { config } from './config.js';
 import { resolveSafe } from './storage.js';
@@ -20,15 +20,25 @@ export class SandboxError extends Error {
   }
 }
 
-export function buildDockerArgs({ image, cmd, projectDir, outDir }) {
+// Every value here is composed server-side (ADR 002 §6: no caller-selected
+// images, mounts, or argv reach docker); `--network none` is unconditional.
+export function buildDockerArgs({
+  image, cmd, projectDir, outDir,
+  extraMounts = [], env = {},
+  cpus = config.sandbox.cpus, memory = config.sandbox.memory,
+}) {
   return [
     'run', '--rm',
     '--network', 'none',
-    '--cpus', config.sandbox.cpus,
-    '--memory', config.sandbox.memory,
+    '--cpus', cpus,
+    '--memory', memory,
     '--pids-limit', '256',
     '-v', `${projectDir}:/work:ro`,
     ...(outDir ? ['-v', `${outDir}:/out`] : []),
+    ...extraMounts.flatMap(({ hostDir, containerDir, readonly = true }) => [
+      '-v', `${hostDir}:${containerDir}${readonly ? ':ro' : ''}`,
+    ]),
+    ...Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
     '-w', '/work',
     image,
     ...cmd,
@@ -46,11 +56,12 @@ export function buildDockerArgs({ image, cmd, projectDir, outDir }) {
 export function runSandboxed(opts, spawnImpl = spawn) {
   const {
     image, cmd, projectDir, outDir = null,
+    extraMounts, env, cpus, memory,
     timeoutMs = config.sandbox.timeoutMs,
     maxOutputBytes = config.sandbox.maxOutputBytes,
   } = opts;
 
-  const args = buildDockerArgs({ image, cmd, projectDir, outDir });
+  const args = buildDockerArgs({ image, cmd, projectDir, outDir, extraMounts, env, cpus, memory });
 
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawnImpl('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -169,4 +180,118 @@ export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [],
     makeCmd: (src, out) => [src, ...extraArgs, '-o', out],
     outputName,
   }, spawnImpl);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #68b: analyst script execution. Same wrapper, same invariants — no
+// network, project read-only, /out the only writable mount — plus a second
+// read-only mount, /script, when the code comes from the org script library
+// (materialized to a temp dir) rather than from the project itself. The
+// interpreter argv is keyed on the script's language server-side; the caller
+// never chooses the image or the command.
+// ---------------------------------------------------------------------------
+
+const INTERPRETERS = {
+  r: { image: () => config.sandbox.rscriptImage, argv: (entry) => ['Rscript', entry] },
+};
+
+/** Languages runScriptSandboxed can execute in this deploy. */
+export const RUNNABLE_LANGUAGES = Object.keys(INTERPRETERS);
+
+async function collectOutputs(outDir) {
+  const { maxOutputFiles, maxOutputBytes } = config.sandbox.script;
+  const outputs = [];
+  let skipped = 0;
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(abs);
+      } else if (entry.isFile()) {
+        const info = await stat(abs);
+        if (outputs.length >= maxOutputFiles || info.size > maxOutputBytes) {
+          skipped += 1;
+          continue;
+        }
+        outputs.push({ path: relative(outDir, abs), buffer: await readFile(abs) });
+      }
+    }
+  };
+  await walk(outDir);
+  return { outputs, skipped };
+}
+
+/**
+ * Run one analyst script in the sandbox. Exactly one of `scriptContent`
+ * (org-library code, materialized into a read-only /script mount) or
+ * `scriptRelPath` (a project file, run in place from /work) is given.
+ *
+ * Unlike the render helpers, a nonzero exit does NOT throw — the caller wants
+ * the stderr to hand back to the agent. Timeouts and docker failures still
+ * throw SandboxError.
+ *
+ * @returns {Promise<{exitCode, stdout, stderr, truncated,
+ *   outputs: Array<{path, buffer}>, skippedOutputs: number, durationMs: number}>}
+ */
+export async function runScriptSandboxed(projectId, {
+  language, entrypoint, args = [], scriptContent = null, scriptRelPath = null,
+}, spawnImpl) {
+  const interpreter = INTERPRETERS[language];
+  if (!interpreter) {
+    throw new SandboxError('failed', `No sandbox runtime for language: ${language}`);
+  }
+
+  let root;
+  let sourceRel = null;
+  if (scriptRelPath != null) {
+    const resolved = await resolveSafe(projectId, scriptRelPath);
+    root = resolved.root;
+    await stat(resolved.abs).catch(() => {
+      throw new SandboxError('failed', `No such script file: ${scriptRelPath}`);
+    });
+    sourceRel = resolved.abs === root ? '.' : resolved.abs.slice(root.length + 1);
+  } else {
+    ({ root } = await resolveSafe(projectId, '.'));
+  }
+
+  // Same placement rationale as .render-tmp (macOS bind-mount shared paths).
+  const scriptTmpRoot = join(config.agent.projectsRoot, '.script-tmp');
+  await mkdir(scriptTmpRoot, { recursive: true });
+  const workDir = await mkdtemp(join(scriptTmpRoot, 'run-'));
+  const outDir = join(workDir, 'out');
+  await mkdir(outDir);
+  try {
+    const extraMounts = [];
+    let entryPath;
+    if (scriptContent != null) {
+      const scriptDir = join(workDir, 'script');
+      await mkdir(scriptDir);
+      await writeFile(join(scriptDir, entrypoint), scriptContent);
+      extraMounts.push({ hostDir: scriptDir, containerDir: '/script', readonly: true });
+      entryPath = `/script/${entrypoint}`;
+    } else {
+      entryPath = `/work/${sourceRel}`;
+    }
+
+    const limits = config.sandbox.script;
+    const started = Date.now();
+    const result = await runSandboxed({
+      image: interpreter.image(),
+      cmd: [...interpreter.argv(entryPath), ...args],
+      projectDir: root,
+      outDir,
+      extraMounts,
+      env: { OUT_DIR: '/out' },
+      cpus: limits.cpus,
+      memory: limits.memory,
+      timeoutMs: limits.timeoutMs,
+      maxOutputBytes: limits.maxOutputBytes,
+    }, spawnImpl);
+    const durationMs = Date.now() - started;
+
+    const { outputs, skipped } = await collectOutputs(outDir);
+    return { ...result, outputs, skippedOutputs: skipped, durationMs };
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
 }
