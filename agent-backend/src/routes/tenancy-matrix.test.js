@@ -121,7 +121,7 @@ beforeAll(async () => {
     './agent.js', './agent-prompts.js', './citations.js', './comments.js', './files.js',
     './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
-    './review-links.js',
+    './review-links.js', './scripts.js',
   ]) {
     app.use((await import(mod)).default);
   }
@@ -218,6 +218,9 @@ const ROUTES = [
   { scope: 'project', minRole: 'editor', method: 'PUT', path: `/api/projects/${PROJECT_A}/active-document`, req: () => ({ json: {} }), ok: { status: 400 } },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/projects/${PROJECT_A}/seed`, sse: true },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/projects/${PROJECT_A}/files/promote`, req: () => ({ json: { path: 'draft/main.md' } }), ok: { status: 202 } },
+  // Issue #68: the 400 is the route's own extension check (draft/main.md is
+  // not a promotable script), proving the guard let the request through.
+  { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/projects/${PROJECT_A}/files/promote-script`, req: () => ({ json: { path: 'draft/main.md' } }), ok: { status: 400 } },
   { scope: 'project', minRole: 'editor', method: 'POST', path: '/api/agent/task', req: () => ({ json: { role: 'writer', projectId: PROJECT_A, input: 'hi' } }), sse: true },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/agent/jobs/${JOB_A}/dispatch`, sse: true },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/agent/jobs/${JOB_A}/reply`, req: () => ({ json: { reply: 'x' } }), ok: { status: 409, error: 'no pending question for this job' } },
@@ -233,6 +236,9 @@ const ROUTES = [
   // Issue #67: every member may view prompts (the agents table is unseeded
   // here, so the list is just empty — the 200 proves the guard threshold).
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/agent-prompts`, ok: { status: 200 } },
+  // Issue #68: every member may browse the org script library.
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/scripts`, ok: { status: 200 } },
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/scripts/999`, ok: { status: 404, error: 'script not found' } },
 
   // -- org-scoped (editor writes) --------------------------------------------
   { scope: 'org', minRole: 'editor', method: 'POST', path: `/api/orgs/${ORG_A}/library/upload`, req: () => ({ form: smallUpload }), ok: { status: 201 } },
@@ -258,6 +264,16 @@ const ROUTES = [
   // Issue #67: owner-only addition writes. Unseeded agents table → the
   // route's own 404, distinct from the guard's non-leak body.
   { scope: 'org', minRole: 'owner', method: 'PUT', path: `/api/orgs/${ORG_A}/agent-prompts/analyst`, req: () => ({ json: { addition: 'x' } }), ok: { status: 404, error: 'agent not found' } },
+  // Issue #68: owner-only script-library writes and the review queue. The
+  // catalog is unseeded here, so at-threshold expectations are the routes'
+  // own post-guard refusals.
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/scripts/import`, req: () => ({ json: { scripts: ['r/none'] } }), ok: { status: 400 } },
+  { scope: 'org', minRole: 'owner', method: 'PATCH', path: `/api/orgs/${ORG_A}/scripts/999`, req: () => ({ json: { status: 'disabled' } }), ok: { status: 404, error: 'script not found' } },
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/scripts/reimport`, req: () => ({ json: { scripts: ['r/none'] } }), ok: { status: 404 } },
+  { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/script-promotions`, ok: { status: 200 } },
+  { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/script-promotions/999`, ok: { status: 404, error: 'script promotion not found' } },
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/script-promotions/999/approve`, req: () => ({ json: { expected_sha256: 'x' } }), ok: { status: 404, error: 'script promotion not found' } },
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/script-promotions/999/reject`, req: () => ({ json: {} }), ok: { status: 404, error: 'script promotion not found' } },
 ];
 
 const RANK = { viewer: 1, editor: 2, owner: 3 };

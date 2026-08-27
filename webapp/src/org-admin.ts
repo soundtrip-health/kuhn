@@ -13,21 +13,30 @@ import { marked } from 'marked';
 import {
   ApiError,
   approvePromotion,
+  approveScriptPromotion,
   createInvitation,
   fileBlobUrl,
   getOrgAgentPrompts,
   getOrgKnowledge,
+  getOrgScript,
+  getOrgScripts,
   getOrgSettings,
+  getScriptPromotion,
+  importCatalogScripts,
   listInvitations,
   listOrgMembers,
   listPromotions,
+  listScriptPromotions,
   putKnowledgeSelections,
   putOrgAgentPrompt,
   readTextFile,
+  reimportCatalogScripts,
   reimportKnowledgeItems,
   rejectPromotion,
+  rejectScriptPromotion,
   removeOrgMember,
   revokeInvitation,
+  setOrgScriptStatus,
   updateMemberRole,
   updateOrgSettings,
   type Invitation,
@@ -35,8 +44,11 @@ import {
   type OrgAgentPrompt,
   type OrgKnowledgeItem,
   type OrgMember,
+  type OrgScriptsPayload,
   type OrgSettings,
   type PromotionRequest,
+  type ScriptPromotion,
+  type ScriptVersionInfo,
   type Role,
 } from './api';
 import { trapFocus } from './a11y';
@@ -46,11 +58,11 @@ import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'agents';
+type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'agents';
 
-/** Owner-only tabs; non-owner members get the read-only Knowledge and Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'agents'];
-const MEMBER_TABS: Tab[] = ['knowledge', 'agents'];
+/** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
+const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -94,6 +106,21 @@ let knowledgeError: string | null = null;
 let knowledgeBusy = false;
 const expandedPackages = new Set<string>();
 let stopKnowledgeFeed: (() => void) | null = null;
+
+// Scripts tab (issue #68): the shared-script library + owner review queue.
+let scriptsData: OrgScriptsPayload | null = null;
+let scriptsLoading = false;
+let scriptsError: string | null = null;
+/** A library write (import/status/reimport/decision) is in flight. */
+let scriptsBusy = false;
+let scriptPromotions: ScriptPromotion[] = [];
+/** Expanded org script → its loaded content/versions. */
+let openScriptId: number | null = null;
+const scriptContents = new Map<number, { content: string; versions: ScriptVersionInfo[] }>();
+/** Expanded promotion request → its loaded review payload. */
+let openScriptReviewId: number | null = null;
+type ScriptReview = Awaited<ReturnType<typeof getScriptPromotion>>;
+const scriptReviews = new Map<number, ScriptReview>();
 
 // Agents tab (issue #67): base prompts + this org's additions.
 let agentPrompts: OrgAgentPrompt[] | null = null;
@@ -173,6 +200,14 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   agentPromptErrors = {};
   agentPromptBusy.clear();
   expandedBasePrompts.clear();
+  scriptsData = null;
+  scriptsError = null;
+  scriptsBusy = false;
+  scriptPromotions = [];
+  openScriptId = null;
+  scriptContents.clear();
+  openScriptReviewId = null;
+  scriptReviews.clear();
 
   render();
   if (owner) {
@@ -183,6 +218,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   }
   void reloadKnowledge();
   void reloadAgentPrompts();
+  void reloadScripts();
 
   // Live import status for the Knowledge tab: doc_status events land on the
   // shared org feed; a poll tick (feed down) refetches the merged state.
@@ -310,6 +346,27 @@ async function reloadKnowledge(): Promise<void> {
     knowledgeError = (err as Error).message;
   } finally {
     knowledgeLoading = false;
+  }
+  render();
+}
+
+async function reloadScripts(): Promise<void> {
+  const orgId = adminOrgId;
+  scriptsLoading = scriptsData === null;
+  render();
+  try {
+    const [payload, pending] = await Promise.all([
+      getOrgScripts(orgId),
+      workspace.isOwner() ? listScriptPromotions(orgId, 'pending') : Promise.resolve([]),
+    ]);
+    if (orgId !== adminOrgId) return;
+    scriptsData = payload;
+    scriptPromotions = pending;
+    scriptsError = null;
+  } catch (err) {
+    scriptsError = (err as Error).message;
+  } finally {
+    scriptsLoading = false;
   }
   render();
 }
@@ -1182,6 +1239,347 @@ function knowledgeTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Scripts tab (issue #68) -----------------------------------------------------
+
+/**
+ * Minimal LCS line diff for the promotion review pane — dependency-light by
+ * design (the webapp ships no diff library). Fine for the script sizes the
+ * backend caps at 256 KB; O(n·m) on line counts.
+ */
+function lineDiff(before: string, after: string): { type: 'ctx' | 'del' | 'add'; text: string }[] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  const m = a.length;
+  const n = b.length;
+  const lcs: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out: { type: 'ctx' | 'del' | 'add'; text: string }[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      out.push({ type: 'ctx', text: a[i] });
+      i++; j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push({ type: 'del', text: a[i++] });
+    } else {
+      out.push({ type: 'add', text: b[j++] });
+    }
+  }
+  while (i < m) out.push({ type: 'del', text: a[i++] });
+  while (j < n) out.push({ type: 'add', text: b[j++] });
+  return out;
+}
+
+function diffPane(before: string, after: string): HTMLElement {
+  const pre = document.createElement('pre');
+  pre.className = 'ap-prompt sc-diff';
+  for (const line of lineDiff(before, after)) {
+    const el = document.createElement('div');
+    el.className = `sc-diff-${line.type}`;
+    el.textContent = `${line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' '} ${line.text}`;
+    pre.append(el);
+  }
+  return pre;
+}
+
+/** Run a library write; failures toast, success reloads the merged state. */
+async function scriptAction(fn: () => Promise<unknown>, done?: string): Promise<void> {
+  scriptsBusy = true;
+  render();
+  try {
+    await fn();
+    if (done) toast(done);
+  } catch (err) {
+    toast((err as Error).message);
+  } finally {
+    scriptsBusy = false;
+  }
+  await reloadScripts();
+}
+
+const LANGUAGE_LABEL: Record<string, string> = { r: 'R', python: 'Python' };
+
+function scriptMetaChip(text: string): HTMLElement {
+  const el = document.createElement('span');
+  el.className = 'sc-chip';
+  el.textContent = text;
+  return el;
+}
+
+function scriptReviewBlock(request: ScriptPromotion): HTMLElement {
+  const block = document.createElement('div');
+  block.className = 'ap-card';
+
+  const head = document.createElement('div');
+  head.className = 'ap-head';
+  const name = document.createElement('span');
+  name.className = 'ap-name';
+  name.textContent = request.title ?? request.path.split('/').pop() ?? request.path;
+  head.append(name, scriptMetaChip(LANGUAGE_LABEL[request.language] ?? request.language));
+  if (request.target_script_slug) {
+    head.append(scriptMetaChip(`update of ${request.target_script_slug}`));
+  }
+  block.append(head);
+
+  const meta = document.createElement('div');
+  meta.className = 'admin-setting-hint';
+  const by = request.suggested_by_email ? ` by ${request.suggested_by_email}` : '';
+  meta.textContent = `${request.project_name} · ${request.path} — suggested ${formatDate(request.created_at)}${by}`;
+  block.append(meta);
+  if (request.note) {
+    const note = document.createElement('div');
+    note.className = 'admin-setting-hint';
+    note.textContent = `Note: ${request.note}`;
+    block.append(note);
+  }
+
+  const expanded = openScriptReviewId === request.id;
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'btn btn-ghost btn-sm ap-toggle';
+  toggle.textContent = expanded ? 'Hide code' : 'Review code';
+  toggle.addEventListener('click', () => {
+    openScriptReviewId = expanded ? null : request.id;
+    if (!expanded && !scriptReviews.has(request.id)) {
+      void getScriptPromotion(adminOrgId, request.id)
+        .then((review) => { scriptReviews.set(request.id, review); render(); })
+        .catch((err) => { toast((err as Error).message); });
+    }
+    render();
+  });
+  block.append(toggle);
+
+  if (expanded) {
+    const review = scriptReviews.get(request.id);
+    if (!review) {
+      block.append(emptyRow('Loading code…'));
+    } else if (review.content_error || review.content == null) {
+      block.append(inlineError(review.content_error ?? 'The file could not be read.'));
+    } else {
+      if (review.target_content != null) {
+        // Update proposal: show what would change against the current version.
+        block.append(diffPane(review.target_content, review.content));
+      } else {
+        const pre = document.createElement('pre');
+        pre.className = 'ap-prompt';
+        pre.textContent = review.content;
+        block.append(pre);
+      }
+
+      const controls = document.createElement('div');
+      controls.className = 'ap-controls';
+      let slugInput: HTMLInputElement | null = null;
+      if (!request.target_script_id) {
+        slugInput = document.createElement('input');
+        slugInput.className = 'pb-input sc-slug';
+        slugInput.setAttribute('aria-label', 'Script slug');
+        const stem = (request.path.split('/').pop() ?? '').replace(/\.[^.]+$/, '');
+        slugInput.value = stem.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+        controls.append(slugInput);
+      }
+      const approve = document.createElement('button');
+      approve.type = 'button';
+      approve.className = 'btn btn-ghost btn-sm';
+      approve.textContent = 'Approve';
+      approve.disabled = scriptsBusy;
+      approve.addEventListener('click', () => {
+        // The sha the owner just reviewed rides along; the backend 409s if
+        // the file changed since (and this row reverts to pending).
+        void scriptAction(
+          () => approveScriptPromotion(adminOrgId, request.id, review.sha256!, {
+            slug: slugInput?.value.trim() || undefined,
+          }),
+          'Script added to the library',
+        );
+      });
+      const reject = document.createElement('button');
+      reject.type = 'button';
+      reject.className = 'btn btn-ghost btn-sm';
+      reject.textContent = 'Reject';
+      reject.disabled = scriptsBusy;
+      reject.addEventListener('click', () => {
+        void scriptAction(() => rejectScriptPromotion(adminOrgId, request.id), 'Suggestion rejected');
+      });
+      controls.append(approve, reject);
+      block.append(controls);
+    }
+  }
+  return block;
+}
+
+function orgScriptBlock(script: OrgScriptsPayload['scripts'][number], owner: boolean): HTMLElement {
+  const block = document.createElement('div');
+  block.className = 'ap-card';
+
+  const head = document.createElement('div');
+  head.className = 'ap-head';
+  const name = document.createElement('span');
+  name.className = 'ap-name';
+  name.textContent = script.title;
+  head.append(name,
+    scriptMetaChip(script.slug),
+    scriptMetaChip(LANGUAGE_LABEL[script.language] ?? script.language),
+    scriptMetaChip(`v${script.current_version}`));
+  if (script.status === 'disabled') head.append(scriptMetaChip('disabled'));
+  if (script.update_available) {
+    const chip = scriptMetaChip('update available');
+    chip.classList.add('sc-chip-update');
+    head.append(chip);
+  }
+  block.append(head);
+
+  if (script.description) {
+    const desc = document.createElement('div');
+    desc.className = 'admin-setting-hint';
+    desc.textContent = script.description;
+    block.append(desc);
+  }
+
+  const controls = document.createElement('div');
+  controls.className = 'ap-controls';
+  const expanded = openScriptId === script.id;
+  const view = document.createElement('button');
+  view.type = 'button';
+  view.className = 'btn btn-ghost btn-sm';
+  view.textContent = expanded ? 'Hide code' : 'View code';
+  view.addEventListener('click', () => {
+    openScriptId = expanded ? null : script.id;
+    if (!expanded && !scriptContents.has(script.id)) {
+      void getOrgScript(adminOrgId, script.id)
+        .then((detail) => {
+          scriptContents.set(script.id, { content: detail.content, versions: detail.versions });
+          render();
+        })
+        .catch((err) => { toast((err as Error).message); });
+    }
+    render();
+  });
+  controls.append(view);
+  if (owner) {
+    if (script.update_available && script.catalog_script_id) {
+      const update = document.createElement('button');
+      update.type = 'button';
+      update.className = 'btn btn-ghost btn-sm';
+      update.textContent = 'Update from catalog';
+      update.disabled = scriptsBusy;
+      update.addEventListener('click', () => {
+        scriptContents.delete(script.id);
+        void scriptAction(
+          () => reimportCatalogScripts(adminOrgId, [script.catalog_script_id!]),
+          `${script.title} updated`,
+        );
+      });
+      controls.append(update);
+    }
+    const toggleStatus = document.createElement('button');
+    toggleStatus.type = 'button';
+    toggleStatus.className = 'btn btn-ghost btn-sm';
+    toggleStatus.textContent = script.status === 'active' ? 'Disable' : 'Enable';
+    toggleStatus.disabled = scriptsBusy;
+    toggleStatus.addEventListener('click', () => {
+      void scriptAction(
+        () => setOrgScriptStatus(adminOrgId, script.id, script.status === 'active' ? 'disabled' : 'active'),
+      );
+    });
+    controls.append(toggleStatus);
+  }
+  block.append(controls);
+
+  if (expanded) {
+    const detail = scriptContents.get(script.id);
+    if (!detail) {
+      block.append(emptyRow('Loading code…'));
+    } else {
+      const pre = document.createElement('pre');
+      pre.className = 'ap-prompt';
+      pre.textContent = detail.content;
+      block.append(pre);
+      if (detail.versions.length > 1) {
+        const history = document.createElement('div');
+        history.className = 'admin-setting-hint';
+        history.textContent = 'History: ' + detail.versions
+          .map((v: ScriptVersionInfo) => `v${v.version} (${formatDate(v.created_at)}${v.created_by_email ? `, ${v.created_by_email}` : ''}${v.change_note ? ` — ${v.change_note}` : ''})`)
+          .join(' · ');
+        block.append(history);
+      }
+    }
+  }
+  return block;
+}
+
+function scriptsTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (scriptsError) parts.push(inlineError(scriptsError));
+  if (scriptsLoading || scriptsData === null) {
+    if (!scriptsError) parts.push(emptyRow('Loading the script library…'));
+    return parts;
+  }
+  const owner = workspace.isOwner();
+
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'Shared, versioned scripts — the deterministic path. Import known-good Kuhn scripts, '
+      + 'review scripts promoted from projects, and keep one canonical copy per task.'
+    : 'The scripts this organization shares across projects. Only owners can change the library.';
+  parts.push(blurb);
+
+  if (owner && scriptPromotions.length > 0) {
+    parts.push(sectionTitle(`Pending script promotions (${scriptPromotions.length})`));
+    for (const request of scriptPromotions) parts.push(scriptReviewBlock(request));
+  }
+
+  parts.push(sectionTitle('Library'));
+  if (scriptsData.scripts.length === 0) {
+    parts.push(emptyRow('No scripts in the library yet.'));
+  } else {
+    for (const script of scriptsData.scripts) parts.push(orgScriptBlock(script, owner));
+  }
+
+  const importable = scriptsData.catalog.filter((c) => c.available && !c.org_script_id);
+  if (importable.length > 0) {
+    parts.push(sectionTitle('Kuhn catalog'));
+    for (const entry of importable) {
+      const row = document.createElement('div');
+      row.className = 'ap-card';
+      const head = document.createElement('div');
+      head.className = 'ap-head';
+      const name = document.createElement('span');
+      name.className = 'ap-name';
+      name.textContent = entry.title;
+      head.append(name,
+        scriptMetaChip(entry.id),
+        scriptMetaChip(LANGUAGE_LABEL[entry.language] ?? entry.language));
+      if (owner) {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn btn-ghost btn-sm';
+        add.style.marginLeft = 'auto';
+        add.textContent = 'Add to library';
+        add.disabled = scriptsBusy;
+        add.addEventListener('click', () => {
+          void scriptAction(() => importCatalogScripts(adminOrgId, [entry.id]), `${entry.title} imported`);
+        });
+        head.append(add);
+      }
+      row.append(head);
+      if (entry.description) {
+        const desc = document.createElement('div');
+        desc.className = 'admin-setting-hint';
+        desc.textContent = entry.description;
+        row.append(desc);
+      }
+      parts.push(row);
+    }
+  }
+  return parts;
+}
+
 // ---- Agents tab (issue #67) ------------------------------------------------------
 
 async function saveAddition(slug: string, text: string): Promise<void> {
@@ -1336,6 +1734,7 @@ const TAB_LABEL: Record<Tab, string> = {
   settings: 'Settings',
   promotions: 'Promotions',
   knowledge: 'Knowledge',
+  scripts: 'Scripts',
   agents: 'Agents',
 };
 
@@ -1364,6 +1763,16 @@ function tabsBar(): HTMLElement {
         const count = document.createElement('span');
         count.className = 'admin-tab-count';
         count.textContent = String(updates);
+        btn.append(count);
+      }
+    }
+    if (tab === 'scripts') {
+      const attention = scriptPromotions.length
+        + (scriptsData?.scripts.filter((s) => s.update_available).length ?? 0);
+      if (attention > 0) {
+        const count = document.createElement('span');
+        count.className = 'admin-tab-count';
+        count.textContent = String(attention);
         btn.append(count);
       }
     }
@@ -1404,6 +1813,7 @@ function render(): void {
     : activeTab === 'settings' ? settingsTab()
     : activeTab === 'promotions' ? promotionsTab()
     : activeTab === 'agents' ? agentsTab()
+    : activeTab === 'scripts' ? scriptsTab()
     : knowledgeTab();
   body.append(...parts);
 

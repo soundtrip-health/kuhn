@@ -1,0 +1,20 @@
+{
+  "catalog_version": 1,
+  "scripts": [
+    {
+      "id": "r/summarize-csv",
+      "title": "Summarize CSV",
+      "language": "r",
+      "path": "r/summarize_csv.R",
+      "entrypoint": "summarize_csv.R",
+      "version": 1,
+      "description": "Deterministic exploratory summary of a CSV: per-column type, missingness, and distribution statistics, written as CSV and Markdown.",
+      "args": [
+        { "name": "--input", "required": true, "description": "CSV file to summarize, path relative to the project root (/work)" }
+      ],
+      "inputs": "One delimited text file with a header row.",
+      "outputs": "summary.csv (one row per column) and summary.md (readable report) under $OUT_DIR.",
+      "tags": ["r", "eda", "tables"]
+    }
+  ]
+}

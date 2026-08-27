@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { query, querySync, transaction } from '../db.js';
 import { AGENTS, TOOLS, ASSIGNMENTS, DEFAULT_ORG, DEFAULT_USER } from './seed-data.js';
 import { catalogFileExists, loadCatalogManifest } from './knowledge-catalog.js';
+import { scriptFileExists, loadScriptManifest } from './script-catalog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -78,8 +79,9 @@ export async function seed() {
   });
 
   await seedKnowledgeCatalog();
+  await seedScriptCatalog();
 
-  console.log('[seed] Applied default tenant, agents, tools, assignments, and knowledge catalog.');
+  console.log('[seed] Applied default tenant, agents, tools, assignments, and catalogs.');
 }
 
 /**
@@ -180,6 +182,61 @@ export async function seedKnowledgeCatalog() {
 
   const note = missingFiles ? ` (${missingFiles} item(s) unavailable — content missing)` : '';
   console.log(`[seed] Knowledge catalog v${manifest.catalog_version}: ${packageRows.length} packages, ${itemRows.length} items${note}.`);
+}
+
+/**
+ * Issue #68: seed catalog_scripts from shared-scripts/catalog.json. Same
+ * discipline as seedKnowledgeCatalog: idempotent upserts; rows that leave the
+ * manifest are marked available = 0, never deleted (orgs may hold imported
+ * copies); scripts whose content file is absent seed as unavailable with a
+ * warning.
+ */
+export async function seedScriptCatalog() {
+  const manifest = await loadScriptManifest();
+  if (!manifest) {
+    console.warn('[seed] shared-scripts/catalog.json not found — script catalog not seeded.');
+    return;
+  }
+
+  const rows = [];
+  let missingFiles = 0;
+  for (const script of manifest.scripts) {
+    const exists = await scriptFileExists(script.path);
+    if (!exists) {
+      missingFiles += 1;
+      console.warn(`[seed] shared script ${script.id}: content file missing (${script.path}) — marked unavailable.`);
+    }
+    rows.push({ ...script, available: exists ? 1 : 0 });
+  }
+
+  transaction(() => {
+    for (const s of rows) {
+      querySync(
+        `INSERT INTO catalog_scripts (id, title, language, path, entrypoint, version, description, args_json, tags, available)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           title = excluded.title,
+           language = excluded.language,
+           path = excluded.path,
+           entrypoint = excluded.entrypoint,
+           version = excluded.version,
+           description = excluded.description,
+           args_json = excluded.args_json,
+           tags = excluded.tags,
+           available = excluded.available`,
+        [s.id, s.title, s.language, s.path, s.entrypoint, s.version,
+          s.description ?? null, JSON.stringify(s.args ?? []), JSON.stringify(s.tags ?? []), s.available],
+      );
+    }
+    querySync(
+      `UPDATE catalog_scripts SET available = 0
+       WHERE id NOT IN (SELECT value FROM json_each($1))`,
+      [JSON.stringify(rows.map((s) => s.id))],
+    );
+  });
+
+  const note = missingFiles ? ` (${missingFiles} script(s) unavailable — content missing)` : '';
+  console.log(`[seed] Script catalog v${manifest.catalog_version}: ${rows.length} scripts${note}.`);
 }
 
 // Allow standalone execution: node src/db/seed.js

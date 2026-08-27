@@ -1761,6 +1761,18 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .ap-controls { display: flex; align-items: center; gap: 8px; }
 .ap-counter { font: var(--ui-small); color: var(--ink-3); margin-right: auto; }
 
+/* Scripts tab (issue #68): library cards, review diff. */
+.sc-chip {
+  font: var(--ui-small); color: var(--ink-3);
+  background: var(--soft); border-radius: 5px; padding: 1px 7px;
+}
+.sc-chip-update { color: var(--accent); background: var(--accent-soft); }
+.sc-slug { max-width: 200px; }
+.sc-diff div { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sc-diff-add { color: var(--ok, #1a7f37); }
+.sc-diff-del { color: var(--danger, #b42318); text-decoration: line-through; }
+.sc-diff-ctx { color: var(--ink-3); }
+
 /* Seed-step package picker (compact: packages only). */
 .om-kn-picker { display: flex; flex-direction: column; gap: 6px; }
 .om-kn-picker[hidden] { display: none; }

@@ -20,7 +20,8 @@ kuhn/
 ├── agent-backend/   # Node.js service: agent runtime, REST + WebSocket, SQLite, Yjs, render/export
 ├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
 ├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
-└── guidance-docs/   # Curated reference corpus (regulatory guidance, etc.), by project type — content, not wired into the app
+├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
+└── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from

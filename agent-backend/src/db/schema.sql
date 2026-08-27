@@ -592,3 +592,82 @@ CREATE TABLE IF NOT EXISTS org_agent_prompts (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (org_id, agent_slug)
 );
+
+-- ============================================================
+-- Shared scripts (issue #68): the deterministic path. catalog_scripts mirrors
+-- knowledge_items — Kuhn-shipped rows seeded from shared-scripts/catalog.json,
+-- never deleted (dropped/missing entries go available = 0). org_scripts is an
+-- org's library of runnable scripts (imported from the catalog or promoted
+-- from a project), each with an append-only version history holding the
+-- actual code text (small, diffable — deliberately NOT storage.js files).
+-- script_promotion_requests parallels promotion_requests: metadata only,
+-- copy-on-approve, so rejected code never enters the org library.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS catalog_scripts (
+  id          TEXT PRIMARY KEY,             -- "<group>/<slug>", e.g. "r/summarize-csv"
+  title       TEXT NOT NULL,
+  language    TEXT NOT NULL CHECK (language IN ('r', 'python')),
+  path        TEXT NOT NULL,                -- manifest-relative content file
+  entrypoint  TEXT NOT NULL,                -- bare filename passed to the interpreter
+  version     INTEGER NOT NULL,
+  description TEXT,
+  args_json   TEXT NOT NULL DEFAULT '[]',   -- [{name, required?, description?}]
+  tags        TEXT NOT NULL DEFAULT '[]',
+  available   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS org_scripts (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id                 INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  slug                   TEXT NOT NULL,     -- the run_script handle
+  title                  TEXT NOT NULL,
+  language               TEXT NOT NULL CHECK (language IN ('r', 'python')),
+  description            TEXT,
+  args_json              TEXT NOT NULL DEFAULT '[]',
+  source                 TEXT NOT NULL CHECK (source IN ('catalog-import', 'project-promotion')),
+  catalog_script_id      TEXT,              -- set for catalog imports
+  catalog_script_version INTEGER,           -- update available when < catalog version
+  -- Disable ≠ delete: past runs keep their provenance; a disabled script is
+  -- simply not offered to agents.
+  status                 TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_by             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, slug)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_scripts_catalog
+  ON org_scripts(org_id, catalog_script_id) WHERE catalog_script_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS org_script_versions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id         INTEGER NOT NULL REFERENCES org_scripts(id) ON DELETE CASCADE,
+  version           INTEGER NOT NULL,       -- current = MAX(version)
+  content           TEXT NOT NULL,
+  sha256            TEXT NOT NULL,
+  entrypoint        TEXT NOT NULL,
+  change_note       TEXT,
+  source_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  source_path       TEXT,
+  created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (script_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS script_promotion_requests (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id           INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path             TEXT NOT NULL,
+  title            TEXT,
+  note             TEXT,
+  language         TEXT NOT NULL CHECK (language IN ('r', 'python')),
+  -- NULL proposes a NEW org script; set proposes a new VERSION of that one.
+  target_script_id INTEGER REFERENCES org_scripts(id) ON DELETE SET NULL,
+  suggested_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  decided_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at       TEXT,
+  decision_note    TEXT,
+  org_script_id    INTEGER REFERENCES org_scripts(id) ON DELETE SET NULL,  -- set on approve
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

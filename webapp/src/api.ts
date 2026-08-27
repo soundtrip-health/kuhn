@@ -1315,6 +1315,245 @@ export async function putOrgAgentPrompt(
   return ((await res.json()) as { addition: AgentPromptAddition | null }).addition;
 }
 
+// ---- Shared scripts (issue #68) ----
+
+export interface ScriptArg {
+  name: string;
+  required?: boolean;
+  description?: string;
+}
+
+/** A Kuhn catalog script; org_script_* set when this org imported it. */
+export interface CatalogScript {
+  id: string;
+  title: string;
+  language: 'r' | 'python';
+  entrypoint: string;
+  version: number;
+  description: string | null;
+  args: ScriptArg[];
+  tags: string[];
+  available: boolean;
+  org_script_id: number | null;
+  org_script_status: 'active' | 'disabled' | null;
+}
+
+/** A script in the org library (imported or promoted), current version metadata joined. */
+export interface OrgScript {
+  id: number;
+  slug: string;
+  title: string;
+  language: 'r' | 'python';
+  description: string | null;
+  args: ScriptArg[];
+  source: 'catalog-import' | 'project-promotion';
+  status: 'active' | 'disabled';
+  catalog_script_id: string | null;
+  catalog_script_version: number | null;
+  update_available: boolean;
+  current_version: number;
+  current_sha256: string;
+  current_entrypoint: string;
+  current_version_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScriptVersionInfo {
+  id: number;
+  version: number;
+  sha256: string;
+  entrypoint: string;
+  change_note: string | null;
+  source_project_id: number | null;
+  source_path: string | null;
+  created_by: number | null;
+  created_by_email: string | null;
+  created_at: string;
+}
+
+export interface ScriptPromotion {
+  id: number;
+  org_id: number;
+  project_id: number;
+  project_name: string;
+  path: string;
+  title: string | null;
+  note: string | null;
+  language: 'r' | 'python';
+  target_script_id: number | null;
+  target_script_slug: string | null;
+  target_script_title: string | null;
+  suggested_by: number | null;
+  suggested_by_email: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  decided_by: number | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  org_script_id: number | null;
+  created_at: string;
+}
+
+export interface OrgScriptsPayload {
+  catalog: CatalogScript[];
+  scripts: OrgScript[];
+}
+
+/** Catalog + this org's script library. Org members. */
+export async function getOrgScripts(orgId: number): Promise<OrgScriptsPayload> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/scripts`));
+  return (await res.json()) as OrgScriptsPayload;
+}
+
+/** One org script with its current content and version history. Org members. */
+export async function getOrgScript(
+  orgId: number,
+  idOrSlug: number | string,
+): Promise<{ script: OrgScript; content: string; versions: ScriptVersionInfo[] }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/scripts/${encodeURIComponent(String(idOrSlug))}`),
+  );
+  return (await res.json()) as { script: OrgScript; content: string; versions: ScriptVersionInfo[] };
+}
+
+/** Import catalog scripts into the org library (owner-only). */
+export async function importCatalogScripts(orgId: number, scripts: string[]): Promise<OrgScriptsPayload> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/scripts/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scripts }),
+    }),
+  );
+  return (await res.json()) as OrgScriptsPayload;
+}
+
+/** Refresh imported scripts to the current catalog content (owner-only). */
+export async function reimportCatalogScripts(orgId: number, scripts: string[]): Promise<OrgScriptsPayload> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/scripts/reimport`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scripts }),
+    }),
+  );
+  return (await res.json()) as OrgScriptsPayload;
+}
+
+/** Enable/disable one org script (owner-only). */
+export async function setOrgScriptStatus(
+  orgId: number,
+  scriptId: number,
+  status: 'active' | 'disabled',
+): Promise<OrgScript> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/scripts/${scriptId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+  return ((await res.json()) as { script: OrgScript }).script;
+}
+
+/**
+ * Promote a project script (.R/.py) into the org script library. Owners (and
+ * everyone under the 'direct' promotion policy) get `script` back
+ * immediately; otherwise a pending `request` is filed for owner review.
+ */
+export async function promoteScript(
+  projectId: number,
+  path: string,
+  opts: { title?: string; note?: string; targetScriptId?: number; slug?: string } = {},
+): Promise<{ script?: OrgScript; request?: ScriptPromotion }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/files/promote-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path,
+        title: opts.title,
+        note: opts.note,
+        target_script_id: opts.targetScriptId,
+        slug: opts.slug,
+      }),
+    }),
+  );
+  return (await res.json()) as { script?: OrgScript; request?: ScriptPromotion };
+}
+
+/** The owner review queue for script promotions. */
+export async function listScriptPromotions(
+  orgId: number,
+  status?: ScriptPromotion['status'],
+): Promise<ScriptPromotion[]> {
+  const query = status ? `?status=${status}` : '';
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/script-promotions${query}`),
+  );
+  return ((await res.json()) as { requests: ScriptPromotion[] }).requests;
+}
+
+/** One request with the live file content + sha, and the target's current content for diffing. */
+export async function getScriptPromotion(
+  orgId: number,
+  id: number,
+): Promise<{
+  request: ScriptPromotion;
+  content: string | null;
+  sha256: string | null;
+  content_error: string | null;
+  target_content: string | null;
+}> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/script-promotions/${id}`),
+  );
+  return (await res.json()) as {
+    request: ScriptPromotion;
+    content: string | null;
+    sha256: string | null;
+    content_error: string | null;
+    target_content: string | null;
+  };
+}
+
+/** Approve a script promotion, echoing the sha256 that was reviewed. */
+export async function approveScriptPromotion(
+  orgId: number,
+  id: number,
+  expectedSha256: string,
+  opts: { slug?: string; decisionNote?: string } = {},
+): Promise<{ request: ScriptPromotion; script: OrgScript }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/script-promotions/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expected_sha256: expectedSha256,
+        slug: opts.slug,
+        decision_note: opts.decisionNote,
+      }),
+    }),
+  );
+  return (await res.json()) as { request: ScriptPromotion; script: OrgScript };
+}
+
+/** Reject a script promotion. */
+export async function rejectScriptPromotion(
+  orgId: number,
+  id: number,
+  decisionNote?: string,
+): Promise<ScriptPromotion> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/script-promotions/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_note: decisionNote }),
+    }),
+  );
+  return ((await res.json()) as { request: ScriptPromotion }).request;
+}
+
 // ---- File activity & project feed (stories 005-001/002/003) ----
 
 /** One row of the persisted per-project file event log. */

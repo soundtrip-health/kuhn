@@ -24,6 +24,7 @@ export type IconName =
   | 'trash'
   | 'send'
   | 'comment'
+  | 'terminal'
   | 'x';
 
 // Inner path markup for each icon (viewBox 0 0 24 24).
@@ -57,6 +58,7 @@ const PATHS: Record<IconName, string> = {
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
   send: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  terminal: '<path d="M4 17l6-5-6-5"/><path d="M12 19h8"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
 };
 
