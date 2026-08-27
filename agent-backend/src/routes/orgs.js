@@ -195,6 +195,46 @@ router.patch('/api/admin/orgs/:id', async (req, res) => {
   res.json({ org: updated[0] });
 });
 
+/**
+ * POST /api/admin/orgs/:id/join — super-admin only — make the CALLER an owner
+ * of the org so it shows up in their own org list and switcher (STH-36).
+ * Deliberately NOT a tenancy bypass: content access still flows through the
+ * membership row this writes, which org members can see (and remove) like any
+ * other. Idempotent — an existing membership of any role is left untouched.
+ */
+router.post('/api/admin/orgs/:id/join', async (req, res) => {
+  if (!requireSuperadmin(req, res)) return;
+  const orgId = Number(req.params.id);
+  if (!Number.isInteger(orgId)) {
+    res.status(400).json({ error: 'invalid organization id' });
+    return;
+  }
+  const org = querySync('SELECT id FROM organizations WHERE id = $1', [orgId]).rows[0];
+  if (!org) {
+    res.status(404).json({ error: 'organization not found' });
+    return;
+  }
+  const existing = querySync(
+    'SELECT role FROM memberships WHERE org_id = $1 AND user_id = $2',
+    [orgId, req.user.id],
+  ).rows[0];
+  if (existing) {
+    res.json({ joined: false, role: existing.role });
+    return;
+  }
+  querySync(
+    `INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, 'owner')`,
+    [req.user.id, orgId],
+  );
+  recordAuthEvent({
+    type: 'member.joined',
+    actorUserId: req.user.id,
+    orgId,
+    meta: { via: 'superadmin', role: 'owner' },
+  });
+  res.status(201).json({ joined: true, role: 'owner' });
+});
+
 /** GET /api/orgs/:id/projects — projects in an org the user belongs to. */
 router.get('/api/orgs/:id/projects', async (req, res) => {
   const ctx = await requireOrgRole(req, res, req.params.id, 'viewer');

@@ -100,6 +100,7 @@ describe('super-admin gate (011-001)', () => {
     ['POST', '/api/orgs', { name: 'New Lab' }],
     ['GET', '/api/admin/orgs'],
     ['PATCH', `/api/admin/orgs/${ORG}`, { name: 'X' }],
+    ['POST', `/api/admin/orgs/${ORG}/join`],
   ];
 
   it('403s every lifecycle route for a non-super-admin, even an org owner', async () => {
@@ -309,6 +310,37 @@ describe('PATCH /api/admin/orgs/:id', () => {
     });
     expect(res.status).toBe(200);
     expect(eventTypes()).toEqual([]);
+  });
+});
+
+describe('POST /api/admin/orgs/:id/join (STH-36)', () => {
+  it('writes an owner membership, audits it, and the org appears in /api/orgs', async () => {
+    const cookie = await cookieFor(SA);
+    const res = await api('POST', `/api/admin/orgs/${ORG}/join`, { cookie });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ joined: true, role: 'owner' });
+    expect(membershipsOf(ORG)).toContainEqual({ user_id: SA, role: 'owner' });
+    expect(eventTypes()).toEqual(['member.joined']);
+
+    const list = await api('GET', '/api/orgs', { cookie });
+    const orgs = (await list.json()).orgs;
+    expect(orgs).toHaveLength(1);
+    expect(orgs[0]).toMatchObject({ id: ORG, role: 'owner' });
+  });
+
+  it('is idempotent — an existing membership of any role is left untouched', async () => {
+    querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES (${SA}, ${ORG}, 'editor')`);
+    const res = await api('POST', `/api/admin/orgs/${ORG}/join`, { cookie: await cookieFor(SA) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ joined: false, role: 'editor' });
+    expect(membershipsOf(ORG)).toContainEqual({ user_id: SA, role: 'editor' });
+    expect(eventTypes()).toEqual([]);
+  });
+
+  it('404s an unknown org and 400s a malformed id', async () => {
+    const cookie = await cookieFor(SA);
+    expect((await api('POST', '/api/admin/orgs/999/join', { cookie })).status).toBe(404);
+    expect((await api('POST', '/api/admin/orgs/nope/join', { cookie })).status).toBe(400);
   });
 });
 

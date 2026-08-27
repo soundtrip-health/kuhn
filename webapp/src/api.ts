@@ -426,6 +426,21 @@ export async function adminCreateOrg(params: {
   return (await res.json()) as { org: Org; member: boolean };
 }
 
+/**
+ * Join an org as owner (super-admin only, STH-36). Writes a normal, visible
+ * membership row — the audited "explicitly made a member" path, never a
+ * tenancy bypass. `joined: false` means a membership already existed; `role`
+ * is whatever role the caller now holds.
+ */
+export async function adminJoinOrg(
+  orgId: number,
+): Promise<{ joined: boolean; role: 'owner' | 'editor' | 'viewer' }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/admin/orgs/${orgId}/join`, { method: 'POST' }),
+  );
+  return (await res.json()) as { joined: boolean; role: 'owner' | 'editor' | 'viewer' };
+}
+
 /** Rename or suspend/unsuspend an organization (super-admin only). */
 export async function adminUpdateOrg(
   orgId: number,
