@@ -323,6 +323,16 @@ function agentCommands(): AgentCommand[] {
   ];
 }
 
+/** The registry's user-facing metadata (name as typed, owning agent,
+ *  description) — the "/ commands" help popover (slash-help.ts, STH-38). */
+export function slashCommandCatalog(): { name: string; agent: string; description: string }[] {
+  return agentCommands().map((c) => ({
+    name: `/${c.label.toLowerCase()}`,
+    agent: c.agent,
+    description: c.description,
+  }));
+}
+
 /**
  * The `/filter` run immediately before the caret, if any. Crepe's block-edit
  * menu leaves the typed `/...` text in the document and delegates removal to the
