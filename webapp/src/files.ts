@@ -30,6 +30,7 @@ import {
   markFileSeen,
   moveFile,
   promoteFileToLibrary,
+  readTextFile,
   uploadFiles,
   type FileActivityEvent,
   type PendingEdit,
@@ -186,6 +187,8 @@ function applyRoleChrome(): void {
   roleEditable = canMutate();
   const uploadBtn = document.getElementById('files-upload-btn');
   if (uploadBtn) uploadBtn.hidden = !roleEditable;
+  const newFileBtn = document.getElementById('files-new-file-btn');
+  if (newFileBtn) newFileBtn.hidden = !roleEditable;
   const newFolderBtn = document.getElementById('files-new-folder-btn');
   if (newFolderBtn) newFolderBtn.hidden = !roleEditable;
 }
@@ -256,6 +259,12 @@ export function initFiles(activeProjectId: number, h: FilesHandlers): void {
   if (refreshBtn) {
     refreshBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
     refreshBtn.addEventListener('click', () => void refreshTree(projectId));
+  }
+
+  const newFileBtn = document.getElementById('files-new-file-btn');
+  if (newFileBtn) {
+    newFileBtn.innerHTML = icon('file-plus', { size: 13, stroke: 1.8 });
+    newFileBtn.addEventListener('click', () => void beginNewFile(targetDir()));
   }
 
   const newFolderBtn = document.getElementById('files-new-folder-btn');
@@ -1008,7 +1017,7 @@ function openMoveFor(node: TreeNode): void {
   });
 }
 
-/** The `<ul role="group">` a new folder's inline input belongs in. */
+/** The `<ul role="group">` a new folder's or file's inline input belongs in. */
 function newFolderGroup(dir: string): HTMLUListElement | null {
   const root = document.getElementById('file-tree');
   if (!root) return null;
@@ -1086,6 +1095,99 @@ async function beginNewFolder(parent: string): Promise<void> {
       focusAfterRender = dir;
       await refreshTree(projectId);
     }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void finish(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      void finish(false);
+    }
+  });
+  input.addEventListener('blur', () => void finish(true));
+}
+
+/** Inline "new file" (sibling of beginNewFolder): type a name, get an empty
+ * file, and land in the editor. An extensionless name becomes markdown. */
+async function beginNewFile(parent: string): Promise<void> {
+  if (inlineEditing || !canMutate()) return;
+  const dir = parent && findNode(parent)?.type === 'dir' ? parent : '';
+  if (dir) {
+    expandAncestors(dir);
+    setExpanded(dir, true);
+  }
+  let ul = newFolderGroup(dir);
+  if (!ul) {
+    await refreshTree(projectId);
+    ul = newFolderGroup(dir);
+  }
+  if (!ul) {
+    toast('Could not find that folder in the tree.');
+    return;
+  }
+
+  const li = document.createElement('li');
+  li.setAttribute('role', 'none');
+  const wrap = document.createElement('div');
+  wrap.className = 'file-row file-row-inline';
+  const input = document.createElement('input');
+  input.className = 'file-name-input';
+  input.placeholder = 'New file name';
+  input.setAttribute('aria-label', dir ? `New file in ${dir}` : 'New file in the project root');
+  wrap.append(input);
+  li.append(wrap);
+  // Files sort after folders, so the input goes at the end of the group.
+  ul.append(li);
+
+  beginInline(input, null);
+  input.focus();
+
+  let settled = false;
+  const finish = async (commit: boolean): Promise<void> => {
+    if (settled) return;
+    settled = true;
+    let name = input.value.trim();
+    endInline();
+    if (!commit || !name) {
+      focusAfterRender = dir;
+      await refreshTree(projectId);
+      return;
+    }
+    if (!/\.[^.]+$/.test(name)) name += '.md';
+    const path = joinPath(dir, name);
+    const fail = async (message: string): Promise<void> => {
+      toast(message);
+      focusAfterRender = dir;
+      await refreshTree(projectId);
+    };
+    if (findNode(path)) {
+      await fail(`"${name}" already exists.`);
+      return;
+    }
+    // The tree can be blind to a file another client just wrote (the editor's
+    // PUT publishes no event), and the upload endpoint overwrites silently —
+    // so probe the server before creating rather than trusting the snapshot.
+    try {
+      if ((await readTextFile(projectId, path)) != null) {
+        await fail(`"${name}" already exists.`);
+        return;
+      }
+    } catch (err) {
+      await fail(`Could not create "${name}": ${(err as Error).message}`);
+      return;
+    }
+    // Through the upload endpoint, not a bare PUT: it publishes the `create`
+    // event and logs activity, so collaborators' trees and badges see it live.
+    const { failed } = await uploadFiles(projectId, [new File([], name)], dir || undefined);
+    if (failed.length > 0) {
+      await fail(`Could not create "${name}": ${failed[0].error}`);
+      return;
+    }
+    focusAfterRender = path;
+    await refreshTree(projectId);
+    if (isEditableText(path)) handlers?.onOpenMarkdown(path);
   };
 
   input.addEventListener('keydown', (e) => {
@@ -1399,8 +1501,8 @@ function rootRow(groupId: string, hasChildren: boolean): HTMLElement {
     btn.setAttribute('aria-owns', groupId);
   }
   if (canMutate()) {
-    btn.setAttribute('aria-keyshortcuts', 'N');
-    btn.title = 'Uploads and new folders land in the selected folder';
+    btn.setAttribute('aria-keyshortcuts', 'N F');
+    btn.title = 'Uploads and new files/folders land in the selected folder';
   }
   btn.innerHTML = icon('folder', { size: 14, stroke: 1.7 }).replace('<svg', '<svg class="file-icon"');
   const name = document.createElement('span');
@@ -1417,7 +1519,10 @@ function rootRow(groupId: string, hasChildren: boolean): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'file-actions';
   if (canMutate()) {
-    actions.append(actionButton('folder-plus', 'New folder (N)', () => void beginNewFolder('')));
+    actions.append(
+      actionButton('file-plus', 'New file (F)', () => void beginNewFile('')),
+      actionButton('folder-plus', 'New folder (N)', () => void beginNewFolder('')),
+    );
   }
   row.append(btn, actions);
   return row;
@@ -1462,7 +1567,7 @@ function renderFolder(
   // and Cmd+M is Minimize on macOS. No modifiers means nothing to compute per
   // platform, and nothing advertised here is unbound. Viewers advertise none:
   // every one of these keys mutates, and they are all role-gated.
-  if (canMutate()) summary.setAttribute('aria-keyshortcuts', 'N R F2 M Delete Backspace');
+  if (canMutate()) summary.setAttribute('aria-keyshortcuts', 'N F R F2 M Delete Backspace');
   summary.draggable = canMutate();
 
   const children = node.children ?? [];
@@ -1630,7 +1735,7 @@ function renderFile(
   button.setAttribute('aria-level', String(level));
   button.setAttribute('aria-posinset', String(posinset));
   button.setAttribute('aria-setsize', String(setsize));
-  if (canMutate()) button.setAttribute('aria-keyshortcuts', 'N R F2 M L Delete Backspace');
+  if (canMutate()) button.setAttribute('aria-keyshortcuts', 'N F R F2 M L Delete Backspace');
   button.setAttribute('aria-selected', String(node.path === activePath));
   button.draggable = canMutate();
   if (node.path === activePath) button.classList.add('active');
@@ -1709,6 +1814,7 @@ function fileActions(node: TreeNode): HTMLElement {
   if (!canMutate()) return wrap;
   if (node.type === 'dir') {
     wrap.append(
+      actionButton('file-plus', 'New file inside (F)', () => void beginNewFile(node.path)),
       actionButton('folder-plus', 'New folder inside (N)', () => void beginNewFolder(node.path)),
       actionButton('corner-up-right', 'Move to… (M)', () => openMoveFor(node)),
       actionButton('pencil', 'Rename (R)', () => beginRename(node)),
@@ -1874,6 +1980,12 @@ function onTreeKeydown(e: KeyboardEvent): void {
     if (e.key === 'n' || e.key === 'N') {
       e.preventDefault();
       void beginNewFolder(node ? (node.type === 'dir' ? node.path : parentDir(node.path)) : '');
+      return;
+    }
+    // 'f' but never 'F2': the rename key below is a distinct e.key value.
+    if (e.key === 'f' || e.key === 'F') {
+      e.preventDefault();
+      void beginNewFile(node ? (node.type === 'dir' ? node.path : parentDir(node.path)) : '');
       return;
     }
     if (node && (e.key === 'r' || e.key === 'R' || e.key === 'F2')) {
