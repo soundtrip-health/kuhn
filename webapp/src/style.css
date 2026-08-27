@@ -1732,6 +1732,35 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .kn-source:hover { text-decoration: underline; }
 .kn-reimport { flex: none; align-self: center; }
 
+/* Agents tab (issue #67): base prompts + org additions. */
+.ap-card {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ap-head { display: flex; align-items: center; gap: 10px; }
+.ap-avatar {
+  width: 27px; height: 27px; flex: 0 0 27px;
+  border-radius: 7px;
+  background: var(--soft-2); color: var(--ink-2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+}
+.ap-name { font: var(--ui-title); color: var(--ink); }
+.ap-model { font: var(--ui-small); color: var(--ink-3); margin-left: auto; }
+.ap-toggle { align-self: flex-start; }
+.ap-prompt {
+  font: var(--ui-small); font-family: var(--mono, monospace);
+  color: var(--ink-2);
+  background: var(--soft); border-radius: 7px;
+  padding: 10px 12px; margin: 0;
+  max-height: 320px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.ap-editor { width: 100%; resize: vertical; font: var(--ui-body); }
+.ap-controls { display: flex; align-items: center; gap: 8px; }
+.ap-counter { font: var(--ui-small); color: var(--ink-3); margin-right: auto; }
+
 /* Seed-step package picker (compact: packages only). */
 .om-kn-picker { display: flex; flex-direction: column; gap: 6px; }
 .om-kn-picker[hidden] { display: none; }

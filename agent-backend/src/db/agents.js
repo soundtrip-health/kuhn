@@ -16,6 +16,25 @@ export function resolveRoleSlug(role) {
  * @param {string} role - Role name or DB slug
  * @returns {Promise<{slug: string, name: string, system_prompt: string, model: string|null, tools: string[]}|null>}
  */
+/**
+ * All agents with their assigned tool slugs, in seed (id) order. Backs the
+ * org-facing prompt view (issue #67).
+ * @returns {Promise<Array<{slug, name, description, system_prompt, model, tools: string[]}>>}
+ */
+export async function listAgentsWithTools() {
+  const { rows } = await query(
+    `SELECT a.slug, a.name, a.description, a.system_prompt, a.model,
+            group_concat(t.slug) AS tools
+     FROM agents a
+     LEFT JOIN agent_tools at ON at.agent_id = a.id
+     LEFT JOIN tools t ON t.id = at.tool_id
+     GROUP BY a.id
+     ORDER BY a.id`,
+  );
+  for (const row of rows) row.tools = row.tools ? row.tools.split(',') : [];
+  return rows;
+}
+
 export async function getAgentWithTools(role) {
   const slug = resolveRoleSlug(role);
   const { rows } = await query(

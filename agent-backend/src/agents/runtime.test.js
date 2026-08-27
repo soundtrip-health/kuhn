@@ -64,6 +64,9 @@ vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
   getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
 }));
+// Same reason as file-activity.js: the real module imports db.js. The SQL
+// substance is covered in db/org-agent-prompts.test.js.
+vi.mock('../db/org-agent-prompts.js', () => ({ getOrgAgentPrompt: vi.fn(() => null) }));
 // Like file-activity.js above: the real module imports db.js, which needs a
 // real config.db.path at import time (story 006-003).
 vi.mock('../db/org-documents.js', () => ({
@@ -116,6 +119,7 @@ import { applyMove, findPendingEditConflicts } from '../db/move-paths.js';
 import { listThreads, addReply, setResolved } from '../db/comments.js';
 import { subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
+import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { updateProjectConfig } from '../db/projects.js';
@@ -208,6 +212,25 @@ describe('runAgentTask', () => {
     expect(options.allowedTools).not.toContain('mcp__kuhn__dispatch_agent');
     expect(options.systemPrompt).toContain('You are the research assistant.');
     expect(options.cwd).toContain('1');
+    // No org addition configured (the mock returns null) → no guardrails block
+    expect(options.systemPrompt).not.toContain('## Organization guardrails');
+  });
+
+  it('appends the org prompt addition after the runtime block (issue #67)', async () => {
+    getOrgAgentPrompt.mockReturnValue({ addition: 'Never query the phi schema.' });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+    expect(getOrgAgentPrompt).toHaveBeenCalledWith(3, 'ra'); // org resolved from the project
+    const prompt = sdkQuery.mock.calls[0][0].options.systemPrompt;
+    expect(prompt).toContain('## Organization guardrails (set by your organization)');
+    expect(prompt).toContain('Never query the phi schema.');
+    // Guardrails must not shadow the tool contract: runtime block comes first
+    expect(prompt.indexOf('## Runtime environment'))
+      .toBeLessThan(prompt.indexOf('## Organization guardrails'));
+    getOrgAgentPrompt.mockReturnValue(null);
   });
 
   it('routes agent file writes through the storage service', async () => {

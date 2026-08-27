@@ -15,12 +15,14 @@ import {
   approvePromotion,
   createInvitation,
   fileBlobUrl,
+  getOrgAgentPrompts,
   getOrgKnowledge,
   getOrgSettings,
   listInvitations,
   listOrgMembers,
   listPromotions,
   putKnowledgeSelections,
+  putOrgAgentPrompt,
   readTextFile,
   reimportKnowledgeItems,
   rejectPromotion,
@@ -30,6 +32,7 @@ import {
   updateOrgSettings,
   type Invitation,
   type KnowledgePackage,
+  type OrgAgentPrompt,
   type OrgKnowledgeItem,
   type OrgMember,
   type OrgSettings,
@@ -37,16 +40,17 @@ import {
   type Role,
 } from './api';
 import { trapFocus } from './a11y';
+import { agentIdentity } from './agents';
 import { icon } from './icons';
 import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions' | 'knowledge';
+type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'agents';
 
-/** Owner-only tabs; non-owner members see only the read-only Knowledge tab. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge'];
-const MEMBER_TABS: Tab[] = ['knowledge'];
+/** Owner-only tabs; non-owner members get the read-only Knowledge and Agents tabs. */
+const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -91,6 +95,18 @@ let knowledgeBusy = false;
 const expandedPackages = new Set<string>();
 let stopKnowledgeFeed: (() => void) | null = null;
 
+// Agents tab (issue #67): base prompts + this org's additions.
+let agentPrompts: OrgAgentPrompt[] | null = null;
+let agentPromptsMax = 4000;
+let agentPromptsLoading = false;
+let agentPromptsError: string | null = null;
+/** Agent slug → its rejected-save message. */
+let agentPromptErrors: Partial<Record<string, string>> = {};
+/** Agent slug → a save is in flight. */
+const agentPromptBusy = new Set<string>();
+/** Agent slugs whose base prompt is expanded. */
+const expandedBasePrompts = new Set<string>();
+
 // Close (or refresh) the overlay when roles change under us: api.ts raises
 // `kuhn:role-refresh` on guard-shaped 403s and workspace re-emits 'orgs'.
 workspace.subscribe((change) => {
@@ -99,8 +115,8 @@ workspace.subscribe((change) => {
     closeOrgAdmin();
     return;
   }
-  // Demoted from owner while open → only the Knowledge tab remains legal.
-  if (!workspace.isOwner() && activeTab !== 'knowledge') {
+  // Demoted from owner while open → only the member tabs remain legal.
+  if (!workspace.isOwner() && !MEMBER_TABS.includes(activeTab)) {
     activeTab = 'knowledge';
   }
   if (change === 'orgs') render();
@@ -152,6 +168,11 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   knowledgeError = null;
   knowledgeBusy = false;
   expandedPackages.clear();
+  agentPrompts = null;
+  agentPromptsError = null;
+  agentPromptErrors = {};
+  agentPromptBusy.clear();
+  expandedBasePrompts.clear();
 
   render();
   if (owner) {
@@ -161,6 +182,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
     void reloadPromotions(); // eager: the tab badge counts pending requests
   }
   void reloadKnowledge();
+  void reloadAgentPrompts();
 
   // Live import status for the Knowledge tab: doc_status events land on the
   // shared org feed; a poll tick (feed down) refetches the merged state.
@@ -288,6 +310,24 @@ async function reloadKnowledge(): Promise<void> {
     knowledgeError = (err as Error).message;
   } finally {
     knowledgeLoading = false;
+  }
+  render();
+}
+
+async function reloadAgentPrompts(): Promise<void> {
+  const orgId = adminOrgId;
+  agentPromptsLoading = agentPrompts === null;
+  render();
+  try {
+    const res = await getOrgAgentPrompts(orgId);
+    if (orgId !== adminOrgId) return;
+    agentPrompts = res.agents;
+    agentPromptsMax = res.max_addition_chars;
+    agentPromptsError = null;
+  } catch (err) {
+    agentPromptsError = (err as Error).message;
+  } finally {
+    agentPromptsLoading = false;
   }
   render();
 }
@@ -1142,6 +1182,153 @@ function knowledgeTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Agents tab (issue #67) ------------------------------------------------------
+
+async function saveAddition(slug: string, text: string): Promise<void> {
+  agentPromptBusy.add(slug);
+  render();
+  try {
+    const addition = await putOrgAgentPrompt(adminOrgId, slug, text);
+    const agent = agentPrompts?.find((a) => a.slug === slug);
+    if (agent) agent.addition = addition;
+    delete agentPromptErrors[slug];
+    toast(addition ? `Saved ${agentIdentity(slug).label} addition` : `Cleared ${agentIdentity(slug).label} addition`);
+  } catch (err) {
+    agentPromptErrors[slug] = (err as Error).message;
+  } finally {
+    agentPromptBusy.delete(slug);
+    render();
+  }
+}
+
+function agentPromptCard(agent: OrgAgentPrompt, owner: boolean): HTMLElement {
+  const identity = agentIdentity(agent.slug);
+  const card = document.createElement('div');
+  card.className = 'ap-card';
+
+  const head = document.createElement('div');
+  head.className = 'ap-head';
+  // Neutral avatar on purpose — role color is reserved for the active agent
+  // (the color-discipline rule in agents.ts).
+  const avatar = document.createElement('span');
+  avatar.className = 'ap-avatar';
+  avatar.textContent = identity.initials;
+  const name = document.createElement('span');
+  name.className = 'ap-name';
+  name.textContent = agent.name;
+  head.append(avatar, name);
+  if (agent.model) {
+    const model = document.createElement('span');
+    model.className = 'ap-model';
+    model.textContent = agent.model;
+    head.append(model);
+  }
+  card.append(head);
+
+  if (agent.description) {
+    const desc = document.createElement('div');
+    desc.className = 'admin-setting-hint';
+    desc.textContent = agent.description;
+    card.append(desc);
+  }
+
+  // Collapsible read-only base prompt (seed-owned; edited in the codebase).
+  const expanded = expandedBasePrompts.has(agent.slug);
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'btn btn-ghost btn-sm ap-toggle';
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.textContent = expanded ? 'Hide base prompt' : 'View base prompt';
+  toggle.addEventListener('click', () => {
+    if (!expandedBasePrompts.delete(agent.slug)) expandedBasePrompts.add(agent.slug);
+    render();
+  });
+  card.append(toggle);
+  if (expanded) {
+    const pre = document.createElement('pre');
+    pre.className = 'ap-prompt';
+    pre.textContent = agent.system_prompt;
+    card.append(pre);
+  }
+
+  const additionTitle = document.createElement('div');
+  additionTitle.className = 'admin-section-title';
+  additionTitle.textContent = 'Organization addition';
+  card.append(additionTitle);
+
+  if (owner) {
+    // Owners edit in place: textarea + counter, Save / Clear.
+    const editor = document.createElement('textarea');
+    editor.className = 'pb-input ap-editor';
+    editor.rows = 4;
+    editor.maxLength = agentPromptsMax;
+    editor.placeholder = 'Org-wide instructions appended to this agent’s prompt — e.g. data-access guardrails.';
+    editor.value = agent.addition?.text ?? '';
+    editor.setAttribute('aria-label', `${agent.name} organization addition`);
+    const counter = document.createElement('span');
+    counter.className = 'ap-counter';
+    const updateCounter = () => { counter.textContent = `${editor.value.length}/${agentPromptsMax}`; };
+    updateCounter();
+    editor.addEventListener('input', updateCounter);
+
+    const busy = agentPromptBusy.has(agent.slug);
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-ghost btn-sm';
+    save.textContent = busy ? 'Saving…' : 'Save';
+    save.disabled = busy;
+    save.addEventListener('click', () => { void saveAddition(agent.slug, editor.value); });
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'btn btn-ghost btn-sm';
+    clear.textContent = 'Clear';
+    clear.disabled = busy || !agent.addition;
+    clear.addEventListener('click', () => { void saveAddition(agent.slug, ''); });
+
+    const controls = document.createElement('div');
+    controls.className = 'ap-controls';
+    controls.append(counter, save, clear);
+    card.append(editor, controls);
+  } else if (agent.addition) {
+    const pre = document.createElement('pre');
+    pre.className = 'ap-prompt';
+    pre.textContent = agent.addition.text;
+    card.append(pre);
+  } else {
+    card.append(emptyRow('No organization addition.'));
+  }
+
+  if (agent.addition) {
+    const meta = document.createElement('div');
+    meta.className = 'admin-setting-hint';
+    const by = agent.addition.updated_by_email ? ` by ${agent.addition.updated_by_email}` : '';
+    meta.textContent = `Updated ${formatDate(agent.addition.updated_at)}${by}`;
+    card.append(meta);
+  }
+  const error = agentPromptErrors[agent.slug];
+  if (error) card.append(inlineError(error));
+  return card;
+}
+
+function agentsTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (agentPromptsError) parts.push(inlineError(agentPromptsError));
+  if (agentPromptsLoading || agentPrompts === null) {
+    if (!agentPromptsError) parts.push(emptyRow('Loading agent prompts…'));
+    return parts;
+  }
+  const owner = workspace.isOwner();
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'Each agent’s built-in instructions, plus an org-wide addition appended to them — ' +
+      'use it for guardrails like data-access rules. Additions apply to every project in this organization.'
+    : 'Each agent’s built-in instructions and this organization’s additions. Only owners can edit additions.';
+  parts.push(blurb);
+  for (const agent of agentPrompts) parts.push(agentPromptCard(agent, owner));
+  return parts;
+}
+
 // ---- Render ----------------------------------------------------------------------
 
 const TAB_LABEL: Record<Tab, string> = {
@@ -1149,6 +1336,7 @@ const TAB_LABEL: Record<Tab, string> = {
   settings: 'Settings',
   promotions: 'Promotions',
   knowledge: 'Knowledge',
+  agents: 'Agents',
 };
 
 function tabsBar(): HTMLElement {
@@ -1215,6 +1403,7 @@ function render(): void {
     activeTab === 'members' ? membersTab()
     : activeTab === 'settings' ? settingsTab()
     : activeTab === 'promotions' ? promotionsTab()
+    : activeTab === 'agents' ? agentsTab()
     : knowledgeTab();
   body.append(...parts);
 

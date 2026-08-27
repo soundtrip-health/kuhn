@@ -13,6 +13,7 @@ import healthRouter from './routes/health.js';
 import { authRouter, meRouter } from './routes/auth.js';
 import accessRequestsRouter from './routes/access-requests.js';
 import agentRouter from './routes/agent.js';
+import agentPromptsRouter from './routes/agent-prompts.js';
 import citationsRouter from './routes/citations.js';
 import commentsRouter from './routes/comments.js';
 import filesRouter from './routes/files.js';
@@ -79,6 +80,7 @@ app.use(session);
 app.use(meRouter);
 app.use(accessRequestsRouter); // super-admin access-request queue (STH-35)
 app.use(agentRouter);
+app.use(agentPromptsRouter); // agent prompt view + org additions (issue #67)
 app.use(citationsRouter);
 app.use(commentsRouter);
 app.use(filesRouter);

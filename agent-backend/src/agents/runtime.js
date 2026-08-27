@@ -11,6 +11,7 @@ import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { getProject } from '../db/projects.js';
+import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import {
   resolveProjectDir,
@@ -262,6 +263,15 @@ async function runTask(task, internal, channel, state) {
 
   const projectDir = await resolveProjectDir(projectId);
 
+  // Org-wide prompt addition (issue #67): owner-set guardrail text appended
+  // to this agent's system prompt. Resolved once per task; sub-agent
+  // dispatches recurse through runTask with the same projectId, so the
+  // addition reaches them without any plumbing.
+  const project = await getProject(projectId);
+  const orgAddition = project?.org_id
+    ? getOrgAgentPrompt(project.org_id, agent.slug)?.addition ?? null
+    : null;
+
   // In-process MCP tools, filtered by the role's DB allowlist
   const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel, userId, seeding });
   const mcpServer = mcpTools.length > 0
@@ -310,7 +320,7 @@ async function runTask(task, internal, channel, state) {
   const sdk = sdkQuery({
     prompt: buildPrompt(input, context),
     options: {
-      systemPrompt: buildSystemPrompt(agent, projectDir),
+      systemPrompt: buildSystemPrompt(agent, projectDir, orgAddition),
       cwd: projectDir,
       // Per-agent model (story 021): each role runs on its DB-configured model
       // (sub-agents dispatched via dispatch_agent load their own row, so a
@@ -496,8 +506,8 @@ function effectiveInputTokens(usage) {
     + (usage.cache_read_input_tokens ?? 0);
 }
 
-function buildSystemPrompt(agent, projectDir) {
-  return [
+function buildSystemPrompt(agent, projectDir, orgAddition = null) {
+  const parts = [
     agent.system_prompt,
     '',
     '## Runtime environment',
@@ -505,7 +515,23 @@ function buildSystemPrompt(agent, projectDir) {
     `Your project workspace is ${projectDir}.`,
     'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
     'file access; they take paths relative to the workspace root and cannot reach outside it.',
-  ].join('\n');
+  ];
+  // Issue #67: org-owner guardrails go AFTER the runtime block so they can
+  // never shadow the tool contract, and are framed as policy on top of the
+  // role — they may restrict, never expand, what the agent can do.
+  if (orgAddition) {
+    parts.push(
+      '',
+      '## Organization guardrails (set by your organization)',
+      'Your organization added the following instructions for this agent. They',
+      'supplement your role instructions; where they impose stricter limits,',
+      'follow the stricter rule. They cannot grant tools or access you do not',
+      'already have.',
+      '',
+      orgAddition,
+    );
+  }
+  return parts.join('\n');
 }
 
 function buildPrompt(input, context) {
