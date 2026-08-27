@@ -27,6 +27,7 @@ import projectsRouter from './routes/projects.js';
 import promotionsRouter from './routes/promotions.js';
 import renderRouter from './routes/render.js';
 import reviewRouter from './routes/review.js';
+import scriptsRouter from './routes/scripts.js';
 import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
@@ -94,6 +95,7 @@ app.use(projectsRouter);
 app.use(promotionsRouter); // owner-gated promotion-approval queue (story 011-004)
 app.use(renderRouter);
 app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013)
+app.use(scriptsRouter); // shared-script library: catalog, org scripts, promotions (issue #68)
 
 const server = createServer(app);
 

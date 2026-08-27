@@ -6,6 +6,7 @@
 // viewer; anything that mutates the project or its files needs editor.
 
 import { Router } from 'express';
+import { config } from '../config.js';
 import { runSeedPipeline } from '../agents/seeding.js';
 import { applyProjectConfig } from '../agents/project-config.js';
 import { listProjectConversations } from '../db/conversation.js';
@@ -19,6 +20,9 @@ import {
 import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { getOrgSettings } from '../db/org-settings.js';
 import { createPromotionRequest } from '../db/promotions.js';
+import { ScriptError, addScriptVersion, createOrgScript, getOrgScript } from '../db/org-scripts.js';
+import { createScriptPromotion } from '../db/script-promotions.js';
+import { publicOrgScript } from './scripts.js';
 import {
   publishOrgEvent,
   publishProjectEvent,
@@ -273,6 +277,138 @@ router.post('/api/projects/:id/files/promote', async (req, res) => {
     createdBy: req.user.id,
   });
   res.status(deduped ? 200 : 201).json({ document, deduped });
+});
+
+// Issue #68: which project files are promotable scripts, by extension.
+const SCRIPT_LANGUAGE_BY_EXT = { r: 'r', py: 'python' };
+
+/**
+ * POST /api/projects/:id/files/promote-script — body { path, title?, note?,
+ * target_script_id?, slug? }. Promote a project script (.R/.py) into the
+ * owning org's shared-script library (issue #68). Same policy branch as
+ * files/promote above: owners — and everyone under promotion_policy
+ * 'direct' — copy immediately (a new script, or a new version of
+ * target_script_id); otherwise a script_promotion_request is filed for owner
+ * review (202; no code is copied until approval).
+ */
+router.post('/api/projects/:id/files/promote-script', async (req, res) => {
+  const project = await authorizeProject(req, res, 'editor');
+  if (!project) return;
+  const { path, title, note, target_script_id: targetRaw, slug } = req.body ?? {};
+  if (!path || typeof path !== 'string') {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+  const ext = (path.split('.').pop() ?? '').toLowerCase();
+  const language = SCRIPT_LANGUAGE_BY_EXT[ext];
+  if (!language) {
+    res.status(400).json({ error: 'not a promotable script (expected a .R or .py file)' });
+    return;
+  }
+  // The target must be this org's script — never trusted blindly.
+  let target = null;
+  if (targetRaw != null) {
+    target = getOrgScript(project.org_id, Number(targetRaw));
+    if (!target) {
+      res.status(404).json({ error: 'target script not found' });
+      return;
+    }
+    if (target.language !== language) {
+      res.status(400).json({ error: `target script is ${target.language}, file is ${language}` });
+      return;
+    }
+  }
+
+  const cleanTitle = typeof title === 'string' && title.trim() ? title.trim() : null;
+  const cleanNote = typeof note === 'string' && note.trim() ? note.trim() : null;
+
+  const policy = getOrgSettings(project.org_id)?.promotion_policy;
+  if (req.orgRole !== 'owner' && policy !== 'direct') {
+    const { request, existing } = createScriptPromotion({
+      orgId: project.org_id,
+      projectId: project.id,
+      path,
+      language,
+      title: cleanTitle,
+      note: cleanNote,
+      targetScriptId: target?.id ?? null,
+      suggestedBy: req.user.id,
+    });
+    if (!existing) {
+      publishProjectEvent(project.id, {
+        type: 'script_promotion', requestId: request.id, path: request.path, status: 'pending',
+      });
+      publishOrgEvent(project.org_id, {
+        type: 'script_promotion_request',
+        requestId: request.id,
+        projectId: project.id,
+        path: request.path,
+        status: 'pending',
+        suggestedBy: req.user.id,
+      });
+    }
+    res.status(existing ? 200 : 202).json({ request });
+    return;
+  }
+
+  // Direct path: copy now.
+  let content;
+  try {
+    const buffer = await readProjectFile(project.id, path);
+    if (buffer.length > config.scripts.maxScriptBytes) {
+      res.status(400).json({ error: `script exceeds the ${config.scripts.maxScriptBytes}-byte cap` });
+      return;
+    }
+    content = buffer.toString('utf-8');
+  } catch (err) {
+    if (err instanceof StorageError) {
+      res.status(err.code === 'not_found' ? 404 : 400).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+  const entrypoint = path.split('/').pop();
+  let script;
+  try {
+    if (target) {
+      script = addScriptVersion(project.org_id, target.id, {
+        content,
+        entrypoint,
+        changeNote: cleanNote,
+        sourceProjectId: project.id,
+        sourcePath: path,
+        createdBy: req.user.id,
+      });
+    } else {
+      const scriptSlug = typeof slug === 'string' && slug.trim()
+        ? slug.trim().toLowerCase()
+        : entrypoint.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(scriptSlug)) {
+        res.status(400).json({ error: `invalid script slug: ${scriptSlug}`, field: 'slug' });
+        return;
+      }
+      script = createOrgScript({
+        orgId: project.org_id,
+        slug: scriptSlug,
+        title: cleanTitle ?? entrypoint,
+        language,
+        source: 'project-promotion',
+        content,
+        entrypoint,
+        changeNote: cleanNote,
+        sourceProjectId: project.id,
+        sourcePath: path,
+        createdBy: req.user.id,
+      });
+    }
+  } catch (err) {
+    if (err instanceof ScriptError && err.code === 'slug_taken') {
+      res.status(409).json({ error: `${err.message} — pass a slug or target_script_id` });
+      return;
+    }
+    throw err;
+  }
+  res.status(201).json({ script: publicOrgScript(script) });
 });
 
 /**

@@ -30,6 +30,7 @@ import {
   markFileSeen,
   moveFile,
   promoteFileToLibrary,
+  promoteScript,
   readTextFile,
   uploadFiles,
   type FileActivityEvent,
@@ -1413,6 +1414,45 @@ async function promoteEntry(node: TreeNode): Promise<void> {
   });
 }
 
+// ---- Promote to org scripts (issue #68) --------------------------------------
+
+/** Which files are promotable into the org script library, by extension. */
+function isScriptFile(name: string): boolean {
+  return /\.(r|py)$/i.test(name);
+}
+
+/** Promote a script into the org's shared-script library. Mirrors
+ * promoteEntry: owners (and 'direct'-policy orgs) copy immediately; otherwise
+ * the backend files a review request for the owners (202). */
+async function promoteScriptEntry(node: TreeNode): Promise<void> {
+  if (!canMutate()) return; // route is editor+ on the server too
+  const org = workspace.activeOrg();
+  if (!org) {
+    toast('No active organization to promote to');
+    return;
+  }
+  // Documented exception (story 005-004): native confirm(), as with delete.
+  const ok = window.confirm(
+    `Promote "${node.name}" to the ${org.name} script library?\n\nAnalysts in every ${org.name} project will be able to reuse it.`,
+  );
+  if (!ok) return;
+
+  let result: Awaited<ReturnType<typeof promoteScript>>;
+  try {
+    result = await promoteScript(projectId, node.path);
+  } catch (err) {
+    toast(`Promote script failed: ${(err as Error).message}`);
+    return;
+  }
+  if (result.request) {
+    toast('Suggested — awaiting admin review');
+    return;
+  }
+  if (result.script) {
+    toast(`Added to the ${org.name} script library as "${result.script.slug}" v${result.script.current_version}`);
+  }
+}
+
 // ---- Rendering --------------------------------------------------------------
 
 function emptyNotice(text: string): HTMLElement {
@@ -1823,6 +1863,9 @@ function fileActions(node: TreeNode): HTMLElement {
   } else {
     wrap.append(
       actionButton('book', 'Add to org library (L)', () => void promoteEntry(node)),
+      ...(isScriptFile(node.name)
+        ? [actionButton('terminal', 'Promote to org scripts (S)', () => void promoteScriptEntry(node))]
+        : []),
       actionButton('corner-up-right', 'Move to… (M)', () => openMoveFor(node)),
       actionButton('pencil', 'Rename (R)', () => beginRename(node)),
       actionButton('trash', 'Delete (Del or Backspace)', () => void deleteEntry(node)),
@@ -2012,6 +2055,11 @@ function onTreeKeydown(e: KeyboardEvent): void {
     if (node && node.type === 'file' && (e.key === 'l' || e.key === 'L')) {
       e.preventDefault();
       void promoteEntry(node);
+      return;
+    }
+    if (node && node.type === 'file' && (e.key === 's' || e.key === 'S') && isScriptFile(node.name)) {
+      e.preventDefault();
+      void promoteScriptEntry(node);
       return;
     }
   }

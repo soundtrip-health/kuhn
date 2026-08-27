@@ -150,6 +150,16 @@ export const config = {
     catalogRoot: process.env.KUHN_GUIDANCE_DOCS
       || new URL('../../guidance-docs', import.meta.url).pathname,
   },
+  scripts: {
+    // Kuhn-curated shared-script catalog (issue #68): shared-scripts/
+    // catalog.json plus the script files it points at, shipped in the repo
+    // tree and read-only at runtime — same deployment contract as the
+    // knowledge catalog above.
+    catalogRoot: process.env.KUHN_SHARED_SCRIPTS
+      || new URL('../../shared-scripts', import.meta.url).pathname,
+    // Scripts are code text: small, diffable, stored in the DB.
+    maxScriptBytes: parseInt(process.env.SCRIPTS_MAX_BYTES || String(256 * 1024)),
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).
