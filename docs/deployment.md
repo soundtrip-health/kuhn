@@ -1,10 +1,22 @@
 # Deployment
 
-Kuhn deploys as a single Node.js process. The agent backend serves the REST
+The current Kuhn build runs as a single Node.js process. The agent backend serves the REST
 API, the WebSocket endpoints (Yjs collaboration), and the built webapp on one
 port (default **3002**), so a deployment needs exactly one service exposed to
 the network — typically behind a TLS-terminating tunnel or reverse proxy such
 as a Cloudflare Tunnel.
+
+> **Current build, not yet the approved production baseline:** this page documents how
+> to run the existing single-process implementation. It still has open fail-closed
+> authentication, credential-URL, durability, and Docker-isolation work. For the
+> *proposed* production topology for the first
+> real-team pilot — the worker/sandbox split, database and file-storage
+> decisions, backup/restore ownership, and the scale ceiling — see
+> [ADR 002: production deployment topology](adr/002-production-deployment-topology.md).
+> For the security model (trust boundaries, data classification, threats), see
+> the [threat model](security/threat-model.md). Several hardening items called
+> out below (fail-closed auth, backups, sandbox isolation) are tracked work, not
+> yet implemented on `main`.
 
 ## Requirements
 
@@ -18,9 +30,9 @@ as a Cloudflare Tunnel.
   ```
 
 - An **`ANTHROPIC_API_KEY`** with sufficient quota for agent runs.
-- A public hostname with TLS. The examples below use a Cloudflare Tunnel, but
-  any reverse proxy that forwards WebSockets and sets `X-Forwarded-Proto`
-  works the same way.
+- A public hostname with TLS. The examples below use a Cloudflare Tunnel. The current
+  build also trusts request Host/forwarding metadata too broadly; do not treat proxying
+  alone as the completed production fix described in ADR 002/STH-17.
 
 ## Build and run
 
@@ -119,8 +131,12 @@ ingress:
 
 - WebSockets (Yjs collaboration) are proxied by cloudflared without extra
   configuration; the webapp derives `wss://` URLs from its own origin.
-- The backend trusts `X-Forwarded-Proto`/`Host` (Express `trust proxy`), so
-  magic links are minted as `https://kuhn.example.com/...` behind the tunnel.
+- **Current security gap:** the backend trusts all proxy hops and currently builds
+  login, invitation, and review URLs from request protocol/Host. A trusted tunnel often
+  makes the URL look correct, but Host remains attacker-influenced if the origin is
+  reachable or forwarding headers are passed through. STH-17 must mint every
+  credential-bearing URL from validated `KUHN_APP_URL`, bound proxy trust to known
+  hops/subnets, strip client forwarding headers, and block direct origin reachability.
 
 ## Authentication and inviting users
 
@@ -199,8 +215,8 @@ Membership itself is invitation-only (epic 011):
   panel; each invitation emails a single-use link that signs the invitee in
   and adds them with the chosen role (`owner`, `editor`, or `viewer`).
 
-With no `KUHN_SMTP_URL` configured, sign-in and invitation links are printed
-to the backend log instead of emailed:
+With no `KUHN_SMTP_URL` configured, sign-in and invitation links are printed to the
+backend log instead of emailed:
 
 ```
 [auth] Magic link for alice@example.com: https://kuhn.example.com/api/auth/verify?token=...
@@ -208,9 +224,10 @@ to the backend log instead of emailed:
 [auth] Access request queued for stranger@example.com (no link sent — invite-only)
 ```
 
-For a small test deployment this is a workable manual flow — the operator
-copies the link from the log and sends it to the invitee. Configure
-`KUHN_SMTP_URL` for self-service delivery.
+This fallback is for local development only. It exposes live authentication secrets to
+anyone or any system that can read collected logs. A shared/production magic-link
+deployment requires SMTP, and the target production profile in STH-17 must refuse to
+start without it.
 
 ## Running as a service
 
@@ -235,8 +252,14 @@ WantedBy=multi-user.target
 
 ## Split-origin deployments
 
-Serving the webapp from a different origin than the API (e.g. `app.example.com`
-+ `api.example.com`) is supported but requires additional configuration:
+The current build can serve the webapp from a different origin than the API (for example
+`app.example.com` + `api.example.com`) with additional configuration, but this layout is
+**outside ADR 002's proposed production baseline**. The current Host-derived
+credential-URL behavior and shared-domain cookie assumptions need a separate validated
+public API origin and end-to-end security tests before this is a supported production
+topology.
+
+For development/evaluation only:
 
 - Build the webapp with the API origin baked in:
   `VITE_BACKEND_URL=https://api.example.com npm run build`, and serve
