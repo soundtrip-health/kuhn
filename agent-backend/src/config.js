@@ -186,5 +186,23 @@ export const config = {
     memory: process.env.SANDBOX_MEMORY || '512m',
     // Cap on captured stdout/stderr and on produced output files
     maxOutputBytes: parseInt(process.env.SANDBOX_MAX_OUTPUT_BYTES || String(32 * 1024 * 1024)),
+    // Issue #68b: the analyst run_script runtime. A Kuhn-BUILT image
+    // (docker/r-analysis/Dockerfile — rocker/r-ver + a curated package set),
+    // not pulled from a registry: with --network none there are no runtime
+    // package installs, so "install a package" means extending that
+    // Dockerfile and rebuilding.
+    rscriptImage: process.env.SANDBOX_R_IMAGE || 'kuhn/r-analysis:latest',
+    // Script runs get their own limits — a GAMM fit outgrows the render
+    // defaults above (60 s / 512 MB). All env-overridable.
+    script: {
+      timeoutMs: parseInt(process.env.SCRIPT_TIMEOUT_MS || '300000'),
+      cpus: process.env.SCRIPT_CPUS || '2',
+      memory: process.env.SCRIPT_MEMORY || '2g',
+      maxOutputBytes: parseInt(process.env.SCRIPT_MAX_OUTPUT_BYTES || String(64 * 1024 * 1024)),
+      // Concurrency cap on sandbox fan-out (threat model T-22): script runs
+      // queue behind this in-process semaphore.
+      maxConcurrent: parseInt(process.env.SCRIPT_MAX_CONCURRENT || '2'),
+      maxOutputFiles: parseInt(process.env.SCRIPT_MAX_OUTPUT_FILES || '50'),
+    },
   },
 };

@@ -24,7 +24,7 @@ flowchart LR
   subgraph Backend host
     B[agent-backend]
     D[(KUHN_DATA_DIR\nSQLite + files)]
-    S[Docker sandboxes\nTypst / Pandoc / poppler\n--network none]
+    S[Docker sandboxes\nTypst / Pandoc / poppler / R\n--network none]
     Y[Yjs rooms\nin-memory only]
   end
   E -- REST / WebSocket / SSE --> B
@@ -113,6 +113,16 @@ leaked), an insufficient role or a suspended org gets a 403.
   mounted **read-only**; output goes to a scratch dir that is read back and
   deleted. Sandbox output is treated as untrusted. Images:
   `ghcr.io/typst/typst`, `pandoc/core`, `minidocks/poppler`.
+- **Analyst script execution** (`run_script`, issue #68b): R scripts — from the
+  org script library or the project's `analyst/` — run through the same
+  `sandbox.js` wrapper with the same invariants (no network, project read-only,
+  `/out` the only writable mount, org-library code mounted read-only at
+  `/script`), bigger limits (5 min / 2 CPUs / 2 GB, env-overridable), and an
+  in-process concurrency cap. Outputs are copied back into the project at
+  `analyst/output/run-<id>/` **through storage.js** (per-file cap applies), and
+  every run lands in the `script_runs` provenance table. Image:
+  `kuhn/r-analysis` — Kuhn-**built** (`docker/r-analysis/`), packages baked in
+  because there is no network for installs.
 
 ## 4. Ephemeral state (lost on restart, by design)
 

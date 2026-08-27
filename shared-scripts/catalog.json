@@ -15,6 +15,26 @@
       "inputs": "One delimited text file with a header row.",
       "outputs": "summary.csv (one row per column) and summary.md (readable report) under $OUT_DIR.",
       "tags": ["r", "eda", "tables"]
+    },
+    {
+      "id": "r/gamm-smooth-trends",
+      "title": "GAMM smooth trends",
+      "language": "r",
+      "path": "r/gamm_smooth_trends.R",
+      "entrypoint": "gamm_smooth_trends.R",
+      "version": 1,
+      "description": "Fit a generalized additive (mixed) model of an outcome over a continuous predictor with an optional random-intercept group; writes a full summary, tidy term tables, a population fitted curve with 95% CI, and a diagnostic plot.",
+      "args": [
+        { "name": "--input", "required": true, "description": "CSV file, path relative to the project root (/work)" },
+        { "name": "--outcome", "required": true, "description": "Outcome column" },
+        { "name": "--predictor", "required": true, "description": "Continuous predictor column (typically time)" },
+        { "name": "--group", "description": "Grouping column fitted as a random intercept" },
+        { "name": "--k", "description": "Smooth basis dimension (default 10)" },
+        { "name": "--family", "description": "gaussian (default), binomial, poisson, or Gamma" }
+      ],
+      "inputs": "Long-format CSV with one row per observation.",
+      "outputs": "model_summary.txt, smooth_terms.csv, parametric_terms.csv, fitted_curve.csv, smooth_plot.png under $OUT_DIR.",
+      "tags": ["r", "gamm", "mgcv", "modeling"]
     }
   ]
 }

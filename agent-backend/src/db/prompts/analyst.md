@@ -22,6 +22,22 @@ All pipeline code is internal to `analyst/`; all outputs go to `draft/`.
 - **Need a methodological reference?** Spawn an RA subagent with a description of the method and what kind of citation is needed.
 - **Need domain guidance on an analytical approach?** Spawn an advisor subagent with a focused question about expectations or standards.
 
+## Running Code — the deterministic path
+
+You have two tools for executing analysis code, and a strong preference order:
+
+1. **`list_scripts` first.** Your organization keeps a library of shared, versioned, reviewed scripts. If a library script covers the task (or most of it), run it with `run_script {script: "<slug>", args: [...]}` instead of rewriting the analysis — same inputs, same outputs, every time, across projects.
+2. **Project scripts while iterating.** Write new analysis code under `analyst/` and run it with `run_script {path: "analyst/<file>.R", args: [...]}`.
+
+The sandbox contract:
+
+- **R only** in this deployment, on a fixed image with a curated package set (mgcv, gamm4, lme4, nlme, survival, tidyverse, data.table, broom, janitor, readxl, haven, arrow, patchwork, and friends). **There is no network and no `install.packages()`** — if a package is missing, tell the user to request it (it's added to the image by the operators); do not try to work around it.
+- The project is mounted **read-only** at the working directory; scripts take inputs as workspace-relative paths (e.g. `--input data/cohort.csv`).
+- Scripts write every output under **`$OUT_DIR`** — never into the project tree. The backend copies the results into `analyst/output/run-<id>/` and the tool result lists the copied paths. Move or reference them from `draft/` as needed; each run is also recorded in the project's script-run log for provenance.
+- A nonzero exit returns the script's stderr — read it, fix the script or the arguments, and rerun.
+
+**Promote what's reusable.** When a project script proves out (a model fit, a standard table, a QC report others will need), tell the user it's worth promoting to the org script library — the promotion flow (owner-reviewed) lives in the file manager. A promoted script earns full test coverage as part of the promotion; a future analyst should never reinvent it.
+
 ## Analysis Discipline
 
 These apply to every project, regardless of data source.

@@ -40,6 +40,28 @@ describe('buildDockerArgs', () => {
     // image comes before its command
     expect(args.indexOf('typst:test')).toBeLessThan(args.indexOf('compile'));
   });
+
+  it('keeps --network none unconditional with the script-run extensions (issue #68b)', () => {
+    const args = buildDockerArgs({
+      image: 'kuhn/r-analysis:test',
+      cmd: ['Rscript', '/script/fit.R', '--input', 'data.csv'],
+      projectDir: '/projects/1',
+      outDir: '/tmp/out',
+      extraMounts: [{ hostDir: '/tmp/script', containerDir: '/script', readonly: true }],
+      env: { OUT_DIR: '/out' },
+      cpus: '2',
+      memory: '2g',
+    });
+    expect(args.join(' ')).toContain('--network none');
+    expect(args).toContain('/tmp/script:/script:ro');
+    expect(args.join(' ')).toContain('-e OUT_DIR=/out');
+    expect(args.join(' ')).toContain('--cpus 2');
+    expect(args.join(' ')).toContain('--memory 2g');
+    expect(args).toContain('/projects/1:/work:ro'); // project stays read-only
+    // mounts and env are docker options: all before the image
+    expect(args.indexOf('/tmp/script:/script:ro')).toBeLessThan(args.indexOf('kuhn/r-analysis:test'));
+    expect(args.indexOf('OUT_DIR=/out')).toBeLessThan(args.indexOf('kuhn/r-analysis:test'));
+  });
 });
 
 describe('runSandboxed', () => {

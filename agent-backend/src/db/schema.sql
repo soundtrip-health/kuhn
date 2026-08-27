@@ -671,3 +671,28 @@ CREATE TABLE IF NOT EXISTS script_promotion_requests (
   org_script_id    INTEGER REFERENCES org_scripts(id) ON DELETE SET NULL,  -- set on approve
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- ============================================================
+-- Script runs (issue #68b): provenance for every run_script execution — which
+-- script (org-library reference or project-local path), which version, what
+-- arguments, how it ended, and where its outputs landed. Append-only; the
+-- analyst's provenance.md points here, and disabled org scripts keep their
+-- history because these rows reference them.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS script_runs (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  job_id         INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  org_script_id  INTEGER REFERENCES org_scripts(id) ON DELETE SET NULL,
+  script_version INTEGER,             -- set with org_script_id
+  script_path    TEXT,                -- set for project-local runs
+  args_json      TEXT NOT NULL DEFAULT '[]',
+  status         TEXT NOT NULL CHECK (status IN ('ok', 'error', 'timeout', 'failed')),
+  exit_code      INTEGER,
+  duration_ms    INTEGER,
+  output_dir     TEXT,                -- project-relative, e.g. analyst/output/run-12-1
+  stdout_tail    TEXT,
+  stderr_tail    TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_script_runs_project ON script_runs(project_id, id DESC);

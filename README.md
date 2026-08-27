@@ -117,11 +117,14 @@ variables, Cloudflare Tunnel configuration, inviting users, and running as a ser
 - Typst + Pandoc + Poppler sandbox images for rendering/export and org-library
   PDF ingestion (one-time: `docker pull ghcr.io/typst/typst:latest &&
   docker pull pandoc/core:latest && docker pull minidocks/poppler:latest`)
+- The analyst's R runtime image, built locally (issue #68b — the sandbox has no
+  network, so packages are baked in): `docker build -t kuhn/r-analysis:latest
+  docker/r-analysis` (see `docker/r-analysis/README.md`)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-Render/export and any future analyst code execution run inside sandboxed Docker images (no
-host Python environment required). Re-seed agents/tools after editing prompts or seed data
-with `npm run db:seed` (from `agent-backend/`).
+Render/export and analyst script execution (`run_script`) run inside sandboxed Docker
+images (no host Python/R environment required). Re-seed agents/tools after editing
+prompts or seed data with `npm run db:seed` (from `agent-backend/`).
 
 See [CLAUDE.md](CLAUDE.md) for contributor guidance (repository layout, where things live,
 agent prompts, conventions). The repository is also configured so Claude Code can run common

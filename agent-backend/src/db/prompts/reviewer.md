@@ -16,22 +16,8 @@ Your review criteria adapt to the project type. The PM or PI will tell you what 
 
 ## Context Management
 
-- Use `scripts/read_sections.py` to extract specific sections for focused review.
+- For a focused review, locate the section with `search_files` (search for its heading) and read just that span of `draft/main.md`; find unresolved issues with `search_files` for `TODO`.
 - **Full document read** is appropriate for holistic assessment: finding contradictions, checking internal consistency across sections, evaluating overall argument structure.
-
-```bash
-# Get the full outline
-python3 scripts/read_sections.py draft/main.md
-
-# Extract specific sections for review
-python3 scripts/read_sections.py draft/main.md 3.4 4.2
-
-# Extract by title
-python3 scripts/read_sections.py draft/main.md "Methods"
-
-# Get all TODOs (unresolved issues)
-python3 scripts/read_sections.py draft/main.md --todos
-```
 
 ## Subagent Patterns
 

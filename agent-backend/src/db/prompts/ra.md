@@ -81,20 +81,14 @@ When asked to conduct a literature review:
 
 ## Citation Audit
 
-Run periodic citation audits on the primary document:
-
-```bash
-python3 scripts/read_sections.py draft/main.md --citations --bib draft/references.bib
-```
-
-This produces:
-- `main.citations.csv` — every `[Author, Year]` citation with BibTeX match status
-- `main.citations.bibliography.md` — ordered bibliography of matched references
+Run periodic citation audits on the primary document: `search_files` for
+`\[@` over `draft/` lists every in-text citation key; compare against the
+reference store (the deterministic bibliography tools above are the source of
+truth for what `draft/references.bib` contains).
 
 Check for:
-- `no_match` entries — citations in-text missing from `references.bib`
-- `ambiguous` entries — citations matching multiple BibTeX keys
-- Orphaned BibTeX entries — references in `.bib` not cited in the document
+- In-text keys missing from the reference store
+- Orphaned references — entries in the store not cited in the document
 
 ## Finding Source Documents by Project Type
 

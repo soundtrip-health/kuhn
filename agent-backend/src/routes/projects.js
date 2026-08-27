@@ -22,6 +22,7 @@ import { getOrgSettings } from '../db/org-settings.js';
 import { createPromotionRequest } from '../db/promotions.js';
 import { ScriptError, addScriptVersion, createOrgScript, getOrgScript } from '../db/org-scripts.js';
 import { createScriptPromotion } from '../db/script-promotions.js';
+import { listScriptRuns } from '../db/script-runs.js';
 import { publicOrgScript } from './scripts.js';
 import {
   publishOrgEvent,
@@ -409,6 +410,17 @@ router.post('/api/projects/:id/files/promote-script', async (req, res) => {
     throw err;
   }
   res.status(201).json({ script: publicOrgScript(script) });
+});
+
+/**
+ * GET /api/projects/:id/script-runs — run_script provenance, newest first
+ * (issue #68b). Viewer: the outputs already sit in the file tree; this is the
+ * audit trail of what produced them.
+ */
+router.get('/api/projects/:id/script-runs', async (req, res) => {
+  const project = await authorizeProject(req, res, 'viewer');
+  if (!project) return;
+  res.json({ runs: listScriptRuns(project.id) });
 });
 
 /**

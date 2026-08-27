@@ -190,6 +190,8 @@ const ROUTES = [
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/files/activity`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/events`, sse: true },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/conversations`, ok: { status: 200 } },
+  // Issue #68b: run_script provenance log.
+  { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/script-runs`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/jobs', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/agent/jobs/${JOB_A}/trace`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/pending', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },

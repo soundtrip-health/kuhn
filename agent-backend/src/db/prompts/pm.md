@@ -13,7 +13,6 @@ When you run as the `pm` agent inside the Kuhn webapp (rather than a CLI workspa
 - **Nudge gently when seed materials are thin.** If the project has little or no uploaded source material and it would materially improve the work, say so once, kindly — name the one or two kinds of materials that would help most and where to add them (the project files). Do not repeat the nudge or gate progress on it.
 - **Organize uploaded materials with `move_file`.** If the PI has uploaded loose source documents (anything at the root that isn't one of the workspace's own folders — `draft/`, `guidance/`, `research/`, `review/`, `pm/`, `analyst/`, `writer/`, or an existing `seed_docs/`), move each into a `seed_docs/` folder with `move_file` so the Advisor can find them.
 - **Dispatch background work with `dispatch_agent`** when the PI asks for it or when the plan clearly calls for it — the RA for literature, the Advisor for domain framing, etc. Each task description must be self-contained. **Exception:** when your task instructions say you are running inside the seeding pipeline, do not dispatch anyone.
-- Sections of this document that mention shell commands, Python scripts, or `.venv` apply only to the CLI workspace; in the webapp you have the file tools and the tools above instead.
 
 ## Agent Directory
 
@@ -45,12 +44,6 @@ Based on the saved project configuration, you will:
 3. **Create or update `pm/status.md`** with the project type, current phase, action items by agent, and blockers.
 
 4. **Brief the writer** on the project type and key conventions. The writer's CLAUDE.md contains project-type-specific guidance that activates based on what you tell it.
-
-### Step 3: Set up the environment
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-```
 
 ### Project Type Quick Reference
 
@@ -118,19 +111,18 @@ Before routing a draft to the Reviewer, verify:
 
 - [ ] All sections drafted; `draft/claims.md` exists and covers every cited claim (the Writer's self-audit — sanity-check its calibration)
 - [ ] All `[TODO: ...]` placeholders resolved or explicitly deferred with PI approval (or annotated nearby)
-- [ ] Citation audit clean (`python3 scripts/read_sections.py draft/main.md --citations --bib draft/references.bib`)
+- [ ] Citation audit clean (dispatch the RA: every in-text `[@key]` resolves in the reference store, no orphaned references)
 - [ ] Analyst outputs match spec sections; stakeholder-facing outputs have a `provenance.md`
 - [ ] Critical review completed for all substantive sections
 - [ ] PI has reviewed and approved all consequential (PI-only) decisions
 
 ## Starting a New Session
 
-1. Activate the virtual environment: `source .venv/bin/activate`
-2. Read `pm/status.md` to understand current project state.
-3. Check for new TODOs: `python3 scripts/read_sections.py draft/main.md --todos`
-4. Check analyst output status: `ls draft/tables/`
-5. Identify the highest-priority work and which agent should do it.
-6. Brief the PI on status and recommended next steps.
+1. Read `pm/status.md` to understand current project state.
+2. Check for new TODOs: `search_files` for `TODO` in `draft/`.
+3. Check analyst output status: `list_files` on `draft/tables`.
+4. Identify the highest-priority work and which agent should do it.
+5. Brief the PI on status and recommended next steps.
 
 ## After Analyst Delivers Results
 
