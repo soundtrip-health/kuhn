@@ -199,7 +199,9 @@ get-or-creating an account. An org must always keep at least one owner. Separate
 flag (synced from `KUHN_SUPERADMIN_EMAILS` at boot), not a role: super-admins provision,
 rename, suspend, and unsuspend orgs via `POST /api/orgs` + `/api/admin/orgs`, but **no tenancy
 guard consults the flag** — a super-admin without a membership is a stranger to every org's
-content. Suspension refuses members everywhere through the same chokepoint while the
+content. The sanctioned way in is explicit: `POST /api/admin/orgs/:id/join` (STH-36, the
+platform console's "Open" action) writes a normal, audited owner membership, after which
+content access flows through that membership like anyone else's. Suspension refuses members everywhere through the same chokepoint while the
 `/api/admin` surface stays open (that is how an org is unsuspended). The whole contract is
 regression-locked by `routes/tenancy-matrix.test.js`, which sweeps every tenant-scoped route
 across principals × org status.
