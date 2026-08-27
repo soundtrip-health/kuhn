@@ -1313,6 +1313,12 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   padding: 8px 12px;
   white-space: pre-wrap; word-break: break-word;
 }
+.sh-ins-line + .sh-ins-line { margin-top: 8px; }
+/* Word-level refinement (STH-41): unchanged words read as quiet context so
+   the actual change carries the color. */
+.sh-ins .sh-kept { color: var(--ink-3); }
+.sh-ins .sh-add { color: var(--good); font-weight: 600; }
+.sh-del.sh-del-word { text-decoration-thickness: 1.5px; }
 .sh-hunk-actions { display: flex; gap: 6px; margin-top: 6px; }
 .sh-accept, .sh-reject {
   display: inline-flex; align-items: center; justify-content: center;
