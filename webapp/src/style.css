@@ -371,11 +371,41 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .editor-path { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); letter-spacing: .02em; }
 .editor-meta { display: flex; align-items: center; gap: 14px; }
 #editor-wordcount { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-.slash-hint-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3); }
+.slash-hint { position: relative; display: inline-flex; }
+.slash-hint-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3);
+  background: none; border: none; padding: 0; cursor: pointer;
+}
+.slash-hint-chip:hover, .slash-hint-chip[aria-expanded="true"] { color: var(--ink-2); }
 .slash-hint-chip kbd, .doc-kbd {
   font-family: var(--font-mono); font-size: 11px;
   background: var(--soft-2); padding: 1px 5px; border-radius: var(--r-xs);
   color: var(--ink-2);
+}
+
+/* Slash-command help popover (STH-38) — slash-help.ts owns it */
+.slash-help-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: var(--shadow-pop); padding: 8px; width: 340px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.slash-help-menu[hidden] { display: none; }
+.slash-help-row {
+  display: grid; grid-template-columns: 64px 1fr auto; align-items: baseline; gap: 8px;
+  padding: 5px 6px; border-radius: var(--r-xs);
+}
+.slash-help-row:hover { background: var(--soft); }
+.slash-help-name { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink); }
+.slash-help-desc { font-size: 12px; color: var(--ink-2); }
+.slash-help-agent {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--ink-3); white-space: nowrap;
+}
+.slash-help-agent .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--role); }
+.slash-help-hint {
+  margin: 6px 2px 2px; padding-top: 8px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--ink-3);
 }
 
 /* Rich ⇄ source toggle (story 039) */
@@ -508,6 +538,29 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 #editor .milkdown .ProseMirror th { background: var(--soft); font-weight: 600; }
 /* Math (katex) inherits doc ink */
 #editor .milkdown .ProseMirror .katex { color: var(--doc-ink); }
+
+/* ---- Live collab carets (y-prosemirror awareness, STH-37) -------------
+   The default cursor builder is a span (inline border-color = user color)
+   wrapping a block <div> name label, which breaks the line. Restyle as a
+   thin caret bar plus a small semi-transparent tag floating above it; the
+   tag turns opaque on hover so identity stays discoverable. */
+.ProseMirror-yjs-cursor {
+  position: relative;
+  border-left: 2px solid;      /* inline style supplies the user color */
+  margin-left: -1px; margin-right: -1px;
+  pointer-events: none;
+}
+.ProseMirror-yjs-cursor > div {
+  position: absolute; top: -1.15em; left: -2px;
+  display: inline-block;
+  font-family: var(--font-ui); font-size: 9.5px; font-weight: 500;
+  line-height: 1; padding: 1.5px 4px; border-radius: 3px;
+  color: #fff; white-space: nowrap; user-select: none;
+  opacity: .5; transition: opacity .15s ease;
+  pointer-events: auto;
+}
+.ProseMirror-yjs-cursor:hover > div,
+.ProseMirror-yjs-cursor > div:hover { opacity: 1; }
 
 /* ---- Citation chip (canonical inline element) ----------------------- */
 .citation-chip {
@@ -1260,6 +1313,12 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   padding: 8px 12px;
   white-space: pre-wrap; word-break: break-word;
 }
+.sh-ins-line + .sh-ins-line { margin-top: 8px; }
+/* Word-level refinement (STH-41): unchanged words read as quiet context so
+   the actual change carries the color. */
+.sh-ins .sh-kept { color: var(--ink-3); }
+.sh-ins .sh-add { color: var(--good); font-weight: 600; }
+.sh-del.sh-del-word { text-decoration-thickness: 1.5px; }
 .sh-hunk-actions { display: flex; gap: 6px; margin-top: 6px; }
 .sh-accept, .sh-reject {
   display: inline-flex; align-items: center; justify-content: center;

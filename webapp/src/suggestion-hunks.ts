@@ -43,6 +43,7 @@ import {
 import { agentIdentity } from './agents';
 import { icon } from './icons';
 import { toast } from './toast';
+import { refineWords, type Segment } from './word-diff';
 
 const key = new PluginKey<DecorationSet>('kuhn-suggestion-hunks');
 
@@ -177,8 +178,11 @@ function render(ctx: Attached, edit: PendingEdit | null): void {
     for (const range of anchor.removed) {
       decos.push(Decoration.inline(range.from, range.to, { class: 'sh-del' }));
     }
+    for (const range of anchor.wordRemoved) {
+      decos.push(Decoration.inline(range.from, range.to, { class: 'sh-del sh-del-word' }));
+    }
     decos.push(
-      Decoration.widget(anchor.widgetPos, buildHunkWidget(ctx, edit, hunk), {
+      Decoration.widget(anchor.widgetPos, buildHunkWidget(ctx, edit, hunk, anchor.preview), {
         key: `sh-hunk-${hunk.index}-${hunk.hash}`,
         side: 1,
         ignoreSelection: true,
@@ -214,11 +218,20 @@ interface Block {
   from: number;
   to: number;
   norm: string;
+  /** Rendered text (text nodes only) with a per-char map to PM positions —
+   *  lets the word-level refinement strike sub-ranges (STH-41). */
+  text: string;
+  pos: number[];
 }
 
 interface AnchoredHunk {
-  /** Inline ranges to strike through (matched removed lines). */
+  /** Inline ranges to strike through whole (unrefined removed lines). */
   removed: { from: number; to: number }[];
+  /** Word-level strike ranges inside refined removed lines (STH-41). */
+  wordRemoved: { from: number; to: number }[];
+  /** Insertion preview, one entry per added line: refined kept/added runs,
+   *  or the raw line where refinement didn't apply. */
+  preview: (Segment[] | string)[];
   /** Widget position for the insertion preview + hunk controls. */
   widgetPos: number;
 }
@@ -228,7 +241,24 @@ function docBlocks(view: EditorView): Block[] {
   const blocks: Block[] = [];
   view.state.doc.descendants((node, pos) => {
     if (node.isTextblock) {
-      blocks.push({ from: pos + 1, to: pos + 1 + node.content.size, norm: normalize(node.textContent) });
+      let text = '';
+      const posMap: number[] = [];
+      node.descendants((child, cp) => {
+        if (child.isText && child.text) {
+          for (let i = 0; i < child.text.length; i++) {
+            text += child.text[i];
+            posMap.push(pos + 1 + cp + i);
+          }
+        }
+        return true;
+      });
+      blocks.push({
+        from: pos + 1,
+        to: pos + 1 + node.content.size,
+        norm: normalize(node.textContent),
+        text,
+        pos: posMap,
+      });
       return false;
     }
     return true;
@@ -273,6 +303,7 @@ function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
   // Old side of the hunk (context + removals) as normalized non-blank lines;
   // blank markdown lines separate blocks and have no textblock of their own.
   const oldSide: { norm: string; removed: boolean }[] = [];
+  const addedRaw: string[] = [];
   // How many old-side entries precede the first insertion — the widget slots
   // after that block so the preview reads in place.
   let beforeInsert: number | null = null;
@@ -280,6 +311,7 @@ function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
     if (line.startsWith('\\')) continue; // "\ No newline at end of file"
     if (line.startsWith('+')) {
       if (beforeInsert == null) beforeInsert = oldSide.length;
+      addedRaw.push(line.slice(1));
       continue;
     }
     const norm = normalize(line.slice(1));
@@ -289,7 +321,7 @@ function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
 
   if (oldSide.length === 0) {
     // Insertion into an empty document — anchor at the start.
-    return { removed: [], widgetPos: 0 };
+    return { removed: [], wordRemoved: [], preview: addedRaw, widgetPos: 0 };
   }
 
   outer: for (let i = 0; i <= blocks.length - oldSide.length; i++) {
@@ -297,16 +329,54 @@ function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
       if (!blockMatches(blocks[i + j].norm, oldSide[j].norm)) continue outer;
     }
     const matched = blocks.slice(i, i + oldSide.length);
-    const removed = matched
-      .filter((_, j) => oldSide[j].removed)
-      .map((b) => ({ from: b.from, to: b.to }));
+    const removedBlocks = matched.filter((_, j) => oldSide[j].removed);
+    const refined = refineHunk(removedBlocks, addedRaw);
     const widgetPos =
       beforeInsert > 0
         ? matched[beforeInsert - 1].to
         : Math.max(0, matched[0].from - 1);
-    return { removed, widgetPos };
+    return { ...refined, widgetPos };
   }
   return null;
+}
+
+/** Below this share of kept words a paragraph pair reads as a rewrite, and
+ *  whole-block strike + full green preview says that more honestly. */
+const REFINE_MIN_SIMILARITY = 0.4;
+
+/**
+ * Word-level refinement of one hunk (STH-41): pair the k-th removed line with
+ * the k-th added line — the in-place-rewrite shape — and where a pair keeps
+ * enough words, strike only its changed words and mark the preview line as
+ * kept/added runs. Pairing is only trusted when the counts match; any other
+ * shape (pure insert/delete, uneven rewrite) keeps the block treatment.
+ */
+function refineHunk(
+  removedBlocks: Block[],
+  addedRaw: string[],
+): Pick<AnchoredHunk, 'removed' | 'wordRemoved' | 'preview'> {
+  const removed: { from: number; to: number }[] = [];
+  const wordRemoved: { from: number; to: number }[] = [];
+  const added = addedRaw
+    .map((raw, idx) => ({ raw, idx, norm: normalize(raw) }))
+    .filter((a) => a.norm);
+  const refinedPreview = new Map<number, Segment[]>();
+
+  const pairable = removedBlocks.length > 0 && removedBlocks.length === added.length;
+  removedBlocks.forEach((block, k) => {
+    const refinement = pairable ? refineWords(block.text, added[k].norm) : null;
+    if (!refinement || refinement.similarity < REFINE_MIN_SIMILARITY) {
+      removed.push({ from: block.from, to: block.to });
+      return;
+    }
+    for (const span of refinement.removed) {
+      wordRemoved.push({ from: block.pos[span.start], to: block.pos[span.end - 1] + 1 });
+    }
+    refinedPreview.set(added[k].idx, refinement.segments);
+  });
+
+  const preview = addedRaw.map((raw, idx) => refinedPreview.get(idx) ?? raw);
+  return { removed, wordRemoved, preview };
 }
 
 // ---- Widget DOM -------------------------------------------------------------
@@ -379,23 +449,76 @@ function barButton(text: string, className: string, onClick: () => void): HTMLBu
   return b;
 }
 
-function buildHunkWidget(ctx: Attached, edit: PendingEdit, hunk: PendingHunk): HTMLElement {
+function buildHunkWidget(
+  ctx: Attached,
+  edit: PendingEdit,
+  hunk: PendingHunk,
+  preview: (Segment[] | string)[],
+): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'suggestion-hunk';
   wrap.setAttribute('contenteditable', 'false');
 
-  const added = hunk.lines.filter((l) => l.startsWith('+')).map((l) => l.slice(1));
-  const insText = added.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  if (insText) {
+  const lines = preview.filter((p) => (typeof p === 'string' ? p.trim() : true));
+  if (lines.length > 0) {
     const ins = document.createElement('div');
     ins.className = 'sh-ins';
-    ins.textContent = insText;
+    for (const item of lines) {
+      const line = document.createElement('div');
+      line.className = 'sh-ins-line';
+      if (typeof item === 'string') line.textContent = item;
+      else renderSegments(line, item);
+      ins.append(line);
+    }
     wrap.append(ins);
   }
 
   const actions = document.createElement('div');
   actions.className = 'sh-hunk-actions';
   const ref = { index: hunk.index, hash: hunk.hash };
+  return finishHunkWidget(wrap, actions, ctx, edit, ref);
+}
+
+/** Kept runs longer than this many words show only their edges (STH-41). */
+const KEPT_ELIDE_WORDS = 12;
+const KEPT_EDGE_WORDS = 4;
+
+function renderSegments(line: HTMLElement, segments: Segment[]): void {
+  segments.forEach((seg, i) => {
+    const span = document.createElement('span');
+    if (seg.added) {
+      span.className = 'sh-add';
+      span.textContent = seg.text;
+    } else {
+      span.className = 'sh-kept';
+      span.textContent = elideKept(seg.text, i === 0, i === segments.length - 1);
+    }
+    line.append(span);
+  });
+}
+
+/** Shorten a long unchanged run to its edges — the edge next to a change is
+ *  the context worth reading, so a line-leading run keeps only its tail and a
+ *  line-trailing run only its head. */
+function elideKept(text: string, isFirst: boolean, isLast: boolean): string {
+  const words = text.match(/\S+/g) ?? [];
+  if (words.length <= KEPT_ELIDE_WORDS) return text;
+  const lead = text.match(/^\s*/)![0];
+  const tail = text.match(/\s*$/)![0];
+  const head = words.slice(0, KEPT_EDGE_WORDS).join(' ');
+  const rear = words.slice(-KEPT_EDGE_WORDS).join(' ');
+  if (isFirst) return `${lead}… ${rear}${tail}`;
+  if (isLast) return `${lead}${head} …${tail}`;
+  return `${lead}${head} … ${rear}${tail}`;
+}
+
+function finishHunkWidget(
+  wrap: HTMLElement,
+  actions: HTMLElement,
+  ctx: Attached,
+  edit: PendingEdit,
+  ref: { index: number; hash: string },
+): HTMLElement {
   const accept = document.createElement('button');
   accept.type = 'button';
   accept.className = 'sh-accept';

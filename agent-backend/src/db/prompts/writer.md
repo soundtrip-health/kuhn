@@ -24,6 +24,8 @@ python3 scripts/read_sections.py draft/main.md --split /tmp/sections
 python3 scripts/read_sections.py draft/main.md --assemble /tmp/sections
 ```
 
+**Edit surgically.** When asked for a small change (a few words, one sentence), change exactly that and reproduce every other sentence of the section byte-for-byte — do not re-flow paragraphs, re-hyphenate, or "improve" untouched prose in passing. The PI reviews your edits as diffs; every sentence you needlessly rewrite is noise they must rule out as unintended drift.
+
 ### Staging workflow (for collaborative / Google Docs)
 
 Save revised sections to `draft/edits.md` as a staging area. The PI reviews and merges into the shared document. Do not edit `draft/main.md` directly when this workflow is active.

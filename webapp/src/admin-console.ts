@@ -18,6 +18,7 @@ import {
   adminApproveAccessRequest,
   adminCreateOrg,
   adminDenyAccessRequest,
+  adminJoinOrg,
   adminListAccessRequests,
   adminListOrgs,
   adminUpdateOrg,
@@ -25,6 +26,7 @@ import {
   type AdminOrg,
   type Role,
 } from './api';
+import * as workspace from './workspace';
 import { trapFocus } from './a11y';
 import { icon } from './icons';
 import { currentUser } from './login';
@@ -134,6 +136,23 @@ async function reloadRequests(): Promise<void> {
 }
 
 // ---- Actions --------------------------------------------------------------------
+
+/**
+ * Open an org from the console (STH-36): join as owner if not yet a member —
+ * the explicit, audited membership the platform-flag invariant requires —
+ * then switch the workspace into it and close the console.
+ */
+async function openOrg(org: AdminOrg): Promise<void> {
+  try {
+    const { joined, role } = await adminJoinOrg(org.id);
+    await workspace.switchToJoinedOrg(org.id);
+    closeAdminConsole();
+    toast(joined ? `Joined ${org.name} as owner` : `Switched to ${org.name} (${role})`);
+  } catch (err) {
+    listError = `Could not open ${org.name}: ${(err as Error).message}`;
+    render();
+  }
+}
 
 async function renameOrg(org: AdminOrg): Promise<void> {
   // Native prompt/confirm, same accessibility rationale as org-admin.ts
@@ -298,6 +317,13 @@ function orgsTable(): HTMLElement {
 
     const actions = document.createElement('td');
     actions.className = 'admin-row-actions';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'btn btn-quiet btn-sm';
+    open.textContent = 'Open';
+    open.title = 'Switch the workspace into this org (joins you as owner if you are not yet a member)';
+    open.setAttribute('aria-label', `Open ${org.name}`);
+    open.addEventListener('click', () => void openOrg(org));
     const rename = document.createElement('button');
     rename.type = 'button';
     rename.className = 'btn btn-quiet btn-sm';
@@ -315,7 +341,7 @@ function orgsTable(): HTMLElement {
     toggle.addEventListener('click', () =>
       void setOrgStatus(org, org.status === 'suspended' ? 'active' : 'suspended'),
     );
-    actions.append(rename, toggle);
+    actions.append(open, rename, toggle);
 
     tr.append(who, status, members, created, actions);
     body.append(tr);
