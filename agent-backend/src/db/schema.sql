@@ -573,3 +573,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_access_requests_pending
   ON access_requests(email) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_access_requests_status
   ON access_requests(status, last_requested_at DESC);
+
+-- ============================================================
+-- Org agent-prompt additions (issue #67): per-agent, org-wide text an owner
+-- appends to an agent's system prompt (e.g. data-access guardrails for the
+-- analyst). Lives OUTSIDE agents.system_prompt on purpose — seed.js
+-- overwrites that column from db/prompts/*.md on every boot, and this table
+-- must survive re-seeds. agent_slug is validated against agents.slug at
+-- write time rather than by FK: seeding rebuilds agent rows, and a stale
+-- addition for a retired slug should linger harmlessly, not block a reseed.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_agent_prompts (
+  org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  agent_slug  TEXT NOT NULL,
+  addition    TEXT NOT NULL,    -- non-empty; clearing an addition deletes the row
+  updated_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (org_id, agent_slug)
+);

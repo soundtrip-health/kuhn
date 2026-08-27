@@ -118,8 +118,8 @@ beforeAll(async () => {
   app.use(session);
   // The full post-session() tenant surface, in index.js mount order.
   for (const mod of [
-    './agent.js', './citations.js', './comments.js', './files.js', './history.js',
-    './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
+    './agent.js', './agent-prompts.js', './citations.js', './comments.js', './files.js',
+    './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js',
   ]) {
@@ -230,6 +230,9 @@ const ROUTES = [
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/library/999/content`, ok: { status: 404, error: 'document not found' } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/events`, sse: true },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/knowledge`, ok: { status: 200 } },
+  // Issue #67: every member may view prompts (the agents table is unseeded
+  // here, so the list is just empty — the 200 proves the guard threshold).
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/agent-prompts`, ok: { status: 200 } },
 
   // -- org-scoped (editor writes) --------------------------------------------
   { scope: 'org', minRole: 'editor', method: 'POST', path: `/api/orgs/${ORG_A}/library/upload`, req: () => ({ form: smallUpload }), ok: { status: 201 } },
@@ -252,6 +255,9 @@ const ROUTES = [
   // the threshold without importing anything (the catalog is unseeded here).
   { scope: 'org', minRole: 'owner', method: 'PUT', path: `/api/orgs/${ORG_A}/knowledge/selections`, req: () => ({ json: { enable: [], disable: [] } }), ok: { status: 200 } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/knowledge/reimport`, req: () => ({ json: { items: [] } }), ok: { status: 200 } },
+  // Issue #67: owner-only addition writes. Unseeded agents table → the
+  // route's own 404, distinct from the guard's non-leak body.
+  { scope: 'org', minRole: 'owner', method: 'PUT', path: `/api/orgs/${ORG_A}/agent-prompts/analyst`, req: () => ({ json: { addition: 'x' } }), ok: { status: 404, error: 'agent not found' } },
 ];
 
 const RANK = { viewer: 1, editor: 2, owner: 3 };

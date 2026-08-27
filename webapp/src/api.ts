@@ -1268,6 +1268,53 @@ export async function reimportKnowledgeItems(
   return ((await res.json()) as { packages: KnowledgePackage<OrgKnowledgeItem>[] }).packages;
 }
 
+// ---- Agent prompts & org additions (issue #67) ----
+
+/** One org's addition to an agent's system prompt. */
+export interface AgentPromptAddition {
+  text: string;
+  updated_at: string;
+  updated_by_email: string | null;
+}
+
+/** An agent's base prompt joined with this org's addition. */
+export interface OrgAgentPrompt {
+  slug: string;
+  name: string;
+  description: string | null;
+  model: string | null;
+  tools: string[];
+  system_prompt: string;
+  addition: AgentPromptAddition | null;
+}
+
+/** Every agent's base prompt + this org's additions. Org members. */
+export async function getOrgAgentPrompts(
+  orgId: number,
+): Promise<{ max_addition_chars: number; agents: OrgAgentPrompt[] }> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/agent-prompts`));
+  return (await res.json()) as { max_addition_chars: number; agents: OrgAgentPrompt[] };
+}
+
+/**
+ * Set (or clear, with an empty string) the org's addition for one agent.
+ * Owner-only; the backend trims and enforces the length cap.
+ */
+export async function putOrgAgentPrompt(
+  orgId: number,
+  slug: string,
+  addition: string,
+): Promise<AgentPromptAddition | null> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/agent-prompts/${encodeURIComponent(slug)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addition }),
+    }),
+  );
+  return ((await res.json()) as { addition: AgentPromptAddition | null }).addition;
+}
+
 // ---- File activity & project feed (stories 005-001/002/003) ----
 
 /** One row of the persisted per-project file event log. */
