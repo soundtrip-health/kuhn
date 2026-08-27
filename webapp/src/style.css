@@ -539,6 +539,29 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 /* Math (katex) inherits doc ink */
 #editor .milkdown .ProseMirror .katex { color: var(--doc-ink); }
 
+/* ---- Live collab carets (y-prosemirror awareness, STH-37) -------------
+   The default cursor builder is a span (inline border-color = user color)
+   wrapping a block <div> name label, which breaks the line. Restyle as a
+   thin caret bar plus a small semi-transparent tag floating above it; the
+   tag turns opaque on hover so identity stays discoverable. */
+.ProseMirror-yjs-cursor {
+  position: relative;
+  border-left: 2px solid;      /* inline style supplies the user color */
+  margin-left: -1px; margin-right: -1px;
+  pointer-events: none;
+}
+.ProseMirror-yjs-cursor > div {
+  position: absolute; top: -1.15em; left: -2px;
+  display: inline-block;
+  font-family: var(--font-ui); font-size: 9.5px; font-weight: 500;
+  line-height: 1; padding: 1.5px 4px; border-radius: 3px;
+  color: #fff; white-space: nowrap; user-select: none;
+  opacity: .5; transition: opacity .15s ease;
+  pointer-events: auto;
+}
+.ProseMirror-yjs-cursor:hover > div,
+.ProseMirror-yjs-cursor > div:hover { opacity: 1; }
+
 /* ---- Citation chip (canonical inline element) ----------------------- */
 .citation-chip {
   display: inline-flex; align-items: baseline; white-space: nowrap;
