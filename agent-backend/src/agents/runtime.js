@@ -28,7 +28,7 @@ import {
 import { DEFAULT_BIB_PATH, upsertCitation, addReference, updateReference, removeReference, isDerivedBibPath } from '../citations.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
 import { addReply, createThread, listThreads, resolveQuote, setResolved } from '../db/comments.js';
-import { isSuggestionPath, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
+import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
 import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
@@ -63,7 +63,8 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
  *   tools so the agent returns text only and emits no file_change (the /write contract)
  * @param {boolean} [task.seeding] - Seeding-pipeline bypass (story 008-001):
- *   suggestion mode normally turns agent writes to draft/** into pending edits;
+ *   suggestion mode normally turns agent writes to draft/** (and to existing
+ *   files elsewhere, STH-44) into pending edits;
  *   the seeding stages write the first draft directly (nothing to protect yet).
  *   Sub-agent dispatches inherit it.
  * @param {object} [internal] - Used by dispatch_agent for sub-tasks; not part of the boundary
@@ -378,10 +379,9 @@ async function runTask(task, internal, channel, state) {
       });
 
       if (text) channel.push({ type: 'text', agent: agent.slug, content: text });
-      for (const call of toolCalls) {
-        const fileEvent = fileChangeEvent(agent.slug, call, !seeding);
-        if (fileEvent) channel.push(fileEvent);
-      }
+      // File events for write_file/edit_file are pushed by the tool handlers
+      // themselves (STH-44) — they alone know whether a write landed on disk
+      // or as a proposal, and a failed write emits nothing.
 
       const msgUsage = message.message?.usage;
       if (msgUsage) {
@@ -552,21 +552,20 @@ function buildPrompt(input, context) {
   return parts.join('\n\n');
 }
 
-// `suggesting` = suggestion mode is active for the task (i.e. not seeding);
-// scoped write_file/edit_file calls then land as pending edits, so their live
-// event is kind 'proposed' — badges update without an activity-log entry.
-function fileChangeEvent(agentSlug, toolCall, suggesting = false) {
-  const path = toolCall.input?.path;
-  if (!path) return null;
-  if (toolCall.name === 'mcp__kuhn__write_file') {
-    const kind = suggesting && isSuggestionPath(path) ? 'proposed' : 'create';
-    return { type: 'file_change', agent: agentSlug, path, kind };
-  }
-  if (toolCall.name === 'mcp__kuhn__edit_file') {
-    const kind = suggesting && isSuggestionPath(path) ? 'proposed' : 'update';
-    return { type: 'file_change', agent: agentSlug, path, kind };
-  }
-  return null;
+/**
+ * Live + persisted signal for a write_file/edit_file outcome (STH-44). Direct
+ * publish + channel mirror — the move_file / run_script pattern: the hub's
+ * WeakSet dedupe keeps the feed to one envelope, and sub-agent runs (depth
+ * > 0, untee'd) persist activity too. 'proposed' is SSE-only by design
+ * (no file_events row, no eviction — nothing on disk changed); the hub
+ * already treats it that way.
+ */
+function emitFileChange(channel, { projectId, agentSlug, path, kind, jobId, userId }) {
+  const event = { type: 'file_change', agent: agentSlug, path, kind };
+  try {
+    publishProjectEvent(projectId, event, { jobId, userId });
+  } catch { /* activity loss must not fail the write */ }
+  channel.push(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -760,7 +759,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         // proposal, show the proposed content — otherwise an agent that wrote
         // and reads back to verify sees stale disk bytes and concludes its
         // write was lost.
-        if (!seeding && isSuggestionPath(path)) {
+        if (!seeding) {
           const proposal = pendingProposalContent(projectId, path);
           if (proposal != null) {
             return `[${path} has a pending proposed update awaiting user review. The content below is the PROPOSED version; the file on disk keeps its previous content until the user accepts.]\n\n${proposal}`;
@@ -877,15 +876,21 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
       },
       async ({ path, content }) => fileToolResult(async () => {
         await rejectDerivedBibWrite(projectId, path);
-        // Suggestion mode (story 008-001): writes to draft/** become pending
-        // edits the user reviews; the file's bytes do not change here. The
-        // seeding pipeline bypasses the gate — its first draft writes land
-        // directly (there is nothing to protect yet).
-        if (!seeding && isSuggestionPath(path)) {
+        // Suggestion mode (story 008-001, widened by STH-44): writes to
+        // draft/** and to any existing file outside agent-private folders
+        // become pending edits the user reviews; the file's bytes do not
+        // change here. The seeding pipeline bypasses the gate — its first
+        // draft writes land directly (there is nothing to protect yet).
+        const emit = (kind) => emitFileChange(channel, {
+          projectId, agentSlug: agent.slug, path, kind, jobId: parentJob.id, userId,
+        });
+        if (!seeding && await isProposable(projectId, path)) {
           await proposeEdit(projectId, { path, proposedContent: content, agentSlug: agent.slug, jobId: parentJob.id });
+          emit('proposed');
           return proposedResult(path);
         }
         const { created } = await writeProjectFile(projectId, path, content);
+        emit(created ? 'create' : 'update');
         return `${created ? 'Created' : 'Updated'} ${path}`;
       }),
     ));
@@ -900,7 +905,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
       },
       async ({ path, old_string, new_string, replace_all }) => fileToolResult(async () => {
         await rejectDerivedBibWrite(projectId, path);
-        const suggesting = !seeding && isSuggestionPath(path);
+        const suggesting = !seeding && await isProposable(projectId, path);
         // In suggestion mode the "current content" is the EFFECTIVE content —
         // an existing proposal if there is one, else the disk file — so a
         // sequential write→edit on the same draft stays coherent (008-001).
@@ -913,11 +918,16 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
           throw new Error(`old_string occurs ${occurrences} times in ${path}; pass replace_all or a longer unique string`);
         }
         const next = content.replaceAll(old_string, new_string);
+        const emit = (kind) => emitFileChange(channel, {
+          projectId, agentSlug: agent.slug, path, kind, jobId: parentJob.id, userId,
+        });
         if (suggesting) {
           await proposeEdit(projectId, { path, proposedContent: next, agentSlug: agent.slug, jobId: parentJob.id });
+          emit('proposed');
           return proposedResult(path);
         }
         await writeProjectFile(projectId, path, next);
+        emit('update');
         return `Updated ${path} (${replace_all ? occurrences : 1} replacement${occurrences > 1 && replace_all ? 's' : ''})`;
       }),
     ));

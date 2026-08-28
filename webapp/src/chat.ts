@@ -581,12 +581,13 @@ async function send(): Promise<void> {
  * The folder selected in the file panel, as agent context — but ONLY when it
  * sits inside `draft/` (story 012-001).
  *
- * Why the restriction: `isSuggestionPath` (agent-backend/src/pending-edits.js)
- * gates the whole suggestion/review loop on a path's FIRST segment being
- * exactly `draft`. An agent write under `draft/` becomes a pending edit the
- * user reviews; anywhere else it lands on disk immediately. So hinting an agent
- * toward a non-draft folder would silently downgrade a reviewable proposal into
- * a direct write — a change to the trust loop disguised as a convenience.
+ * Why the restriction: `isProposable` (agent-backend/src/pending-edits.js)
+ * gates the suggestion/review loop: a NEW file is a reviewable proposal only
+ * under `draft/`; anywhere else it lands on disk immediately (existing files
+ * are proposals everywhere outside agent-private folders — STH-44). So hinting
+ * an agent toward a non-draft folder for new files would silently downgrade a
+ * reviewable proposal into a direct write — a change to the trust loop
+ * disguised as a convenience.
  *
  * Outside `draft/` (including the project root, the default) we send nothing
  * and the agent uses its own judgement, exactly as before this story. Nothing

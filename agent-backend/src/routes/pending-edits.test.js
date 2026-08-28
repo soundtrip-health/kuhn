@@ -121,6 +121,15 @@ describe('pending-edit routes (story 008-001)', () => {
     expect(one.edits[0]).toMatchObject({ baseMissing: true });
   });
 
+  it('POST proposes for an existing file outside draft/ (STH-44)', async () => {
+    const { rows } = querySync('SELECT root_path FROM projects WHERE id = $1', [PROJECT_ID]);
+    await mkdir(join(rows[0].root_path, 'research'), { recursive: true });
+    await writeFile(join(rows[0].root_path, 'research', 'notes.md'), BASE);
+    const res = await post(`/api/projects/${PROJECT_ID}/pending-edits`, { path: 'research/notes.md', proposedContent: PROPOSED });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ path: 'research/notes.md', baseMissing: false });
+  });
+
   it('POST 400s out-of-scope paths and malformed bodies', async () => {
     for (const body of [
       { path: 'research/notes.md', proposedContent: 'x' },

@@ -113,6 +113,9 @@ vi.mock('../db/move-paths.js', () => ({
 // the diff/apply/orchestration substance is covered in ../pending-edits.test.js.
 vi.mock('../pending-edits.js', () => ({
   isSuggestionPath: (p) => typeof p === 'string' && p.split('/')[0] === 'draft',
+  // STH-44: the real rule also proposes for EXISTING files outside draft/;
+  // here it defaults to draft-only and tests widen it per case.
+  isProposable: vi.fn(async (_projectId, p) => typeof p === 'string' && p.split('/')[0] === 'draft'),
   proposeEdit: vi.fn(async (_projectId, { path }) => ({ id: 1, path })),
   effectiveContent: vi.fn(async () => 'file body'),
   pendingProposalContent: vi.fn(() => null),
@@ -128,7 +131,7 @@ vi.mock('../db/comments.js', () => ({
 }));
 
 import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
+import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { isDerivedBibPath, updateReference, removeReference } from '../citations.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { writeProjectFile, moveProjectEntry } from '../storage.js';
@@ -191,10 +194,10 @@ describe('runAgentTask', () => {
 
     const events = await collect({ role: 'research', projectId: 1, input: 'write the intro' });
 
+    // No file_change from the bare tool_use blocks: the handlers emit those
+    // when a write actually happens (STH-44), and none ran here.
     expect(events).toEqual([
       { type: 'text', agent: 'ra', content: 'Drafting now.' },
-      { type: 'file_change', agent: 'ra', path: 'draft.md', kind: 'create' },
-      { type: 'file_change', agent: 'ra', path: 'notes.md', kind: 'update' },
       {
         type: 'done',
         agent: 'ra',
@@ -443,32 +446,52 @@ describe('suggestion mode (story 008-001)', () => {
     expect(result.content[0].text).toMatch(/^Updated research\/notes\.md/);
   });
 
-  it("fileChangeEvent reports scoped writes as kind 'proposed' — but 'create' while seeding", async () => {
-    const turn = {
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', id: 't1', name: 'mcp__kuhn__write_file', input: { path: 'draft/main.md', content: 'x' } },
-          { type: 'tool_use', id: 't2', name: 'mcp__kuhn__edit_file', input: { path: 'draft/main.md', old_string: 'a', new_string: 'b' } },
-          { type: 'tool_use', id: 't3', name: 'mcp__kuhn__write_file', input: { path: 'research/s.md', content: 'x' } },
-        ],
-        usage: { input_tokens: 1, output_tokens: 1 },
-      },
+  it("write/edit handlers emit kind 'proposed' for scoped paths — 'create'/'update' while seeding", async () => {
+    const run = async (task) => {
+      sdkState.generator = async function* () {
+        const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+        const write = tools.find((t) => t.name === 'write_file');
+        const edit = tools.find((t) => t.name === 'edit_file');
+        await write.handler({ path: 'draft/main.md', content: 'x' });
+        await edit.handler({ path: 'draft/main.md', old_string: 'file', new_string: 'b', replace_all: false });
+        await write.handler({ path: 'research/s.md', content: 'x' });
+        yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+      };
+      const events = [];
+      for await (const ev of runAgentTask(task)) events.push(ev);
+      return events.filter((e) => e.type === 'file_change').map((e) => [e.path, e.kind]);
     };
     getAgentWithTools.mockResolvedValue(WRITER);
-    sdkState.messages = [turn, ...success()];
-    const events = await collect({ role: 'writer', projectId: 7, input: 'go' });
-    expect(events.filter((e) => e.type === 'file_change').map((e) => [e.path, e.kind])).toEqual([
+    effectiveContent.mockResolvedValue('file body');
+    expect(await run({ role: 'writer', projectId: 7, input: 'go' })).toEqual([
       ['draft/main.md', 'proposed'],
       ['draft/main.md', 'proposed'],
       ['research/s.md', 'create'],
     ]);
-
-    sdkState.messages = [turn, ...success()];
-    const seeded = await collect({ role: 'writer', projectId: 7, input: 'go', seeding: true });
-    expect(seeded.filter((e) => e.type === 'file_change').map((e) => e.kind)).toEqual([
-      'create', 'update', 'create',
+    expect(await run({ role: 'writer', projectId: 7, input: 'go', seeding: true })).toEqual([
+      ['draft/main.md', 'create'],
+      ['draft/main.md', 'update'],
+      ['research/s.md', 'create'],
     ]);
+    sdkState.generator = null;
+  });
+
+  it('an EXISTING file outside draft/ is proposed, not written (STH-44)', async () => {
+    isProposable.mockImplementation(async (_p, path) => path === 'research/reviews/lit.md' || path.startsWith('draft/'));
+    const { write, edit } = await fileTools({ role: 'writer', projectId: 7, input: 'go' });
+    const result = await write.handler({ path: 'research/reviews/lit.md', content: 'rewritten' });
+    expect(proposeEdit).toHaveBeenCalledWith(7, {
+      path: 'research/reviews/lit.md', proposedContent: 'rewritten', agentSlug: 'writer', jobId: 42,
+    });
+    expect(result.content[0].text).toMatch(/Successfully proposed update to research\/reviews\/lit\.md/);
+    // edit_file on it reads the EFFECTIVE content (a prior proposal), like draft/.
+    effectiveContent.mockResolvedValueOnce('rewritten body');
+    await edit.handler({ path: 'research/reviews/lit.md', old_string: 'body', new_string: 'text', replace_all: false });
+    expect(proposeEdit).toHaveBeenLastCalledWith(7, expect.objectContaining({ proposedContent: 'rewritten text' }));
+    // A NEW file outside draft/ still lands directly.
+    const fresh = await write.handler({ path: 'research/reviews/new.md', content: 'x' });
+    expect(fresh.content[0].text).toMatch(/^Created /);
+    expect(writeProjectFile).toHaveBeenCalledWith(7, 'research/reviews/new.md', 'x');
   });
 
   it('read_file on a path with a pending proposal returns the PROPOSED content (issue #42)', async () => {
