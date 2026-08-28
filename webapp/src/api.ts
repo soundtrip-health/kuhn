@@ -631,6 +631,34 @@ export async function getTree(projectId: number): Promise<TreeNode[]> {
   return ((await res.json()) as { tree: TreeNode[] }).tree;
 }
 
+// ---- Reference store (STH-42) ----------------------------------------------
+
+/** A row of the project's reference store — the source the .bib is derived
+ *  from, and the only place the abstract lives. */
+export interface StoredReference {
+  id: number;
+  cite_key: string;
+  entry_type: string;
+  title: string;
+  /** "Family, Given" strings (PubMed FAU) or free-form names. */
+  authors: string[];
+  year: number | null;
+  journal: string | null;
+  volume: string | null;
+  issue: string | null;
+  pages: string | null;
+  doi: string | null;
+  pmid: string | null;
+  url: string | null;
+  abstract: string | null;
+  source_type: string | null;
+}
+
+export async function listReferences(projectId: number): Promise<StoredReference[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/references`));
+  return ((await res.json()) as { references: StoredReference[] }).references;
+}
+
 const fileUrl = (projectId: number, path: string) =>
   `${BACKEND_URL}/api/projects/${projectId}/file?path=${encodeURIComponent(path)}`;
 

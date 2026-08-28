@@ -584,6 +584,31 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .ProseMirror-selectednode.citation-chip { box-shadow: 0 0 0 2px var(--accent-line); }
 
+/* Citation hover card (STH-42) — cite-card.ts owns it. Fixed-positioned from
+   the chip's rect; one element for the whole editor. */
+.cite-card {
+  position: fixed; z-index: 60; width: 360px; max-width: calc(100vw - 16px);
+  background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: var(--shadow-pop); padding: 11px 13px 9px;
+  display: flex; flex-direction: column; gap: 4px;
+  font: var(--ui-body); color: var(--ink-2);
+}
+.cite-card[hidden] { display: none; }
+.cite-card-key { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+.cite-card-authors { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+.cite-card-title { font-size: 13.5px; color: var(--ink); line-height: 1.4; font-weight: 500; }
+.cite-card-source { font: var(--ui-small); color: var(--ink-3); }
+.cite-card-missing { margin: 2px 0 0; font: var(--ui-small); color: var(--warn); }
+.cite-card-actions { display: flex; gap: 4px; margin: 4px 0 0 -6px; }
+.cite-card-details { border-top: 1px solid var(--line-2); margin-top: 4px; padding-top: 8px; }
+.cite-card-abstract {
+  margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
+  max-height: 220px; overflow-y: auto;
+}
+.cite-card-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font: var(--ui-small); }
+.cite-card-links a { color: var(--accent); text-decoration: none; }
+.cite-card-links a:hover { text-decoration: underline; }
+
 /* ---- Chat ----------------------------------------------------------- */
 /* Conversation filter bar (issue #45): sits above the scrolling log. */
 #chat-filter-bar {
