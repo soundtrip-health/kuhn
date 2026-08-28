@@ -26,6 +26,16 @@
       </div>
       <div class="topbar-right">
         <span id="topbar-activity" class="topbar-activity" role="status" aria-live="polite" hidden></span>
+        <!-- Slash-command help (STH-38) — slash-help.ts owns it. Lives up here
+             rather than in the document sub-header (STH-45): the commands are
+             app-level, and the sub-header has no room when the side panels are open. -->
+        <span class="slash-hint">
+          <button id="slash-help-btn" type="button" class="slash-hint-chip"
+            aria-expanded="false" aria-haspopup="true"
+            title="What can I type after / ?"><kbd>/</kbd> commands</button>
+          <div id="slash-help-menu" class="slash-help-menu" hidden></div>
+        </span>
+        <span class="topbar-divider" aria-hidden="true"></span>
         <button id="toggle-chat" type="button" class="btn btn-quiet" title="Toggle chat panel">Chat</button>
         <button id="toggle-files" type="button" class="btn btn-quiet" title="Toggle files panel">Files</button>
         <button id="toggle-preview" type="button" class="btn btn-ghost" title="Toggle PDF preview">Preview&nbsp;PDF</button>
@@ -84,17 +94,13 @@
 
       <!-- ---------- CENTER: EDITOR ---------- -->
       <section id="editor-pane">
+        <!-- Only the document actions live here (STH-45). The path and word
+             count moved to the footer status bar (the breadcrumb names the
+             file too), and the / commands help to the topbar: with chat +
+             files + comments open the pane is ~430px, which is exactly what
+             the four action buttons need. -->
         <div id="editor-subheader">
-          <span id="editor-path" class="editor-path">untitled.md</span>
           <div class="editor-meta">
-            <span id="editor-wordcount">0 words</span>
-            <!-- Slash-command help (STH-38) — slash-help.ts owns it -->
-            <span class="slash-hint">
-              <button id="slash-help-btn" type="button" class="slash-hint-chip"
-                aria-expanded="false" aria-haspopup="true"
-                title="What can I type after / ?"><kbd>/</kbd> commands</button>
-              <div id="slash-help-menu" class="slash-help-menu" hidden></div>
-            </span>
             <!-- External review links (epic 013) — share-links.ts owns it -->
             <button id="editor-share-btn" type="button" class="btn btn-quiet btn-sm"
               title="Share this document with an external reviewer">Share</button>
@@ -174,6 +180,8 @@
       <div class="status-left">
         <span id="status-doc"></span>
         <span id="status-save" data-state="saved">saved</span>
+        <!-- Word count moved down from the document sub-header (STH-45). -->
+        <span id="editor-wordcount">0 words</span>
         <span id="status-notice" role="status" aria-live="polite"></span>
       </div>
       <div class="status-right">
