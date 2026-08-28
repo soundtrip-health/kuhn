@@ -275,7 +275,9 @@ function assessContext(agent: string, inputTokens: number): void {
   btn.innerHTML = `Start fresh conversation ${icon('arrow-right', { size: 13, stroke: 2 })}`;
   btn.addEventListener('click', () => {
     btn.disabled = true;
-    clearConversation(agent, { confirm: false });
+    // A refused clear (agent still running) leaves the card — re-arm the
+    // button; a successful one removes the card via clearConversation.
+    if (!clearConversation(agent, { confirm: false })) btn.disabled = false;
   });
   card.append(btn);
   log.append(card);
@@ -283,27 +285,41 @@ function assessContext(agent: string, inputTokens: number): void {
 }
 
 /**
+ * Drop the "getting long" card(s) for an agent once its context IS cleared
+ * (STH-46). Leaving the card — with its prominent call-to-action — after the
+ * divider announced a fresh start read as "not cleared yet". The divider is
+ * the durable record of the break; the suggestion has served its purpose.
+ */
+function dismissContextNotices(agent: string): void {
+  document
+    .querySelectorAll<HTMLElement>(`#chat-log .chat-notice-context[data-agent="${CSS.escape(agent)}"]`)
+    .forEach((card) => card.remove());
+}
+
+/**
  * Drop an agent's SDK session so its next message starts a fresh conversation.
  * The transcript stays on screen (server history is untouched); a divider marks
- * the break so the context boundary is visible in the log.
+ * the break so the context boundary is visible in the log. Returns whether the
+ * context was actually cleared (false when refused or cancelled).
  */
-function clearConversation(agent: string, opts: { confirm: boolean }): void {
+function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   const label = agentLabel(agent);
   if (running) {
     notify(`${label} is still working — wait for the task to finish before clearing`);
-    return;
+    return false;
   }
   if (!sessions.has(agent) && !contextTokens.has(agent)) {
     notify(`No conversation context with ${label} to clear`);
-    return;
+    return false;
   }
   // Documented exception (story 005-004): native confirm(), as with delete.
   if (opts.confirm && !window.confirm(
     `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.`,
-  )) return;
+  )) return false;
   sessions.delete(agent);
   contextTokens.delete(agent);
   contextSuggested.delete(agent);
+  dismissContextNotices(agent);
   const divider = document.createElement('div');
   divider.className = 'chat-divider';
   divider.textContent = `fresh conversation with ${label} — earlier chat context cleared`;
@@ -311,6 +327,7 @@ function clearConversation(agent: string, opts: { confirm: boolean }): void {
   document.getElementById('chat-log')!.append(divider);
   updateContextIndicator();
   scrollLog();
+  return true;
 }
 
 // Restore prior state on page load (story 020): render the recent transcript
