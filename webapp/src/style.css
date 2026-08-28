@@ -69,7 +69,9 @@ body {
   background: var(--chrome);
   border-bottom: 1px solid var(--line);
 }
-.topbar-left { display: flex; align-items: center; gap: 14px; }
+/* min-width:0 lets the breadcrumb give way before the right-hand actions get
+   pushed off-screen on a narrow window (STH-45). */
+.topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 
 .brand { display: flex; align-items: center; gap: 9px; }
@@ -83,7 +85,7 @@ body {
 
 .topbar-divider { width: 1px; height: 18px; background: var(--line); }
 
-.breadcrumb { display: flex; align-items: center; gap: 6px; }
+.breadcrumb { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .breadcrumb-sep { color: var(--ink-3); font-size: 13px; }
 .phase-pill {
   font: 500 11px/1 var(--font-ui);
@@ -101,11 +103,14 @@ body {
   border: none; background: none; cursor: pointer;
   font: 400 13.5px/1 var(--font-ui); color: var(--ink-2);
   padding: 4px 7px; border-radius: var(--r-xs);
+  white-space: nowrap;
 }
 .breadcrumb-seg:hover { background: var(--soft); color: var(--ink); }
 .breadcrumb-seg svg { color: var(--ink-3); }
 .breadcrumb-project { font-weight: 500; color: var(--ink); }
 .breadcrumb-doc { font-family: var(--font-mono); font-size: 12px; }
+/* Long filenames ellipsize instead of wrapping the topbar (STH-45). */
+.breadcrumb-doc { display: block; max-width: 260px; min-width: 48px; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .breadcrumb-seg:disabled { color: var(--ink-3); cursor: default; background: none; }
 
 /* z-index 95: above the zero-orgs overlay (90) so the org menu really does
@@ -363,15 +368,22 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 
 /* ---- Editor sub-header + canvas ------------------------------------- */
 #editor-subheader {
-  height: 38px; flex: 0 0 38px;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 22px;
+  min-height: 38px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 2px 16px;
   border-bottom: 1px solid var(--line-2);
 }
-.editor-path { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); letter-spacing: .02em; }
-.editor-meta { display: flex; align-items: center; gap: 14px; }
-#editor-wordcount { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+/* .editor-path survives for the external review shell (review.html), which
+   has no breadcrumb to name the document. The member shell dropped it (STH-45). */
+.editor-path { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); letter-spacing: .02em; margin-right: auto; }
+/* Wraps rather than overflowing into the neighbouring panel when the pane is
+   squeezed below what the actions need (STH-45). */
+.editor-meta { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 2px 6px; min-width: 0; }
+#editor-wordcount { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+#statusbar #editor-wordcount:empty { display: none; }
 .slash-hint { position: relative; display: inline-flex; }
+/* In the topbar (STH-45) the chip sits among real buttons — give it their footprint. */
+.topbar-right .slash-hint-chip { padding: 0 6px; }
 .slash-hint-chip {
   display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3);
   background: none; border: none; padding: 0; cursor: pointer;

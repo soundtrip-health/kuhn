@@ -415,8 +415,6 @@ async function openDocumentInner(
   movedAway = false;
   writerSession = undefined; // a new document starts a fresh writer thread
   setDocument(path);
-  const pathEl = document.getElementById('editor-path');
-  if (pathEl) pathEl.textContent = path.replace(/\//g, ' / ');
   void refreshBib(projectId);
   if (!tooltipsInstalled) {
     installCitationTooltips(document.getElementById('editor')!);
@@ -776,11 +774,7 @@ export async function retargetDocument(path: string): Promise<void> {
       // so a racing autosave lands on the new path (rule 1).
       docHandle?.setPath(p);
     },
-    announce: (p) => {
-      setDocument(p);
-      const pathEl = document.getElementById('editor-path');
-      if (pathEl) pathEl.textContent = p.replace(/\//g, ' / ');
-    },
+    announce: (p) => setDocument(p),
     pendingMarkdown: () => (hasUnsavedChanges() ? currentMarkdown() : null),
     cancelPendingSave,
     clearMovedAway: () => { movedAway = false; }, // we know where the document went

@@ -145,7 +145,6 @@ async function switchToActiveProject(): Promise<void> {
     await closeDocument();
     openTarget = '';
     setActiveFile('');
-    document.getElementById('editor-path')!.textContent = '';
     if (!workspace.hasNoOrgs()) openProjectBrowser();
     return;
   }
