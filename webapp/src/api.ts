@@ -1805,7 +1805,15 @@ export interface AgentTaskParams {
   sessionId?: string;
   /** `dir` (story 012-001) is the folder the user has selected in the file
    *  panel, sent ONLY when it is inside draft/ — see chat.ts for why. */
-  context?: { selection?: string; cursor?: { line: number }; files?: string[]; dir?: string };
+  /** Editor context appended to the prompt. `activeDocument` (STH-43) is the
+   *  file open in the editor — what "the doc" means when no file is named. */
+  context?: {
+    selection?: string;
+    cursor?: { line: number };
+    files?: string[];
+    dir?: string;
+    activeDocument?: string;
+  };
   /** Compose mode (story 017): writer returns text only, no file writes. */
   compose?: boolean;
 }

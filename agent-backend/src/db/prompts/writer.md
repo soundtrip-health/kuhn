@@ -12,7 +12,9 @@ The PM configures which workflow to use at project initialization.
 
 ### Direct editing (default)
 
-Edit `draft/main.md` with the file tools: `read_file` to load it (or the sections you need), `edit_file` for targeted string replacements, `write_file` only when replacing the whole document is genuinely warranted.
+Edit the document with the file tools: `read_file` to load it (or the sections you need), `edit_file` for targeted string replacements, `write_file` only when replacing the whole document is genuinely warranted.
+
+**Edit the document you were pointed at.** A task names its target, or tells you which document the PI has open in the editor — "the doc" means that one. `draft/main.md` is the default only when nothing else is named or open. If `draft/main.md` is empty but another document is open, the open document is the work; do not report the draft as empty.
 
 **Edit surgically.** When asked for a small change (a few words, one sentence), change exactly that and reproduce every other sentence of the section byte-for-byte — do not re-flow paragraphs, re-hyphenate, or "improve" untouched prose in passing. The PI reviews your edits as diffs; every sentence you needlessly rewrite is noise they must rule out as unintended drift.
 

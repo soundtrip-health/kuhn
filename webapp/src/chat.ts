@@ -22,6 +22,7 @@ import {
   runAgentTask,
   seedProject,
   type AgentEvent,
+  type AgentTaskParams,
 } from './api';
 import { agentIdentity } from './agents';
 import type { FileChange } from './files';
@@ -617,6 +618,19 @@ function draftTargetContext(): { dir: string } | undefined {
 }
 
 /**
+ * Editor context sent with every chat turn (STH-43): the document the user
+ * has open, so "do a full pass on the doc" resolves to what they are looking
+ * at rather than draft/main.md by default — plus the draft-folder hint above.
+ * The backend relays the open document to any sub-agent the PM dispatches.
+ */
+function taskContext(): AgentTaskParams['context'] {
+  const activeDocument = workspace.activeDocPath() || undefined;
+  const dir = draftTargetContext();
+  if (!activeDocument && !dir) return undefined;
+  return { ...dir, activeDocument };
+}
+
+/**
  * Run a single chat turn. Separated from send() so the user message is appended
  * once but the run itself can be re-invoked by "Try again" after a transient
  * overload (story 029) — resuming the agent's session if one was recorded.
@@ -634,7 +648,7 @@ async function dispatchTask(role: string, text: string): Promise<void> {
         projectId: activeProjectId,
         input: text,
         sessionId: sessions.get(role),
-        context: draftTargetContext(),
+        context: taskContext(),
       },
       createEventHandler(),
     );
@@ -957,7 +971,7 @@ async function continueAfterBudget(agent: string): Promise<void> {
         projectId: activeProjectId,
         input: prompt,
         sessionId: sessions.get(agent),
-        context: draftTargetContext(),
+        context: taskContext(),
       },
       createEventHandler(),
     );
