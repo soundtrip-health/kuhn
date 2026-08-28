@@ -143,7 +143,7 @@ import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
-import { updateProjectConfig } from '../db/projects.js';
+import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
 import { runAgentTask, reattach } from './runtime.js';
@@ -1507,5 +1507,66 @@ describe('run_script tools (issue #68b)', () => {
     const neither = await run.handler({ args: [] });
     expect(neither.isError).toBe(true);
     expect(runScriptSandboxed).not.toHaveBeenCalled();
+  });
+});
+
+// --- STH-43: the agent knows which document the user is looking at -----------
+
+describe('open-document context (STH-43)', () => {
+  const finish = () => [
+    { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+  const promptOf = (call = 0) => sdkQuery.mock.calls[call][0].prompt;
+
+  it('tells the agent which document is open and not to assume draft/main.md', async () => {
+    sdkState.messages = finish();
+    await collect({
+      role: 'ra', projectId: 1, input: 'do a full pass on the doc',
+      context: { activeDocument: 'research/reviews/lit.md' },
+    });
+    expect(promptOf()).toMatch(/^do a full pass on the doc\n\n/);
+    expect(promptOf()).toContain('currently has research/reviews/lit.md open in the editor');
+    expect(promptOf()).toContain('do not assume draft/main.md');
+  });
+
+  it("falls back to the project's persisted last-open document when the caller sent none", async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3, config: { activeDocument: 'draft/outline.md' } });
+    sdkState.messages = finish();
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(promptOf()).toContain('currently has draft/outline.md open in the editor');
+  });
+
+  it('prefers the context the client sent over the persisted document', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3, config: { activeDocument: 'draft/outline.md' } });
+    sdkState.messages = finish();
+    await collect({ role: 'ra', projectId: 1, input: 'go', context: { activeDocument: 'draft/spec.md' } });
+    expect(promptOf()).toContain('draft/spec.md open');
+    expect(promptOf()).not.toContain('draft/outline.md');
+  });
+
+  it('leaves seeding-pipeline prompts untouched', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3, config: { activeDocument: 'draft/main.md' } });
+    sdkState.messages = finish();
+    await collect({ role: 'ra', projectId: 1, input: 'seed', seeding: true, context: { seedStage: 'research' } });
+    expect(promptOf()).toBe('seed');
+  });
+
+  it('sub-agent dispatches inherit the open document but not the selection', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'pm', tools: ['spawn_agent'] });
+    sdkState.messages = finish();
+    await collect({
+      role: 'pm', projectId: 1, input: 'have the writer do a full pass on the doc',
+      context: { activeDocument: 'research/reviews/lit.md', selection: 'quoted passage', dir: 'draft/specs' },
+    });
+    const dispatch = createSdkMcpServer.mock.calls[0][0].tools.find((t) => t.name === 'dispatch_agent');
+    getAgentWithTools.mockResolvedValue(RA_AGENT);
+    sdkState.messages = finish();
+    await dispatch.handler({ agent_slug: 'writer', task: 'Full pass on research/reviews/lit.md' });
+
+    const child = promptOf(1);
+    expect(child).toMatch(/^Full pass on research\/reviews\/lit\.md/);
+    expect(child).toContain('currently has research/reviews/lit.md open in the editor');
+    expect(child).toContain('create new files in draft/specs/');
+    expect(child).not.toContain('<selection>');
   });
 });

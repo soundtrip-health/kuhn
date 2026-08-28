@@ -58,7 +58,10 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {number|null} [task.userId] - Session user for attribution (story
  *   007-001): stamped on the job, conversation, messages, and file events;
  *   sub-agent dispatches inherit it
- * @param {object} [task.context] - Optional editor context: { selection, cursor: {line}, files }
+ * @param {object} [task.context] - Optional editor context: { selection, cursor: {line},
+ *   files, dir, activeDocument }. `activeDocument` (STH-43) is the path the user
+ *   has open in the editor; when absent (and not seeding) it falls back to the
+ *   project's persisted last-open document, and sub-agent dispatches inherit it.
  * @param {string} [task.sessionId] - Continue a prior SDK session
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
  *   tools so the agent returns text only and emits no file_change (the /write contract)
@@ -276,8 +279,17 @@ async function runTask(task, internal, channel, state) {
     ? getOrgAgentPrompt(project.org_id, agent.slug)?.addition ?? null
     : null;
 
+  // Which document the user is looking at (STH-43). The chat client sends it
+  // with every turn; other callers (check scripts, the REST route without
+  // context) fall back to the project's persisted last-open document, which
+  // is the same thing the browser shows. Seeding runs are left alone — there
+  // is no user looking at anything yet, and their prompts are fixed.
+  const taskContext = seeding ? context : withActiveDocument(context, project);
+
   // In-process MCP tools, filtered by the role's DB allowlist
-  const mcpTools = buildMcpTools(agent, { projectId, depth, budget, parentJob: job, channel, userId, seeding });
+  const mcpTools = buildMcpTools(agent, {
+    projectId, depth, budget, parentJob: job, channel, userId, seeding, context: taskContext,
+  });
   const mcpServer = mcpTools.length > 0
     ? createSdkMcpServer({ name: 'kuhn', version: '1.0.0', tools: mcpTools })
     : null;
@@ -322,7 +334,7 @@ async function runTask(task, internal, channel, state) {
 
   async function runSdkAttempt() {
   const sdk = sdkQuery({
-    prompt: buildPrompt(input, context),
+    prompt: buildPrompt(input, taskContext),
     options: {
       systemPrompt: buildSystemPrompt(agent, projectDir, orgAddition),
       cwd: projectDir,
@@ -538,12 +550,43 @@ function buildSystemPrompt(agent, projectDir, orgAddition = null) {
   return parts.join('\n');
 }
 
+/** Fill in `activeDocument` from the project's persisted last-open document
+ * when the caller did not say which file the user is looking at (STH-43). */
+function withActiveDocument(context, project) {
+  if (context?.activeDocument) return context;
+  const persisted = project?.config?.activeDocument;
+  if (typeof persisted !== 'string' || !persisted) return context;
+  return { ...(context ?? {}), activeDocument: persisted };
+}
+
+/** The slice of a task's context a sub-agent should inherit (STH-43): where
+ * the user is working. Selection/cursor stay with the agent that received
+ * them — the dispatcher quotes what matters in the task text. */
+function inheritedContext(context) {
+  if (!context) return undefined;
+  const out = {};
+  if (context.activeDocument) out.activeDocument = context.activeDocument;
+  if (context.dir) out.dir = context.dir;
+  return Object.keys(out).length ? out : undefined;
+}
+
 function buildPrompt(input, context) {
   if (!context) return input;
   const parts = [input];
   if (context.selection) parts.push(`<selection>\n${context.selection}\n</selection>`);
   if (context.cursor?.line != null) parts.push(`The user's cursor is at line ${context.cursor.line}.`);
   if (context.files?.length) parts.push(`Relevant files: ${context.files.join(', ')}`);
+  // The open document (STH-43): "the doc" means what the user is looking at,
+  // not draft/main.md by default — early in a project main.md is often still
+  // empty while the real work (a lit review, an outline) lives elsewhere.
+  if (context.activeDocument) {
+    parts.push(
+      `The user currently has ${context.activeDocument} open in the editor. When they refer to `
+      + '"the doc", "this document", "the draft" or similar without naming a file, they mean this one — '
+      + 'do not assume draft/main.md. Name this path explicitly in any task you dispatch to another agent. '
+      + 'If it is genuinely ambiguous which document they mean, ask before acting.',
+    );
+  }
   // `dir` (story 012-001) is the folder selected in the file panel. A default,
   // not a constraint: the agent still puts a file somewhere else when it plainly
   // belongs there. The client only ever sends a folder inside draft/ — see
@@ -745,7 +788,7 @@ function addRunScriptTools(tools, agent, { projectId, parentJob, channel }) {
   ));
 }
 
-function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId, seeding = false }) {
+function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId, seeding = false, context: taskContext = null }) {
   const tools = [];
 
   // File tools (story 018): all project file access goes through the storage
@@ -1368,10 +1411,12 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         let finalText = '';
         let errorMessage = null;
         const child = runAgentTask(
-          // Sub-jobs inherit the dispatching user's attribution (story 007-001)
-          // and the seeding bypass (story 008-001): a sub-agent dispatched by a
-          // seeding stage writes the first draft directly too.
-          { role: agent_slug, projectId, input, userId, seeding },
+          // Sub-jobs inherit the dispatching user's attribution (story 007-001),
+          // the seeding bypass (story 008-001): a sub-agent dispatched by a
+          // seeding stage writes the first draft directly too — and the user's
+          // open document (STH-43), so a "full pass on the doc" relayed by the
+          // PM lands on the document the PI is actually looking at.
+          { role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext) },
           { depth: depth + 1, parentJobId: parentJob.id, budget },
         );
         for await (const event of child) {
