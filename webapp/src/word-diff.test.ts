@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { refineWords } from './word-diff';
+import { refineParagraph, refineWords } from './word-diff';
 
 describe('refineWords', () => {
   it('isolates a small in-place word change', () => {
@@ -57,5 +57,63 @@ describe('refineWords', () => {
     const r = refineWords('keep old end', 'keep new end')!;
     // Rejoining all segments must reproduce the full new text.
     expect(r.segments.map((s) => s.text).join('')).toBe('keep new end');
+  });
+});
+
+describe('refineParagraph (STH-44)', () => {
+  const oldText =
+    'Mitochondria produce ATP. They have their own DNA. Their membranes are folded into cristae. This is the fourth sentence, kept as is.';
+
+  it('strikes rewritten sentences whole and keeps untouched ones plain', () => {
+    const newText =
+      'Mitochondria produce ATP. They carry a small circular genome inherited from the mother. The inner membrane folds into cristae that house the respiratory chain. This is the fourth sentence, kept as is.';
+    const r = refineParagraph(oldText, newText)!;
+    // Two adjacent rewritten sentences merge into one struck span.
+    expect(r.removed).toEqual([
+      { start: oldText.indexOf('They have'), end: oldText.indexOf('cristae.') + 'cristae.'.length },
+    ]);
+    expect(r.segments.map((s) => [s.added, s.text])).toEqual([
+      [false, 'Mitochondria produce ATP. '],
+      [true, 'They carry a small circular genome inherited from the mother. The inner membrane folds into cristae that house the respiratory chain.'],
+      [false, ' This is the fourth sentence, kept as is.'],
+    ]);
+    expect(r.segments.map((s) => s.text).join('')).toBe(newText);
+  });
+
+  it('refines a touched-up sentence at word level inside the sentence walk', () => {
+    const newText =
+      'Mitochondria produce ATP. They have their own genome. Their membranes are folded into cristae. This is the fourth sentence, kept as is.';
+    const r = refineParagraph(oldText, newText)!;
+    expect(r.removed).toEqual([
+      { start: oldText.indexOf('DNA.'), end: oldText.indexOf('DNA.') + 'DNA.'.length },
+    ]);
+    expect(r.segments.filter((s) => s.added).map((s) => s.text)).toEqual(['genome.']);
+    expect(r.segments.map((s) => s.text).join('')).toBe(newText);
+  });
+
+  it('handles a few words changed across several sentences without striking them whole', () => {
+    const old2 = 'Alpha is first here. Beta comes second here. Gamma is third here.';
+    const new2 = 'Alpha is first there. Beta comes second there. Gamma is third there.';
+    const r = refineParagraph(old2, new2)!;
+    expect(r.removed.map((sp) => old2.slice(sp.start, sp.end))).toEqual(['here.', 'here.', 'here.']);
+    expect(r.segments.filter((s) => s.added).map((s) => s.text)).toEqual(['there.', 'there.', 'there.']);
+  });
+
+  it('treats re-wrapped whitespace as unchanged', () => {
+    const r = refineParagraph('One two.  Three four.', 'One two. Three   four.')!;
+    expect(r.removed).toEqual([]);
+    expect(r.segments.every((s) => !s.added)).toBe(true);
+  });
+
+  it('returns null when nothing survives at either level (full rewrite)', () => {
+    expect(refineParagraph('Alpha beta gamma. Delta epsilon zeta.', 'Eta theta iota. Kappa lambda mu.')).toBeNull();
+    expect(refineParagraph('', 'x.')).toBeNull();
+    expect(refineParagraph('x.', '   ')).toBeNull();
+  });
+
+  it('a single-sentence paragraph with a small change refines at word level', () => {
+    const r = refineParagraph('The cell is the unit of life.', 'The cell is the basic unit of life.')!;
+    expect(r.removed).toEqual([]);
+    expect(r.segments.filter((s) => s.added).map((s) => s.text)).toEqual(['basic']);
   });
 });

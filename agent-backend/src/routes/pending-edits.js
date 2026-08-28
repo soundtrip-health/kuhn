@@ -3,13 +3,12 @@
 // accept/reject orchestration live in src/pending-edits.js; these handlers
 // only translate HTTP and validate body shapes.
 // Tenancy (story 010-003): listing needs viewer; propose/accept/reject need
-// editor (they change what lands in draft/**).
+// editor (they change what lands in the project's documents).
 
 import { Router } from 'express';
 
 import {
   acceptEdit,
-  isSuggestionPath,
   listEdits,
   proposeEdit,
   rejectEdit,
@@ -77,7 +76,7 @@ router.get('/api/projects/:projectId/pending-edits', handle('viewer', async (pro
  * POST /api/projects/:projectId/pending-edits — body { path, proposedContent,
  * agent?, jobId? }. Creates/coalesces a pending edit exactly as the agent
  * tool path does (token-free check scripts, future human proposals). 400 for
- * paths outside the suggestion scope.
+ * paths outside the suggestion scope (see pending-edits.js isProposable).
  */
 router.post('/api/projects/:projectId/pending-edits', handle('editor', async (projectId, req, res) => {
   const { path, proposedContent, agent = null, jobId = null } = req.body ?? {};
@@ -85,10 +84,8 @@ router.post('/api/projects/:projectId/pending-edits', handle('editor', async (pr
     res.status(400).json({ error: 'path and proposedContent are required' });
     return;
   }
-  if (!isSuggestionPath(path)) {
-    res.status(400).json({ error: `Suggestions cover draft/** only: ${path}` });
-    return;
-  }
+  // Scope (draft/**, or an existing file outside agent-private folders —
+  // STH-44) is enforced by proposeEdit: invalid_path → 400 via handle().
   const edit = await proposeEdit(projectId, { path, proposedContent, agentSlug: agent, jobId });
   // Same live signal the agent tool path emits via fileChangeEvent: tabs
   // re-fetch pending edits on any file_change; 'proposed' is SSE-only.

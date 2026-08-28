@@ -102,14 +102,14 @@ function subtreeRows(table, projectId, from) {
  * findPendingEditConflicts() BEFORE the fs rename so the common case never
  * gets this far.
  *
- * Scope: a row whose NEW path leaves draft/** could never have been created
- * (isSuggestionPath, pending-edits.js:32-34). We still MOVE it rather than
- * drop it — proposed_content is the only copy, and deleting it silently is the
- * same data loss OR REPLACE was rejected for. The row follows its file and the
- * scope gate moves to acceptance time; the count is returned as `outOfScope`
- * so callers can surface it. NOTE: acceptEdit/acceptHunks (pending-edits.js:
- * 251, 267) call writeProjectFile with row.path and re-check nothing, so they
- * need an isSuggestionPath guard for this to be airtight.
+ * Scope: a row whose NEW path leaves draft/** may not have been creatable
+ * there (pending-edits.js isProposable — since STH-44 existing files outside
+ * draft/ are in scope too, agent-private folders never are). We still MOVE it
+ * rather than drop it — proposed_content is the only copy, and deleting it
+ * silently is the same data loss OR REPLACE was rejected for. The row follows
+ * its file and the scope gate moves to acceptance time (acceptEdit re-checks
+ * before writing); the count is returned as `outOfScope` so callers can
+ * surface it.
  */
 function rekeyPendingEdits(projectId, from, to) {
   const sources = subtreeRows('pending_edits', projectId, from);

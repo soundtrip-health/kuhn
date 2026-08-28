@@ -1,4 +1,5 @@
-// Story 008-001: suggestion mode. Agent writes to draft/** land here as
+// Story 008-001: suggestion mode. Agent writes to draft/** — and, since
+// STH-44, to any existing file outside agent-private folders — land here as
 // pending edits — full base/proposed blobs in SQLite (db/pending-edits.js),
 // with diff hunks DERIVED server-side (jsdiff) and never stored. This module
 // owns the scope rule, the hunk math (compute / apply-one / un-apply-one),
@@ -25,13 +26,43 @@ import { publishProjectEvent } from './project-events.js';
 import { StorageError, readProjectFile, writeProjectFile } from './storage.js';
 
 /**
- * The suggestion scope: paths whose FIRST segment is exactly `draft`
+ * The always-suggest scope: paths whose FIRST segment is exactly `draft`
  * (`draft/main.md` yes, `draft-notes/x.md` no). Normalized first so an agent
- * cannot dodge the gate with `./draft/...` or `research/../draft/...`.
+ * cannot dodge the gate with `./draft/...` or `research/../draft/...`. New
+ * files here are proposals too — the draft is the PI's.
  */
 export function isSuggestionPath(path) {
   if (typeof path !== 'string' || path.length === 0) return false;
   return posix.normalize(path).split('/')[0] === 'draft';
+}
+
+/**
+ * Agent-private folders (STH-44): the agent's own working state, never
+ * proposals. `pm/` holds the PM's status/decisions/issues log — its memory
+ * between sessions, which a review gate would silently freeze. `analyst/`
+ * holds scripts the analyst iterates on and `run_script` executes FROM DISK,
+ * so a pending proposal there would run stale code.
+ */
+const PRIVATE_ROOTS = new Set(['pm', 'analyst']);
+
+export function isPrivatePath(path) {
+  if (typeof path !== 'string' || path.length === 0) return false;
+  return PRIVATE_ROOTS.has(posix.normalize(path).split('/')[0]);
+}
+
+/**
+ * Whether an agent write to `path` lands as a pending edit (STH-44): always
+ * under draft/**; elsewhere only when the file already EXISTS — the PI's
+ * lit review in research/reviews/, a guidance note, a reviewer report — and
+ * never in an agent-private folder. A brand-new file outside draft/ is
+ * written directly: there is nothing of the PI's to protect yet, and the
+ * file tree badges it as new.
+ */
+export async function isProposable(projectId, path) {
+  if (isSuggestionPath(path)) return true;
+  if (isPrivatePath(path)) return false;
+  const { missing } = await readCurrent(projectId, posix.normalize(path));
+  return !missing;
 }
 
 export function sha256(text) {
@@ -144,11 +175,14 @@ async function refreshRow(projectId, row) {
  * @returns {Promise<object>} the edit in REST shape
  */
 export async function proposeEdit(projectId, { path, proposedContent, agentSlug = null, jobId = null }) {
-  if (!isSuggestionPath(path)) {
-    throw new StorageError('invalid_path', `Suggestions cover draft/** only: ${path}`);
+  if (typeof path !== 'string' || path.length === 0 || isPrivatePath(path)) {
+    throw new StorageError('invalid_path', `Suggestions never cover agent-private folders (pm/, analyst/): ${path}`);
   }
   const normalized = posix.normalize(path);
   const { content: base, missing } = await readCurrent(projectId, normalized);
+  if (missing && !isSuggestionPath(normalized)) {
+    throw new StorageError('invalid_path', `Suggestions cover draft/** and existing files only: ${path}`);
+  }
   const existing = getPendingEditByPath(projectId, normalized);
   const row = upsertPendingEdit(projectId, {
     path: normalized,
@@ -232,15 +266,15 @@ export async function acceptEdit(projectId, id, { hunk = null, force = false, us
   if (!stored) throw new StorageError('not_found', `No pending edit ${id}`);
   const row = await refreshRow(projectId, stored);
   if (!row) return { applied: true, remaining: 0 }; // resolved itself: file already matches
-  // proposeEdit gates on isSuggestionPath, but a row's path is no longer fixed
-  // for its lifetime: story 012-002 lets a move re-key pending_edits, so a
-  // proposal for draft/main.md follows the file to archive/main.md and would
-  // otherwise be written outside draft/** here — a scope the agent could never
-  // have proposed into directly. Re-check at the point of the write.
-  if (!isSuggestionPath(row.path)) {
+  // proposeEdit gates on the scope, but a row's path is no longer fixed for
+  // its lifetime: story 012-002 lets a move re-key pending_edits, so a proposal
+  // can follow its file into an agent-private folder, or a new-file proposal
+  // (base missing) can leave draft/ — scopes the agent could never have
+  // proposed into directly. Re-check at the point of the write.
+  if (isPrivatePath(row.path) || (row.base_missing && !isSuggestionPath(row.path))) {
     throw new StorageError(
       'invalid_path',
-      `Pending edit ${id} now points at ${row.path}, outside the draft/ suggestion scope — `
+      `Pending edit ${id} now points at ${row.path}, outside the suggestion scope — `
       + 'its file was moved. Reject it and ask the agent to re-propose.',
     );
   }

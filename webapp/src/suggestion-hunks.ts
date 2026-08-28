@@ -43,7 +43,7 @@ import {
 import { agentIdentity } from './agents';
 import { icon } from './icons';
 import { toast } from './toast';
-import { refineWords, type Segment } from './word-diff';
+import { refineParagraph, type Segment } from './word-diff';
 
 const key = new PluginKey<DecorationSet>('kuhn-suggestion-hunks');
 
@@ -340,16 +340,15 @@ function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
   return null;
 }
 
-/** Below this share of kept words a paragraph pair reads as a rewrite, and
- *  whole-block strike + full green preview says that more honestly. */
-const REFINE_MIN_SIMILARITY = 0.4;
-
 /**
- * Word-level refinement of one hunk (STH-41): pair the k-th removed line with
- * the k-th added line — the in-place-rewrite shape — and where a pair keeps
- * enough words, strike only its changed words and mark the preview line as
- * kept/added runs. Pairing is only trusted when the counts match; any other
- * shape (pure insert/delete, uneven rewrite) keeps the block treatment.
+ * Refinement of one hunk (STH-41 / STH-44): pair the k-th removed line with
+ * the k-th added line — the in-place-rewrite shape — and refine each pair
+ * sentences-first, words-within (word-diff.ts refineParagraph): untouched
+ * sentences stay plain, a touched-up sentence strikes only its changed
+ * words, a rewritten sentence is struck whole. A pair where nothing
+ * survives keeps the block treatment, as does any other hunk shape (pure
+ * insert/delete, uneven rewrite) — pairing is only trusted when the counts
+ * match.
  */
 function refineHunk(
   removedBlocks: Block[],
@@ -364,8 +363,8 @@ function refineHunk(
 
   const pairable = removedBlocks.length > 0 && removedBlocks.length === added.length;
   removedBlocks.forEach((block, k) => {
-    const refinement = pairable ? refineWords(block.text, added[k].norm) : null;
-    if (!refinement || refinement.similarity < REFINE_MIN_SIMILARITY) {
+    const refinement = pairable ? refineParagraph(block.text, added[k].norm) : null;
+    if (!refinement) {
       removed.push({ from: block.from, to: block.to });
       return;
     }

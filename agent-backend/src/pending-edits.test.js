@@ -20,7 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let exec; let querySync;
 let commitNow; let publishProjectEvent;
-let isSuggestionPath; let sha256; let computeHunks; let applyHunk; let unapplyHunk;
+let isSuggestionPath, isPrivatePath, isProposable; let sha256; let computeHunks; let applyHunk; let unapplyHunk;
 let proposeEdit; let effectiveContent; let listEdits; let acceptEdit; let rejectEdit;
 
 let root;
@@ -38,7 +38,7 @@ beforeAll(async () => {
   ({ commitNow } = await import('./history.js'));
   ({ publishProjectEvent } = await import('./project-events.js'));
   ({
-    isSuggestionPath, sha256, computeHunks, applyHunk, unapplyHunk,
+    isSuggestionPath, isPrivatePath, isProposable, sha256, computeHunks, applyHunk, unapplyHunk,
     proposeEdit, effectiveContent, listEdits, acceptEdit, rejectEdit,
   } = await import('./pending-edits.js'));
   root = await mkdtemp(join(tmpdir(), 'kuhn-pending-'));
@@ -64,6 +64,9 @@ beforeEach(async () => {
   await mkdir(join(dir, 'draft'), { recursive: true });
   await writeFile(join(dir, 'draft', 'main.md'), BASE);
 });
+
+const projectDir = () =>
+  querySync('SELECT root_path FROM projects WHERE id = $1', [PROJECT_ID]).rows[0].root_path;
 
 const diskContent = async (path = 'draft/main.md') => {
   const { rows } = querySync('SELECT root_path FROM projects WHERE id = $1', [PROJECT_ID]);
@@ -94,6 +97,31 @@ describe('isSuggestionPath (story 008-001)', () => {
     expect(isSuggestionPath('../draft/main.md')).toBe(false);
     expect(isSuggestionPath('')).toBe(false);
     expect(isSuggestionPath(null)).toBe(false);
+  });
+});
+
+describe('isProposable (STH-44)', () => {
+  it('always proposes under draft/, even for a file that does not exist yet', async () => {
+    expect(await isProposable(PROJECT_ID, 'draft/main.md')).toBe(true);
+    expect(await isProposable(PROJECT_ID, 'draft/sections/new.md')).toBe(true);
+  });
+
+  it('proposes for an EXISTING file outside draft/, writes a new one directly', async () => {
+    await mkdir(join(projectDir(), 'research', 'reviews'), { recursive: true });
+    await writeFile(join(projectDir(), 'research', 'reviews', 'lit.md'), 'lit review\n');
+    expect(await isProposable(PROJECT_ID, 'research/reviews/lit.md')).toBe(true);
+    expect(await isProposable(PROJECT_ID, './research/reviews/lit.md')).toBe(true);
+    expect(await isProposable(PROJECT_ID, 'research/reviews/new.md')).toBe(false);
+  });
+
+  it('never proposes inside agent-private folders, existing or not', async () => {
+    await mkdir(join(projectDir(), 'pm'), { recursive: true });
+    await writeFile(join(projectDir(), 'pm', 'status.md'), 'status\n');
+    expect(isPrivatePath('pm/status.md')).toBe(true);
+    expect(isPrivatePath('analyst/fit.R')).toBe(true);
+    expect(isPrivatePath('pm-notes/x.md')).toBe(false);
+    expect(await isProposable(PROJECT_ID, 'pm/status.md')).toBe(false);
+    expect(await isProposable(PROJECT_ID, 'analyst/fit.R')).toBe(false);
   });
 });
 
@@ -161,8 +189,23 @@ describe('proposeEdit', () => {
   });
 
   it('rejects out-of-scope paths with invalid_path (→ 400)', async () => {
+    // A file that does not exist outside draft/ …
     await expect(propose({ path: 'research/notes.md' }))
       .rejects.toMatchObject({ name: 'StorageError', code: 'invalid_path' });
+    // … and anything agent-private, even when it exists (STH-44).
+    await mkdir(join(projectDir(), 'pm'), { recursive: true });
+    await writeFile(join(projectDir(), 'pm', 'status.md'), 'status\n');
+    await expect(propose({ path: 'pm/status.md' }))
+      .rejects.toMatchObject({ name: 'StorageError', code: 'invalid_path' });
+  });
+
+  it('accepts a proposal for an existing file outside draft/ (STH-44)', async () => {
+    await mkdir(join(projectDir(), 'research', 'reviews'), { recursive: true });
+    await writeFile(join(projectDir(), 'research', 'reviews', 'lit.md'), BASE);
+    const edit = await propose({ path: 'research/reviews/lit.md' });
+    expect(edit).toMatchObject({ path: 'research/reviews/lit.md', baseMissing: false, stale: false });
+    expect(edit.hunks.length).toBeGreaterThan(0);
+    expect(await diskContent('research/reviews/lit.md')).toBe(BASE); // untouched until accepted
   });
 
   it('effectiveContent prefers the pending proposal over the disk file', async () => {
@@ -239,18 +282,25 @@ describe('acceptEdit', () => {
     });
   });
 
-  it('refuses a row whose file was moved out of draft/ (story 012-002)', async () => {
-    // proposeEdit gates on isSuggestionPath, but a move re-keys pending_edits
-    // (db/move-paths.js), so a row's path can leave draft/ after the fact.
-    // Accepting it would write outside the suggestion scope — a path the agent
-    // could never have proposed into directly.
+  it('refuses a row whose file was moved into an agent-private folder (story 012-002)', async () => {
+    // proposeEdit gates on the scope, but a move re-keys pending_edits
+    // (db/move-paths.js), so a row's path can leave it after the fact.
+    // Accepting it would write where the agent could never have proposed.
     const edit = await propose();
-    querySync('UPDATE pending_edits SET path = $2 WHERE id = $1', [edit.id, 'archive/main.md']);
+    querySync('UPDATE pending_edits SET path = $2 WHERE id = $1', [edit.id, 'pm/main.md']);
     await expect(acceptEdit(PROJECT_ID, edit.id, { userId: USER_ID }))
       .rejects.toMatchObject({ code: 'invalid_path' });
     // Nothing written, and the untouched original is still on disk.
     expect(await diskContent()).toBe(BASE);
-    await expect(diskContent('archive/main.md')).rejects.toThrow();
+    await expect(diskContent('pm/main.md')).rejects.toThrow();
+  });
+
+  it('refuses a new-file proposal that left draft/ (base missing outside the scope)', async () => {
+    const edit = await propose({ path: 'draft/new.md' });
+    expect(edit.baseMissing).toBe(true);
+    querySync('UPDATE pending_edits SET path = $2 WHERE id = $1', [edit.id, 'archive/new.md']);
+    await expect(acceptEdit(PROJECT_ID, edit.id, { userId: USER_ID }))
+      .rejects.toMatchObject({ code: 'invalid_path' });
   });
 
   it("a base-missing accept publishes kind 'create'", async () => {
