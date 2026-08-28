@@ -620,6 +620,16 @@ function updateUnseenPill(): void {
  * files panel is visible, expand the row's ancestor folders, highlight it, and
  * scroll it into view.
  */
+/**
+ * Open a text file in the editor through the same handler a tree click uses
+ * (main.ts openInEditor — active-file, workspace document and editor all
+ * move together). No-op for non-text files and before initFiles. Used by the
+ * citation card's "open in references.bib" (STH-42).
+ */
+export function openFile(path: string): void {
+  if (isEditableText(path)) handlers?.onOpenMarkdown(path);
+}
+
 export function revealFile(path: string): void {
   document.getElementById('files-panel')?.classList.remove('collapsed');
   // STATE first, then DOM: setting only `.open` would be undone by the next

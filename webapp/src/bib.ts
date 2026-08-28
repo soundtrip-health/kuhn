@@ -1,11 +1,15 @@
-// Bibliography cache (story 016): loads the project's .bib and resolves
-// citation keys to a human-readable reference line for chip hover tooltips.
-// Parsing only needs key + a few display fields; entries with nested braces or
-// exotic syntax degrade to whatever fields do match.
+// Bibliography cache (story 016): resolves citation keys to a reference the
+// hover card can show (STH-42). Two sources, merged per key:
 //
-// The path is RESOLVED, not hard-coded (story 012-001) — see `bibPath` below.
+//  - the project's reference store (GET /references) — authoritative, and the
+//    only place the abstract and identifiers live; the .bib is derived from it.
+//  - the .bib file itself — parsed for key + display fields, so a bibliography
+//    the store does not know about (hand-written, imported) still resolves.
+//
+// The .bib path is RESOLVED, not hard-coded (story 012-001) — see `bibPath`.
 
-import { readTextFile } from './api';
+import { listReferences, readTextFile } from './api';
+import type { ReferenceView } from './reference-format';
 import { findBibPath } from './tree-state';
 
 /**
@@ -16,14 +20,10 @@ import { findBibPath } from './tree-state';
  */
 const DEFAULT_BIB_PATH = 'draft/references.bib';
 
-interface BibEntry {
-  authors: string;
-  year: string;
-  title: string;
-  journal: string;
-}
-
-const entries = new Map<string, BibEntry>();
+/** Entries parsed from the .bib file. */
+const entries = new Map<string, ReferenceView>();
+/** Entries from the reference store, keyed by cite key. */
+const stored = new Map<string, ReferenceView>();
 /**
  * The bibliography this cache is loaded from. NOT a constant since story
  * 012-001: once folders can be created and moved from the file manager, the bib
@@ -59,11 +59,42 @@ export async function refreshBib(projectId: number, path?: string): Promise<void
     // A different project — nothing cached can be valid, and the previous
     // project's resolved path certainly isn't.
     entries.clear();
+    stored.clear();
     bibPath = DEFAULT_BIB_PATH;
     loadedForProject = projectId;
   }
-  const resolved = path ?? findBibPath(bibPath);
   const seq = ++loadSeq;
+  await Promise.all([loadStore(projectId, seq), loadBibFile(projectId, seq, path)]);
+}
+
+async function loadStore(projectId: number, seq: number): Promise<void> {
+  try {
+    const refs = await listReferences(projectId);
+    if (seq !== loadSeq) return;
+    stored.clear();
+    for (const r of refs) {
+      stored.set(r.cite_key, {
+        key: r.cite_key,
+        authors: r.authors ?? [],
+        year: r.year == null ? '' : String(r.year),
+        title: r.title ?? '',
+        journal: r.journal ?? '',
+        volume: r.volume ?? undefined,
+        issue: r.issue ?? undefined,
+        pages: r.pages ?? undefined,
+        abstract: r.abstract ?? undefined,
+        doi: r.doi ?? undefined,
+        pmid: r.pmid ?? undefined,
+        url: r.url ?? undefined,
+      });
+    }
+  } catch {
+    // Backend unreachable or a viewer without the route — keep what we had.
+  }
+}
+
+async function loadBibFile(projectId: number, seq: number, path?: string): Promise<void> {
+  const resolved = path ?? findBibPath(bibPath);
   if (resolved == null) {
     // The project has no bibliography at all (nothing has been cited yet).
     // Requesting the default path anyway 404s on every document open and every
@@ -84,23 +115,13 @@ export async function refreshBib(projectId: number, path?: string): Promise<void
   }
 }
 
-/** Tooltip line for a citation key, or null when the key is not in the bib. */
-export function bibTooltip(key: string): string | null {
-  const entry = entries.get(key);
-  if (!entry) return null;
-  const authors = entry.authors
-    .split(/\s+and\s+/)
-    .map((a) => a.split(',')[0].trim())
-    .filter(Boolean);
-  const authorPart =
-    authors.length > 2 ? `${authors[0]} et al.` : authors.join(' & ');
-  return [
-    [authorPart, entry.year ? `(${entry.year})` : ''].filter(Boolean).join(' '),
-    entry.title,
-    entry.journal,
-  ]
-    .filter(Boolean)
-    .join('. ');
+/**
+ * The reference behind a citation key, or null when neither the store nor
+ * the .bib knows it. The store wins (it carries the abstract and identifiers);
+ * the parsed .bib fills in keys the store lacks.
+ */
+export function referenceFor(key: string): ReferenceView | null {
+  return stored.get(key) ?? entries.get(key) ?? null;
 }
 
 function parseBib(text: string): void {
@@ -109,11 +130,20 @@ function parseBib(text: string): void {
     if (!head) continue;
     const field = (name: string): string =>
       chunk.match(new RegExp(`^\\s*${name}\\s*=\\s*[{"]([^}"]*)[}"]`, 'im'))?.[1].trim() ?? '';
-    entries.set(head[1], {
-      authors: field('author'),
+    const key = head[1];
+    entries.set(key, {
+      key,
+      authors: field('author').split(/\s+and\s+/).map((a) => a.trim()).filter(Boolean),
       year: field('year'),
       title: field('title'),
       journal: field('journal'),
+      volume: field('volume') || undefined,
+      issue: field('number') || undefined,
+      pages: field('pages') || undefined,
+      doi: field('doi') || undefined,
+      pmid: field('pmid') || undefined,
+      url: field('url') || undefined,
+      abstract: field('abstract') || undefined,
     });
   }
 }

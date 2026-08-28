@@ -36,8 +36,8 @@ import {
   type Comment,
 } from './api';
 import { agentIdentity } from './agents';
-import { refreshBib } from './bib';
-import { installCitationTooltips } from './citation';
+import { currentBibPath, refreshBib } from './bib';
+import { installCitationCards } from './cite-card';
 import { openCitePicker } from './cite-picker';
 import {
   sourceCommentGutter,
@@ -56,13 +56,14 @@ import {
   type ReviewerPresence,
   type SaveEngine,
 } from './editor-core';
-import { refreshTree } from './files';
+import { openFile, refreshTree } from './files';
 import { icon } from './icons';
 import { currentUser } from './login';
 import { performRetarget, resolveMovedRoom } from './move-follow';
 import { notify, setDocument, setSaveState } from './status';
 import { attachSuggestions, detachSuggestions } from './suggestion-hunks';
 import { toast } from './toast';
+import { findBibPath } from './tree-state';
 import * as workspace from './workspace';
 import { startWrite } from './write-suggestion';
 
@@ -374,6 +375,39 @@ function insertCitation(view: EditorView, key: string): void {
 
 let tooltipsInstalled = false;
 
+/**
+ * "Open in references.bib" from the citation card (STH-42): open the
+ * bibliography (raw text view — it is not markdown) through the normal
+ * file-open path, then select and scroll to the `@type{key,` line.
+ */
+async function openBibEntry(key: string, bibFile: string): Promise<void> {
+  openFile(bibFile);
+  // openFile fires the async open without a promise; wait for the raw view
+  // of THAT path to exist (a few hundred ms at most on a local backend).
+  for (let i = 0; i < 40 && !(currentPath === bibFile && sourceView); i++) {
+    await new Promise((r) => setTimeout(r, 75));
+  }
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  revealInSource(new RegExp(`^@[A-Za-z]+\\s*\\{\\s*${escaped}\\s*,`, 'm'));
+}
+
+/** Select the first match of `needle` in the raw text view and scroll it into
+ * view. False when no raw view is open or nothing matched. */
+export function revealInSource(needle: RegExp): boolean {
+  if (!sourceView) return false;
+  const text = sourceView.state.doc.toString();
+  const match = needle.exec(text);
+  if (!match) return false;
+  const from = match.index;
+  const to = from + match[0].length;
+  sourceView.dispatch({
+    selection: { anchor: from, head: to },
+    effects: CmEditorView.scrollIntoView(from, { y: 'center' }),
+  });
+  sourceView.focus();
+  return true;
+}
+
 // Re-entrancy guard (story 012-002). A move retargets the open document at the
 // same moment the mover's own tab reopens it, so openDocument can legitimately
 // be called twice for the same path within one tick. Without this, both calls
@@ -419,7 +453,10 @@ async function openDocumentInner(
   if (pathEl) pathEl.textContent = path.replace(/\//g, ' / ');
   void refreshBib(projectId);
   if (!tooltipsInstalled) {
-    installCitationTooltips(document.getElementById('editor')!);
+    installCitationCards(document.getElementById('editor')!, {
+      bibFile: () => findBibPath(currentBibPath()),
+      openInBib: (key, bibFile) => void openBibEntry(key, bibFile),
+    });
     tooltipsInstalled = true;
   }
   wireModeToggle();

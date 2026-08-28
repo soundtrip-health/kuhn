@@ -5,11 +5,10 @@
 // custom `citation` mdast nodes (parse side), and a toMarkdown handler emits
 // the raw text again (serialize side — a plain text node would get its `[`
 // backslash-escaped by remark-stringify). The ProseMirror node is an inline
-// atom; hover tooltips resolve the key against the loaded bibliography.
+// atom; hovering it opens the citation card (cite-card.ts), which resolves
+// the key against the loaded bibliography (STH-42).
 
 import { $nodeSchema, $remark } from '@milkdown/kit/utils';
-
-import { bibTooltip, currentBibPath } from './bib';
 
 const CITATION_RE = /\[@([A-Za-z0-9_][A-Za-z0-9_:.+-]*)\]/g;
 
@@ -96,18 +95,3 @@ export const citationSchema = $nodeSchema('citation', () => ({
 
 /** All plugins the citation chip needs; spread into Editor.use(). */
 export const citationPlugins = [remarkCitation, citationSchema].flat();
-
-/**
- * Hover tooltips via event delegation on the editor container — chips are
- * re-rendered by ProseMirror at will, so per-node listeners would leak.
- */
-export function installCitationTooltips(container: HTMLElement): void {
-  container.addEventListener('mouseover', (event) => {
-    const chip = (event.target as HTMLElement).closest?.('.citation-chip');
-    if (!(chip instanceof HTMLElement)) return;
-    const key = chip.getAttribute('data-citation-key') ?? '';
-    // Name the bibliography the project actually uses — it is no longer fixed
-    // at draft/references.bib (story 012-001).
-    chip.title = bibTooltip(key) ?? `@${key} — not found in ${currentBibPath()}`;
-  });
-}
