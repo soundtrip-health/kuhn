@@ -59,11 +59,6 @@ const projectId = projects[0].id;
 const docUrl = `${BACKEND}/api/projects/${projectId}/file?path=${encodeURIComponent('draft/main.md')}`;
 const originalDoc = await (await fetch(docUrl)).text();
 
-// The empty-state hero is not under test here; remove it so its opaque overlay
-// can't intercept clicks (a warm/stale Yjs room can leave it up even when the
-// doc has content — the story-024 collab race). updateDocMeta guards on the
-// element existing, so removal is safe. Re-run after every (re)load.
-const killHero = () => page.evaluate(() => document.getElementById('editor-hero')?.remove());
 
 const fetchDoc = async () => (await fetch(docUrl)).text();
 const restoreDoc = async () =>
@@ -100,7 +95,6 @@ try {
   await page.waitForTimeout(1500);
 
   // /write is a steady-state interaction over a non-empty document.
-  await killHero();
   await page.click('#editor .milkdown .ProseMirror');
   await page.keyboard.type('Intro paragraph for the write check.\n');
 
@@ -138,7 +132,6 @@ try {
   await page.reload();
   await page.waitForSelector('#editor .milkdown', { timeout: 15000 });
   await page.waitForTimeout(1500);
-  await killHero();
   const afterReload = await page.textContent('#editor .milkdown');
   if (!afterReload?.includes(draft(ACCEPT_TOKEN))) fail('accepted suggestion did not survive reload');
   console.log('survives reload:', afterReload?.includes(draft(ACCEPT_TOKEN)));

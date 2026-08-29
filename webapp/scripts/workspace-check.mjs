@@ -60,8 +60,9 @@ await page.waitForFunction(
 );
 check('breadcrumb switches to the new project', true);
 await page.waitForTimeout(1200);
-check('new project shows the seeding hero (empty doc)',
-  (await page.locator('#editor-hero:not([hidden])').count()) === 1);
+check('new project opens on a blank page with the empty-doc hint',
+  (await page.locator('#editor-empty-hint:not([hidden])').count()) === 1
+  && ((await page.textContent('#editor .milkdown [contenteditable]')) ?? '').trim() === '');
 
 // 4. Switch back to the first project via the dashboard
 await page.click('#breadcrumb .breadcrumb-project');

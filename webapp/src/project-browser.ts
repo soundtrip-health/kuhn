@@ -1,7 +1,7 @@
 // Project & document browser overlay (story 006): the projects dashboard for
 // the active organization. Lists the org's projects as cards, lets the user
 // switch to one (no full reload — it drives workspace state, which main reacts
-// to), and creates a new project that drops into the seeding hero. The org
+// to), and creates a new project that opens on a blank page. The org
 // switcher itself lives in the breadcrumb's org menu (story 007); this overlay
 // is the project surface.
 

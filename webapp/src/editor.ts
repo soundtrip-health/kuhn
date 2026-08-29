@@ -325,7 +325,7 @@ function agentCommands(): AgentCommand[] {
 }
 
 /** The registry's user-facing metadata (name as typed, owning agent,
- *  description) — the "/ commands" help popover (slash-help.ts, STH-38). */
+ *  description) — the help popover (help.ts, STH-38). */
 export function slashCommandCatalog(): { name: string; agent: string; description: string }[] {
   return agentCommands().map((c) => ({
     name: `/${c.label.toLowerCase()}`,
@@ -357,14 +357,18 @@ function runAgentCommand(ctx: Ctx, command: AgentCommand): void {
   command.run(view);
 }
 
-/** Update the sub-header word count and toggle the empty-state hero. */
+/** Update the status-bar word count and toggle the empty-document hint. */
 function updateDocMeta(markdown: string): void {
   const words = (markdown.trim().match(/\S+/g) ?? []).length;
   const wc = document.getElementById('editor-wordcount');
   if (wc) wc.textContent = `${words.toLocaleString()} word${words === 1 ? '' : 's'}`;
-  // The seeding hero belongs to the rich draft view — never over raw text.
-  const hero = document.getElementById('editor-hero');
-  if (hero) hero.hidden = sourceView != null || markdown.trim().length > 0;
+  // A blank document is just a blank page (Crepe's block placeholder says
+  // "Type / for commands" on the first line) plus a muted note under it that
+  // points at the PM in the chat. It never covers the editor — the old
+  // full-pane hero hid pending agent suggestions on a first draft. Rich view
+  // only; raw text has its own affordances.
+  const hint = document.getElementById('editor-empty-hint');
+  if (hint) hint.hidden = sourceView != null || markdown.trim().length > 0;
 }
 
 /** Insert a citation chip atom at the current selection. */

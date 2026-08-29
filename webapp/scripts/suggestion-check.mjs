@@ -104,15 +104,11 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on('pageerror', (err) => fail(`pageerror: ${err.message}`));
 
-// The empty-state hero is not under test; remove it so it can't intercept
-// clicks (same guard as write-check.mjs). Re-run after every (re)load.
-const killHero = () => page.evaluate(() => document.getElementById('editor-hero')?.remove());
 
 try {
   await page.goto(WEBAPP);
   await page.waitForSelector('#editor .milkdown', { timeout: 15000 });
   await page.waitForTimeout(1500);
-  await killHero();
 
   // ---- Tree badge: 'suggested' (wins over the modified badge from our PUT) ----
   const badgeSel = `.file-entry[data-path="${PATH}"] .file-badge.is-suggested`;

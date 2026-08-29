@@ -101,7 +101,6 @@ page.on('response', (res) => {
     console.log(`[api] ${req.method()} ${req.url().replace(BACKEND, '')} -> ${res.status()}`);
   }
 });
-const killHero = () => page.evaluate(() => document.getElementById('editor-hero')?.remove());
 
 // Select a paragraph through the DOM Selection API (ProseMirror's observer
 // maps it into state.selection) — synthetic triple-clicks race Crepe's own
@@ -124,7 +123,6 @@ try {
   await page.goto(WEBAPP);
   await page.waitForSelector('#editor .milkdown', { timeout: 15000 });
   await page.waitForTimeout(1500);
-  await killHero();
 
   // ---- Tree badge: unresolved-comment count ----
   const badgeSel = `.file-entry[data-path="${PATH}"] .file-badge.is-comment`;

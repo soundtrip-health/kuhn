@@ -9,7 +9,7 @@
 import { openAdminConsole } from './admin-console';
 import { revealFile } from './files';
 import { icon } from './icons';
-import { authMode, currentUser, signOut } from './login';
+import { authMode, currentUser } from './login';
 import { openOrgAdmin } from './org-admin';
 import {
   libraryNeedsSetup,
@@ -219,23 +219,8 @@ function orgMenu(): HTMLElement {
     menu.append(console_);
   }
 
-  // Sign out (story 007-002) — only in real auth mode; dev mode has no
-  // session to end. Labelled with the signed-in email so it doubles as the
-  // "who am I" answer.
-  if (authMode() !== 'dev') {
-    const out = document.createElement('button');
-    out.type = 'button';
-    out.className = 'breadcrumb-menu-item bm-signout';
-    out.setAttribute('role', 'menuitem');
-    out.innerHTML = `<span class="bm-check">${icon('lock', { size: 13, stroke: 1.8 })}</span><span></span>`;
-    (out.querySelector('span:last-child') as HTMLElement).textContent =
-      `Sign out${currentUser() ? ` (${currentUser()!.email})` : ''}`;
-    out.addEventListener('click', () => {
-      closeOrgMenu();
-      void signOut();
-    });
-    menu.append(out);
-  }
+  // Sign out moved to the account popover (user-menu.ts): this menu is
+  // about where you are, that one about who you are.
 
   // Nothing actionable to show. In practice this is the dev-mode org-less
   // non-super-admin: no orgs to switch to, no org-scoped entries, org creation

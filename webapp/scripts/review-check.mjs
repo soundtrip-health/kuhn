@@ -326,7 +326,6 @@ try {
   await memberPage.waitForSelector('#editor .milkdown', { timeout: 15000 });
   await until('member tab renders the doc', async () =>
     ((await memberPage.textContent('#editor').catch(() => '')) ?? '').includes('Bravo paragraph'));
-  await memberPage.evaluate(() => document.getElementById('editor-hero')?.remove());
 
   // ---- VIEW ----------------------------------------------------------------
   const viewPage = await newReviewerPage(browser, 'view');
