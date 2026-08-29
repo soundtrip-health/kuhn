@@ -1246,25 +1246,12 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 #status-budget[data-state='warn'] { color: var(--advisor); }
 #status-budget[data-state='over'] { color: var(--warn); }
 
-/* ---- Empty-state editor hero ---------------------------------------- */
-#editor-hero {
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center; padding: 32px;
-  background: var(--chrome);
+/* ---- Empty-document hint (under the blank page, never over it) ------- */
+#editor-empty-hint {
+  max-width: var(--doc-measure); margin: -96px auto 0; padding: 0 32px;
+  font: var(--ui-body); color: var(--ink-3);
 }
-#editor-hero[hidden] { display: none; }
-.hero-inner { max-width: 560px; width: 100%; text-align: center; display: flex; flex-direction: column; align-items: center; }
-.hero-icon {
-  width: 54px; height: 54px; border-radius: var(--r-lg);
-  background: var(--soft); border: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: center; margin-bottom: 22px; color: var(--ink-3);
-}
-.hero-title { font-family: var(--font-doc); font-weight: 600; font-size: 25px; margin: 0 0 10px; color: var(--ink); }
-.hero-sub { font: var(--ui-body); color: var(--ink-2); margin: 0 0 24px; max-width: 420px; }
-.hero-actions { display: flex; gap: 10px; }
-.hero-actions .btn { padding: 11px 18px; font-size: 14px; border-radius: var(--r-sm); }
-.hero-privacy { margin-top: 30px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-3); }
-.hero-privacy svg { width: 13px; height: 13px; }
+#editor-empty-hint[hidden] { display: none; }
 
 /* ---- Toasts --------------------------------------------------------- */
 #toast-layer { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }

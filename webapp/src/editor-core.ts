@@ -177,7 +177,7 @@ export interface OpenDocOptions {
   buildToolbar?: NonNullable<ToolbarFeatureConfig['buildToolbar']>;
   /** Extra Milkdown plugins (member: none today; reserved). */
   extraPlugins?: (editor: Editor) => void;
-  /** Word count / hero / any per-keystroke meta. Also called once on load. */
+  /** Word count / empty-doc hint / any per-keystroke meta. Also called once on load. */
   onMarkdownUpdated?: (markdown: string) => void;
   onSaveState?: (state: SaveStateName, detail?: string) => void;
   /** Returning false suppresses scheduling AND writing (member: moved-away). */

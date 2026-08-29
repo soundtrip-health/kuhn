@@ -83,34 +83,6 @@ function wireExportMenu(): void {
   menu.addEventListener('click', () => close()); // pick a format → close
 }
 
-// Empty-state editor hero (story 025 screen 3): shown by the editor when the
-// document is blank. Seeding is now chat-driven — the PM greets and interviews
-// in the chat panel on a brand-new project — so the hero points there rather
-// than carrying its own seed button. Start blank → dismiss and start typing.
-function buildEditorHero(): void {
-  const pane = document.getElementById('editor-pane');
-  if (!pane || document.getElementById('editor-hero')) return;
-  const hero = document.createElement('div');
-  hero.id = 'editor-hero';
-  hero.hidden = true;
-  hero.innerHTML =
-    `<div class="hero-inner">` +
-      `<div class="hero-icon">${icon('file-text', { size: 24, stroke: 1.6 })}</div>` +
-      `<h1 class="hero-title">Start your document</h1>` +
-      `<p class="hero-sub">Your project manager is in the chat — answer a few questions and ` +
-        `Kuhn will research and draft a skeleton from your materials. Or begin with a blank page.</p>` +
-      `<div class="hero-actions">` +
-        `<button id="hero-blank" class="btn btn-ghost">Start blank</button>` +
-      `</div>` +
-      `<div class="hero-privacy">${icon('lock', { size: 13, stroke: 1.8 })} Your materials stay private to this project.</div>` +
-    `</div>`;
-  pane.append(hero);
-  hero.querySelector('#hero-blank')!.addEventListener('click', () => {
-    hero.hidden = true;
-    (document.querySelector('#editor .milkdown [contenteditable]') as HTMLElement | null)?.focus();
-  });
-}
-
 // Each project switch bumps this; async steps bail if a newer switch started,
 // so racing switches can't cross-wire one project's document into another.
 let switchSeq = 0;
@@ -463,7 +435,6 @@ async function main(): Promise<void> {
   initAgentSelector();
   initHelp();
   initUserMenu();
-  buildEditorHero();
   setSetupHandler((projectId) => openSetupWizard(projectId));
   initHistoryButton(() => ({
     projectId: workspace.activeProject()?.id ?? 0,

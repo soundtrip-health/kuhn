@@ -15,7 +15,6 @@ page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404'
 await page.goto(WEBAPP);
 await page.waitForSelector('#editor .milkdown [contenteditable]', { timeout: 15000 });
 await page.waitForTimeout(1500);
-await page.evaluate(() => document.getElementById('editor-hero')?.remove());
 
 const ed = '#editor .milkdown';
 // Robust clear: a leading CodeMirror code block traps keyboard focus, so place
