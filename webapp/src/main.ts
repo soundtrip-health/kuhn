@@ -41,9 +41,10 @@ import { initAuth } from './login';
 import { initPreview, previewStoredFile } from './preview';
 import { openProjectBrowser } from './project-browser';
 import { initShareLinks, refreshShareLinks } from './share-links';
-import { initSlashHelp } from './slash-help';
+import { initHelp } from './help';
 import { notify, setVersion } from './status';
 import { toast } from './toast';
+import { initUserMenu } from './user-menu';
 import { refreshSuggestionsSoon } from './suggestion-hunks';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
@@ -460,7 +461,8 @@ async function main(): Promise<void> {
   wirePanelToggles();
   wireExportMenu();
   initAgentSelector();
-  initSlashHelp();
+  initHelp();
+  initUserMenu();
   buildEditorHero();
   setSetupHandler((projectId) => openSetupWizard(projectId));
   initHistoryButton(() => ({

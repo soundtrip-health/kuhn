@@ -613,6 +613,7 @@ function updateUnseenPill(): void {
   }
   pill.textContent = String(count);
   pill.setAttribute('aria-label', `${count} unseen file change${count === 1 ? '' : 's'}`);
+  pill.title = `${count} file${count === 1 ? '' : 's'} changed since you last looked`;
 }
 
 /**

@@ -70,8 +70,12 @@ body {
   border-bottom: 1px solid var(--line);
 }
 /* min-width:0 lets the breadcrumb give way before the right-hand actions get
-   pushed off-screen on a narrow window (STH-45). */
-.topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
+   pushed off-screen on a narrow window (STH-45). No overflow:hidden here: the
+   org popover is absolutely positioned inside this container, and a clipping
+   ancestor both hides it and gets scrolled by the menu's focus() call, which
+   shoves the whole breadcrumb out of view. The segments ellipsize themselves
+   instead (below). */
+.topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 
 .brand { display: flex; align-items: center; gap: 9px; }
@@ -109,7 +113,10 @@ body {
 .breadcrumb-seg svg { color: var(--ink-3); }
 .breadcrumb-project { font-weight: 500; color: var(--ink); }
 .breadcrumb-doc { font-family: var(--font-mono); font-size: 12px; }
-/* Long filenames ellipsize instead of wrapping the topbar (STH-45). */
+/* Long names ellipsize instead of wrapping or overflowing the topbar (STH-45).
+   Each segment clips its own text, so no ancestor needs overflow:hidden. */
+.breadcrumb-org > span:first-child { display: block; max-width: 200px; min-width: 32px; overflow: hidden; text-overflow: ellipsis; }
+.breadcrumb-project { display: block; max-width: 240px; min-width: 48px; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .breadcrumb-doc { display: block; max-width: 260px; min-width: 48px; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .breadcrumb-seg:disabled { color: var(--ink-3); cursor: default; background: none; }
 
@@ -381,28 +388,72 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .editor-meta { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 2px 6px; min-width: 0; }
 #editor-wordcount { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 #statusbar #editor-wordcount:empty { display: none; }
-.slash-hint { position: relative; display: inline-flex; }
-/* In the topbar (STH-45) the chip sits among real buttons — give it their footprint. */
-.topbar-right .slash-hint-chip { padding: 0 6px; }
-.slash-hint-chip {
-  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3);
-  background: none; border: none; padding: 0; cursor: pointer;
-}
-.slash-hint-chip:hover, .slash-hint-chip[aria-expanded="true"] { color: var(--ink-2); }
-.slash-hint-chip kbd, .doc-kbd {
+.doc-kbd, .help-menu kbd {
   font-family: var(--font-mono); font-size: 11px;
   background: var(--soft-2); padding: 1px 5px; border-radius: var(--r-xs);
   color: var(--ink-2);
 }
 
-/* Slash-command help popover (STH-38) — slash-help.ts owns it */
-.slash-help-menu {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+/* ---- Topbar icon buttons + popovers (help, account) ------------------ */
+.topbar-pop { position: relative; display: inline-flex; }
+.topbar-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid transparent; background: transparent; color: var(--ink-2);
+  cursor: pointer; padding: 0;
+}
+.topbar-icon-btn:hover, .topbar-icon-btn[aria-expanded="true"] { background: var(--soft); color: var(--ink); }
+/* Initials avatar: the same tint as the unseen-count pill, so the topbar
+   stays one palette. */
+.user-avatar {
+  font: 600 11px/1 var(--font-ui); letter-spacing: .03em;
+  color: var(--accent); background: var(--accent-soft); border-color: transparent;
+}
+.user-avatar:hover, .user-avatar[aria-expanded="true"] { background: var(--accent); color: var(--ink-inv); }
+.user-avatar-lg { width: 36px; height: 36px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; flex: 0 0 auto; }
+.topbar-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 95;
   background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r);
-  box-shadow: var(--shadow-pop); padding: 8px; width: 340px;
+  box-shadow: var(--shadow-pop); padding: 8px;
   display: flex; flex-direction: column; gap: 2px;
 }
-.slash-help-menu[hidden] { display: none; }
+.topbar-menu[hidden] { display: none; }
+
+/* Help popover — help.ts owns it */
+.help-menu { width: 380px; max-height: calc(100vh - 80px); overflow-y: auto; }
+.help-heading {
+  margin: 8px 6px 4px; font: 600 10.5px/1 var(--font-ui); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.help-heading:first-child { margin-top: 2px; }
+.help-tip { display: grid; grid-template-columns: 96px 1fr; gap: 8px; padding: 4px 6px; border-radius: var(--r-xs); }
+.help-tip-what { font: 500 12px/1.45 var(--font-ui); color: var(--ink); }
+.help-tip-how { font: var(--ui-small); color: var(--ink-2); }
+.help-tip-how em { font-style: normal; font-weight: 500; color: var(--ink); }
+.help-tip-how code { font-family: var(--font-mono); font-size: 11px; }
+
+/* Account popover — user-menu.ts owns it */
+.user-menu { width: 300px; padding: 10px; gap: 8px; }
+.user-menu-head { display: flex; align-items: center; gap: 10px; padding: 2px 2px 8px; border-bottom: 1px solid var(--line-2); }
+.user-menu-ident { min-width: 0; }
+.user-menu-name { font: 500 13.5px/1.3 var(--font-ui); color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.user-menu-email { font: var(--ui-small); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.user-menu-roles { display: flex; flex-direction: column; gap: 6px; padding: 0 2px; }
+.user-menu-role { display: flex; gap: 8px; align-items: flex-start; }
+.user-menu-role-icon { color: var(--accent); display: inline-flex; margin-top: 2px; }
+.user-menu-role-label { font: 500 12.5px/1.4 var(--font-ui); color: var(--ink); }
+.user-menu-role-detail { font: var(--ui-small); color: var(--ink-3); }
+.user-menu-note { font: var(--ui-small); color: var(--ink-3); padding: 0 2px; }
+.user-menu-foot { border-top: 1px solid var(--line-2); padding-top: 6px; }
+.user-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  text-align: left; border: none; background: none; cursor: pointer;
+  font: var(--ui-body); color: var(--ink); padding: 7px 8px; border-radius: var(--r-xs);
+}
+.user-menu-item:hover { background: var(--soft); }
+.user-menu-item svg { color: var(--ink-3); }
+
+/* Slash-command rows inside the help popover (STH-38) — help.ts owns them */
 .slash-help-row {
   display: grid; grid-template-columns: 64px 1fr auto; align-items: baseline; gap: 8px;
   padding: 5px 6px; border-radius: var(--r-xs);
@@ -415,10 +466,6 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   font-size: 10.5px; color: var(--ink-3); white-space: nowrap;
 }
 .slash-help-agent .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--role); }
-.slash-help-hint {
-  margin: 6px 2px 2px; padding-top: 8px; border-top: 1px solid var(--line);
-  font-size: 11px; color: var(--ink-3);
-}
 
 /* Rich ⇄ source toggle (story 039) */
 #editor-mode-toggle { font-family: var(--font-mono); font-size: 11px; }
@@ -969,7 +1016,7 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   display: inline-block; margin-left: 6px; min-width: 16px; text-align: center;
   font: 600 10px/16px var(--font-ui); letter-spacing: .02em;
   color: var(--ink-inv); background: var(--accent); border-radius: 8px; padding: 0 4px;
-  vertical-align: 1px;
+  vertical-align: 1px; cursor: help;
 }
 
 /* files drop-zone (empty state visual — wired in story 014) */
