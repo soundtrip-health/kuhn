@@ -99,6 +99,13 @@ app.use(scriptsRouter); // shared-script library: catalog, org scripts, promotio
 
 const server = createServer(app);
 
+// Long-lived SSE responses — an agent task stream parked on an ask_user
+// question waits indefinitely by design (story 012) — outlive Node's default
+// 5-minute requestTimeout, which destroys the socket mid-stream and surfaced
+// in the webapp as a mid-question "network error" (STH-48). Disable it;
+// headersTimeout still guards the handshake against slow-header clients.
+server.requestTimeout = 0;
+
 // Two WebSocket servers — no port binding; upgrade is routed manually
 const signalingWss = new WebSocketServer({ noServer: true });
 const yjsWss = new WebSocketServer({ noServer: true });

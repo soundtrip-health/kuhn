@@ -366,10 +366,13 @@ async function reconnectPendingQuestion(): Promise<void> {
   running = true;
   conversationAgent = p.agent;
   setAgentActivity(`${agentLabel(p.agent)} is waiting for your answer…`);
+  const onEvent = createEventHandler();
   try {
-    await reconnectAgent(p.jobId, createEventHandler());
+    await reconnectAgent(p.jobId, onEvent);
   } catch (err) {
-    appendSystemLine((err as Error).message, 'error');
+    if (!(await resumeAfterStreamDrop(onEvent, p.jobId))) {
+      appendSystemLine((err as Error).message, 'error');
+    }
   } finally {
     finishRun();
   }
@@ -641,6 +644,7 @@ async function dispatchTask(role: string, text: string): Promise<void> {
   conversationAgent = role;
   setAgentActivity(`${agentLabel(role)} is working…`);
 
+  const onEvent = createEventHandler();
   try {
     await runAgentTask(
       {
@@ -650,10 +654,15 @@ async function dispatchTask(role: string, text: string): Promise<void> {
         sessionId: sessions.get(role),
         context: taskContext(),
       },
-      createEventHandler(),
+      onEvent,
     );
   } catch (err) {
-    appendSystemLine((err as Error).message, 'error');
+    // STH-48: a dropped stream while the run is parked on an ask_user
+    // question must not surface as an error — the run is still alive on the
+    // server (story 027 keeps it parked), so re-attach to it instead.
+    if (!(await resumeAfterStreamDrop(onEvent))) {
+      appendSystemLine((err as Error).message, 'error');
+    }
   } finally {
     finishRun();
   }
@@ -685,6 +694,43 @@ export async function startSeeding(): Promise<void> {
     completeSeeding();
     finishRun();
   }
+}
+
+/**
+ * STH-48: recover from a dropped event stream while a question is pending.
+ *
+ * The ask_user wait is indefinite by design, but the SSE response carrying it
+ * can die (idle timeouts, network blips). The run itself survives on the
+ * server — a detachable run parked on a question is left alive (story 027) —
+ * so the right response is to re-attach, not to render the question card as
+ * expired and print `network error`. The dropped stream is also what made the
+ * agent "forget" its question: the parked run's session id never reached the
+ * sessions map, so the next chat turn resumed an older session without the
+ * question in it. Re-attaching keeps the original session (and its context).
+ *
+ * Retries with backoff — the server may not have noticed the disconnect yet,
+ * so reconnect can 409 until it does. Returns true when the run was
+ * re-attached and its stream ran to completion; false when the run is truly
+ * gone and the caller should surface the original error.
+ */
+async function resumeAfterStreamDrop(
+  onEvent: (event: AgentEvent) => void,
+  jobId: number | null = pendingQuestionJobId,
+): Promise<boolean> {
+  if (jobId == null) return false;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    setAgentActivity('Connection lost — reconnecting…');
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 15_000)));
+    try {
+      await reconnectAgent(jobId, onEvent);
+      return true; // re-attached; the stream ran to completion
+    } catch (err) {
+      // 404 "no live run": the run has actually ended — nothing to resume.
+      if (/no live run/i.test((err as Error).message)) return false;
+      // 409 (previous consumer not yet detached) or transient failure: retry.
+    }
+  }
+  return false;
 }
 
 function finishRun(): void {
