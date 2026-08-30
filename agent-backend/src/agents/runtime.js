@@ -1,54 +1,32 @@
-// Story 011: Agent runtime on the Claude Agent SDK, behind the agent-task
-// boundary. The rest of the system depends only on runAgentTask(); the SDK
-// is an implementation detail of this module.
-
-import { query as sdkQuery, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
+// The agent-task boundary. The rest of the system depends only on
+// runAgentTask(); model providers sit below it as AgentRuntime adapters.
+//
+// STH-1: the model-callable Kuhn tools are described once in provider-neutral
+// form (agents/tools/); the Claude tool adapter (provider-runtime/
+// claude-tools.js) is the only code that turns them into SDK/MCP form.
+// STH-7: the Claude AgentRuntime adapter (provider-runtime/claude-runtime.js)
+// is the production model-execution boundary — model execution, streaming,
+// tool-loop mechanics, provider errors/identity, usage, canonical
+// continuation, and cancellation all live there. This module owns the Kuhn
+// product semantics: jobs, conversations, retries/backoff, budgets,
+// questions/reconnect, sub-agent policy, storage/product effects, and event
+// publication. Outside the Claude adapter, production code neither imports
+// Claude SDK objects nor understands Claude message shapes.
 
 import { config } from '../config.js';
-import { query as dbQuery } from '../db.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
-import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-scripts.js';
-import { recordScriptRun } from '../db/script-runs.js';
-import { SandboxError, RUNNABLE_LANGUAGES, runScriptSandboxed } from '../sandbox.js';
-import { Semaphore } from '../sandbox-semaphore.js';
-import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
-import {
-  resolveProjectDir,
-  readProjectFile,
-  writeProjectFile,
-  listProjectTree,
-  searchProjectFiles,
-  moveProjectEntry,
-} from '../storage.js';
-import {
-  DEFAULT_BIB_PATH, upsertCitation, addArxivReference, addDoiReference,
-  addManualReference, verifyProjectReferences, updateReference, removeReference,
-  isDerivedBibPath,
-} from '../citations.js';
-import { findPendingEditConflicts } from '../db/move-paths.js';
-import { addReply, createThread, listThreads, resolveQuote, setResolved } from '../db/comments.js';
-import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
+import { resolveProjectDir } from '../storage.js';
 import { publishProjectEvent } from '../project-events.js';
 import { EventChannel } from './events.js';
-import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
+import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
-import { pubmedSearch, arxivSearch } from './search.js';
-import { applyProjectConfig } from './project-config.js';
-
-// DB tool slug → built-in SDK tool names. File access deliberately maps to
-// no built-ins (story 018): agents get storage-backed MCP tools instead, so
-// every file operation goes through the project-root-enforcing storage
-// service. Tools not granted to a role are removed entirely via the SDK
-// `tools` option (allowedTools alone does not restrict anything under
-// permissionMode: 'bypassPermissions').
-const BUILTIN_TOOL_MAP = {
-  web_search: ['WebSearch', 'WebFetch'],
-};
+import { createToolContext, listTools } from './tools/index.js';
+import { createClaudeRuntime } from './provider-runtime/claude-runtime.js';
+import { PROVIDER_ERROR_CODES, normalizeProviderError } from './provider-runtime/contract.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -66,7 +44,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   files, dir, activeDocument }. `activeDocument` (STH-43) is the path the user
  *   has open in the editor; when absent (and not seeding) it falls back to the
  *   project's persisted last-open document, and sub-agent dispatches inherit it.
- * @param {string} [task.sessionId] - Continue a prior SDK session
+ * @param {string} [task.sessionId] - Continue a prior provider session
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
  *   tools so the agent returns text only and emits no file_change (the /write contract)
  * @param {boolean} [task.seeding] - Seeding-pipeline bypass (story 008-001):
@@ -84,7 +62,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'citation', agent, key, bibtex, path } — add_citation upserted the bibliography (story 016)
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
- *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient API error before retrying (story 029)
+ *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
@@ -100,10 +78,20 @@ export async function* runAgentTask(task, internal = {}) {
       : undefined,
   );
   Object.assign(state, {
-    sdkQuery: null,
+    runtime: null,
+    controller: null,
     finished: false,
     job: null,
     runHandle: null,
+    // Opaque provider session handle (Claude session id): updated from the
+    // runtime's provider events, used for retry-resume and terminal-error
+    // handoff. Kuhn treats it as an opaque string.
+    sessionId: task.sessionId ?? null,
+    // Canonical Kuhn continuation threaded across attempts (STH-7).
+    continuation: null,
+    // 'budget' when the budget cutoff aborts the in-flight turn; 'disconnect'
+    // when the consumer dropped; null while the run is healthy.
+    cancelReason: null,
     // Detachable runs (the chat task path) survive a disconnect while parked
     // on a question, so a reconnect can resume them (story 027). Sub-agent and
     // seeding-pipeline runs are not detachable: they keep today's teardown.
@@ -113,19 +101,15 @@ export async function* runAgentTask(task, internal = {}) {
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
       console.error('[agent] Task failed:', err);
-      // A transient model-provider failure that survived the runtime's retry
-      // budget (story 029): tag it so the client offers a clean retry instead
-      // of rendering a raw `API Error: 529` line, and hand back the session id
-      // so a chat retry resumes this exact conversation.
-      const transient = isTransientApiError(err);
+      // Provider failures no longer throw — the runtime adapter surfaces
+      // them as its terminal `error` event (with the retry/notice handling
+      // in runTask). Anything that escapes here is a non-provider failure
+      // (DB, unknown role, …) and is reported raw.
       channel.push({
         type: 'error',
         agent: task.role,
         jobId: state.job?.id,
-        message: transient
-          ? 'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.'
-          : err.message,
-        ...(transient ? { reason: 'provider_overloaded', sessionId: state.sdkSessionId } : {}),
+        message: err.message,
       });
       if (state.job) {
         await updateJob(state.job.id, { status: 'error', error: err.message }).catch(() => {});
@@ -180,8 +164,9 @@ function raceNext(channel, signal) {
  * Decide what happens when a run's SSE consumer stops. A detachable run that
  * is currently parked on an ask_user question is left alive (its channel keeps
  * buffering) so POST /api/agent/jobs/:id/reconnect can resume it; every other
- * case interrupts the SDK loop and marks the job cancelled. A run that already
- * finished just settles its pump. (story 027)
+ * case interrupts the in-flight turn through the runtime adapter and marks
+ * the job cancelled. A run that already finished just settles its pump.
+ * (story 027)
  */
 async function teardownOrDetach(state) {
   if (state.finished) {
@@ -196,11 +181,10 @@ async function teardownOrDetach(state) {
     state.runHandle.consumerAttached = false;
     return; // leave the run alive and parked; do NOT interrupt or await the pump
   }
-  // Unblock ask_user first: the SDK loop may be parked inside its handler.
+  // Unblock ask_user first: the runtime loop may be parked inside its handler.
   if (jobId != null) cancelQuestion(jobId);
-  try {
-    await state.sdkQuery?.interrupt();
-  } catch { /* already stopped */ }
+  if (!state.cancelReason) state.cancelReason = 'disconnect';
+  state.controller?.abort(); // the adapter interrupts the provider query
   if (jobId != null) {
     await updateJob(jobId, { status: 'cancelled' }).catch(() => {});
   }
@@ -233,6 +217,12 @@ export async function* reattach(run, signal) {
 // the allowlist. This is the runtime guarantee behind the "no file_change
 // during /write" contract — the prompt asks, the tool filter enforces.
 const COMPOSE_DENIED_TOOLS = new Set(['file_write', 'add_citation', 'add_reference', 'add_comment', 'manage_comments', 'project_config']);
+
+// The story-029 terminal message for a transient provider failure that
+// survived the retry budget: a clean, non-technical explanation plus a
+// retry affordance, instead of a raw `API Error: 529` line.
+const OVERLOADED_TERMINAL_MESSAGE =
+  'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.';
 
 async function runTask(task, internal, channel, state) {
   const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null } = task;
@@ -291,37 +281,86 @@ async function runTask(task, internal, channel, state) {
   // is no user looking at anything yet, and their prompts are fixed.
   const taskContext = seeding ? context : withActiveDocument(context, project);
 
-  // In-process MCP tools, filtered by the role's DB allowlist
-  const mcpTools = buildMcpTools(agent, {
-    projectId, depth, budget, parentJob: job, channel, userId, seeding, context: taskContext,
+  // Neutral Kuhn tool registry (STH-1): the model-callable surface, derived
+  // server-side from the role's DB grants and the task context. The Claude
+  // adapter below projects it into MCP form; no Claude name or type leaks
+  // past provider-runtime/.
+  const toolContext = createToolContext({
+    agent, projectId, depth, budget, parentJob: job, channel, userId, seeding,
+    context: taskContext,
+    dispatch: (t, i) => runAgentTask(t, i),
   });
-  const mcpServer = mcpTools.length > 0
-    ? createSdkMcpServer({ name: 'kuhn', version: '1.0.0', tools: mcpTools })
-    : null;
+  const neutralTools = listTools(toolContext);
 
-  const builtinTools = agent.tools.flatMap((slug) => BUILTIN_TOOL_MAP[slug] ?? []);
-  const allowedTools = [
-    ...builtinTools,
-    ...mcpTools.map((t) => `mcp__kuhn__${t.name}`),
-  ];
+  // The model-execution boundary (STH-7): the Claude AgentRuntime adapter
+  // owns model execution, streaming, tool-loop mechanics, provider
+  // errors/identity, usage, canonical continuation, and cancellation.
+  const runtime = createClaudeRuntime({
+    // Per-agent model (story 021): each role runs on its DB-configured model
+    // (sub-agents dispatched via dispatch_agent load their own row, so a
+    // Haiku RA can serve an Opus PM); AGENT_MODEL is the global fallback.
+    model: agent.model ?? config.agent.model,
+    projectDir,
+    tools: neutralTools,
+    maxTurns: MAX_TURNS,
+    initialSessionId: sessionId,
+  });
+  state.runtime = runtime;
+  state.controller = new AbortController();
 
+  const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);
+  const prompt = buildPrompt(input, taskContext);
+
+  // Product-side usage in effective (budget/job) terms; the runtime's
+  // canonical usage is disjoint-component and is converted per turn.
   const usage = { inputTokens: 0, outputTokens: 0 };
-  let sdkSessionId = sessionId;
 
-  // Transient model-provider errors (529 Overloaded / 429 / 5xx) are upstream
-  // and stateless: retry the SDK query with exponential backoff before giving
-  // up, resuming the session so completed turns aren't re-run (story 029). The
-  // SDK does its own shallow retries; this outer net survives a sustained
-  // capacity event and narrates the wait to the client via a 'notice' event.
-  // (A turn that half-streamed before the failure re-streams on resume — a rare
-  // cosmetic doubling; the common case is a failure before any output.)
+  // Transient provider failures (rate limit / overload / 5xx / network) are
+  // upstream and stateless: retry the turn with exponential backoff before
+  // giving up, resuming the session so completed turns aren't re-run
+  // (story 029). The adapter normalizes provider errors; the retry policy,
+  // the client-facing 'notice', and the session bookkeeping are Kuhn's.
+  // (A turn that half-streamed before the failure re-streams on resume — a
+  // rare cosmetic doubling; the common case is a failure before any output.)
   const retry = config.agent.retry;
   for (let attempt = 0; ; attempt++) {
-    try {
-      await runSdkAttempt();
+    const outcome = await runTurnLoop(runtime, {
+      input: prompt,
+      systemPrompt,
+      signal: state.controller.signal,
+      resume: state.sessionId,
+      continuation: state.continuation,
+    }, { agent, job, conversation, channel, budget, costRatio, usage, userId, state });
+
+    if (outcome.kind === 'done') {
+      const doneUsage = outcome.usage ?? {};
+      const productUsage = {
+        inputTokens: effectiveInputTokens(doneUsage),
+        outputTokens: doneUsage.outputTokens ?? usage.outputTokens,
+      };
+      await updateJob(job.id, {
+        status: 'done',
+        inputTokens: productUsage.inputTokens,
+        outputTokens: productUsage.outputTokens,
+      });
+      channel.push({
+        type: 'done', agent: agent.slug, jobId: job.id, sessionId: state.sessionId,
+        usage: productUsage,
+        budget: { used: Math.round(budget.used), limit: budget.limit },
+      });
       return;
-    } catch (err) {
-      if (!isTransientApiError(err) || attempt >= retry.maxAttempts) throw err;
+    }
+
+    const perr = outcome.error;
+    if (outcome.continuation) state.continuation = outcome.continuation;
+
+    if (perr.code === 'cancelled') {
+      // The budget cutoff already pushed its own error event; the disconnect
+      // teardown marked the job cancelled. The run is over.
+      return;
+    }
+
+    if (perr.retryable && attempt < retry.maxAttempts) {
       const delay = backoffDelay(attempt + 1, retry);
       channel.push({
         type: 'notice',
@@ -334,167 +373,165 @@ async function runTask(task, internal, channel, state) {
         message: `Model provider is busy (attempt ${attempt + 1}/${retry.maxAttempts}); retrying in ${Math.round(delay / 1000)}s…`,
       });
       await sleep(delay);
+      continue; // next attempt resumes state.sessionId
     }
+
+    // Terminal failure. Provider failures (the PROVIDER_ERROR_CODES
+    // vocabulary) keep the provider's own message; the retryable ones that
+    // exhausted the budget get the story-029 friendly explanation. Turn
+    // terminations (max_turns, …) render as "Agent task stopped: <reason>".
+    const providerFailure = PROVIDER_ERROR_CODES.has(perr.code);
+    const reason = providerFailure ? perr.message : perr.code.replaceAll('_', ' ');
+    const message = perr.retryable
+      ? OVERLOADED_TERMINAL_MESSAGE
+      : (providerFailure ? perr.message : `Agent task stopped: ${reason}`);
+    const jobTokens = outcome.usage
+      ? {
+          inputTokens: effectiveInputTokens(outcome.usage),
+          outputTokens: outcome.usage.outputTokens ?? usage.outputTokens,
+        }
+      : { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+    await updateJob(job.id, {
+      status: 'error',
+      error: reason,
+      inputTokens: jobTokens.inputTokens,
+      outputTokens: jobTokens.outputTokens,
+    });
+    channel.push({
+      type: 'error', agent: agent.slug, jobId: job.id, message,
+      ...(perr.retryable ? { reason: 'provider_overloaded', sessionId: state.sessionId } : {}),
+      budget: { used: Math.round(budget.used), limit: budget.limit },
+    });
+    return;
   }
 
-  async function runSdkAttempt() {
-  const sdk = sdkQuery({
-    prompt: buildPrompt(input, taskContext),
-    options: {
-      systemPrompt: buildSystemPrompt(agent, projectDir, orgAddition),
-      cwd: projectDir,
-      // Per-agent model (story 021): each role runs on its DB-configured model
-      // (sub-agents dispatched via dispatch_agent load their own row, so a
-      // Haiku RA can serve an Opus PM); AGENT_MODEL is the global fallback.
-      model: agent.model ?? config.agent.model,
-      maxTurns: MAX_TURNS,
-      tools: builtinTools,           // removes every built-in tool not granted to this role
-      allowedTools,
-      permissionMode: 'bypassPermissions',
-      includePartialMessages: true,  // token-level text_delta events for the chat UI (story 013)
-      settingSources: [],            // never load host CLAUDE.md / settings into agent context
-      ...(mcpServer ? { mcpServers: { kuhn: mcpServer } } : {}),
-      // Resume the live session on retry so the agent continues from where the
-      // transient failure interrupted it, not from scratch (story 029).
-      ...(sdkSessionId ? { resume: sdkSessionId } : {}),
-    },
-  });
-  state.sdkQuery = sdk;
+  /**
+   * Consume one runtime turn, mapping the normalized runtime events onto the
+   * product surface: the event channel (text_delta/text), the conversation
+   * log (assistant rows + tool rows), and budget enforcement.
+   *
+   * @returns {Promise<{kind: 'done', usage: object} | {kind: 'error', error: object, usage: object|null, continuation: object|null}>}
+   */
+  async function runTurnLoop(runtime, turn, refs) {
+    const { agent, job, conversation, channel, budget, costRatio, usage, userId, state } = refs;
 
-  for await (const message of sdk) {
-    if (message.type === 'system' && message.subtype === 'init') {
-      sdkSessionId = message.session_id;
-      state.sdkSessionId = sdkSessionId;  // for resume on retry + terminal-error handoff (story 029)
-      await updateJob(job.id, { sessionId: sdkSessionId });
-      continue;
-    }
-
-    if (message.type === 'stream_event') {
-      // Token-level streaming: forward text deltas as they arrive. The full
-      // turn still follows as a single 'text' event (the chat UI replaces
-      // accumulated deltas with it); logging/budgeting stay turn-based.
-      const event = message.event;
-      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-        channel.push({ type: 'text_delta', agent: agent.slug, content: event.delta.text });
-      }
-      continue;
-    }
-
-    if (message.type === 'assistant') {
-      const blocks = message.message?.content ?? [];
-      const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('');
-      const toolCalls = blocks.filter((b) => b.type === 'tool_use');
-
-      await logMessage({
+    // Assistant-turn state for the conversation log. The assistant row is
+    // written when the turn's usage event arrives — by then the full
+    // assistant message (text + tool calls) is known — which preserves the
+    // pre-seam DB row order (the assistant row before its tool rows). A turn
+    // without a usage event is closed at the terminal.
+    const turnLog = { open: false, text: null, calls: [], tokenCount: null };
+    const closeTurn = () => {
+      if (!turnLog.open) return;
+      logMessage({
         conversationId: conversation.id,
         role: 'assistant',
-        content: text || null,
-        toolCalls: toolCalls.length > 0 ? toolCalls : null,
-        tokenCount: message.message?.usage?.output_tokens ?? null,
+        content: turnLog.text,
+        toolCalls: turnLog.calls.length > 0 ? turnLog.calls : null,
+        tokenCount: turnLog.tokenCount,
         userId,
       });
+      turnLog.open = false;
+      turnLog.text = null;
+      turnLog.calls = [];
+      turnLog.tokenCount = null;
+    };
 
-      if (text) channel.push({ type: 'text', agent: agent.slug, content: text });
-      // File events for write_file/edit_file are pushed by the tool handlers
-      // themselves (STH-44) — they alone know whether a write landed on disk
-      // or as a proposal, and a failed write emits nothing.
-
-      const msgUsage = message.message?.usage;
-      if (msgUsage) {
-        const inputTokens = effectiveInputTokens(msgUsage);
-        budget.used += (inputTokens + (msgUsage.output_tokens ?? 0)) * costRatio;
-        usage.inputTokens += inputTokens;
-        usage.outputTokens += msgUsage.output_tokens ?? 0;
-      }
-      // A grace margin lets an in-flight task overshoot the budget so the
-      // current piece of work can finish instead of being cut off abruptly.
-      if (budget.used > budget.limit * config.agent.budgetGrace) {
-        await sdk.interrupt().catch(() => {});
-        await updateJob(job.id, {
-          status: 'error',
-          error: 'token budget exceeded',
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-        });
-        channel.push({
-          type: 'error',
-          agent: agent.slug,
-          jobId: job.id,
-          reason: 'budget_exceeded',
-          // The SDK session is recorded so the client can resume this exact
-          // conversation (with a fresh budget) instead of starting over.
-          sessionId: sdkSessionId,
-          message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
-          budget: { used: Math.round(budget.used), limit: budget.limit },
-        });
-        return;
-      }
-      continue;
-    }
-
-    if (message.type === 'user') {
-      // Tool results echoed back into the loop
-      for (const block of message.message?.content ?? []) {
-        if (block.type === 'tool_result') {
+    for await (const event of runtime.runTurn(turn)) {
+      switch (event.type) {
+        case 'provider': {
+          if (event.sessionId && event.sessionId !== state.sessionId) {
+            state.sessionId = event.sessionId;
+            // Record the session so a retry resumes it and a terminal
+            // transient error can hand it back to a chat retry (story 029).
+            updateJob(job.id, { sessionId: event.sessionId }).catch(() => {});
+          }
+          break;
+        }
+        case 'text_delta':
+          channel.push({ type: 'text_delta', agent: agent.slug, content: event.content });
+          break;
+        case 'text':
+          // The full turn still follows the token-level deltas as a single
+          // 'text' event (the chat UI replaces accumulated deltas with it).
+          if (!turnLog.open) turnLog.open = true;
+          turnLog.text = event.content;
+          channel.push({ type: 'text', agent: agent.slug, content: event.content });
+          break;
+        case 'tool_call':
+          // File events for write_file/edit_file are pushed by the tool
+          // executors themselves (STH-44) — they alone know whether a write
+          // landed on disk or as a proposal, and a failed write emits nothing.
+          turnLog.open = true;
+          turnLog.calls.push({ id: event.id, name: event.name, input: event.arguments ?? {} });
+          break;
+        case 'usage': {
+          const u = event.usage;
+          const effectiveIn = effectiveInputTokens(u);
+          const out = u.outputTokens ?? 0;
+          budget.used += (effectiveIn + out) * costRatio;
+          usage.inputTokens += effectiveIn;
+          usage.outputTokens += out;
+          turnLog.tokenCount = u.outputTokens ?? null;
+          closeTurn();
+          // A grace margin lets an in-flight task overshoot the budget so the
+          // current piece of work can finish instead of being cut off
+          // abruptly.
+          if (budget.used > budget.limit * config.agent.budgetGrace) {
+            await updateJob(job.id, {
+              status: 'error',
+              error: 'token budget exceeded',
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+            });
+            channel.push({
+              type: 'error',
+              agent: agent.slug,
+              jobId: job.id,
+              reason: 'budget_exceeded',
+              // The provider session is recorded so the client can resume
+              // this exact conversation (with a fresh budget) instead of
+              // starting over.
+              sessionId: state.sessionId,
+              message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
+              budget: { used: Math.round(budget.used), limit: budget.limit },
+            });
+            state.cancelReason = 'budget';
+            state.controller.abort();
+          }
+          break;
+        }
+        case 'tool_result':
+          // Tool results echoed back into the loop.
           await logMessage({
             conversationId: conversation.id,
             role: 'tool',
-            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-            toolCallId: block.tool_use_id,
+            content: event.content?.[0]?.text ?? '',
+            toolCallId: event.id,
             userId,
-            isError: block.is_error === true, // audit trail (issue #42)
+            isError: event.isError === true, // audit trail (issue #42)
           });
-        }
-      }
-      continue;
-    }
-
-    if (message.type === 'result') {
-      const resultUsage = message.usage ?? {};
-      if (resultUsage.input_tokens != null) usage.inputTokens = effectiveInputTokens(resultUsage);
-      if (resultUsage.output_tokens != null) usage.outputTokens = resultUsage.output_tokens;
-
-      if (message.subtype === 'success') {
-        await updateJob(job.id, {
-          status: 'done',
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-        });
-        channel.push({
-          type: 'done', agent: agent.slug, jobId: job.id, sessionId: sdkSessionId, usage,
-          budget: { used: Math.round(budget.used), limit: budget.limit },
-        });
-      } else {
-        const reason = message.subtype.replace(/^error_/, '').replaceAll('_', ' ');
-        await updateJob(job.id, {
-          status: 'error',
-          error: reason,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-        });
-        channel.push({
-          type: 'error', agent: agent.slug, jobId: job.id, message: `Agent task stopped: ${reason}`,
-          budget: { used: Math.round(budget.used), limit: budget.limit },
-        });
+          break;
+        case 'done':
+          closeTurn();
+          return { kind: 'done', usage: event.usage };
+        case 'error':
+          closeTurn();
+          return { kind: 'error', error: event.error, usage: event.usage ?? null, continuation: event.continuation ?? null };
+        default:
+          break;
       }
     }
+    // The runtime is contractually obliged to end with exactly one terminal
+    // event; a stream that ends without one is a contract violation.
+    closeTurn();
+    return {
+      kind: 'error',
+      error: normalizeProviderError(new Error('agent runtime stream ended without a terminal event')),
+      usage: null,
+      continuation: state.continuation,
+    };
   }
-  }
-}
-
-// Transient model-provider errors (story 029): a 529 Overloaded, 429 rate-limit,
-// 5xx, or a network blip is upstream and safe to retry. Classify by HTTP status
-// when the SDK exposes one, else by the error text — the Agent SDK commonly
-// surfaces these as `API Error: 529 Overloaded`.
-const TRANSIENT_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
-
-export function isTransientApiError(err) {
-  if (!err) return false;
-  const status = err.status ?? err.statusCode ?? err.response?.status;
-  if (typeof status === 'number' && (TRANSIENT_STATUS.has(status) || status >= 500)) return true;
-  const msg = `${err.message ?? err}`;
-  return /\b(429|5\d\d|overloaded|rate[\s_-]?limit|too many requests)\b/i.test(msg)
-    || /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up)\b/i.test(msg);
 }
 
 // Exponential backoff with full jitter, capped at retry.maxDelayMs (story 029).
@@ -518,12 +555,13 @@ function modelCostWeight(model) {
   return weights.default;
 }
 
-// Prompt-cache reads/writes are reported separately from input_tokens; count
-// them all so budgets and job accounting reflect real context size.
+// Product accounting (story 020): budgets and job figures count cached input
+// as input. The canonical runtime usage keeps the cache components disjoint,
+// so fold them in here.
 function effectiveInputTokens(usage) {
-  return (usage.input_tokens ?? 0)
-    + (usage.cache_creation_input_tokens ?? 0)
-    + (usage.cache_read_input_tokens ?? 0);
+  return (usage?.inputTokens ?? 0)
+    + (usage?.cacheReadTokens ?? 0)
+    + (usage?.cacheWriteTokens ?? 0);
 }
 
 function buildSystemPrompt(agent, projectDir, orgAddition = null) {
@@ -563,17 +601,6 @@ function withActiveDocument(context, project) {
   return { ...(context ?? {}), activeDocument: persisted };
 }
 
-/** The slice of a task's context a sub-agent should inherit (STH-43): where
- * the user is working. Selection/cursor stay with the agent that received
- * them — the dispatcher quotes what matters in the task text. */
-function inheritedContext(context) {
-  if (!context) return undefined;
-  const out = {};
-  if (context.activeDocument) out.activeDocument = context.activeDocument;
-  if (context.dir) out.dir = context.dir;
-  return Object.keys(out).length ? out : undefined;
-}
-
 function buildPrompt(input, context) {
   if (!context) return input;
   const parts = [input];
@@ -597,945 +624,4 @@ function buildPrompt(input, context) {
   // webapp/src/chat.ts `draftTargetContext` for why that restriction exists.
   if (context.dir) parts.push(`Unless a file clearly belongs elsewhere, create new files in ${context.dir}/.`);
   return parts.join('\n\n');
-}
-
-/**
- * Live + persisted signal for a write_file/edit_file outcome (STH-44). Direct
- * publish + channel mirror — the move_file / run_script pattern: the hub's
- * WeakSet dedupe keeps the feed to one envelope, and sub-agent runs (depth
- * > 0, untee'd) persist activity too. 'proposed' is SSE-only by design
- * (no file_events row, no eviction — nothing on disk changed); the hub
- * already treats it that way.
- */
-function emitFileChange(channel, { projectId, agentSlug, path, kind, jobId, userId }) {
-  const event = { type: 'file_change', agent: agentSlug, path, kind };
-  try {
-    publishProjectEvent(projectId, event, { jobId, userId });
-  } catch { /* activity loss must not fail the write */ }
-  channel.push(event);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #68b: the deterministic path's execution half. Two runtime tools under
-// the one `run_script` DB slug (analyst-only in seed-data): list_scripts and
-// run_script. The org is derived server-side from the project (as with
-// search_org_knowledge); the image and interpreter argv are composed inside
-// sandbox.js — the model chooses only WHICH script and its arguments.
-// ---------------------------------------------------------------------------
-
-// Lazy: the capacity knob lives in config.sandbox.script, which pinned test
-// configs may not define at module-load time.
-let scriptSemaphore = null;
-function getScriptSemaphore() {
-  if (!scriptSemaphore) {
-    scriptSemaphore = new Semaphore(config.sandbox?.script?.maxConcurrent ?? 2);
-  }
-  return scriptSemaphore;
-}
-
-const SCRIPT_LANGUAGE_BY_EXT = { r: 'r', py: 'python' };
-
-// Plain values and workspace-relative paths only: no whitespace, no shell
-// metacharacters. Args ride AFTER the server-built interpreter argv, so they
-// can never become docker flags; the regex keeps them boring anyway.
-const SCRIPT_ARG_PATTERN = /^[\w./=@,:-]+$/;
-
-function addRunScriptTools(tools, agent, { projectId, parentJob, channel }) {
-  let runSeq = 0;
-
-  const resolveOrgId = async () => (await getProject(projectId))?.org_id ?? null;
-
-  tools.push(tool(
-    'list_scripts',
-    'List the shared scripts in your organization\'s script library — known-good, versioned tools (the deterministic path). Prefer running one of these over rewriting the same analysis; check here before writing a new script.',
-    {},
-    async () => {
-      try {
-        const orgId = await resolveOrgId();
-        const scripts = orgId == null ? [] : listOrgScripts(orgId, { status: 'active' });
-        if (scripts.length === 0) {
-          return { content: [{ type: 'text', text: 'The organization script library is empty. Write what you need in analyst/, and suggest promoting anything reusable.' }] };
-        }
-        const text = scripts.map((s) => {
-          const args = JSON.parse(s.args_json || '[]')
-            .map((a) => `${a.name}${a.required ? ' (required)' : ''}${a.description ? ` — ${a.description}` : ''}`)
-            .join('; ');
-          const runnable = RUNNABLE_LANGUAGES.includes(s.language)
-            ? '' : ` [${s.language}: not runnable in this deploy]`;
-          return `- ${s.slug} (v${s.current_version}, ${s.language})${runnable}: ${s.title}`
-            + (s.description ? ` — ${s.description}` : '')
-            + (args ? `\n  args: ${args}` : '');
-        }).join('\n');
-        return { content: [{ type: 'text', text }] };
-      } catch (err) {
-        return { content: [{ type: 'text', text: `list_scripts failed: ${err.message}` }], isError: true };
-      }
-    },
-  ));
-
-  tools.push(tool(
-    'run_script',
-    'Run a script in the sandbox: a shared org script by slug (see list_scripts), or a project file by path while iterating before promotion. The sandbox has NO network and a read-only project mount; scripts read inputs via workspace-relative paths and write every output under $OUT_DIR. Outputs are copied into analyst/output/run-<id>/ and listed in the result.',
-    {
-      script: z.string().optional().describe('Org script slug to run (current version)'),
-      path: z.string().optional().describe('Project-relative script file to run instead (e.g. analyst/fit.R)'),
-      args: z.array(z.string().regex(SCRIPT_ARG_PATTERN, 'plain values and workspace-relative paths only'))
-        .max(16).default([]).describe('Arguments passed to the script'),
-    },
-    async ({ script, path, args }) => {
-      const errorResult = (text) => ({ content: [{ type: 'text', text }], isError: true });
-      if ((script == null) === (path == null)) {
-        return errorResult('Pass exactly one of `script` (org slug) or `path` (project file).');
-      }
-
-      // Resolve what to run — language, content/location, provenance refs.
-      let language;
-      let run;
-      let provenance;
-      try {
-        if (script != null) {
-          const orgId = await resolveOrgId();
-          const orgScript = orgId == null ? null : getOrgScript(orgId, script);
-          if (!orgScript || orgScript.status !== 'active') {
-            return errorResult(`No active org script "${script}". Use list_scripts to see the library.`);
-          }
-          language = orgScript.language;
-          if (!RUNNABLE_LANGUAGES.includes(language)) {
-            return errorResult(`"${script}" is ${language}, which this deploy cannot run yet (R only).`);
-          }
-          const version = getScriptVersion(orgId, orgScript.id, null);
-          run = { language, entrypoint: version.entrypoint, scriptContent: version.content, args };
-          provenance = { orgScriptId: orgScript.id, scriptVersion: version.version };
-        } else {
-          const ext = (path.split('.').pop() ?? '').toLowerCase();
-          language = SCRIPT_LANGUAGE_BY_EXT[ext];
-          if (!language) {
-            return errorResult(`${path} is not a runnable script (expected .R or .py).`);
-          }
-          if (!RUNNABLE_LANGUAGES.includes(language)) {
-            return errorResult(`${path} is ${language}, which this deploy cannot run yet (R only). Write the analysis in R, or ask the user to request a ${language} runtime.`);
-          }
-          run = { language, entrypoint: null, scriptRelPath: path, args };
-          provenance = { scriptPath: path };
-        }
-      } catch (err) {
-        return errorResult(`run_script failed: ${err.message}`);
-      }
-
-      runSeq += 1;
-      const outputDir = `analyst/output/run-${parentJob.id}-${runSeq}`;
-      const record = (fields) => recordScriptRun({
-        projectId: Number(projectId), jobId: parentJob.id, args, ...provenance, ...fields,
-      });
-
-      let result;
-      try {
-        result = await getScriptSemaphore().run(() => runScriptSandboxed(projectId, run));
-      } catch (err) {
-        if (err instanceof SandboxError) {
-          const status = err.code === 'timeout' ? 'timeout' : 'failed';
-          record({ status, stderr: err.message });
-          return errorResult(`run_script ${status}: ${err.message}`);
-        }
-        record({ status: 'failed', stderr: err.message });
-        throw err;
-      }
-
-      // Copy outputs into the project through the storage chokepoint; each
-      // copied file gets a real file_change so badges/activity/history all
-      // see it (analyst/output/** is outside draft/**, so no suggestion gate).
-      const copied = [];
-      const copyFailures = [];
-      for (const output of result.outputs) {
-        const dest = `${outputDir}/${output.path}`;
-        try {
-          await writeProjectFile(projectId, dest, output.buffer);
-          copied.push(dest);
-          const event = { type: 'file_change', agent: agent.slug, path: dest, kind: 'create' };
-          // Direct publish + channel mirror (the move_file pattern): the hub
-          // dedupes the object, and sub-agent runs persist activity too.
-          try {
-            publishProjectEvent(projectId, event, { jobId: parentJob.id });
-          } catch { /* activity loss must not fail the run */ }
-          channel.push(event);
-        } catch (err) {
-          copyFailures.push(`${dest}: ${err.message}`);
-        }
-      }
-
-      const status = result.exitCode === 0 ? 'ok' : 'error';
-      record({
-        status,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs,
-        outputDir: copied.length > 0 ? outputDir : null,
-        stdout: result.stdout,
-        stderr: result.stderr,
-      });
-
-      const tail = (text) => (text && text.length > 16384 ? `…${text.slice(-16384)}` : text);
-      const lines = [
-        `exit code ${result.exitCode} (${Math.round(result.durationMs / 1000)}s)`,
-        copied.length > 0 ? `outputs (${copied.length}):\n${copied.map((p) => `  ${p}`).join('\n')}` : 'no output files',
-      ];
-      if (result.skippedOutputs > 0) lines.push(`${result.skippedOutputs} output file(s) skipped (count/size cap)`);
-      if (copyFailures.length > 0) lines.push(`copy failures:\n${copyFailures.map((f) => `  ${f}`).join('\n')}`);
-      if (result.stdout) lines.push(`stdout:\n${tail(result.stdout)}`);
-      if (result.stderr) lines.push(`stderr:\n${tail(result.stderr)}`);
-      if (result.truncated) lines.push('(stdout/stderr truncated at the sandbox output cap)');
-      return {
-        content: [{ type: 'text', text: lines.join('\n\n') }],
-        ...(status === 'ok' ? {} : { isError: true }),
-      };
-    },
-  ));
-}
-
-function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, userId, seeding = false, context: taskContext = null }) {
-  const tools = [];
-
-  // File tools (story 018): all project file access goes through the storage
-  // service, which enforces the project root. Paths are workspace-relative.
-  if (agent.tools.includes('file_read')) {
-    tools.push(tool(
-      'read_file',
-      'Read a file from the project workspace. Path is relative to the workspace root.',
-      { path: z.string().describe('Workspace-relative file path') },
-      async ({ path }) => fileToolResult(async () => {
-        // Suggestion-mode coherence (issue #42): if this path has a pending
-        // proposal, show the proposed content — otherwise an agent that wrote
-        // and reads back to verify sees stale disk bytes and concludes its
-        // write was lost.
-        if (!seeding) {
-          const proposal = pendingProposalContent(projectId, path);
-          if (proposal != null) {
-            return `[${path} has a pending proposed update awaiting user review. The content below is the PROPOSED version; the file on disk keeps its previous content until the user accepts.]\n\n${proposal}`;
-          }
-        }
-        const buf = await readProjectFile(projectId, path);
-        return buf.toString('utf-8');
-      }),
-    ));
-    tools.push(tool(
-      'search_files',
-      'Search project files for a regular expression. Returns matching lines as path:line: text.',
-      {
-        pattern: z.string().describe('JavaScript regular expression to search for'),
-        path: z.string().default('.').describe('Workspace-relative directory to search in'),
-      },
-      async ({ pattern, path }) => fileToolResult(async () => {
-        const matches = await searchProjectFiles(projectId, pattern, path);
-        if (matches.length === 0) return 'No matches.';
-        return matches.map((m) => `${m.path}:${m.line}: ${m.text}`).join('\n');
-      }),
-    ));
-  }
-
-  if (agent.tools.includes('file_list')) {
-    tools.push(tool(
-      'list_files',
-      'List the project workspace file tree.',
-      { path: z.string().default('.').describe('Workspace-relative directory to list') },
-      async ({ path }) => fileToolResult(async () => {
-        const tree = await listProjectTree(projectId, path);
-        return JSON.stringify(tree, null, 2);
-      }),
-    ));
-  }
-
-  if (agent.tools.includes('file_move')) {
-    tools.push(tool(
-      'move_file',
-      'Move or rename a file or folder within the project workspace. Parent directories of the destination are created as needed. Use this to organize loose uploads — e.g. move "protocol.pdf" to "seed_docs/protocol.pdf".',
-      {
-        from: z.string().describe('Workspace-relative source path'),
-        to: z.string().describe('Workspace-relative destination path (including the new filename)'),
-      },
-      async ({ from, to }) => fileToolResult(async () => {
-        // Story 012-002: a move is an identity change, not a delete plus a
-        // create. One 'moved' event carries the file's identity to the new
-        // path and the hub re-keys every path-keyed consumer (seen state,
-        // comments, pending edits, activeDocument) in the same transaction
-        // that appends the activity row — so nothing is left orphaned at a
-        // path that no longer exists.
-        //
-        // Pre-check the one collision the rewrite refuses, while the file is
-        // still in place: a pending proposal at the destination exists only in
-        // the DB (no bytes on disk), so storage cannot 409 on it and the
-        // rewrite must not silently replace it.
-        const clashes = findPendingEditConflicts(projectId, from, to);
-        if (clashes.length > 0) {
-          throw new Error(
-            `Cannot move ${from} → ${to}: a pending proposed edit is already waiting at `
-            + `${clashes.join(', ')}. Ask the user to accept or reject it first.`,
-          );
-        }
-        // moveProjectEntry reports the CANONICAL paths it actually renamed;
-        // publishing those (not the model's raw arguments) is what keeps the
-        // prefix rewrite from matching zero rows on './a.md' or 'dir/'.
-        const moved = await moveProjectEntry(projectId, from, to);
-        const event = {
-          type: 'file_change',
-          agent: agent.slug,
-          path: moved.to,
-          kind: 'moved',
-          meta: { from: moved.from },
-        };
-        // Published directly rather than only through the channel tee, because
-        // 'moved' is the one kind whose persistence failure propagates and
-        // EventChannel.push swallows tee throws (events.js:22-27) — a
-        // push-only move would report success over a half-applied state. The
-        // hub's WeakSet dedupe makes the tee's re-offer of this same object a
-        // no-op, so the feed still sees exactly one envelope; it also means a
-        // sub-agent run (depth > 0, untee'd) rewrites the DB too, where the
-        // old push-only path depended on dispatch_agent forwarding.
-        try {
-          publishProjectEvent(projectId, event, { jobId: parentJob.id, userId });
-        } catch (err) {
-          // The rename already committed on disk. Put the bytes back so the
-          // tool never reports a move whose consumers were not carried with it.
-          let restored = true;
-          try {
-            await moveProjectEntry(projectId, moved.to, moved.from);
-          } catch {
-            restored = false;
-          }
-          throw new Error(
-            `Move failed: ${err.message}. `
-            + (restored
-              ? `${moved.from} was left in place.`
-              : `${moved.from} could NOT be restored and is now at ${moved.to} — tell the user.`),
-          );
-        }
-        channel.push(event); // mirror into the live client stream (deduped above)
-        return `Moved ${moved.from} → ${moved.to}`;
-      }),
-    ));
-  }
-
-  if (agent.tools.includes('file_write')) {
-    tools.push(tool(
-      'write_file',
-      'Create or overwrite a file in the project workspace. Parent directories are created as needed.',
-      {
-        path: z.string().describe('Workspace-relative file path'),
-        content: z.string().describe('Full file content'),
-      },
-      async ({ path, content }) => fileToolResult(async () => {
-        await rejectDerivedBibWrite(projectId, path);
-        // Suggestion mode (story 008-001, widened by STH-44): writes to
-        // draft/** and to any existing file outside agent-private folders
-        // become pending edits the user reviews; the file's bytes do not
-        // change here. The seeding pipeline bypasses the gate — its first
-        // draft writes land directly (there is nothing to protect yet).
-        const emit = (kind) => emitFileChange(channel, {
-          projectId, agentSlug: agent.slug, path, kind, jobId: parentJob.id, userId,
-        });
-        if (!seeding && await isProposable(projectId, path)) {
-          await proposeEdit(projectId, { path, proposedContent: content, agentSlug: agent.slug, jobId: parentJob.id });
-          emit('proposed');
-          return proposedResult(path);
-        }
-        const { created } = await writeProjectFile(projectId, path, content);
-        emit(created ? 'create' : 'update');
-        return `${created ? 'Created' : 'Updated'} ${path}`;
-      }),
-    ));
-    tools.push(tool(
-      'edit_file',
-      'Replace an exact string in a file. old_string must match exactly and, unless replace_all is true, exactly once.',
-      {
-        path: z.string().describe('Workspace-relative file path'),
-        old_string: z.string().describe('Exact text to replace'),
-        new_string: z.string().describe('Replacement text'),
-        replace_all: z.boolean().default(false).describe('Replace every occurrence'),
-      },
-      async ({ path, old_string, new_string, replace_all }) => fileToolResult(async () => {
-        await rejectDerivedBibWrite(projectId, path);
-        const suggesting = !seeding && await isProposable(projectId, path);
-        // In suggestion mode the "current content" is the EFFECTIVE content —
-        // an existing proposal if there is one, else the disk file — so a
-        // sequential write→edit on the same draft stays coherent (008-001).
-        const content = suggesting
-          ? await effectiveContent(projectId, path)
-          : (await readProjectFile(projectId, path)).toString('utf-8');
-        const occurrences = content.split(old_string).length - 1;
-        if (occurrences === 0) throw new Error(`old_string not found in ${path}`);
-        if (occurrences > 1 && !replace_all) {
-          throw new Error(`old_string occurs ${occurrences} times in ${path}; pass replace_all or a longer unique string`);
-        }
-        const next = content.replaceAll(old_string, new_string);
-        const emit = (kind) => emitFileChange(channel, {
-          projectId, agentSlug: agent.slug, path, kind, jobId: parentJob.id, userId,
-        });
-        if (suggesting) {
-          await proposeEdit(projectId, { path, proposedContent: next, agentSlug: agent.slug, jobId: parentJob.id });
-          emit('proposed');
-          return proposedResult(path);
-        }
-        await writeProjectFile(projectId, path, next);
-        emit('update');
-        return `Updated ${path} (${replace_all ? occurrences : 1} replacement${occurrences > 1 && replace_all ? 's' : ''})`;
-      }),
-    ));
-  }
-
-  if (agent.tools.includes('pubmed_search')) {
-    tools.push(tool(
-      'pubmed_search',
-      'Search PubMed for peer-reviewed scientific papers. Call this whenever you need citations or evidence from the biomedical literature — never cite from memory.',
-      {
-        query: z.string().describe('Search query (keywords, MeSH terms, or author searches)'),
-        max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
-      },
-      async ({ query, max_results }) => searchToolResult(() => pubmedSearch(query, max_results)),
-    ));
-  }
-
-  if (agent.tools.includes('add_citation')) {
-    tools.push(tool(
-      'add_citation',
-      'Add a citation to the project bibliography by PubMed ID. Verifies the metadata against PubMed, dedupes against existing entries, appends to the .bib file, and returns the BibTeX key to cite as [@key]. Find the PMID with pubmed_search first — never invent identifiers.',
-      {
-        pmid: z.string().describe('PubMed ID of the work to cite'),
-        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
-      },
-      async ({ pmid, path }) => {
-        try {
-          const { key, created, bibtex } = await upsertCitation(projectId, pmid, path);
-          // Live citation event (deferred from story 011) so the editor can
-          // refresh chips/bibliography without polling.
-          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
-          if (created) {
-            channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
-          }
-          return {
-            content: [{
-              type: 'text',
-              text: created
-                ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
-                : `Already in ${path} as "${key}". Cite it as [@${key}].`,
-            }],
-          };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `add_citation failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('add_reference')) {
-    // STH-49 (bianchi2026): the old free-form path let the model type an
-    // author list from parametric memory, so a real paper entered the store
-    // under three fabricated authors. Now any source with an identifier is
-    // fetched from its registry (arXiv, Crossref) and the FULL record is
-    // stored by code — the model only picks an identifier out of search
-    // results. The manual path (identifier-less web/government sources)
-    // takes an organization as corporate author; person-name author fields
-    // no longer exist on this tool.
-    tools.push(tool(
-      'add_reference',
-      'Add a non-PubMed reference to the project bibliography and return the BibTeX key to cite as [@key]. '
-      + 'Pass the identifier your search returned — arxiv_id (from arxiv_search results) or doi — and the full citation record (title, authors, year, venue) is fetched from the authoritative registry and stored deterministically; never type metadata for a work that has an identifier. '
-      + 'Only an identifier-less source (web page, government guidance) may be described manually, and then with an organization as author, never person names. Use add_citation for anything indexed in PubMed.',
-      {
-        arxiv_id: z.string().optional().describe('arXiv id exactly as returned by arxiv_search (e.g. "2401.01234v1"); the record is fetched from arXiv'),
-        doi: z.string().optional().describe('DOI of the work; the record is fetched from Crossref'),
-        title: z.string().optional().describe('Manual path only: title of the identifier-less work'),
-        organization: z.string().optional().describe('Manual path only: issuing organization as corporate author (e.g. "U.S. Food and Drug Administration")'),
-        year: z.number().int().optional().describe('Manual path only: publication year'),
-        publisher: z.string().optional().describe('Manual path only: publisher or issuing body'),
-        url: z.string().optional().describe('Manual path only (required there): URL of the source'),
-        entry_type: z.string().optional().describe('Manual path only: BibTeX entry type (default misc)'),
-        source_type: z.enum(['web', 'government', 'manual']).optional().describe('Manual path only: source authority class (default web)'),
-        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
-      },
-      async ({ arxiv_id, doi, path, ...manual }) => {
-        try {
-          let result;
-          if (arxiv_id) {
-            result = await addArxivReference(projectId, arxiv_id, path);
-          } else if (doi) {
-            result = await addDoiReference(projectId, doi, path);
-          } else if (manual.title && manual.url) {
-            result = await addManualReference(projectId, manual, path);
-          } else {
-            return {
-              content: [{
-                type: 'text',
-                text: 'add_reference failed: pass arxiv_id or doi for any indexed work (the record is then fetched from the registry). A manual entry is only for identifier-less sources and requires title and url.',
-              }],
-              isError: true,
-            };
-          }
-          const { key, created, bibtex } = result;
-          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
-          if (created) {
-            channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
-          }
-          return {
-            content: [{
-              type: 'text',
-              text: created
-                ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
-                : `Already in ${path} as "${key}". Cite it as [@${key}].`,
-            }],
-          };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `add_reference failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('manage_references')) {
-    // Deterministic corrections to the reference store (issue #41): the RA's
-    // alternative to hand-editing the derived .bib, which the file tools
-    // refuse. Both regenerate the bibliography file after changing the store.
-    tools.push(tool(
-      'update_reference',
-      'Correct fields of an existing bibliography entry by its cite key (metadata fixes: title, authors, year, journal, DOI, pages, ...). Only the fields you pass change; the cite key never changes, so in-text [@key] citations keep working. The bibliography file is regenerated automatically. Never fabricate metadata — only apply corrections you verified against the source.',
-      {
-        cite_key: z.string().describe('Cite key of the entry to correct (as returned by add_citation/add_reference)'),
-        title: z.string().optional().describe('Corrected title'),
-        authors: z.array(z.string()).optional().describe('Corrected author list, e.g. "Smith, Jane"'),
-        year: z.number().int().optional().describe('Corrected publication year'),
-        journal: z.string().optional().describe('Corrected journal or venue'),
-        volume: z.string().optional().describe('Corrected volume'),
-        issue: z.string().optional().describe('Corrected issue'),
-        pages: z.string().optional().describe('Corrected page range'),
-        publisher: z.string().optional().describe('Corrected publisher'),
-        doi: z.string().optional().describe('Corrected DOI'),
-        pmid: z.string().optional().describe('Corrected PubMed ID'),
-        url: z.string().optional().describe('Corrected URL'),
-        entry_type: z.string().optional().describe('Corrected BibTeX entry type (article, misc, techreport, ...)'),
-        source_type: z.enum(['pubmed', 'preprint', 'crossref', 'web', 'manual', 'government']).optional().describe('Corrected source authority class'),
-        abstract: z.string().optional().describe('Corrected abstract'),
-        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
-      },
-      async ({ cite_key, path, entry_type, source_type, ...rest }) => {
-        try {
-          const changes = { ...rest };
-          if (entry_type !== undefined) changes.entryType = entry_type;
-          if (source_type !== undefined) changes.sourceType = source_type;
-          const { key, bibtex } = await updateReference(projectId, cite_key, changes, path);
-          channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
-          channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
-          return { content: [{ type: 'text', text: `Updated reference "${key}" and regenerated ${path}. Corrected entry:\n${bibtex}` }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `update_reference failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-    tools.push(tool(
-      'remove_reference',
-      'Delete a bibliography entry by its cite key (e.g. a duplicate or a reference that could not be verified). The bibliography file is regenerated automatically. Check that the draft no longer cites [@key] before removing.',
-      {
-        cite_key: z.string().describe('Cite key of the entry to delete'),
-        path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
-      },
-      async ({ cite_key, path }) => {
-        try {
-          const { key } = await removeReference(projectId, cite_key, path);
-          channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
-          return { content: [{ type: 'text', text: `Removed reference "${key}" and regenerated ${path}.` }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `remove_reference failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('verify_references')) {
-    // STH-49: the verification step must check every fact about a citation,
-    // not just that it exists. Field-by-field comparison against the
-    // authoritative registry, by code — a "verified" claim means this ran
-    // clean, nothing less.
-    tools.push(tool(
-      'verify_references',
-      'Verify stored bibliography entries field-by-field (authors, title, year, DOI, volume/issue/pages, venue) against their authoritative registries: PubMed by PMID, Crossref by DOI, arXiv by id. Reports verified / mismatch (with the registry value for each differing field) / unverifiable (no identifier — needs human review). Run this before stating that references are verified, and fix mismatches with update_reference using the reported registry values.',
-      {
-        cite_keys: z.array(z.string()).optional().describe('Limit the check to these cite keys (default: every reference in the project store)'),
-      },
-      async ({ cite_keys }) => {
-        try {
-          const report = await verifyProjectReferences(projectId, cite_keys);
-          return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `verify_references failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('add_comment')) {
-    tools.push(tool(
-      'add_comment',
-      'File a margin comment on a passage of a project document. Quote the exact target text and the comment appears anchored to that passage in the editor, where the user and collaborators read, reply to, and resolve it. Use this for feedback on specific text instead of writing critique into chat or separate report files.',
-      {
-        path: z.string().describe('Workspace-relative path of the document'),
-        quote: z.string().min(1).describe('The target text, copied VERBATIM from the current file content — a short excerpt (one clause to a few sentences) that pins down the passage'),
-        body: z.string().min(1).describe('The comment: the issue, why it matters, and what needs to change'),
-      },
-      async ({ path, quote, body }) => {
-        try {
-          // Anchor against the stored bytes — what the user's editor shows.
-          // A quote that no longer matches is the agent's error to fix.
-          const content = (await readProjectFile(projectId, path)).toString('utf-8');
-          const range = resolveQuote(content, quote);
-          if (!range) {
-            return {
-              content: [{
-                type: 'text',
-                text: `add_comment failed: the quote was not found in ${path}. Re-read the file and copy the target text exactly as it appears now.`,
-              }],
-              isError: true,
-            };
-          }
-          const thread = createThread(projectId, {
-            path,
-            body,
-            quote: content.slice(range.start, range.end),
-            start: range.start,
-            end: range.end,
-            userId,
-            agentSlug: agent.slug,
-            jobId: parentJob.id,
-          });
-          channel.push({
-            type: 'comment', action: 'create', agent: agent.slug,
-            path, id: thread.id, rootId: thread.id,
-          });
-          return { content: [{ type: 'text', text: `Comment filed on ${path} (comment ${thread.id}).` }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `add_comment failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('manage_comments')) {
-    // Issue #58: the read-and-act half of the comment loop. add_comment can
-    // file feedback, but agents could not see existing threads (from users,
-    // external reviewers, or other agents), answer them, or close them out.
-    // Resolution stamps the task's user (agents act on the user's behalf);
-    // in-thread attribution comes from the agent-authored reply.
-    const author = (c) => {
-      if (c.agent) return `${c.agent} (agent)`;
-      if (c.userName) return c.userName;
-      if (c.reviewerName) return `${c.reviewerName} (external reviewer)`;
-      return 'unknown';
-    };
-    tools.push(tool(
-      'list_comments',
-      'List margin-comment threads on a document (or the whole project): who wrote each comment, the anchored quote, the full thread of replies, and its open/resolved state. Use this before filing comments (avoid duplicates), when asked to address feedback, and to find threads to resolve.',
-      {
-        path: z.string().optional().describe('Workspace-relative document path; omit to list threads across the whole project'),
-        include_resolved: z.boolean().default(false).describe('Include threads that are already resolved (default: open threads only)'),
-      },
-      async ({ path, include_resolved }) => {
-        try {
-          let threads = listThreads(projectId, { path: path ?? null });
-          if (!include_resolved) threads = threads.filter((t) => t.resolvedAt == null);
-          if (threads.length === 0) {
-            const scope = path ? `on ${path}` : 'in this project';
-            return { content: [{ type: 'text', text: `No ${include_resolved ? '' : 'open '}comment threads ${scope}.` }] };
-          }
-          const text = threads.map((t) => {
-            const status = t.resolvedAt ? 'resolved' : 'open';
-            const anchor = t.anchor?.quote
-              ? `\n  anchored to: "${t.anchor.quote}"${t.orphaned ? ' (orphaned — the quoted text no longer exists)' : ''}`
-              : '';
-            const replies = t.replies.map((r) => `\n  ↳ ${author(r)}: ${r.body}`).join('');
-            return `Comment ${t.id} on ${t.path} [${status}] by ${author(t)}:${anchor}\n  ${t.body}${replies}`;
-          }).join('\n\n');
-          return { content: [{ type: 'text', text }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `list_comments failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-    tools.push(tool(
-      'reply_comment',
-      'Reply in an existing comment thread. Use it to answer a question asked in a comment, or to explain what you changed in response. The reply appears in the thread in the editor, attributed to you.',
-      {
-        comment_id: z.number().int().describe('Thread id (the root comment id from list_comments)'),
-        body: z.string().min(1).describe('The reply text'),
-      },
-      async ({ comment_id, body }) => {
-        try {
-          const reply = addReply(projectId, comment_id, {
-            body, userId, agentSlug: agent.slug, jobId: parentJob.id,
-          });
-          channel.push({
-            type: 'comment', action: 'reply', agent: agent.slug,
-            path: reply.path, id: reply.id, rootId: comment_id,
-          });
-          return { content: [{ type: 'text', text: `Reply added to comment ${comment_id} on ${reply.path}.` }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `reply_comment failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-    tools.push(tool(
-      'resolve_comment',
-      'Resolve a comment thread after its concern has been fully addressed. Pass a note saying what was done — it is filed as your reply in the thread before resolving, so the resolution is traceable. Only resolve threads you (or the change you just made) actually addressed; leave open questions for the user.',
-      {
-        comment_id: z.number().int().describe('Thread id (the root comment id from list_comments)'),
-        note: z.string().optional().describe('What was changed or why the comment is settled — filed as a closing reply in the thread'),
-      },
-      async ({ comment_id, note }) => {
-        try {
-          if (note && note.trim().length > 0) {
-            const reply = addReply(projectId, comment_id, {
-              body: note.trim(), userId, agentSlug: agent.slug, jobId: parentJob.id,
-            });
-            channel.push({
-              type: 'comment', action: 'reply', agent: agent.slug,
-              path: reply.path, id: reply.id, rootId: comment_id,
-            });
-          }
-          const thread = setResolved(projectId, comment_id, true, { userId });
-          channel.push({
-            type: 'comment', action: 'resolve', agent: agent.slug,
-            path: thread.path, id: comment_id, rootId: comment_id,
-          });
-          return { content: [{ type: 'text', text: `Resolved comment ${comment_id} on ${thread.path}.` }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `resolve_comment failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('arxiv_search')) {
-    tools.push(tool(
-      'arxiv_search',
-      'Search arXiv for preprints. Flag any preprint citations as needing verification of peer-reviewed publication status.',
-      {
-        query: z.string().describe('Search query'),
-        max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
-      },
-      async ({ query, max_results }) => searchToolResult(() => arxivSearch(query, max_results)),
-    ));
-  }
-
-  if (agent.tools.includes('search_org_knowledge')) {
-    // The one sanctioned crossing of the project-root boundary (story 006-003):
-    // read-only passages from the org's knowledge library, with provenance. The
-    // org is derived server-side from the task's project — agents never pick
-    // their tenant, so there is deliberately no org parameter.
-    tools.push(tool(
-      'search_org_knowledge',
-      'Search your organization\'s shared knowledge library (style guides, SOPs, regulatory guidance, templates, prior work) for relevant passages. Returns ranked excerpts, each with the source document and section — cite the source document by name when you rely on one. Read-only and org-wide; separate from this project\'s files.',
-      {
-        query: z.string().describe('Full-text keyword query (plain domain terms work best)'),
-        limit: z.number().int().min(1).max(25).default(8).describe('Maximum passages to return'),
-      },
-      async ({ query, limit }) => {
-        try {
-          const project = await getProject(projectId);
-          const orgId = project?.org_id;
-          // Suspension (story 011-001, fix I4): a suspended org's knowledge is
-          // off limits to agents too, not just to browsers. Note the gap this
-          // does NOT close: jobs already in flight when the suspension lands
-          // keep running (documented in docs/data-pipeline.md; killing them is
-          // 010-002's lifecycle rework).
-          if (orgId != null) {
-            const { rows } = await dbQuery(
-              'SELECT status FROM organizations WHERE id = $1', [orgId],
-            );
-            if (rows[0]?.status === 'suspended') {
-              return {
-                content: [{
-                  type: 'text',
-                  text: 'Organization suspended: the org knowledge library is unavailable. Proceed without org guidance — do not retry this search.',
-                }],
-              };
-            }
-          }
-          if (orgId == null || !hasReadyOrgDocuments(orgId)) {
-            return {
-              content: [{
-                type: 'text',
-                text: 'The organization has no library documents yet. Proceed without org guidance — do not retry this search.',
-              }],
-            };
-          }
-          const passages = searchOrgKnowledge(orgId, query, limit);
-          if (passages.length === 0) {
-            return {
-              content: [{
-                type: 'text',
-                text: `No org library passages matched "${query}". Try once more with different keywords, or proceed without org guidance.`,
-              }],
-            };
-          }
-          const text = passages.map((p, i) => {
-            const doc = p.title || p.filename;
-            const section = p.headingPath ? ` — section: ${p.headingPath}` : '';
-            return `${i + 1}. Source: "${doc}" (${p.filename})${section}\n${p.snippet}`;
-          }).join('\n\n');
-          return { content: [{ type: 'text', text }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `search_org_knowledge failed: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('run_script')) {
-    addRunScriptTools(tools, agent, { projectId, parentJob, channel });
-  }
-
-  if (agent.tools.includes('ask_user')) {
-    tools.push(tool(
-      'ask_user',
-      'Ask the user a question and wait for their reply. Use this for interview questions and any decision that needs user input. Ask one question at a time and adapt to earlier answers.',
-      { question: z.string().describe('The question to show the user') },
-      async ({ question }) => {
-        // The reply round-trip (story 012): emit a question event carrying the
-        // job id, then park until POST /api/agent/jobs/:id/reply delivers the
-        // answer (or the timeout / task teardown unblocks us without one).
-        channel.push({ type: 'question', agent: agent.slug, jobId: parentJob.id, content: question });
-        const reply = await waitForReply(parentJob.id, config.agent.questionTimeoutMs, { question, agent: agent.slug });
-        if (reply == null) {
-          // Tell the webapp the question is no longer answerable (story 020);
-          // on task teardown the channel is already closed and this is a no-op.
-          channel.push({ type: 'question_expired', agent: agent.slug, jobId: parentJob.id });
-          return {
-            content: [{
-              type: 'text',
-              text: '[No reply received. Do not wait further: continue with sensible defaults and clearly note any assumptions you make.]',
-            }],
-          };
-        }
-        return { content: [{ type: 'text', text: reply }] };
-      },
-    ));
-  }
-
-  if (agent.tools.includes('project_config')) {
-    tools.push(tool(
-      'save_project_config',
-      'Save the structured project configuration (type, config) to the project record and write project.json to the workspace root. The project keeps the name the user gave it; the title here is stored as metadata. Normally handled by the setup wizard before this agent runs — retained for edge cases where the config still needs to be saved or updated from here.',
-      {
-        title: z.string().describe('Project title'),
-        project_type: z.enum(['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'])
-          .describe('Document type; pick the closest match for "other" projects'),
-        research_question: z.string().describe('The central research question or document purpose'),
-        deliverables: z.array(z.string()).min(1).describe('Key deliverables'),
-        timeline: z.string().describe('Key milestones and dates (use absolute dates)'),
-        source_materials: z.array(z.string()).default([])
-          .describe('Source materials the user already has (guidance docs, prior protocols, key papers, data)'),
-        notes: z.string().optional().describe('Anything else from the interview worth preserving'),
-      },
-      async (input) => {
-        try {
-          const projectConfig = {
-            title: input.title,
-            project_type: input.project_type,
-            research_question: input.research_question,
-            deliverables: input.deliverables,
-            timeline: input.timeline,
-            source_materials: input.source_materials ?? [],
-            ...(input.notes ? { notes: input.notes } : {}),
-          };
-          // Keep the user's chosen project name; the manuscript title lives in
-          // config.title (and the user can rename the project explicitly).
-          const { created } = await applyProjectConfig(projectId, projectConfig);
-          channel.push({
-            type: 'file_change',
-            agent: agent.slug,
-            path: 'project.json',
-            kind: created ? 'create' : 'update',
-          });
-          return { content: [{ type: 'text', text: 'Project configuration saved to the project record and project.json.' }] };
-        } catch (err) {
-          return { content: [{ type: 'text', text: `Failed to save project config: ${err.message}` }], isError: true };
-        }
-      },
-    ));
-  }
-
-  if (agent.tools.includes('spawn_agent') && depth < config.agent.maxDispatchDepth) {
-    tools.push(tool(
-      'dispatch_agent',
-      'Dispatch a sub-agent to perform a focused task (e.g. ra for literature research, advisor for domain review). Returns the sub-agent\'s final output.',
-      {
-        agent_slug: z.string().describe('Agent to dispatch: pm, writer, ra, advisor, reviewer, analyst'),
-        task: z.string().describe('Task description for the sub-agent'),
-        context: z.string().optional().describe('Additional context for the sub-agent'),
-      },
-      async ({ agent_slug, task, context }) => {
-        const input = context ? `${task}\n\nContext: ${context}` : task;
-        let finalText = '';
-        let errorMessage = null;
-        const child = runAgentTask(
-          // Sub-jobs inherit the dispatching user's attribution (story 007-001),
-          // the seeding bypass (story 008-001): a sub-agent dispatched by a
-          // seeding stage writes the first draft directly too — and the user's
-          // open document (STH-43), so a "full pass on the doc" relayed by the
-          // PM lands on the document the PI is actually looking at.
-          { role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext) },
-          { depth: depth + 1, parentJobId: parentJob.id, budget },
-        );
-        for await (const event of child) {
-          if (event.type === 'text') finalText += (finalText ? '\n' : '') + event.content;
-          if (event.type === 'error') errorMessage = event.message;
-          // Forward child progress to the client; the parent emits the single
-          // terminal 'done' for the whole task.
-          if (event.type !== 'done') channel.push(event);
-        }
-        if (errorMessage) {
-          return { content: [{ type: 'text', text: `Sub-agent failed: ${errorMessage}` }], isError: true };
-        }
-        return { content: [{ type: 'text', text: finalText || '(sub-agent produced no output)' }] };
-      },
-    ));
-  }
-
-  return tools;
-}
-
-async function searchToolResult(fn) {
-  try {
-    const results = await fn();
-    return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
-  } catch (err) {
-    return { content: [{ type: 'text', text: `Search failed: ${err.message}` }], isError: true };
-  }
-}
-
-// The suggestion-mode success message (issue #42): agents treated the old
-// "awaiting user review" phrasing as a failed/blocked write and thrashed —
-// retrying, rewriting whole files, or declaring the tool broken. Say outright
-// that the write succeeded and is complete.
-function proposedResult(path) {
-  return `Successfully proposed update to ${path}. The write is COMPLETE — do not retry or rewrite. `
-    + 'It is recorded as a pending suggestion the user reviews in the editor; the file on disk changes only when they accept. '
-    + 'Reading the file back will show your proposed version.';
-}
-
-// Refuse direct writes to a materialized bibliography (issue #42): the file is
-// derived from the reference store, so a hand edit is clobbered on the next
-// regeneration — and under suggestion mode it would sit as an invisible
-// pending edit. Steer to the deterministic reference tools instead.
-async function rejectDerivedBibWrite(projectId, path) {
-  if (await isDerivedBibPath(projectId, path)) {
-    throw new Error(
-      `${path} is generated from the project reference store; direct edits are overwritten the next time the bibliography is regenerated. `
-      + 'Use add_citation (PubMed works) or add_reference (everything else) to add entries, and '
-      + 'update_reference / remove_reference to correct or delete existing ones. If you lack those '
-      + 'tools, dispatch the ra agent or tell the user exactly what needs to change.',
-    );
-  }
-}
-
-async function fileToolResult(fn) {
-  try {
-    return { content: [{ type: 'text', text: await fn() }] };
-  } catch (err) {
-    return { content: [{ type: 'text', text: err.message }], isError: true };
-  }
 }
