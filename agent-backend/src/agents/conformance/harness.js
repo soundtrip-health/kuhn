@@ -281,7 +281,7 @@ export async function runScenario(scenarioInput, driverFactory) {
     arxiv: scenario.fixture?.arxiv ?? {},
   });
   setSandboxFixture({ scripts: scenario.fixture?.scripts ?? {} });
-  setFetchFixture({ pmids: scenario.fixture?.literature?.pmids ?? {} });
+  setFetchFixture({ pmids: scenario.fixture?.literature?.pmids ?? {}, arxivIds: scenario.fixture?.literature?.arxivIds ?? {} });
   installFetchFake();
 
   resetBridge();

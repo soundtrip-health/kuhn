@@ -219,10 +219,13 @@ export const directVsProposed = {
   },
 };
 
-/** 6 — Citations and references against the fixture literature. */
+/** 6 — Citations and references against the fixture literature (STH-49
+ * contract: PubMed via add_citation; identifier-bearing sources are fetched
+ * from their registry by code; only identifier-less sources take the manual
+ * path, with an organization as corporate author). */
 export const citationsReferences = {
   id: 'citations-references',
-  title: 'PubMed-verified citations and manual references land in the .bib store',
+  title: 'PubMed citation, registry-fetched arXiv reference, and a manual entry land in the .bib store',
   fixture: {
     files: { 'draft/main.md': 'Metformin may protect the heart [@smith2024].\n' },
     literature: {
@@ -236,52 +239,69 @@ export const citationsReferences = {
         },
       },
       searches: { 'metformin cardioprotective': ['38450214'] },
+      // Served by the fetch fake as the arXiv API Atom feed the REAL
+      // arxivFetchById()/parseArxivFeed() code consumes (id_list lookup).
+      arxivIds: {
+        '2401.01234v1': {
+          title: 'Deep learning for metabolic disease risk prediction',
+          authors: ['Rita Roe', 'Sam Cole'],
+          published: '2024-01-02T17:00:00Z',
+          summary: 'We predict metabolic disease risk from routine imaging.',
+        },
+      },
     },
   },
   tasks: [{
     role: 'ra',
-    input: 'Cite the metformin review, add a manual reference, and fix the title.',
+    input: 'Cite the metformin review, add the arXiv preprint by id, add a manual web reference, and correct the preprint title.',
     model: {
       attempts: [{
         turns: [
           { toolCalls: [{ tool: 'pubmed_search', args: { query: 'metformin cardioprotective' } }] },
           { toolCalls: [{ tool: 'add_citation', args: { pmid: '38450214' } }] },
+          { toolCalls: [{ tool: 'add_reference', args: { arxiv_id: '2401.01234v1' } }] },
           { toolCalls: [{
             tool: 'add_reference',
             args: {
-              title: 'Cardiovascular endpoints in metabolic disease',
-              authors: ['Roe, Rita'],
+              title: 'Cardiovascular endpoints in metabolic disease: guidance for trial design',
+              organization: 'National Heart Institute',
               year: 2023,
-              journal: 'Preprint Server',
-              source_type: 'preprint',
+              url: 'https://example.org/nhi/roe-2023',
+              source_type: 'web',
             },
           }] },
-          { toolCalls: [{ tool: 'update_reference', args: { cite_key: 'roe2023', title: 'Cardiovascular endpoints in metabolic disease (updated)' } }] },
-          { text: 'Bibliography updated.', usage: { input: 11, output: 6 } },
+          { toolCalls: [{ tool: 'update_reference', args: { cite_key: 'roe2024', title: 'Deep learning for metabolic disease risk prediction (updated)' } }] },
+          { text: 'Bibliography updated.', usage: { input: 12, output: 6 } },
         ],
       }],
     },
   }],
   assert: async (ctx) => {
     const refs = ctx.references(ctx.fixture.projectId);
-    ctx.check('two references stored', refs.length === 2, JSON.stringify(refs.map((r) => r.cite_key)));
+    ctx.check('three references stored', refs.length === 3, JSON.stringify(refs.map((r) => r.cite_key)));
     const pmRef = refs.find((r) => r.pmid === '38450214');
     ctx.check('PubMed citation verified with metadata',
       pmRef?.cite_key === 'smith2024' && pmRef.title === 'Metformin and cardioprotection: a systematic review'
       && pmRef.year === 2024 && pmRef.source_type === 'pubmed' && pmRef.identity_status === 'strong',
       JSON.stringify(pmRef));
-    const manual = refs.find((r) => r.cite_key === 'roe2023');
-    ctx.check('manual reference stored and corrected',
-      manual?.source_type === 'preprint' && manual.title.includes('(updated)'), JSON.stringify(manual));
+    const arxivRef = refs.find((r) => r.cite_key === 'roe2024');
+    ctx.check('arXiv reference fetched from the registry with corrected title',
+      arxivRef?.source_type === 'preprint' && arxivRef.title.includes('(updated)')
+      && JSON.parse(arxivRef.authors_json ?? '[]')?.[0] === 'Roe, Rita' && arxivRef.year === 2024
+      && arxivRef.url === 'http://arxiv.org/abs/2401.01234v1',
+      JSON.stringify(arxivRef));
+    const manual = refs.find((r) => r.cite_key === 'nationalheartinstitute2023');
+    ctx.check('manual identifier-less reference stored with corporate author',
+      manual?.source_type === 'web' && JSON.parse(manual.authors_json ?? '[]')?.[0] === '{National Heart Institute}'
+      && manual.url === 'https://example.org/nhi/roe-2023',
+      JSON.stringify(manual));
     const bib = await ctx.read('draft/references.bib');
-    ctx.check('bib file materialized with both entries',
-      bib != null && bib.includes('smith2024') && bib.includes('roe2023'), bib);
+    ctx.check('bib file materialized with all three entries',
+      bib != null && bib.includes('smith2024') && bib.includes('roe2024') && bib.includes('nationalheartinstitute2023'), bib);
     const citationEvents = ctx.eventsOf('citation');
     ctx.check('live citation events emitted for each bibliography change',
-      citationEvents.length === 3
-      && citationEvents[0]?.key === 'smith2024'
-      && citationEvents[1]?.key === 'roe2023'
-      && citationEvents[2]?.key === 'roe2023',
+      citationEvents.length === 4
+      && citationEvents.map((e) => e.key).join(',') === 'smith2024,roe2024,nationalheartinstitute2023,roe2024',
       JSON.stringify(citationEvents.map((e) => e.key)));
   },
 };

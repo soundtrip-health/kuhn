@@ -42,13 +42,17 @@ vi.mock('../../config.js', async () => {
   return { config: getConformanceConfig() };
 });
 
-// PubMed/ArXiv search HTTP — fixture-driven (scenario.literature / arxiv).
+// Literature search: the SEARCH entry points are fixture-driven (the
+// networked queries the app runs); everything else in the module is REAL —
+// parseArxivFeed, arxivFetchById, crossrefFetchByDoi — so the registry-fetch
+// ingestion paths run for real against the fetch fake's Atom/Crossref feeds.
 vi.mock('../search.js', async () => {
+  const real = await vi.importActual('../search.js');
   const fakes = await import('./fakes.js');
   return {
+    ...real,
     pubmedSearch: fakes.fakePubmedSearch,
     arxivSearch: fakes.fakeArxivSearch,
-    parseArxivFeed: vi.fn(),
   };
 });
 

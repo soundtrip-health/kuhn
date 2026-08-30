@@ -64,9 +64,9 @@ export function fakeRunScriptSandboxed(projectId, { script, language }) {
 // renders fixture PMIDs as the NBIB text the real parseNbib() expects, so the
 // real parse/insert/materialize code runs.
 // ---------------------------------------------------------------------------
-let fetchFixture = { pmids: {} };
+let fetchFixture = { pmids: {}, arxivIds: {} };
 
-export function setFetchFixture(f) { fetchFixture = f ?? { pmids: {} }; }
+export function setFetchFixture(f) { fetchFixture = f ?? { pmids: {}, arxivIds: {} }; }
 
 /** NBIB (Medline) text for one fixture record — the `TAG - value` format. */
 export function nbibText(pmid, rec) {
@@ -78,7 +78,31 @@ export function nbibText(pmid, rec) {
   if (rec?.doi) lines.push(`LID  - ${rec.doi} [doi]`);
   return lines.join('\n');
 }
+/** Atom feed XML for one fixture arXiv record — the shape the real
+ * parseArxivFeed() consumes. Fixture authors are "Given Family" (the arXiv
+ * API's order); citations.js flips them to BibTeX order. */
+export function arxivFeedXml(id, rec) {
+  const escape = (s) => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const authors = (rec?.authors ?? [])
+    .map((a) => `<author><name>${escape(a)}</name></author>`)
+    .join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>fixture</title>
+<entry>
+<id>http://arxiv.org/abs/${id}</id>
+<title>${escape(rec?.title ?? '')}</title>
+<summary>${escape(rec?.summary ?? '')}</summary>
+<published>${rec?.published ?? '2024-01-01T00:00:00Z'}</published>
+${authors}
+</entry>
+</feed>
+`;
+}
 
+const EMPTY_ARXIV_FEED = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>fixture</title></feed>
+`;
 let realFetch = null;
 
 /** Install the eutils intercept once; non-eutils URLs pass through. */
@@ -94,6 +118,16 @@ export function installFetchFake() {
       return new Response(nbibText(pmid, rec), {
         status: 200,
         headers: { 'content-type': 'text/plain' },
+      });
+    }
+    if (u.includes('export.arxiv.org/api/query')) {
+      // arxivFetchById() (real code) queries by id_list; an unknown id gets
+      // an empty feed, which the real code maps to a not_found error.
+      const id = new URL(u).searchParams.get('id_list') ?? '';
+      const rec = (fetchFixture.arxivIds ?? {})[id];
+      return new Response(rec ? arxivFeedXml(id, rec) : EMPTY_ARXIV_FEED, {
+        status: 200,
+        headers: { 'content-type': 'application/atom+xml' },
       });
     }
     return realFetch(url, opts);

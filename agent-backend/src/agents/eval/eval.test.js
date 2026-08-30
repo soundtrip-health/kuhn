@@ -15,7 +15,7 @@ import { CASES, validateCases } from './cases.js';
 import { validateCheckSpecs, runChecks, decimalsIn, normalizeToolName } from './checks.js';
 import { installEvalNetwork } from './network.js';
 import { blindCaseId, makeSalt, renderBlindedSheet, mergeScores, RUBRIC_CRITERIA } from './rubric.js';
-import { pubmedSearch, arxivSearch } from '../search.js';
+import { pubmedSearch, arxivSearch, arxivFetchById, crossrefFetchByDoi } from '../search.js';
 
 let corpus;
 let net = null;
@@ -119,6 +119,40 @@ describe('network fakes drive the real search.js code paths', () => {
     } finally {
       net2.restore();
     }
+  });
+
+  it('arxivFetchById fetches the fixture record by id (real code path; unknown id -> null)', async () => {
+    const net3 = installEvalNetwork({
+      pmids: {},
+      searches: {},
+      arxiv: {},
+      arxivIds: {
+        '2401.01234v1': {
+          title: 'Deep learning for metabolic disease risk prediction',
+          authors: ['Rita Roe', 'Sam Cole'],
+          published: '2024-01-02T17:00:00Z',
+          summary: 'We predict metabolic disease risk from routine imaging.',
+        },
+      },
+    });
+    try {
+      const entry = await arxivFetchById('2401.01234v1');
+      expect(entry.title).toBe('Deep learning for metabolic disease risk prediction');
+      expect(entry.authors).toEqual(['Rita Roe', 'Sam Cole']);
+      expect(entry.published).toBe('2024-01-02T17:00:00Z');
+      expect(await arxivFetchById('9999.99999')).toBeNull();
+    } finally {
+      net3.restore();
+    }
+  });
+
+  it('crossrefFetchByDoi serves the corpus record for a fixture DOI (unknown DOI -> null)', async () => {
+    const work = await crossrefFetchByDoi('10.1161/CIR.0000000000001245');
+    expect(work.title).toContain('heart failure');
+    expect(work.authors).toContain('Chen, Wei');
+    expect(work.year).toBe('2024');
+    expect(work.journal).toBe('Circulation');
+    expect(await crossrefFetchByDoi('10.9999/not-registered')).toBeNull();
   });
 
   it('logs nothing for fully-fixture runs', () => {

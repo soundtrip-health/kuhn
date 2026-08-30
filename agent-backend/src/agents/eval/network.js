@@ -10,9 +10,9 @@
  *
  * The interceptor is a strict superset of the conformance harness's efetch
  * fake (conformance/fakes.js, installFetchFake): it also serves the
- * esearch/esummary JSON endpoints pubmedSearch() calls and the arXiv Atom
- * endpoint arxivSearch() calls. Query→record matching uses the same
- * substring semantics as conformance/fakes.js's fakePubmedSearch.
+ * esearch/esummary JSON endpoints pubmedSearch() calls, the arXiv Atom
+ * endpoint (both search_query and id_list lookups), and the Crossref
+ * works endpoint add_reference/verify_references call for DOI sources.
  *
  * Non-fixture URLs pass through to the real fetch and are logged in
  * handle.passthroughs — a non-empty list in the result record means the
@@ -66,7 +66,8 @@ ${authors}
  * Install the fixture fetch responder.
  * @param {object} literature - the corpus literature fixture
  *   { pmids: {<pmid>: {title, authors[], journal, pubdate, doi}},
- *     searches: {<query substring>: [pmid, ...]}, arxiv: {<query substring>: [hit, ...]} }
+ *     searches: {<query substring>: [pmid, ...]}, arxiv: {<query substring>: [hit, ...]},
+ *     arxivIds: {<arxiv id>: {title, authors[], published, summary}} }
  * @returns {{ passthroughs: string[], restore: () => void }}
  */
 export function installEvalNetwork(literature) {
@@ -125,6 +126,15 @@ export function installEvalNetwork(literature) {
       // --- arXiv export -----------------------------------------------------
       if (u.includes('export.arxiv.org/api/query')) {
         const parsed = new URL(u);
+        const idList = parsed.searchParams.get('id_list');
+        if (idList) {
+          // arxivFetchById() (real code) — registry lookup by id.
+          const rec = (literature.arxivIds ?? {})[idList];
+          return new Response(rec ? atomFeed([{ ...rec, id: idList }]) : atomFeed([]), {
+            status: 200,
+            headers: { 'content-type': 'application/atom+xml' },
+          });
+        }
         const raw = parsed.searchParams.get('search_query') ?? '';
         const query = raw.replace(/^all:/, '');
         let hits = [];
@@ -137,6 +147,34 @@ export function installEvalNetwork(literature) {
         return new Response(atomFeed(hits), {
           status: 200,
           headers: { 'content-type': 'application/atom+xml' },
+        });
+      }
+
+      // --- Crossref (STH-49 registry fetch for DOI sources) -----------------
+      // crossrefFetchByDoi() (real code) consumes a Crossref "message". The
+      // corpus PMIDs carry DOIs; a DOI that maps to a corpus record is served
+      // from it, so identifier-driven ingestion and field-level verification
+      // are deterministic and offline.
+      if (u.includes('api.crossref.org/works/')) {
+        const doi = decodeURIComponent(u.split('/works/')[1].split('?')[0].split('/')[0]);
+        const rec = Object.values(literature.pmids ?? {})
+          .find((r) => r.doi && r.doi.toLowerCase() === String(doi).toLowerCase());
+        if (!rec) return new Response('', { status: 404 });
+        const message = {
+          type: 'journal-article',
+          title: [rec.title],
+          author: (rec.authors ?? []).map((a) => {
+            const s = String(a);
+            const i = s.indexOf(',');
+            return i < 0 ? { name: s } : { family: s.slice(0, i).trim(), given: s.slice(i + 1).trim() };
+          }),
+          'container-title': [rec.journal],
+          issued: { 'date-parts': [[Number(String(rec.pubdate ?? '').slice(0, 4))]] },
+          DOI: rec.doi,
+        };
+        return new Response(JSON.stringify({ message }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
         });
       }
     } catch (err) {
