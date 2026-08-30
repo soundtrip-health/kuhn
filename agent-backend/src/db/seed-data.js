@@ -50,8 +50,12 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { pmid: { type: 'string', description: 'PubMed ID of the work to cite' }, path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' } }, required: ['pmid'] },
   },
   {
-    slug: 'add_reference', name: 'Add Reference', description: 'Add a non-PubMed reference (preprint, web, manual) to the project bibliography by full metadata and return its BibTeX key',
-    parameterSchema: { type: 'object', properties: { title: { type: 'string', description: 'Title of the work' }, authors: { type: 'array', items: { type: 'string' }, description: 'Author names, e.g. "Smith, Jane"' }, year: { type: 'integer', description: 'Publication year' }, entry_type: { type: 'string', description: 'BibTeX entry type', default: 'article' }, journal: { type: 'string', description: 'Journal or venue' }, doi: { type: 'string', description: 'DOI if available' }, url: { type: 'string', description: 'URL if available' }, source_type: { type: 'string', enum: ['preprint', 'web', 'manual', 'government'], description: 'Source authority class' }, abstract: { type: 'string', description: 'Abstract or summary' }, path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' } }, required: ['title', 'authors', 'year'] },
+    // STH-49: identifier-driven — the full record is fetched from the
+    // registry (arXiv/Crossref) by code; free-form person-author metadata is
+    // gone. Manual entries are for identifier-less sources only and take an
+    // organization as corporate author.
+    slug: 'add_reference', name: 'Add Reference', description: 'Add a non-PubMed reference by identifier (arXiv id or DOI; the record is fetched from the registry) — or, for identifier-less web/government sources only, by manual description with an organization as author — and return its BibTeX key',
+    parameterSchema: { type: 'object', properties: { arxiv_id: { type: 'string', description: 'arXiv id from arxiv_search results' }, doi: { type: 'string', description: 'DOI of the work' }, title: { type: 'string', description: 'Manual path: title of the identifier-less work' }, organization: { type: 'string', description: 'Manual path: issuing organization (corporate author)' }, year: { type: 'integer', description: 'Manual path: publication year' }, publisher: { type: 'string', description: 'Manual path: publisher or issuing body' }, url: { type: 'string', description: 'Manual path: source URL (required there)' }, entry_type: { type: 'string', description: 'Manual path: BibTeX entry type', default: 'misc' }, source_type: { type: 'string', enum: ['web', 'government', 'manual'], description: 'Manual path: source authority class', default: 'web' }, path: { type: 'string', description: 'Workspace-relative .bib file path', default: 'draft/references.bib' } } },
   },
   {
     // Issue #41: deterministic corrections to the reference store — grants the
@@ -59,6 +63,12 @@ export const TOOLS = [
     // refuses direct file writes, so this is the only way to fix an entry.
     slug: 'manage_references', name: 'Manage References', description: 'Correct or delete existing bibliography entries by cite key (the derived .bib file is regenerated automatically)',
     parameterSchema: { type: 'object', properties: { cite_key: { type: 'string', description: 'Cite key of the entry' } }, required: ['cite_key'] },
+  },
+  {
+    // STH-49: field-level verification — every fact about a citation, not
+    // just its existence — against PubMed/Crossref/arXiv.
+    slug: 'verify_references', name: 'Verify References', description: 'Field-by-field check of stored bibliography entries against their authoritative registries (PubMed/Crossref/arXiv); reports per-field mismatches',
+    parameterSchema: { type: 'object', properties: { cite_keys: { type: 'array', items: { type: 'string' }, description: 'Cite keys to check (default: all)' } } },
   },
   {
     slug: 'add_comment', name: 'Add Comment', description: 'File a margin comment anchored to quoted text in a project document',
@@ -104,6 +114,10 @@ export const ASSIGNMENTS = [
   ['pm', 'file_move'],
   ['ra', 'pubmed_search'], ['ra', 'arxiv_search'],
   ['ra', 'add_citation'], ['writer', 'add_citation'], ['ra', 'add_reference'], ['ra', 'manage_references'],
+  // STH-49: field-level citation verification — the RA runs it after adding
+  // references and in audits; the reviewer runs it when checking claims vs.
+  // evidence.
+  ['ra', 'verify_references'], ['reviewer', 'verify_references'],
   ['ra', 'web_search'], ['advisor', 'web_search'],
   // Org knowledge library (story 006-003): the four roles that consume
   // guidance content. pm/analyst excluded by design — see the story's Notes.

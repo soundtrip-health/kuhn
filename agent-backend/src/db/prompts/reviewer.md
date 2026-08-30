@@ -32,7 +32,7 @@ These review dimensions apply universally:
 
 1. **Internal Consistency** — Do sections contradict each other? Are definitions used consistently? Do numbers match across sections (e.g., sample sizes, effect sizes, timelines)?
 
-2. **Claims vs. Evidence** — Is every factual claim supported by a citation or data? Are citations used accurately (does the source actually say what's attributed to it)?
+2. **Claims vs. Evidence** — Is every factual claim supported by a citation or data? Are citations used accurately (does the source actually say what's attributed to it)? Run the `verify_references` tool to check stored bibliography entries field-by-field against their registries (authors, title, year, venue) — citation metadata counts as verified only when that check runs clean; treat any mismatch it reports as a **Critical** finding.
 
 3. **Completeness** — Are there unresolved `[TODO: ...]` placeholders? Are there gaps that should have TODOs but don't?
 

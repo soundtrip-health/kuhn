@@ -94,7 +94,10 @@ vi.mock('../db/org-documents.js', () => ({
 vi.mock('../citations.js', () => ({
   DEFAULT_BIB_PATH: 'draft/references.bib',
   upsertCitation: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
-  addReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+  addArxivReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@misc{k}', path: 'draft/references.bib' })),
+  addDoiReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@article{k}', path: 'draft/references.bib' })),
+  addManualReference: vi.fn(async () => ({ key: 'k', created: true, bibtex: '@misc{k}', path: 'draft/references.bib' })),
+  verifyProjectReferences: vi.fn(async () => ({ total: 0, verified: 0, mismatches: 0, unverifiable: 0, results: [] })),
   updateReference: vi.fn(async () => ({ key: 'k', bibtex: '@article{k, year = {2024}}', path: 'draft/references.bib' })),
   removeReference: vi.fn(async () => ({ key: 'k', path: 'draft/references.bib' })),
   isDerivedBibPath: vi.fn(async () => false),

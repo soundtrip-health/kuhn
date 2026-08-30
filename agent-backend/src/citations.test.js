@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  arxivToRef,
+  crossrefToRef,
+  diffReferenceRecord,
+  extractArxivId,
   formatBibEntry,
   makeCitekey,
   parseNbib,
+  toFamilyFirst,
 } from './citations.js';
 
 const NBIB_SAMPLE = `
@@ -106,3 +111,108 @@ describe('formatBibEntry', () => {
   });
 });
 
+
+// ---- STH-49: deterministic ingestion + field-level verification ------------
+
+describe('toFamilyFirst', () => {
+  it('converts arXiv "Given Family" order to BibTeX "Family, Given"', () => {
+    expect(toFamilyFirst('Samar Ansari')).toBe('Ansari, Samar');
+    expect(toFamilyFirst('A Michael Lincoff')).toBe('Lincoff, A Michael');
+  });
+
+  it('leaves already family-first or single-token names alone', () => {
+    expect(toFamilyFirst('Ansari, Samar')).toBe('Ansari, Samar');
+    expect(toFamilyFirst('Aristotle')).toBe('Aristotle');
+    expect(toFamilyFirst('')).toBe('');
+  });
+});
+
+describe('arxivToRef', () => {
+  it('builds the insert record entirely from the fetched arXiv entry', () => {
+    const ref = arxivToRef({
+      id: '2602.05930v1',
+      title: 'Citation Fabrication Taxonomy',
+      authors: ['Samar Ansari'],
+      summary: 'An abstract.',
+      published: '2026-02-09T00:00:00Z',
+      url: 'http://arxiv.org/abs/2602.05930v1',
+    });
+    expect(ref.title).toBe('Citation Fabrication Taxonomy');
+    expect(ref.authors).toEqual(['Ansari, Samar']);
+    expect(ref.year).toBe('2026');
+    expect(ref.url).toBe('http://arxiv.org/abs/2602.05930v1');
+    expect(ref.entryType).toBe('misc');
+    expect(ref.sourceType).toBe('preprint');
+    // The cite key then derives from the REAL first author
+    expect(makeCitekey(ref, new Set())).toBe('ansari2026');
+  });
+});
+
+describe('crossrefToRef', () => {
+  it('maps entry types and marks posted-content as preprint', () => {
+    const article = crossrefToRef({ type: 'journal-article', title: 'T', authors: ['A, B'], year: '2025' });
+    expect(article.entryType).toBe('article');
+    expect(article.sourceType).toBe('crossref');
+    const preprint = crossrefToRef({ type: 'posted-content', title: 'T', authors: [], year: '2025' });
+    expect(preprint.entryType).toBe('misc');
+    expect(preprint.sourceType).toBe('preprint');
+  });
+});
+
+describe('extractArxivId', () => {
+  it('pulls the id out of stored abs/pdf URLs', () => {
+    expect(extractArxivId('http://arxiv.org/abs/2602.05930')).toBe('2602.05930');
+    expect(extractArxivId('http://arxiv.org/pdf/2602.05930.pdf')).toBe('2602.05930');
+    expect(extractArxivId('https://example.com/paper')).toBeNull();
+    expect(extractArxivId(null)).toBeNull();
+  });
+});
+
+describe('diffReferenceRecord', () => {
+  const stored = {
+    title: 'Citation Fabrication Taxonomy',
+    authors: ['Ansari, Samar'],
+    year: '2026',
+    journal: null, volume: null, issue: null, pages: null, doi: null,
+  };
+
+  it('returns no issues when every field matches the registry record', () => {
+    expect(diffReferenceRecord(stored, {
+      title: 'Citation fabrication taxonomy.',
+      authors: ['Samar Ansari'].map(toFamilyFirst),
+      year: '2026',
+    })).toEqual([]);
+  });
+
+  it('catches the bianchi2026 failure: fabricated author list on a real paper', () => {
+    const corrupted = { ...stored, authors: ['Bianchi, Stefano', 'Minervini, Pasquale', 'Mohan, Ansh'] };
+    const issues = diffReferenceRecord(corrupted, { title: stored.title, authors: ['Ansari, Samar'], year: '2026' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].field).toBe('authors');
+    expect(issues[0].source).toBe('Ansari, Samar');
+  });
+
+  it('flags year, doi, and title mismatches', () => {
+    const issues = diffReferenceRecord(
+      { ...stored, doi: '10.1/aaa' },
+      { title: 'A Different Paper', authors: ['Ansari, Samar'], year: '2024', doi: '10.1/bbb' },
+    );
+    const fields = issues.map((i) => i.field).sort();
+    expect(fields).toEqual(['doi', 'title', 'year']);
+  });
+
+  it('tolerates journal abbreviations and page-range dash styles', () => {
+    const issues = diffReferenceRecord(
+      { ...stored, journal: 'N Engl J Med', pages: '100--110' },
+      {
+        title: stored.title, authors: ['Ansari, Samar'], year: '2026',
+        journal: 'The New England journal of medicine', journalAbbrev: 'N Engl J Med', pages: '100-110',
+      },
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('ignores authors when the registry record has none (no false positives)', () => {
+    expect(diffReferenceRecord(stored, { title: stored.title, authors: [], year: '2026' })).toEqual([]);
+  });
+});
