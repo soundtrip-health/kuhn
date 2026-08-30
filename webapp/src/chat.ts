@@ -109,6 +109,9 @@ let conversationAgent: string | null = null;
 // re-armed by a fresh start) clearing between tasks; the user can also clear
 // manually any time via the fresh-start button next to the send button.
 const CONTEXT_SUGGEST_TOKENS = 100_000;
+// Denominator for the context meter (STH-52); refined by live 'context'
+// events, which carry the backend's configured window size.
+let contextWindow = 200_000;
 const contextTokens = new Map<string, number>();
 const contextSuggested = new Set<string>();
 
@@ -244,13 +247,28 @@ function compactTokens(n: number): string {
   return String(n);
 }
 
-/** Show the selected agent's carried context in the filter bar, if known. */
+/** Per-agent context meter (STH-52), bottom of the chat window: how much
+ * context the selected agent carries into its next reply, as a share of
+ * its model's window. Fed live by 'context' events during a run, by done
+ * usage, and on reload from recorded jobs (input_tokens = last-turn
+ * context). Hidden until something is known. */
 function updateContextIndicator(): void {
-  const el = document.getElementById('chat-context-size');
-  if (!el) return;
+  const meter = document.getElementById('chat-context-meter');
+  if (!meter) return;
   const tokens = contextTokens.get(selectedAgent());
-  el.textContent = tokens ? `context ~${compactTokens(tokens)} tokens` : '';
-  el.classList.toggle('is-high', (tokens ?? 0) >= CONTEXT_SUGGEST_TOKENS);
+  if (!tokens) {
+    meter.hidden = true;
+    return;
+  }
+  const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
+  const fill = document.getElementById('chat-context-fill') as HTMLElement;
+  fill.style.width = `${Math.max(pct, 2)}%`;
+  document.getElementById('chat-context-text')!.textContent =
+    `${compactTokens(tokens)} / ${compactTokens(contextWindow)}`;
+  meter.classList.toggle('is-high', tokens >= CONTEXT_SUGGEST_TOKENS);
+  meter.title = `${agentLabel(selectedAgent())} carries ~${compactTokens(tokens)} tokens `
+    + `(${pct}% of a ${compactTokens(contextWindow)}-token window) into its next reply`;
+  meter.hidden = false;
 }
 
 /** Record a finished run's context size and suggest a fresh start when it has
@@ -340,9 +358,20 @@ async function restore(): Promise<void> {
     applyChatFilter(); // restored messages carry mixed conversation tags
     const jobs = await listJobs(activeProjectId);
     for (const job of jobs) {
-      // Jobs are newest first; keep the most recent session per role
-      if (job.session_id && !sessions.has(job.role)) sessions.set(job.role, job.session_id);
+      // Jobs are newest first; keep the most recent session per role.
+      // Sub-agent dispatch jobs are skipped (STH-52): resuming one would
+      // silently continue a dispatched sub-task's context in a direct
+      // chat, and its token count describes that context, not this
+      // conversation's.
+      if (job.parent_job_id != null) continue;
+      if (job.session_id && !sessions.has(job.role)) {
+        sessions.set(job.role, job.session_id);
+        // input_tokens is the context that session carried into its last
+        // reply — seed the meter so it survives a reload (STH-52).
+        if (job.input_tokens > 0) contextTokens.set(job.role, job.input_tokens);
+      }
     }
+    updateContextIndicator();
     await reconnectPendingQuestion();
   } catch (err) {
     // A fresh project restores an *empty* transcript without erroring, so a
@@ -514,6 +543,19 @@ function createEventHandler(): (event: AgentEvent) => void {
             + ` (${event.attempt}/${event.maxAttempts})…`,
           );
           notify('Model provider is busy — retrying automatically…');
+        }
+        break;
+      }
+      case 'context': {
+        // Live context-window state (STH-52). Sub-agent 'context' events
+        // (forwarded by dispatch under the child's slug) describe their own
+        // fresh sessions — only the addressed agent's belongs on the meter.
+        if (event.context) {
+          if (event.context.window) contextWindow = event.context.window;
+          if (!conversationAgent || event.agent === conversationAgent) {
+            contextTokens.set(event.agent, event.context.tokens);
+            updateContextIndicator();
+          }
         }
         break;
       }

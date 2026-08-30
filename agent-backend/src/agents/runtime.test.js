@@ -31,6 +31,7 @@ vi.mock('../config.js', () => ({
       tokenBudget: 250000,
       budgetGrace: 1.1,
       maxDispatchDepth: 2,
+      contextWindow: 200000,
       questionTimeoutMs: 15 * 60 * 1000,
       model: undefined,
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
@@ -201,6 +202,8 @@ describe('runAgentTask', () => {
     // when a write actually happens (STH-44), and none ran here.
     expect(events).toEqual([
       { type: 'text', agent: 'ra', content: 'Drafting now.' },
+      // Per-turn context-window state for the UI meter (STH-52)
+      { type: 'context', agent: 'ra', jobId: 42, context: { tokens: 10, window: 200000 } },
       {
         type: 'done',
         agent: 'ra',

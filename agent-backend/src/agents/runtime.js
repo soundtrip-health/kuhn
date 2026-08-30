@@ -86,6 +86,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient API error before retrying (story 029)
+ *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
@@ -439,6 +440,12 @@ async function runTask(task, internal, channel, state) {
           jobId: job.id, agent: agent.slug, sessionId: sdkSessionId, depth,
           contextTokens: inputTokens, turnOutputTokens: msgUsage.output_tokens ?? 0,
           budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
+        });
+        // Live per-agent context meter (STH-52); sub-agent events reach the
+        // client via dispatch forwarding, tagged with the child's slug.
+        channel.push({
+          type: 'context', agent: agent.slug, jobId: job.id,
+          context: { tokens: inputTokens, window: config.agent.contextWindow },
         });
       }
       // A grace margin lets an in-flight task overshoot the budget so the
