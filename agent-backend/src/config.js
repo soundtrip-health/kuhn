@@ -17,6 +17,14 @@ function parseModelWeights(env) {
 
 export const config = {
   port: parseInt(process.env.PORT || '3002'),
+  // Structured logging (STH-51): leveled console output + append-only NDJSON
+  // audit files, one per UTC day, under <dataDir>/logs. LOG_LEVEL:
+  // debug|info|warn|error (default info). KUHN_LOG_DIR relocates the audit
+  // files; set it to '' to disable the file sink (console only).
+  log: {
+    level: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+    dir: process.env.KUHN_LOG_DIR ?? join(dataDir, 'logs'),
+  },
   // SQLite database file. In-process, no service to run; lives under the data dir.
   db: {
     path: process.env.KUHN_SQLITE_PATH || join(dataDir, 'db', 'kuhn.sqlite'),

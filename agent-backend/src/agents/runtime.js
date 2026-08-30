@@ -39,6 +39,7 @@ import { waitForReply, cancelQuestion, hasPendingQuestion, getPendingQuestion } 
 import { registerRun, unregisterRun } from './runs.js';
 import { pubmedSearch, arxivSearch } from './search.js';
 import { applyProjectConfig } from './project-config.js';
+import { log } from '../logger.js';
 
 // DB tool slug → built-in SDK tool names. File access deliberately maps to
 // no built-ins (story 018): agents get storage-backed MCP tools instead, so
@@ -112,7 +113,7 @@ export async function* runAgentTask(task, internal = {}) {
 
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
-      console.error('[agent] Task failed:', err);
+      log.error('job_failed', { jobId: state.job?.id, agent: task.role, projectId: task.projectId, err });
       // A transient model-provider failure that survived the runtime's retry
       // budget (story 029): tag it so the client offers a clean retry instead
       // of rendering a raw `API Error: 529` line, and hand back the session id
@@ -255,6 +256,14 @@ async function runTask(task, internal, channel, state) {
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId });
   state.job = job;
+  // Audit (STH-51): resumeSession null at depth > 0 is the receipt that a
+  // dispatched sub-agent starts a FRESH SDK context — nothing but the task
+  // text crosses the boundary; there is no shared chat history.
+  log.info('job_start', {
+    jobId: job.id, agent: agent.slug, projectId: Number(projectId), userId,
+    depth, parentJobId, model: agent.model ?? config.agent.model ?? null,
+    resumeSession: sessionId, seeding, compose,
+  });
   if (depth === 0) {
     // Top-level job-start marker for the project feed (story 005-001); the
     // matching terminal 'done'/'error' flows through the channel tee.
@@ -323,6 +332,10 @@ async function runTask(task, internal, channel, state) {
     } catch (err) {
       if (!isTransientApiError(err) || attempt >= retry.maxAttempts) throw err;
       const delay = backoffDelay(attempt + 1, retry);
+      log.warn('provider_retry', {
+        jobId: job.id, agent: agent.slug, attempt: attempt + 1,
+        maxAttempts: retry.maxAttempts, nextRetryMs: delay, err,
+      });
       channel.push({
         type: 'notice',
         agent: agent.slug,
@@ -363,9 +376,14 @@ async function runTask(task, internal, channel, state) {
 
   for await (const message of sdk) {
     if (message.type === 'system' && message.subtype === 'init') {
+      const priorSession = sdkSessionId;
       sdkSessionId = message.session_id;
       state.sdkSessionId = sdkSessionId;  // for resume on retry + terminal-error handoff (story 029)
       await updateJob(job.id, { sessionId: sdkSessionId });
+      log.info('session_init', {
+        jobId: job.id, agent: agent.slug, depth, sessionId: sdkSessionId,
+        freshContext: priorSession == null,
+      });
       continue;
     }
 
@@ -394,6 +412,16 @@ async function runTask(task, internal, channel, state) {
         userId,
       });
 
+      if (toolCalls.length > 0) {
+        log.info('tool_use', {
+          jobId: job.id, agent: agent.slug,
+          tools: toolCalls.map((t) => ({
+            name: t.name,
+            ...(t.input?.path ? { path: t.input.path } : {}),
+            ...(t.input?.agent_slug ? { agent_slug: t.input.agent_slug } : {}),
+          })),
+        });
+      }
       if (text) channel.push({ type: 'text', agent: agent.slug, content: text });
       // File events for write_file/edit_file are pushed by the tool handlers
       // themselves (STH-44) — they alone know whether a write landed on disk
@@ -405,11 +433,22 @@ async function runTask(task, internal, channel, state) {
         budget.used += (inputTokens + (msgUsage.output_tokens ?? 0)) * costRatio;
         usage.inputTokens += inputTokens;
         usage.outputTokens += msgUsage.output_tokens ?? 0;
+        // Per-agent context-window state (STH-51): what this agent's SDK
+        // session carried into this turn (input + cache read/write).
+        log.info('context_state', {
+          jobId: job.id, agent: agent.slug, sessionId: sdkSessionId, depth,
+          contextTokens: inputTokens, turnOutputTokens: msgUsage.output_tokens ?? 0,
+          budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
+        });
       }
       // A grace margin lets an in-flight task overshoot the budget so the
       // current piece of work can finish instead of being cut off abruptly.
       if (budget.used > budget.limit * config.agent.budgetGrace) {
         await sdk.interrupt().catch(() => {});
+        log.warn('budget_exceeded', {
+          jobId: job.id, agent: agent.slug,
+          budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
+        });
         await updateJob(job.id, {
           status: 'error',
           error: 'token budget exceeded',
@@ -444,6 +483,9 @@ async function runTask(task, internal, channel, state) {
             userId,
             isError: block.is_error === true, // audit trail (issue #42)
           });
+          if (block.is_error === true) {
+            log.warn('tool_error', { jobId: job.id, agent: agent.slug, toolUseId: block.tool_use_id });
+          }
         }
       }
       continue;
@@ -460,6 +502,11 @@ async function runTask(task, internal, channel, state) {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
         });
+        log.info('job_end', {
+          jobId: job.id, agent: agent.slug, depth, status: 'done',
+          contextTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+          budgetUsed: Math.round(budget.used),
+        });
         channel.push({
           type: 'done', agent: agent.slug, jobId: job.id, sessionId: sdkSessionId, usage,
           budget: { used: Math.round(budget.used), limit: budget.limit },
@@ -471,6 +518,11 @@ async function runTask(task, internal, channel, state) {
           error: reason,
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+        });
+        log.error('job_end', {
+          jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
+          contextTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+          budgetUsed: Math.round(budget.used),
         });
         channel.push({
           type: 'error', agent: agent.slug, jobId: job.id, message: `Agent task stopped: ${reason}`,
