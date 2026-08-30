@@ -25,7 +25,11 @@ import {
   searchProjectFiles,
   moveProjectEntry,
 } from '../storage.js';
-import { DEFAULT_BIB_PATH, upsertCitation, addReference, updateReference, removeReference, isDerivedBibPath } from '../citations.js';
+import {
+  DEFAULT_BIB_PATH, upsertCitation, addArxivReference, addDoiReference,
+  addManualReference, verifyProjectReferences, updateReference, removeReference,
+  isDerivedBibPath,
+} from '../citations.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
 import { addReply, createThread, listThreads, resolveQuote, setResolved } from '../db/comments.js';
 import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
@@ -1021,25 +1025,50 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
   }
 
   if (agent.tools.includes('add_reference')) {
+    // STH-49 (bianchi2026): the old free-form path let the model type an
+    // author list from parametric memory, so a real paper entered the store
+    // under three fabricated authors. Now any source with an identifier is
+    // fetched from its registry (arXiv, Crossref) and the FULL record is
+    // stored by code — the model only picks an identifier out of search
+    // results. The manual path (identifier-less web/government sources)
+    // takes an organization as corporate author; person-name author fields
+    // no longer exist on this tool.
     tools.push(tool(
       'add_reference',
-      'Add a non-PubMed reference (preprint, government/regulatory doc, software, or other web source) to the project bibliography by full metadata. Dedupes against existing entries and returns the BibTeX key to cite as [@key]. Use add_citation for anything indexed in PubMed; use this for everything else. Never fabricate metadata — only add references your searches actually returned.',
+      'Add a non-PubMed reference to the project bibliography and return the BibTeX key to cite as [@key]. '
+      + 'Pass the identifier your search returned — arxiv_id (from arxiv_search results) or doi — and the full citation record (title, authors, year, venue) is fetched from the authoritative registry and stored deterministically; never type metadata for a work that has an identifier. '
+      + 'Only an identifier-less source (web page, government guidance) may be described manually, and then with an organization as author, never person names. Use add_citation for anything indexed in PubMed.',
       {
-        title: z.string().describe('Title of the work'),
-        authors: z.array(z.string()).describe('Author names, e.g. "Smith, Jane"'),
-        year: z.number().int().optional().describe('Publication year'),
-        entry_type: z.string().default('article').describe('BibTeX entry type (article, misc, techreport, ...)'),
-        journal: z.string().optional().describe('Journal, venue, or publisher'),
-        doi: z.string().optional().describe('DOI if available'),
-        url: z.string().optional().describe('URL if available'),
-        source_type: z.enum(['preprint', 'web', 'manual', 'government']).default('manual')
-          .describe('Source authority class'),
-        abstract: z.string().optional().describe('Abstract or summary'),
+        arxiv_id: z.string().optional().describe('arXiv id exactly as returned by arxiv_search (e.g. "2401.01234v1"); the record is fetched from arXiv'),
+        doi: z.string().optional().describe('DOI of the work; the record is fetched from Crossref'),
+        title: z.string().optional().describe('Manual path only: title of the identifier-less work'),
+        organization: z.string().optional().describe('Manual path only: issuing organization as corporate author (e.g. "U.S. Food and Drug Administration")'),
+        year: z.number().int().optional().describe('Manual path only: publication year'),
+        publisher: z.string().optional().describe('Manual path only: publisher or issuing body'),
+        url: z.string().optional().describe('Manual path only (required there): URL of the source'),
+        entry_type: z.string().optional().describe('Manual path only: BibTeX entry type (default misc)'),
+        source_type: z.enum(['web', 'government', 'manual']).optional().describe('Manual path only: source authority class (default web)'),
         path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
       },
-      async ({ path, ...input }) => {
+      async ({ arxiv_id, doi, path, ...manual }) => {
         try {
-          const { key, created, bibtex } = await addReference(projectId, input, path);
+          let result;
+          if (arxiv_id) {
+            result = await addArxivReference(projectId, arxiv_id, path);
+          } else if (doi) {
+            result = await addDoiReference(projectId, doi, path);
+          } else if (manual.title && manual.url) {
+            result = await addManualReference(projectId, manual, path);
+          } else {
+            return {
+              content: [{
+                type: 'text',
+                text: 'add_reference failed: pass arxiv_id or doi for any indexed work (the record is then fetched from the registry). A manual entry is only for identifier-less sources and requires title and url.',
+              }],
+              isError: true,
+            };
+          }
+          const { key, created, bibtex } = result;
           channel.push({ type: 'citation', agent: agent.slug, key, bibtex, path });
           if (created) {
             channel.push({ type: 'file_change', agent: agent.slug, path, kind: 'update' });
@@ -1080,7 +1109,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         pmid: z.string().optional().describe('Corrected PubMed ID'),
         url: z.string().optional().describe('Corrected URL'),
         entry_type: z.string().optional().describe('Corrected BibTeX entry type (article, misc, techreport, ...)'),
-        source_type: z.enum(['pubmed', 'preprint', 'web', 'manual', 'government']).optional().describe('Corrected source authority class'),
+        source_type: z.enum(['pubmed', 'preprint', 'crossref', 'web', 'manual', 'government']).optional().describe('Corrected source authority class'),
         abstract: z.string().optional().describe('Corrected abstract'),
         path: z.string().default(DEFAULT_BIB_PATH).describe('Workspace-relative .bib file path'),
       },
@@ -1112,6 +1141,28 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
           return { content: [{ type: 'text', text: `Removed reference "${key}" and regenerated ${path}.` }] };
         } catch (err) {
           return { content: [{ type: 'text', text: `remove_reference failed: ${err.message}` }], isError: true };
+        }
+      },
+    ));
+  }
+
+  if (agent.tools.includes('verify_references')) {
+    // STH-49: the verification step must check every fact about a citation,
+    // not just that it exists. Field-by-field comparison against the
+    // authoritative registry, by code — a "verified" claim means this ran
+    // clean, nothing less.
+    tools.push(tool(
+      'verify_references',
+      'Verify stored bibliography entries field-by-field (authors, title, year, DOI, volume/issue/pages, venue) against their authoritative registries: PubMed by PMID, Crossref by DOI, arXiv by id. Reports verified / mismatch (with the registry value for each differing field) / unverifiable (no identifier — needs human review). Run this before stating that references are verified, and fix mismatches with update_reference using the reported registry values.',
+      {
+        cite_keys: z.array(z.string()).optional().describe('Limit the check to these cite keys (default: every reference in the project store)'),
+      },
+      async ({ cite_keys }) => {
+        try {
+          const report = await verifyProjectReferences(projectId, cite_keys);
+          return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `verify_references failed: ${err.message}` }], isError: true };
         }
       },
     ));

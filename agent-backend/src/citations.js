@@ -4,7 +4,7 @@
 // from PubMed metadata; nothing here is model-generated (Epic 003 grounding
 // rule). The pure helpers are exported for tests.
 
-import { pubmedSearch } from './agents/search.js';
+import { arxivFetchById, crossrefFetchByDoi, pubmedSearch } from './agents/search.js';
 import { StorageError, writeProjectFile } from './storage.js';
 import {
   insertReference, materializeBib, findByPmid, listProjectReferences,
@@ -236,31 +236,6 @@ export async function upsertCitation(projectId, pmid, bibPath = DEFAULT_BIB_PATH
 }
 
 /**
- * Add a non-PubMed reference (preprint, web, manual) to the project's reference
- * store by full metadata, then regenerate the derived bibliography file.
- * @param {object} input - { title, authors[], year, entry_type?, journal?, doi?,
- *   url?, source_type?, abstract? }
- * @returns {Promise<{ key, created, bibtex, path }>}
- */
-export async function addReference(projectId, input, bibPath = DEFAULT_BIB_PATH) {
-  const ref = {
-    title: input.title,
-    authors: input.authors ?? [],
-    year: input.year,
-    journal: input.journal,
-    doi: input.doi,
-    url: input.url,
-    abstract: input.abstract,
-    entryType: input.entry_type ?? 'article',
-    sourceType: input.source_type ?? 'manual',
-  };
-  const result = insertReference(projectId, ref);
-  if (result.created) await materializeBib(projectId, bibPath);
-  const bibtex = result.created ? formatBibEntry(ref, result.key, ref.entryType) : null;
-  return { key: result.key, created: result.created, bibtex, path: bibPath };
-}
-
-/**
  * Correct fields of a stored reference by cite key and regenerate the derived
  * bibliography (issue #41: the deterministic alternative to hand-editing the
  * .bib). The cite key itself never changes — in-text [@key] citations keep
@@ -287,4 +262,263 @@ export async function removeReference(projectId, citeKey, bibPath = DEFAULT_BIB_
   }
   await writeProjectFile(projectId, bibPath, await exportBibtex(projectId));
   return { key: citeKey, path: bibPath };
+}
+
+// ---- Deterministic non-PubMed ingestion (STH-49) ---------------------------
+//
+// The bianchi2026 incident: the old add_reference took a free-form author
+// list, the model filled it from parametric memory, and a real paper entered
+// the store under three fabricated authors. The fix is structural: for any
+// source with an identifier (arXiv id, DOI) the FULL record is fetched from
+// the registry and stored with no model-authored field — the model only picks
+// the identifier out of search results. Person-author fields no longer exist
+// on the manual path at all.
+
+/** "Given Family" → "Family, Given" (arXiv name order → BibTeX order). */
+export function toFamilyFirst(name) {
+  const s = String(name ?? '').trim();
+  if (!s || s.includes(',')) return s;
+  const parts = s.split(/\s+/);
+  if (parts.length < 2) return s;
+  return `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`;
+}
+
+/** Map a parsed arXiv entry to the references.js insert shape. */
+export function arxivToRef(entry) {
+  return {
+    title: entry.title,
+    authors: (entry.authors ?? []).map(toFamilyFirst),
+    year: entry.published?.match(/\b(?:19|20)\d{2}\b/)?.[0] ?? null,
+    url: entry.url || (entry.id ? `http://arxiv.org/abs/${entry.id}` : null),
+    abstract: entry.summary,
+    entryType: 'misc',
+    sourceType: 'preprint',
+  };
+}
+
+const CROSSREF_ENTRY_TYPES = {
+  'journal-article': 'article',
+  'proceedings-article': 'inproceedings',
+  'book-chapter': 'incollection',
+  book: 'book',
+  monograph: 'book',
+  report: 'techreport',
+  'posted-content': 'misc',
+};
+
+/** Map a normalized Crossref work to the references.js insert shape. */
+export function crossrefToRef(work) {
+  return {
+    title: work.title,
+    authors: work.authors,
+    year: work.year,
+    journal: work.journal,
+    volume: work.volume,
+    issue: work.issue,
+    pages: work.pages,
+    publisher: work.publisher,
+    doi: work.doi,
+    url: work.url,
+    abstract: work.abstract,
+    entryType: CROSSREF_ENTRY_TYPES[work.type] ?? 'misc',
+    sourceType: work.type === 'posted-content' ? 'preprint' : 'crossref',
+  };
+}
+
+async function insertAndMaterialize(projectId, ref, bibPath) {
+  const result = insertReference(projectId, ref);
+  if (result.created) await materializeBib(projectId, bibPath);
+  const bibtex = result.created ? formatBibEntry(ref, result.key, ref.entryType) : null;
+  return { key: result.key, created: result.created, bibtex, path: bibPath };
+}
+
+/**
+ * Add an arXiv preprint by id. The full record is fetched from the arXiv API;
+ * nothing about it is caller-supplied.
+ * @returns {Promise<{ key, created, bibtex, path }>}
+ */
+export async function addArxivReference(projectId, arxivId, bibPath = DEFAULT_BIB_PATH) {
+  let entry;
+  try {
+    entry = await arxivFetchById(arxivId);
+  } catch (err) {
+    throw new UpstreamError(err.message);
+  }
+  if (!entry) throw new StorageError('not_found', `No arXiv record for id "${arxivId}"`);
+  return insertAndMaterialize(projectId, arxivToRef(entry), bibPath);
+}
+
+/**
+ * Add a DOI-registered work. The full record is fetched from Crossref;
+ * nothing about it is caller-supplied.
+ * @returns {Promise<{ key, created, bibtex, path }>}
+ */
+export async function addDoiReference(projectId, doi, bibPath = DEFAULT_BIB_PATH) {
+  let work;
+  try {
+    work = await crossrefFetchByDoi(doi);
+  } catch (err) {
+    throw new UpstreamError(err.message);
+  }
+  if (!work) throw new StorageError('not_found', `DOI "${doi}" is not registered with Crossref`);
+  return insertAndMaterialize(projectId, crossrefToRef(work), bibPath);
+}
+
+/**
+ * Manual path — ONLY for identifier-less sources (web pages, government
+ * guidance). Takes an organization as corporate author; person-name authors
+ * are deliberately not accepted (STH-49): a person's name may only enter the
+ * store from a registry record.
+ * @param {object} input - { title, url, organization?, year?, publisher?,
+ *   entry_type?, source_type? }
+ * @returns {Promise<{ key, created, bibtex, path }>}
+ */
+export async function addManualReference(projectId, input, bibPath = DEFAULT_BIB_PATH) {
+  const ref = {
+    title: input.title,
+    // Braced so BibTeX treats it as a corporate author, not "Given Family".
+    authors: input.organization ? [`{${input.organization}}`] : [],
+    year: input.year != null ? String(input.year) : null,
+    publisher: input.publisher,
+    url: input.url,
+    entryType: input.entry_type ?? 'misc',
+    sourceType: input.source_type ?? 'web',
+  };
+  return insertAndMaterialize(projectId, ref, bibPath);
+}
+
+// ---- Field-level verification (STH-49) -------------------------------------
+//
+// "Verified" used to mean "the work exists". Now it means: every stored field
+// matches the authoritative registry record, checked by code.
+
+const normText = (t) => String(t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+const familyKey = (a) => String(a ?? '').replace(/[{}]/g, '').split(',')[0]
+  .normalize('NFD').replace(/[^a-zA-Z]/g, '').toLowerCase();
+
+/**
+ * Compare a stored reference against an authoritative registry record, field
+ * by field. Returns [{ field, stored, source }]; empty array means verified.
+ * Authors compare as ordered family-name sequences; journals only flag when
+ * the names share no overlap (abbreviations are legitimate).
+ */
+export function diffReferenceRecord(stored, source) {
+  const issues = [];
+  const flag = (field, s, a) => issues.push({ field, stored: s ?? null, source: a ?? null });
+
+  if (source.title && normText(stored.title) !== normText(source.title)) {
+    flag('title', stored.title, source.title);
+  }
+
+  const storedFams = (stored.authors ?? []).map(familyKey);
+  const sourceFams = (source.authors ?? []).map(familyKey);
+  if (sourceFams.length > 0
+      && (storedFams.length !== sourceFams.length || storedFams.some((f, i) => f !== sourceFams[i]))) {
+    flag('authors', (stored.authors ?? []).join(' and '), (source.authors ?? []).join(' and '));
+  }
+
+  if (source.year != null && String(stored.year ?? '') !== String(source.year)) {
+    flag('year', stored.year, source.year);
+  }
+
+  const normDoi = (d) => String(d ?? '').trim().toLowerCase();
+  if (stored.doi && source.doi && normDoi(stored.doi) !== normDoi(source.doi)) {
+    flag('doi', stored.doi, source.doi);
+  }
+
+  for (const field of ['volume', 'issue']) {
+    if (stored[field] && source[field] && String(stored[field]) !== String(source[field])) {
+      flag(field, stored[field], source[field]);
+    }
+  }
+
+  const normPages = (pg) => String(pg ?? '').replace(/\s*-+\s*/g, '-');
+  if (stored.pages && source.pages && normPages(stored.pages) !== normPages(source.pages)) {
+    flag('pages', stored.pages, source.pages);
+  }
+
+  const sj = normText(stored.journal);
+  const candidates = [source.journal, source.journalAbbrev].map(normText).filter(Boolean);
+  if (sj && candidates.length > 0
+      && !candidates.some((c) => c === sj || c.includes(sj) || sj.includes(c))) {
+    flag('journal', stored.journal, source.journal ?? source.journalAbbrev);
+  }
+
+  return issues;
+}
+
+/** The arXiv id embedded in a stored URL, or null. */
+export function extractArxivId(url) {
+  const m = String(url ?? '').match(/arxiv\.org\/(?:abs|pdf)\/([^\s?#]+?)(?:\.pdf)?$/i);
+  return m ? m[1] : null;
+}
+
+/**
+ * Verify one stored reference row against its authoritative registry:
+ * PubMed (pmid), else Crossref (doi), else arXiv (arxiv.org url). Rows with
+ * no identifier are reported unverifiable — those need a human check.
+ */
+export async function verifyReferenceRow(row) {
+  const stored = {
+    title: row.title,
+    authors: row.authors ?? [],
+    year: row.year,
+    journal: row.journal,
+    volume: row.volume,
+    issue: row.issue,
+    pages: row.pages,
+    doi: row.doi,
+  };
+  const base = { cite_key: row.cite_key, title: row.title };
+  const finish = (checkedAgainst, mismatches) => (mismatches.length === 0
+    ? { ...base, checked_against: checkedAgainst, status: 'verified' }
+    : { ...base, checked_against: checkedAgainst, status: 'mismatch', mismatches });
+  try {
+    if (row.pmid) {
+      const rec = await fetchPubmedRecord(row.pmid);
+      if (!rec) return { ...base, checked_against: `PubMed ${row.pmid}`, status: 'not_found' };
+      return finish(`PubMed ${row.pmid}`, diffReferenceRecord(stored, rec));
+    }
+    if (row.doi) {
+      const work = await crossrefFetchByDoi(row.doi);
+      if (!work) return { ...base, checked_against: `Crossref ${row.doi}`, status: 'not_found' };
+      return finish(`Crossref ${row.doi}`, diffReferenceRecord(stored, work));
+    }
+    const arxivId = extractArxivId(row.url);
+    if (arxivId) {
+      const entry = await arxivFetchById(arxivId);
+      if (!entry) return { ...base, checked_against: `arXiv ${arxivId}`, status: 'not_found' };
+      return finish(`arXiv ${arxivId}`, diffReferenceRecord(stored, arxivToRef(entry)));
+    }
+  } catch (err) {
+    return { ...base, status: 'error', error: err.message };
+  }
+  return {
+    ...base,
+    status: 'unverifiable',
+    note: 'No PMID, DOI, or arXiv id — verify by hand against the source URL.',
+  };
+}
+
+/**
+ * Field-level verification of a project's stored references (STH-49): the
+ * deterministic check behind any "sources verified" claim. Sequential on
+ * purpose — the registries rate-limit.
+ * @returns {Promise<{ total, verified, mismatches, unverifiable, results }>}
+ */
+export async function verifyProjectReferences(projectId, citeKeys = null) {
+  let refs = await listProjectReferences(projectId);
+  if (citeKeys?.length) {
+    const wanted = new Set(citeKeys);
+    refs = refs.filter((r) => wanted.has(r.cite_key));
+  }
+  const results = [];
+  for (const row of refs) results.push(await verifyReferenceRow(row));
+  return {
+    total: results.length,
+    verified: results.filter((r) => r.status === 'verified').length,
+    mismatches: results.filter((r) => r.status === 'mismatch').length,
+    unverifiable: results.filter((r) => r.status === 'unverifiable').length,
+    results,
+  };
 }
