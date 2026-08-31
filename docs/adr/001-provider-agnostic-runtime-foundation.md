@@ -242,7 +242,7 @@ The direct Pi package directories are roughly 15 MB installed in this spike and 
 
 ## Escape hatch
 
-Kuhn's interface and tests use only normalized events, canonical Kuhn continuation messages, JSON-compatible schemas, provider/model identity and explicit usage fields. Pi types stay inside `provider-runtime/pi-spike.js` and the future Pi adapter. Kuhn tools and policy never import Pi.
+Kuhn's interface and tests use only normalized events, canonical Kuhn continuation messages, JSON-compatible schemas, provider/model identity and explicit usage fields. Pi types stay inside `provider-runtime/pi-adapter.js` (the spike `pi-spike.js` is retired by STH-8). Kuhn tools and policy never import Pi.
 
 If Pi is abandoned, replace the adapter with AI SDK Core or a Kuhn-owned loop. `runAgentTask(...)`, tools, DB schema, storage, authorization, UI events and persisted continuation remain unchanged.
 

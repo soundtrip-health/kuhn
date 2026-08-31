@@ -84,16 +84,16 @@ The four component fields are **disjoint**: `inputTokens` counts non-cached inpu
 
 The phase-one suite has two deliberately different layers. Only the first is provider-neutral.
 
-**Layer 1 — portable contract tests** (`provider-runtime/contract.test.js`, `pi-spike.test.js`, the scripted runtime and the Pi faux runtime). These cover streaming, tool protocol, errors, cancellation, canonical continuation and usage, and are written against the neutral event contract only. A future adapter must pass this layer unchanged.
+**Layer 1 — portable contract tests** (`provider-runtime/contract.test.js`, `pi-adapter.test.js`, the scripted runtime and the Pi faux runtime). These cover streaming, tool protocol, errors, cancellation, canonical continuation and usage, and are written against the neutral event contract only. A future adapter must pass this layer unchanged.
 
 **Layer 2 — current Kuhn application regression evidence** (existing `agents/runtime.test.js`, storage, suggestion, question, job, seeding and route tests). These freeze product behavior, but many of them assert against Claude-shaped mechanisms — `sdkQuery` options, `mcp__kuhn__*` tool names, SDK/MCP construction. They are transitional adapter tests: they prove today's behavior on today's runtime, and they **cannot run unchanged against a future non-Claude runtime**. Application-level provider-neutralization happens when PLA-226 (Kuhn-owned tool registry) and PLA-227 (real `AgentRuntime` seam under `runAgentTask`) move those policies above the adapter boundary; the table below is the map of which behaviors that work must carry over.
 
 | Behavior | Current evidence |
 | --- | --- |
-| ordered delta → final text → terminal event | `provider-runtime/contract.test.js`, `pi-spike.test.js`, `agents/runtime.test.js` |
+| ordered delta → final text → terminal event | `provider-runtime/contract.test.js`, `pi-adapter.test.js`, `agents/runtime.test.js` |
 | terminal error without done | provider-runtime tests; runtime budget/provider-error tests |
-| attempted tool_call, schema validation in tool_result, execution and continuation | Pi spike tests |
-| thrown tool failures become error results | Pi spike tests and existing runtime domain-tool tests |
+| attempted tool_call, schema validation in tool_result, execution and continuation | Pi adapter tests |
+| thrown tool failures become error results | Pi adapter tests and existing runtime domain-tool tests |
 | only role-granted tools are exposed | runtime allowlist and per-tool grant tests |
 | compose mode removes mutating tools | runtime compose-mode tests |
 | seeding bypass versus suggestion mode | runtime suggestion/seeding tests and `agents/seeding.test.js` |
@@ -136,6 +136,27 @@ The smoke uses a non-Anthropic model by default and prints provider/model/API, d
 
 `validateRuntimeEventSequence(...)` returns violations rather than throwing. The contract test feeds it an incomplete transcript with dangling deltas, an unresolved tool call, and no canonical continuation and asserts that every defect is detected, including provider metadata leaking into continuation state. This keeps the test suite green while proving that an incomplete adapter cannot satisfy the contract.
 
+## Production Pi adapter (STH-8)
+
+`provider-runtime/pi-adapter.js` replaces the phase-one spike as the Pi implementation of this contract. One module owns the whole Pi boundary: the `PiAgentRuntime` class, the canonical-continuation converters, and the provider factories (`createFauxPiRuntime`, `createOpenAICompatiblePiRuntime`, `createOpenAIPiRuntime`, `createOpenRouterPiRuntime`). `pi-spike.js` is retired; no second Pi implementation exists.
+
+Design decisions the STH-1/STH-7 AgentRuntime seam should know:
+
+- **Request-scoped state.** Each `runTurn` builds a fresh Pi `Agent` seeded only from the canonical continuation passed for that turn (or the constructor's initial continuation). An adapter instance holds configuration only, so concurrent turns — on one instance or across many — cannot interfere.
+- **Server-mode safety.** Only tools Kuhn passed reach the model (Pi's coding-agent tool factories are never instantiated); the model-facing system prompt is exactly Kuhn's (no AGENTS.md/CLAUDE.md or implicit Pi context); credentials resolve only from explicitly named environment variables, and an unconfigured provider fails the turn with a normalized `provider_error` instead of borrowing ambient credentials. `pi-adapter.test.js` proves all three against the model-facing request context.
+- **Cancellation.** A pre-aborted `AbortSignal` yields identity plus one terminal `cancelled` error with no provider work or tool execution. A mid-run abort maps to a terminal `cancelled` error even when Pi surfaces it as a provider-level `error` stop — an abort can surface through Pi-internal setup steps with the abort context lost, and the adapter reclassifies on the caller's aborted signal (the contract's required strong signal). Kuhn tools receive the turn's `AbortSignal` as Pi's documented third `execute` argument.
+- **Retries.** Pi's transport-level request retry defaults to zero in the pinned 0.84.2 APIs, so provider failures surface as exactly one terminal `error` event; no retry policy lives in the adapter.
+- **Identity.** `runtime.identity` exposes the normalized provider/model/api/endpoint/capabilities payload, identical to the opening `provider` event.
+- **Dependencies.** The pinned `@earendil-works/pi-agent-core`/`@earendil-works/pi-ai` packages moved from devDependencies to dependencies (pins unchanged) because the adapter is production code under `src/`; a production `npm ci --omit=dev` must keep resolving them once the seam imports it.
+
+Wiring is a one-line choice at the seam: build a `PiAgentRuntime` via a factory and consume `runTurn({ input, signal, continuation })` exactly like `ScriptedRuntime`.
+
+The live-smoke default model moved from `openai/gpt-oss-20b:free` to `openai/gpt-oss-20b`: the free slug is retired on OpenRouter (verified 404, August 2026); the live smoke was re-verified against the new slug with zero contract violations.
+
+STH-8 was verified against the STH-1/STH-7 AgentRuntime evolution (working-tree `contract.js` + `claude-runtime.js` reference implementation, inspected 2026-08-30): the adapter accepts the per-turn `systemPrompt` (overrides the constructor default) and `resume` (forwarded as Pi's `sessionId` — an opaque caller-side session token for prompt-cache correlation; Pi invents none of its own), exposes `cancel()` (interrupts the in-flight turn; the terminal is still one `error` with code `cancelled`), omits `kind: 'provider_builtin'` and execute-less tool descriptors from the model surface (mirroring `buildClaudeToolSet`), translates Kuhn's never-throwing failure envelope (`isError: true`) into Pi's throw-based error marking, and carries cumulative `usage` plus the partial canonical `continuation` into every error terminal. The full Pi adapter suite (76 tests) passes unchanged against the evolved `contract.js`.
+
+Remaining seam-side decision: the Pi adapter validates tool arguments with Pi's JSON-schema path; once STH-1's `agents/tools/validate.js` lands, switching the adapter's tool wrapper to `validateArgs(parameters, args)` gives verdict parity with the Claude path (one-line change; the descriptor contract is unchanged).
+
 ## Known phase-one gaps
 
 - Production `runAgentTask(...)` still consumes Claude SDK events directly; PLA-227 introduces the real interface.
@@ -144,4 +165,3 @@ The smoke uses a non-Anthropic model by default and prints provider/model/API, d
 - Dispatch remains a Kuhn-owned product tool; the existing app-level regression must move unchanged with the neutral tool registry.
 - Provider-specific structured output, reasoning visibility, images and compatibility profiles need explicit production policy.
 - Scientific-writing quality parity is tracked separately in PLA-251.
-- The checked-out `main` baseline currently lacks `src/db/knowledge-catalog.js` and `src/routes/knowledge.js`, so the full backend suite has two unrelated import-failing suites even though all other suites pass.
