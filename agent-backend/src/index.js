@@ -72,6 +72,9 @@ if (serveWebapp) {
     // overlay). Falls through to the SPA only when the build predates the
     // reviewer entry.
     if (serveReviewShell && (req.path === '/review' || req.path.startsWith('/review/'))) {
+      // STH-16 (T-15): the claim token lives in this URL path — never let it
+      // ride out as a referrer to a third party.
+      res.setHeader('Referrer-Policy', 'no-referrer');
       res.sendFile(reviewShell);
       return;
     }

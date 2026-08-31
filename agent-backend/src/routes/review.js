@@ -12,7 +12,6 @@
 
 import { Router } from 'express';
 import express from 'express';
-import { extname } from 'node:path';
 
 import { config } from '../config.js';
 import { querySync } from '../db.js';
@@ -31,6 +30,7 @@ import {
 } from '../db/review-links.js';
 import { commitNow, scheduleCommit } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
+import { sendRawFile } from '../raw-content.js';
 import { REVIEW_COOKIE, reviewerPrincipal, reviewerSession } from '../review-auth.js';
 import { StorageError, readProjectFile, writeProjectFile } from '../storage.js';
 
@@ -46,16 +46,9 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-// Subset of the files-route map — a review link covers one document.
-const CONTENT_TYPES = {
-  '.md': 'text/markdown; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
-  '.bib': 'text/plain; charset=utf-8',
-  '.typ': 'text/plain; charset=utf-8',
-  '.tex': 'text/plain; charset=utf-8',
-  '.csv': 'text/csv; charset=utf-8',
-  '.json': 'application/json',
-};
+// STH-16: the linked document is served through the raw-content policy
+// (../raw-content.js) — the guest review surface is on the app origin, so
+// an active inline document here would run with the reviewer's session.
 
 function handle(fn) {
   return async (req, res) => {
@@ -262,9 +255,7 @@ router.get('/api/review/context', reviewerAccess, handle(async (req, res) => {
  *  exists, so there is no traversal surface. All modes. */
 router.get('/api/review/file', reviewerAccess, handle(async (req, res) => {
   const buf = await readProjectFile(req.reviewer.projectId, req.reviewer.path);
-  res.set('Content-Type',
-    CONTENT_TYPES[extname(req.reviewer.path).toLowerCase()] ?? 'application/octet-stream');
-  res.send(buf);
+  sendRawFile(res, req.reviewer.path, buf);
 }));
 
 // Same request-time-limit rationale as the member file route.

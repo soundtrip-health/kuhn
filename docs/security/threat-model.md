@@ -1,7 +1,7 @@
 # Kuhn production threat model & data classification
 
 > **Status:** Proposed production-pilot baseline, awaiting human review; revised
-> 2026-08-20 (STH-2).
+> 2026-08-20 (STH-2), 2026-08-31 (STH-16).
 > **Scope:** the small-team, single-deployment production pilot defined in
 > [ADR 002 — production deployment topology](../adr/002-production-deployment-topology.md).
 > **Companion documents:** [architecture.md](../architecture.md) (what the system is),
@@ -129,8 +129,8 @@ flowchart TB
 | B9 | Kuhn-owned research/search APIs | Network | `agents/search.js`, `citations.js` | PubMed/arXiv, query text only. |
 | B10 | Background job execution | In-process | Agent route calls `runAgentTask` inline (`routes/agent.js` task route; `agents/runtime.js` `runAgentTask`) | No separate worker; `agents/runs.js` is only the reconnect cache for question-parked runs. |
 | B11 | SQLite persistence | In-process file | `db.js:14-21` (WAL, FK on) | Synchronous; every query blocks the event loop. |
-| B12 | Project files | Filesystem | `storage.js` project-root containment `storage.js:80-114` | Symlinks omitted entirely; `.git` segment reserved. |
-| B13 | Org knowledge-library files | Filesystem | `storage.js` org-root containment `storage.js:52-60` | Deduped by `(org, sha256)`. |
+| B12 | Project files | Filesystem | `storage.js` project-root containment `storage.js:80-114` | Symlinks omitted entirely; `.git` segment reserved. Raw serving is policy-gated: the safe-inline allowlist in `raw-content.js` (STH-16) — active/unknown types are never inline documents. |
+| B13 | Org knowledge-library files | Filesystem | `storage.js` org-root containment `storage.js:52-60` | Deduped by `(org, sha256)`. Same raw-serving policy as B12; the stored client-supplied `mime` column is metadata only and never decides serving (STH-16). |
 | B14 | Per-project git history | Filesystem (`<dir>/.git`) | `history.js:31-37` (`execFile`, no shell) | Inherits full `process.env` into the git child `history.js:33`. |
 | B15 | Rendering / ingestion | In-process → sandbox | `render.js`, `ingest.js` → `sandbox.js` | All execution goes through the sandbox; never in-process Typst/Pandoc. |
 | B16 | Sandbox execution | Container | `sandbox.js` `buildDockerArgs` | `--network none`, `:ro` project mount, cpu/mem/pids caps, kill timer. Images: Typst/Pandoc/poppler (render/ingest) + the Kuhn-**built** `kuhn/r-analysis` (analyst `run_script`, issue #68b — bigger limits: 5 min/2 CPU/2 GB, env-overridable). Script runs add a second `:ro` mount (`/script`, org-library code) and a writable `/out`; image and interpreter argv are composed server-side (agent input is only the script selector and regex-constrained args), and runs queue behind an in-process semaphore (`sandbox-semaphore.js`, `SCRIPT_MAX_CONCURRENT`). |
@@ -377,10 +377,10 @@ tracked, not built.
 
 | ID | Threat | Sev | Attacker / prereq | Impact | Current control | Evidence | Residual | Issue |
 |---|---|---|---|---|---|---|---|---|
-| **T-12** | **Stored active-content (HTML/SVG) on the API origin** — `GET …/file` serves `.html` as `text/html` and `.svg` as `image/svg+xml`, no upload type allowlist, no `nosniff`, no CSP; single-port ⇒ API origin *is* app origin | **High** | Any editor or agent writes `evil.html`; a viewer opens it | Same-origin script execution against the (HttpOnly) session cookie: authenticated same-origin API actions as the viewer | HttpOnly blunts direct cookie theft, not same-origin actions | `routes/files.js:39-53`, `storage.js` (no type gate), no helmet | **Not fixed** | **STH-16** |
-| **T-13** | **Org-library uploader chooses response Content-Type** — `…/library/:docId/content` prefers client-supplied `doc.mime` over extension map | High | Org editor uploads `text/html` | Active content served to any org viewer | Same origin caveat as T-12 | `org-library.js:145` | **Not fixed** | **STH-16** |
+| **T-12** | **Stored active-content (HTML/SVG) on the API origin** — raw-file routes could serve uploaded `.html`/`.svg` as active same-origin documents (single-port ⇒ API origin *is* app origin) | **High** | Any editor or agent writes `evil.html`; a viewer opens it | Same-origin script execution against the (HttpOnly) session cookie: authenticated same-origin API actions as the viewer | **Fixed (STH-16)** — explicit safe-inline allowlist in `raw-content.js`: only text/JSON/raster/PDF serve inline; HTML/SVG/unknown/binary serve as `application/octet-stream` + `Content-Disposition: attachment`; `X-Content-Type-Options: nosniff` on every raw response; project file, history file, org-library content, and reviewer file routes all go through `sendRawFile` | `raw-content.js`, `raw-content.test.js`, `webapp/scripts/raw-content-check.mjs` | No upload-time type restriction (any type stores; active types simply never render) and no CSP on the app origin (defense in depth) | **STH-16** (closed) |
+| **T-13** | **Org-library uploader chooses response Content-Type** — `…/library/:docId/content` trusted the stored, client-supplied `doc.mime` (multer's upload mimetype) over the file's own type | High | Org editor uploads a file whose MIME claims `text/html` | Active content served to any org viewer | **Fixed (STH-16)** — stored MIME no longer decides serving: the content route classifies by extension through `rawContentPolicy` (`raw-content.js`), which never consults stored/client-supplied MIME; `doc.mime` is descriptive metadata only | `raw-content.js`, `routes/org-library.js` content route, `raw-content.test.js` | Same residual as T-12 | **STH-16** (closed) |
 | **T-14** | **Malicious uploaded document → ingestion** — crafted PDF/docx processed by Pandoc/poppler | Medium | Editor uploads a malformed doc | Parser exploit *inside the sandbox* (network-isolated, `:ro`, capped) | Sandbox contains it; fail-soft ingestion | `ingest.js:41-67`, `sandbox.js:23-36` | Sandbox hardening gaps (T-24); `:latest` parser images (T-26) | STH-21 |
-| **T-15** | **Review-link token in URL path** — `/review/<token>`; no `Referrer-Policy` | Medium | Proxy/access logs, browser history, referrer | Token disclosure ⇒ guest session | Cosmetic URL rewrite post-claim; single-claim | `webapp/src/review/main.ts:530-531`, no helmet | **Not fixed** | STH-16 (headers), STH-19 |
+| **T-15** | **Review-link token in URL path** — `/review/<token>` | Medium | Proxy/access logs, browser history, referrer | Token disclosure ⇒ guest session | **Headers fixed (STH-16)** — `Referrer-Policy: no-referrer` on the review shell, so the token URL never rides a referrer to a third party; cosmetic URL rewrite post-claim; single-claim | `index.js` (review-shell branch), `webapp/src/review/main.ts:530-531` | Token still present in the URL path itself (proxy/access logs, browser history) | STH-19 |
 
 ### 5.4 Model / agent / tool threats
 
@@ -478,6 +478,13 @@ whether it **holds today** or is a **target** the owning issue must deliver.
 10. **Every security-sensitive change is attributable after the fact.** Auth/admin/
     knowledge actions write `auth_events`; a durable, *readable* audit trail must exist.
     *(Partly holds — events are written but nothing reads them — STH-24.)*
+11. **User files never render as active same-origin content.** Every raw-bytes
+    route (project file, history file, org-library document content, reviewer
+    file) serves through the `raw-content.js` allowlist: only text, JSON,
+    raster images, and PDF are inline; everything else is
+    `application/octet-stream` + `Content-Disposition: attachment`;
+    `X-Content-Type-Options: nosniff` on every raw response; stored or
+    client-supplied MIME is never consulted. *(Holds — STH-16.)*
 
 ---
 

@@ -7,7 +7,7 @@
 // shared library document is owner-only (the 010-003 matrix).
 
 import { createHash } from 'node:crypto';
-import { basename, extname } from 'node:path';
+import { basename } from 'node:path';
 
 import { Router } from 'express';
 
@@ -19,20 +19,16 @@ import {
 } from '../db/org-documents.js';
 import { queueIngest } from '../ingest.js';
 import { subscribeOrgEvents } from '../project-events.js';
+import { sendRawFile } from '../raw-content.js';
 import { StorageError, deleteOrgEntry, readOrgFile, writeOrgFile } from '../storage.js';
 import { requireOrgRole } from './guards.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 
 const router = Router();
 
-const CONTENT_TYPES = {
-  '.md': 'text/markdown; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
-  '.pdf': 'application/pdf',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.html': 'text/html; charset=utf-8',
-  '.json': 'application/json',
-};
+// STH-16: raw document bytes are served through the raw-content policy
+// (../raw-content.js) — the stored `mime` is client-supplied at upload and
+// must never decide how the browser treats the document.
 
 /** Resolve an org where the session user holds minRole, or refuse (404
  *  non-leaking / 403 role / 403 suspended — routes/guards.js). */
@@ -142,8 +138,7 @@ router.get('/api/orgs/:orgId/library/:docId/content', async (req, res) => {
     return;
   }
   const buf = await readOrgFile(orgId, docPath(doc));
-  res.set('Content-Type', doc.mime || CONTENT_TYPES[extname(doc.filename).toLowerCase()] || 'application/octet-stream');
-  res.send(buf);
+  sendRawFile(res, doc.filename, buf);
 });
 
 /** DELETE /api/orgs/:orgId/library/:docId — remove record and bytes. */
