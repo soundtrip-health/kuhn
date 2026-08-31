@@ -98,6 +98,14 @@ function applyComposerRole(): void {
 // persists across reloads.
 const SHOW_ALL_KEY = 'kuhn-chat-show-all';
 let showAllAgents = localStorage.getItem(SHOW_ALL_KEY) === '1';
+
+// Smart autoscroll (STH-50): the log follows new output only while the user
+// is at (or near) the bottom. Scrolling back into the history parks
+// autoscroll so earlier output stays readable while tokens stream; new
+// content then lights the “new messages” pill, which (like scrolling back
+// down manually) re-engages following.
+let stickToBottom = true;
+const NEAR_BOTTOM_PX = 40;
 // The role the in-flight run is addressed to. Everything appended during the
 // run — including subagent bubbles and file-change lines — belongs to that
 // conversation, not to the event's author agent.
@@ -130,6 +138,7 @@ export function initChat(
   pendingQuestionJobId = null;
   activeQuestionCard = null;
   document.getElementById('chat-log')!.replaceChildren();
+  setStickToBottom(true);
   const seedingPanel = document.getElementById('seeding-panel');
   if (seedingPanel) seedingPanel.hidden = true;
   applyChatFilter(); // refresh the filter bar for the (possibly new) project
@@ -158,6 +167,21 @@ export function initChat(
   // The agent-selector pill mirrors picks into the hidden select and fires
   // change — re-filter the log for the newly addressed agent.
   document.getElementById('chat-role')?.addEventListener('change', () => applyChatFilter());
+
+  // Smart autoscroll (STH-50): park following when the user scrolls up;
+  // re-engage when they return to the bottom. Our own programmatic scrolls
+  // land at the bottom, so this listener is a no-op for them.
+  const logEl = document.getElementById('chat-log')!;
+  logEl.addEventListener('scroll', () => {
+    setStickToBottom(logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= NEAR_BOTTOM_PX);
+  });
+  const jump = document.createElement('button');
+  jump.type = 'button';
+  jump.id = 'chat-jump';
+  jump.hidden = true;
+  jump.innerHTML = `${icon('chevron-down', { size: 14, stroke: 2 })}<span>New messages</span>`;
+  jump.addEventListener('click', () => scrollLog(true));
+  document.getElementById('chat-form')!.append(jump);
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
@@ -233,7 +257,7 @@ function applyChatFilter(): void {
     toggle.setAttribute('aria-pressed', String(showAllAgents));
   }
   updateContextIndicator();
-  scrollLog();
+  scrollLog(true);
 }
 
 // ---- Context assessment & clearing (issue #43) -----------------------------
@@ -327,7 +351,7 @@ function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   tagConversation(divider, agent);
   document.getElementById('chat-log')!.append(divider);
   updateContextIndicator();
-  scrollLog();
+  scrollLog(true);
   return true;
 }
 
@@ -815,7 +839,7 @@ function appendUserMessage(text: string, agent?: string): void {
   main.append(body);
   wrapper.append(avatar, main);
   log.append(wrapper);
-  scrollLog();
+  scrollLog(true);
 }
 
 /** Toggle the single-active-agent color treatment on a message. */
@@ -1043,7 +1067,28 @@ function textFragment(text: string): DocumentFragment {
   return fragment;
 }
 
-function scrollLog(): void {
+/**
+ * Follow new content to the bottom of the log — unless the user has
+ * scrolled back into the history (STH-50). While parked, appended content
+ * reveals the “new messages” pill instead. `force` marks user actions
+ * (sending, the pill, filter/agent switches, fresh starts) that re-engage
+ * following regardless of scroll position.
+ */
+function scrollLog(force = false): void {
   const log = document.getElementById('chat-log')!;
-  log.scrollTop = log.scrollHeight;
+  if (force) setStickToBottom(true);
+  if (stickToBottom) {
+    log.scrollTop = log.scrollHeight;
+  } else {
+    const pill = document.getElementById('chat-jump');
+    if (pill) pill.hidden = false;
+  }
+}
+
+function setStickToBottom(on: boolean): void {
+  stickToBottom = on;
+  if (on) {
+    const pill = document.getElementById('chat-jump');
+    if (pill) pill.hidden = true;
+  }
 }

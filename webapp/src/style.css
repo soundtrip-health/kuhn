@@ -757,7 +757,24 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-system-error { color: var(--warn); }
 
 /* ---- Chat input ----------------------------------------------------- */
-#chat-form { padding: 12px 16px 14px; border-top: 1px solid var(--line-2); }
+#chat-form { position: relative; padding: 12px 16px 14px; border-top: 1px solid var(--line-2); }
+
+/* Autoscroll re-engage pill (STH-50): floats above the composer while new
+   output lands below the user's scroll position. */
+#chat-jump {
+  position: absolute; top: -10px; left: 50%;
+  transform: translate(-50%, -100%);
+  z-index: 40;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: none; border-radius: var(--r-pill);
+  background: var(--ink); color: var(--ink-inv);
+  font: var(--ui-body); cursor: pointer;
+  box-shadow: var(--shadow-pop);
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+#chat-jump:hover { opacity: 0.92; }
+#chat-jump svg { display: block; }
+#chat-jump[hidden] { display: none; }
 .chat-field {
   border: 1px solid var(--line); border-radius: var(--r);
   background: var(--soft); padding: 10px 12px;

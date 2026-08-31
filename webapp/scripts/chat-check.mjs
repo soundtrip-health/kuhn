@@ -21,7 +21,7 @@ await page.waitForFunction(
   { timeout: 120000 },
 );
 
-console.log('agent tag:', await page.textContent('.chat-agent .chat-tag'));
+console.log('agent tag:', await page.textContent('.chat-agent .chat-name'));
 console.log('agent reply:', (await page.textContent('.chat-agent .chat-body')).slice(0, 200));
 console.log('status tokens:', await page.textContent('#status-tokens'));
 await page.screenshot({ path: '/tmp/kuhn-chat.png' });
