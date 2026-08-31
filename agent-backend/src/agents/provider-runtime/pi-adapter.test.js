@@ -36,8 +36,9 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
  * Deterministic provider whose scripted steps control the raw stream events
  * (deltas, usage, terminal error) — for the cases the faux provider cannot
  * express: missing/partial usage and a provider failure after partial text.
- * Each step is `step(stamped, stream) => finalMessage` and must return the
- * message the stream ends with.
+ * Each step is `step(stamped, stream, { signal }) => finalMessage` and must
+ * return (or await to return) the message the stream ends with; a step may
+ * await the caller's abort signal to finalize mid-stream.
  */
 function createScriptedPiProvider({ provider = 'kuhn-scripted', modelId = 'scripted-1', steps = [] } = {}) {
   const api = 'scripted';
@@ -73,13 +74,13 @@ function createScriptedPiProvider({ provider = 'kuhn-scripted', modelId = 'scrip
       streamSimple: scriptedStream,
     },
   });
-  function scriptedStream() {
+  function scriptedStream(_model, _context, options) {
     const stream = createAssistantMessageEventStream();
     const step = steps.length > 0
       ? steps.shift()
       : () => stamped({ stopReason: 'error', errorMessage: 'No more scripted responses' });
-    queueMicrotask(() => {
-      const finalMessage = step(stamped, stream);
+    queueMicrotask(async () => {
+      const finalMessage = await step(stamped, stream, { signal: options?.signal });
       if (finalMessage.stopReason === 'error' || finalMessage.stopReason === 'aborted') {
         stream.push({ type: 'error', reason: finalMessage.stopReason, error: finalMessage });
       } else {
@@ -208,6 +209,62 @@ describe('Pi production adapter', () => {
     expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 
+  it('orders each assistant message as text -> tool_call(s) -> usage -> tool_result(s)', async () => {
+    const { runtime } = createFauxPiRuntime({
+      tools: [{
+        name: 'echo',
+        label: 'Echo',
+        description: 'Echo text through a Kuhn-owned tool',
+        parameters: Type.Object({ text: Type.String() }),
+        execute: async (_id, args) => ({ content: [{ type: 'text', text: args.text.toUpperCase() }] }),
+      }],
+      responses: [
+        // One message requesting two tool calls: both tool_call events must
+        // precede the message's usage event, and both results follow it.
+        fauxAssistantMessage([
+          fauxText('Two calls at once.'),
+          fauxToolCall('echo', { text: 'one' }, { id: 'ord-1' }),
+          fauxToolCall('echo', { text: 'two' }, { id: 'ord-2' }),
+        ], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('Done.'),
+      ],
+    });
+
+    const events = await collect(runtime.runTurn({ input: 'Order check' }));
+
+    // The exact normalized sequence for a tool-using turn (text deltas are
+    // a separate contract concern, covered by the streaming test): the
+    // message's tool calls precede its usage, the results follow it. This
+    // is the order the product seam persists on — the assistant row is
+    // written when the usage arrives and must already carry its calls.
+    const skeleton = events
+      .filter((event) => event.type !== 'text_delta')
+      .map((event) => (event.type === 'tool_call' || event.type === 'tool_result'
+        ? `${event.type}:${event.id}`
+        : event.type));
+    expect(skeleton).toEqual([
+      'provider',
+      'text',
+      'tool_call:ord-1',
+      'tool_call:ord-2',
+      'usage',
+      'tool_result:ord-1',
+      'tool_result:ord-2',
+      'text',
+      'usage',
+      'done',
+    ]);
+    // Exactly-once: no duplicate tool_call from Pi's execution events.
+    expect(events.filter((event) => event.type === 'tool_call').map((event) => event.id))
+      .toEqual(['ord-1', 'ord-2']);
+    // The call events carry the message content's id/name/arguments.
+    expect(events.find((event) => event.type === 'tool_call' && event.id === 'ord-1'))
+      .toMatchObject({ name: 'echo', arguments: { text: 'one' } });
+    expect(events.find((event) => event.type === 'tool_call' && event.id === 'ord-2'))
+      .toMatchObject({ name: 'echo', arguments: { text: 'two' } });
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
+  });
+
   it('reports the attempted tool_call, fails validation in tool_result, and never calls Kuhn code', async () => {
     const execute = vi.fn();
     const { runtime } = createFauxPiRuntime({
@@ -234,7 +291,12 @@ describe('Pi production adapter', () => {
     const callIndex = events.findIndex((event) => event.type === 'tool_call');
     const resultIndex = events.findIndex((event) => event.type === 'tool_result');
     expect(callIndex).toBeGreaterThan(-1);
-    expect(resultIndex).toBe(callIndex + 1);
+    // The message's usage event sits between its tool_call and the
+    // tool_result: the normalized order is tool_call -> usage ->
+    // tool_result (the seam persists the assistant row when the usage
+    // arrives, so the call must already be on the row).
+    expect(events.slice(callIndex + 1, resultIndex).map((event) => event.type))
+      .toEqual(['usage']);
 
     const result = events[resultIndex];
     expect(execute).not.toHaveBeenCalled();
@@ -495,6 +557,100 @@ describe('Pi production adapter', () => {
       { role: 'assistant', content: [{ type: 'text', text }] },
     ]);
     expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('ends an abort mid tool-call with a cancelled terminal and a canonical record that closes the call', async () => {
+    // The stream finalizes with PARTIAL content that already carries a
+    // toolCall block whose arguments never finished streaming. The turn
+    // ends before that call can execute: the event stream carries the
+    // attempted tool_call and no tool_result for it (the Phase-1 stance,
+    // identical to the Claude adapter's interrupted stream), while the
+    // canonical record closes the call with an explicit error tool_result
+    // so a retry can resume from it. Before the closure fix this path
+    // threw inside continuationFromPiMessages and hung the stream.
+    const { collection, model } = createScriptedPiProvider({
+      steps: [
+        (stamped, stream, { signal }) => {
+          const textPartial = stamped({ content: [{ type: 'text', text: '' }], stopReason: 'pending' });
+          stream.push({ type: 'start', partial: { ...textPartial } });
+          textPartial.content[0].text = 'Working…';
+          stream.push({
+            type: 'text_delta', contentIndex: 0, delta: 'Working…',
+            partial: { ...textPartial },
+          });
+          const withCall = {
+            ...stamped({ stopReason: 'pending' }),
+            content: [
+              { type: 'text', text: 'Working…' },
+              { type: 'toolCall', id: 'dangle-1', name: 'echo', arguments: {} },
+            ],
+          };
+          stream.push({ type: 'toolcall_start', contentIndex: 1, partial: { ...withCall } });
+          const aborted = stamped({
+            content: [
+              { type: 'text', text: 'Working…' },
+              { type: 'toolCall', id: 'dangle-1', name: 'echo', arguments: {} },
+            ],
+            stopReason: 'aborted',
+            errorMessage: 'Request aborted',
+          });
+          if (signal?.aborted) return aborted;
+          return new Promise((resolve) => {
+            signal.addEventListener('abort', () => resolve(aborted), { once: true });
+          });
+        },
+      ],
+    });
+    const runtime = new PiAgentRuntime({
+      models: collection,
+      model,
+      tools: [{
+        name: 'echo',
+        label: 'Echo',
+        description: 'Must not run',
+        parameters: Type.Object({ text: Type.String() }),
+        execute: async () => { throw new Error('must not execute'); },
+      }],
+    });
+    const controller = new AbortController();
+
+    const events = await collect(
+      runtime.runTurn({ input: 'Start', signal: controller.signal }),
+      (event) => { if (event.type === 'text_delta') controller.abort(); },
+    );
+
+    const terminal = events.at(-1);
+    expect(terminal).toMatchObject({ type: 'error', error: { code: 'cancelled', retryable: false } });
+    expect(events.some((event) => event.type === 'done')).toBe(false);
+    // Exactly one attempted tool_call, and no tool_result event for it.
+    expect(events.filter((event) => event.type === 'tool_call'))
+      .toEqual([{ type: 'tool_call', id: 'dangle-1', name: 'echo', arguments: {} }]);
+    expect(events.filter((event) => event.type === 'tool_result')).toEqual([]);
+    // The Phase-1 stance for an interrupted in-flight call: the event
+    // stream carries no result for it (the closure lives in the record).
+    expect(validateRuntimeEventSequence(events))
+      .toEqual(['tool_call dangle-1 has no tool_result']);
+    // The record is canonical and closed: a retry can resume from the
+    // explicit error result instead of a dangling call.
+    expect(terminal.continuation).toBeDefined();
+    expect(validateContinuation(terminal.continuation)).toEqual([]);
+    expect(terminal.continuation.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Start' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Working…' },
+        { type: 'tool_call', id: 'dangle-1', name: 'echo', arguments: {} },
+      ] },
+      {
+        role: 'tool_result',
+        toolCallId: 'dangle-1',
+        toolName: 'echo',
+        content: [{
+          type: 'text',
+          text: '(unresolved: the turn ended before this tool call produced a result)',
+        }],
+        isError: true,
+      },
+    ]);
   });
 
   it('reports missing usage without inventing zeros', async () => {

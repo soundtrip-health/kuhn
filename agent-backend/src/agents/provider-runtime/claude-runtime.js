@@ -34,7 +34,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
+import { addUsage, normalizeProviderError, normalizeUsage, toolResultText } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
 import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME, toNeutralToolName } from './claude-tools.js';
 
@@ -96,17 +96,6 @@ export function createClaudeRuntime({
     cacheWriteTokens: usage.cache_creation_input_tokens,
     outputTokens: usage.output_tokens,
   });
-
-  /** The model-facing text of an SDK tool_result block. */
-  const toolResultText = (content) => {
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const texts = content.filter((b) => b?.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text);
-      if (texts.length > 0) return texts.join('\n');
-    }
-    return JSON.stringify(content ?? null);
-  };
 
   /**
    * @param {{ input: string, signal?: AbortSignal, resume?: string|null,

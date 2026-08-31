@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeProviderError,
   normalizeUsage,
+  toolResultText,
   validateRuntimeEventSequence,
 } from './contract.js';
 import {
@@ -213,6 +214,20 @@ describe('provider-neutral runtime contract', () => {
   it('sums disjoint cache components into the derived total', () => {
     expect(normalizeUsage({ input: 10, output: 5, cacheRead: 80, cacheWrite: 20 }))
       .toMatchObject({ totalTokens: 115 });
+  });
+
+  it('persists the full normalized tool result content (never content[0].text)', () => {
+    // Multi-block results keep every text block (joined); a result without
+    // text blocks persists its JSON rather than silently becoming ''.
+    expect(toolResultText([
+      { type: 'text', text: 'first block' },
+      { type: 'text', text: 'second block' },
+    ])).toBe('first block\nsecond block');
+    expect(toolResultText([])).toBe('[]');
+    expect(toolResultText('plain sdk text')).toBe('plain sdk text');
+    expect(toolResultText([{ type: 'text', text: 'only' }])).toBe('only');
+    expect(toolResultText([{ type: 'json', data: { a: 1 } }]))
+      .toBe('[{"type":"json","data":{"a":1}}]');
   });
 
   it('rejects an intentionally incomplete adapter transcript', () => {

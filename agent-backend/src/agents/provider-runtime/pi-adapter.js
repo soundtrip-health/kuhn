@@ -46,6 +46,17 @@ import { validateArgs } from '../tools/validate.js';
  *   adapter translates a failure envelope into a throw carrying the
  *   model-facing text, so the `tool_result` event and the model both see
  *   the failure.
+ * - Normalized tool-call ordering: an assistant message's `tool_call`
+ *   events are emitted from the message's `message_end` — from the final
+ *   content's toolCall blocks — BEFORE the message's `usage` event, so the
+ *   normalized order per message is `text -> tool_call(s) -> usage ->
+ *   tool_result(s)` (identical to the Claude adapter). The product seam
+ *   writes the assistant conversation row when the usage arrives, so the
+ *   row must already carry its tool calls. `tool_execution_start` no
+ *   longer emits the call (it would land after the usage); `tool_result`
+ *   still comes from execution completion, and a call the turn ended
+ *   before executing is closed in the canonical continuation (never as a
+ *   second event), keeping the lifecycle exactly-once.
  * - `kind: 'provider_builtin'` descriptors (execute is null — provider-
  *   native capabilities Pi cannot supply, e.g. web_search/web_fetch) and
  *   tools without an execute function are omitted when the Agent is built,
@@ -279,15 +290,11 @@ export class PiAgentRuntime {
         channel.push({ type: 'text_delta', content: event.assistantMessageEvent.delta });
         return;
       }
-      if (event.type === 'tool_execution_start') {
-        channel.push({
-          type: 'tool_call',
-          id: event.toolCallId,
-          name: event.toolName,
-          arguments: structuredClone(event.args),
-        });
-        return;
-      }
+      // The normalized tool_call is emitted from this assistant message's
+      // message_end, before the message's usage event (the ordering the
+      // product seam persists on: the assistant conversation row is written
+      // when the usage arrives and must already carry the message's tool
+      // calls). Pi's tool_execution_start is execution bookkeeping only.
       if (event.type === 'tool_execution_end') {
         channel.push({
           type: 'tool_result',
@@ -307,6 +314,23 @@ export class PiAgentRuntime {
           .map((block) => block.text)
           .join('');
         if (text) channel.push({ type: 'text', content: text });
+        // Ordering contract (STH-47): the tool calls the message requested
+        // are part of the message — record them BEFORE the message's usage
+        // event, so the normalized order per assistant message is
+        // text -> tool_call(s) -> usage -> tool_result(s), the same order
+        // the Claude adapter emits from its assistant message. Each
+        // toolCall block appears exactly once in the final content, so the
+        // tool_call lifecycle stays exactly-once (the duplicate emission
+        // from tool_execution_start is gone).
+        for (const block of event.message.content) {
+          if (block.type !== 'toolCall' || !block.id || !block.name) continue;
+          channel.push({
+            type: 'tool_call',
+            id: block.id,
+            name: block.name,
+            arguments: structuredClone(block.arguments ?? {}),
+          });
+        }
         usage = addUsage(usage, messageUsage);
         channel.push({ type: 'usage', usage: messageUsage });
         return;
@@ -430,10 +454,26 @@ export class PiAgentRuntime {
 }
 
 /**
+ * A tool call the turn ended before executing (an interrupted/aborted turn):
+ * the canonical record must stay canonical — a transcript ending in an
+ * unanswered tool_call is rejected by the validator and by provider APIs at
+ * resume. The Claude adapter closes the same situation with an explicit
+ * error marker in its record; the Pi transcript gets the identical closure.
+ * Executed calls always carry their real result in the transcript (Pi
+ * finalizes every started call, including aborted ones), so this only ever
+ * closes never-executed calls — the exactly-once lifecycle is preserved.
+ */
+const UNRESOLVED_TOOL_RESULT_TEXT =
+  '(unresolved: the turn ended before this tool call produced a result)';
+
+/**
  * Pi transcript → canonical Kuhn continuation. Thinking blocks, images and
  * every provider/framework metadata field (api, provider, model, response
  * ids, usage, stop reasons, timestamps) are deliberately dropped — see
  * continuation.js for the portability rationale.
+ *
+ * Dangling tool calls (see UNRESOLVED_TOOL_RESULT_TEXT) are closed with an
+ * explicit error tool_result before the envelope is validated.
  */
 export function continuationFromPiMessages(piMessages) {
   const messages = [];
@@ -447,7 +487,10 @@ export function continuationFromPiMessages(piMessages) {
       const content = [];
       for (const block of message.content) {
         if (block.type === 'text' && block.text) content.push({ type: 'text', text: block.text });
-        if (block.type === 'toolCall') {
+        // A degenerate partial toolCall (an abort mid-stream can leave a
+        // block without id/name) cannot be canonical and cannot be
+        // referenced by a result — drop it rather than crash the terminal.
+        if (block.type === 'toolCall' && block.id && block.name) {
           content.push({ type: 'tool_call', id: block.id, name: block.name, arguments: structuredClone(block.arguments ?? {}) });
         }
       }
@@ -459,6 +502,23 @@ export function continuationFromPiMessages(piMessages) {
         toolName: message.toolName,
         content: canonicalTextBlocks(message.content),
         isError: message.isError === true,
+      });
+    }
+  }
+  const resulted = new Set(messages
+    .filter((message) => message.role === 'tool_result')
+    .map((message) => message.toolCallId));
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type !== 'tool_call' || !block.id || resulted.has(block.id)) continue;
+      resulted.add(block.id);
+      messages.push({
+        role: 'tool_result',
+        toolCallId: block.id,
+        toolName: block.name,
+        content: [{ type: 'text', text: UNRESOLVED_TOOL_RESULT_TEXT }],
+        isError: true,
       });
     }
   }

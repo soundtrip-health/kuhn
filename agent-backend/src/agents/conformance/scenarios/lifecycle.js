@@ -319,3 +319,57 @@ export const jobConversationState = {
     ctx.check('the user turn is recorded once', userMsgs.length === 1);
   },
 };
+
+/** 21 — Tool-call attribution (STH-47): the assistant row persists with its
+ * own tool calls — the normalized tool_call precedes the message's usage at
+ * the seam, so the row written on the usage event already carries the
+ * calls — the tool result row follows it, and the next assistant row
+ * borrows none of the first's calls. */
+export const toolCallAttribution = {
+  id: 'tool-call-attribution',
+  title: 'The assistant row keeps its own tool call; the tool result row follows it; the next assistant row borrows none',
+  tasks: [{
+    role: 'writer',
+    input: 'Outline the methods section. Check the workspace first.',
+    model: {
+      attempts: [{
+        turns: [
+          { text: 'Checking the workspace first.', toolCalls: [{ tool: 'list_files', args: {} }] },
+          { text: 'Workspace checked — outline drafted.', usage: { input: 12, output: 8 } },
+        ],
+      }],
+    },
+  }],
+  assert: async (ctx) => {
+    const job = ctx.job(ctx.runs[0].jobId);
+    const conv = ctx.conversations().find((c) => c.id === job?.conversation_id);
+    const msgs = ctx.messages(conv?.id);
+    const assistants = msgs.filter((m) => m.role === 'assistant');
+    const [first, second] = assistants;
+    ctx.check('one assistant row per scripted turn', assistants.length === 2,
+      JSON.stringify(msgs.map((m) => m.role)));
+    const firstCalls = first?.tool_calls ? JSON.parse(first.tool_calls) : null;
+    ctx.check('the first assistant row carries exactly its own list_files call',
+      Array.isArray(firstCalls) && firstCalls.length === 1
+      && firstCalls[0]?.name === 'list_files' && firstCalls[0]?.id != null,
+      JSON.stringify(firstCalls));
+    const toolRows = msgs.filter((m) => m.role === 'tool');
+    ctx.check('one tool result row follows the first assistant row',
+      toolRows.length === 1 && msgs.indexOf(toolRows[0]) > msgs.indexOf(first),
+      JSON.stringify(msgs.map((m) => [m.id, m.role])));
+    ctx.check('the tool result row belongs to that call',
+      toolRows[0]?.tool_call_id === firstCalls?.[0]?.id && toolRows[0]?.is_error === 0,
+      JSON.stringify(toolRows[0] ?? null));
+    ctx.check('the tool result content is persisted',
+      typeof toolRows[0]?.content === 'string' && toolRows[0].content.length > 0,
+      JSON.stringify(toolRows[0]?.content ?? null));
+    const secondCalls = second?.tool_calls ? JSON.parse(second.tool_calls) : null;
+    ctx.check('the second assistant row borrows no call from the first',
+      secondCalls == null,
+      JSON.stringify(secondCalls));
+    ctx.check('row order: assistant -> tool -> assistant',
+      first && toolRows[0] && second
+      && first.id < toolRows[0].id && toolRows[0].id < second.id,
+      JSON.stringify(msgs.map((m) => [m.id, m.role])));
+  },
+};

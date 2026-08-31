@@ -29,6 +29,7 @@ import {
   nonTransientError,
   followUpContinuation,
   jobConversationState,
+  toolCallAttribution,
 } from './lifecycle.js';
 import { roleSmoke } from './roles.js';
 
@@ -55,6 +56,7 @@ export const SCENARIOS = [
   nonTransientError,
   followUpContinuation,
   jobConversationState,
+  toolCallAttribution,
   // Role smoke (STH-47 preview slice)
   roleSmoke,
 ];

@@ -27,7 +27,7 @@ import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questi
 import { registerRun, unregisterRun } from './runs.js';
 import { createToolContext, listTools } from './tools/index.js';
 import { createAgentRuntime } from './provider-runtime/factory.js';
-import { PROVIDER_ERROR_CODES, normalizeProviderError } from './provider-runtime/contract.js';
+import { PROVIDER_ERROR_CODES, normalizeProviderError, toolResultText } from './provider-runtime/contract.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -618,11 +618,14 @@ async function runTask(task, internal, channel, state) {
           break;
         }
         case 'tool_result':
-          // Tool results echoed back into the loop.
+          // Tool results echoed back into the loop. The normalized content
+          // is the complete block array — persisted in full (text blocks
+          // joined; a result without text blocks as JSON), never reduced to
+          // content[0].text.
           await logMessage({
             conversationId: conversation.id,
             role: 'tool',
-            content: event.content?.[0]?.text ?? '',
+            content: toolResultText(event.content),
             toolCallId: event.id,
             userId,
             isError: event.isError === true, // audit trail (issue #42)

@@ -58,6 +58,15 @@
  * `tool_result`; invalid arguments produce `tool_result.isError === true` and
  * the Kuhn `execute` implementation is never invoked for them.
  *
+ * Ordering: an assistant message's `tool_call` events precede that
+ * message's `usage` event, and the matching `tool_result` follows the
+ * usage — per message, `text -> tool_call(s) -> usage -> tool_result(s)`.
+ * The product seam writes the assistant conversation row when the message's
+ * usage arrives, so the row must already carry the message's tool calls.
+ * A turn that ends before a requested call executed emits no `tool_result`
+ * event for it; the canonical continuation closes the unresolved call with
+ * an explicit error tool_result so the record stays canonical for resume.
+ *
  * Event vocabulary: `provider` (identity — provider/model/api, plus
  * `sessionId` once the provider has allocated a session, and optional
  * `capabilities` — e.g. a declared `contextWindow` the model metadata
@@ -105,6 +114,26 @@
 import { validateContinuation } from './continuation.js';
 
 export const TERMINAL_RUNTIME_EVENTS = new Set(['done', 'error']);
+
+/**
+ * The persisted/model-facing text of a normalized `tool_result` content
+ * array (or an SDK-shaped string/block content): every text block is
+ * preserved — a multi-block result is joined, never reduced to
+ * `content[0]` — and a result without text blocks is serialized as JSON so
+ * nothing is silently dropped. Adapters use it when flattening a provider
+ * tool result into the canonical single-text-block record; the product seam
+ * uses it when persisting the tool row from the normalized event.
+ */
+export function toolResultText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const texts = content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text);
+    if (texts.length > 0) return texts.join('\n');
+  }
+  return JSON.stringify(content ?? null);
+}
 
 /** Raw usage fields (canonical names plus adapter aliases) read by normalizeUsage(). */
 const USAGE_FIELDS = [
