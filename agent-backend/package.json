@@ -11,6 +11,7 @@
     "db:seed": "node src/db/seed.js",
     "import:guidance": "node scripts/import-guidance.mjs",
     "eval:org-search": "node scripts/eval-org-search.mjs",
+    "eval:baseline": "node src/agents/eval/run.js",
     "smoke": "node scripts/smoke-research.js",
     "smoke:pi-runtime": "node scripts/smoke-pi-runtime.js",
     "test": "vitest run",
