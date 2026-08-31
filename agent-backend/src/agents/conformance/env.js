@@ -39,6 +39,8 @@ export function getConformanceConfig() {
       model: undefined,
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
       retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
+      // Context-meter denominator fallback (STH-52), mirroring main's default.
+      contextWindow: 200000,
       projectsRoot: join(dataDir, 'files'),
     },
     storage: {
@@ -56,6 +58,10 @@ export function getConformanceConfig() {
   // of touching the repo's guidance/script catalogs.
     knowledge: { catalogRoot: join(dataDir, 'knowledge-catalog') },
     scripts: { catalogRoot: join(dataDir, 'scripts-catalog') },
+    slideThemes: {
+      catalogRoot: join(dataDir, 'slide-themes-catalog'),
+      maxThemeBytes: 256 * 1024,
+    },
     auth: { superadminEmails: [] },
     // Runtime selector (STH-47): 'claude' by default; the Pi conformance
     // driver switches this to 'pi' for its suite run and the harness resets

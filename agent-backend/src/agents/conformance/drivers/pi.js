@@ -82,8 +82,15 @@ function buildRuntime(driver, options) {
   const state = { inner: null, role: null, attempt: 0 };
   const runtime = {
     get identity() {
-      ensureInner(driver, state, options, null);
-      return state.inner.identity;
+      if (state.inner) return state.inner.identity;
+      // Pre-turn: the scripted model is not yet known (the role arrives
+      // per turn in the system prompt), so the inner runtime is not built.
+      // Report the driver-level identity — exactly the identity the inner
+      // runtime will report once built (fixed provider + faux model id) —
+      // so pre-turn readers (the product's job_start audit) see the
+      // normalized shape without constructing the inner runtime or
+      // consuming a scripted model from the role queue.
+      return { provider: PI_CONFORMANCE_PROVIDER, model: 'faux-1', api: 'faux' };
     },
     cancel: () => {
       if (state.inner) state.inner.cancel();
