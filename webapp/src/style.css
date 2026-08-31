@@ -667,9 +667,17 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 #chat-filter-toggle { font-size: 12px; }
 .chat-filtered-out { display: none !important; }
-/* Context size readout + fresh-start button (issue #43) */
-#chat-context-size { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-#chat-context-size.is-high { color: var(--warn); }
+/* Per-agent context meter (STH-52): bottom of the chat window, next to the
+   agent selector — how much context the selected agent carries into its
+   next reply, live during a run. is-high mirrors the fresh-start
+   suggestion threshold (issue #43). */
+.chat-composer-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#chat-context-meter { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+#chat-context-meter[hidden] { display: none; }
+#chat-context-bar { width: 44px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#chat-context-fill { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--ink-3); transition: width var(--dur) var(--ease); }
+#chat-context-meter.is-high { color: var(--warn); }
+#chat-context-meter.is-high #chat-context-fill { background: var(--warn); }
 #chat-clear-btn { margin-left: auto; padding: 5px 7px; color: var(--ink-3); }
 #chat-clear-btn:hover { color: var(--ink); }
 

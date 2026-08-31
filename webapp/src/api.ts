@@ -97,7 +97,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link' | 'context';
   agent: string;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
   ts?: string;
@@ -119,6 +119,8 @@ export interface AgentEvent {
   usage?: { inputTokens: number; outputTokens: number };
   // Per-task token budget snapshot (weighted tokens), carried on done/error.
   budget?: { used: number; limit: number };
+  // Live per-agent context-window state (STH-52), emitted each assistant turn.
+  context?: { tokens: number; window: number };
   // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
   // 'provider_overloaded' on a transient-error notice/terminal error (story 029).
   reason?: string;
@@ -162,6 +164,11 @@ export interface Job {
   role: string;
   status: string;
   session_id: string | null;
+  // Dispatching job when this ran as a sub-agent (STH-52: those sessions
+  // and token counts belong to the dispatch, not to a user conversation).
+  parent_job_id: number | null;
+  // Context the session carried into its last reply (input + cache tokens).
+  input_tokens: number;
   created_at: string;
 }
 

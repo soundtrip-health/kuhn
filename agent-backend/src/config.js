@@ -108,6 +108,9 @@ export const config = {
     modelWeights: parseModelWeights(process.env.AGENT_MODEL_WEIGHTS),
     // Max nested dispatch depth (writer -> research is depth 1)
     maxDispatchDepth: parseInt(process.env.AGENT_MAX_DISPATCH_DEPTH || '2'),
+    // Approximate model context-window size (tokens), reported with each
+    // turn's context state so the UI meter has a denominator (STH-52).
+    contextWindow: parseInt(process.env.AGENT_CONTEXT_WINDOW || '200000'),
     // How long ask_user waits for a reply before proceeding. Default null =
     // wait indefinitely (if the PI steps away, the question just waits). Set
     // AGENT_QUESTION_TIMEOUT_MS to a number to re-enable an auto-default.
