@@ -112,7 +112,7 @@ export function runSandboxed(opts, spawnImpl = spawn) {
  * project read-only, and collects one output file from the sandbox's
  * write-only /out dir.
  */
-async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputName, env, memory, timeoutMs }, spawnImpl) {
+async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputName, env, memory, timeoutMs, extraMounts }, spawnImpl) {
   const { root, abs } = await resolveSafe(projectId, sourcePath);
   await stat(abs).catch(() => {
     throw new SandboxError('failed', `No such source file: ${sourcePath}`);
@@ -134,6 +134,7 @@ async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputN
       env,
       memory,
       timeoutMs,
+      extraMounts,
     }, spawnImpl);
 
     if (result.exitCode !== 0) {
@@ -197,20 +198,43 @@ const MARP_FORMATS = {
   html: { flag: '--html', outputName: 'export.html' },
 };
 
-/** Convert a project markdown file with Marp. Returns { output, stdout, stderr }. */
-export function renderMarp(projectId, sourcePath, format, spawnImpl) {
+/**
+ * Convert a project markdown file with Marp. Returns { output, stdout, stderr }.
+ * STH-58: a resolved custom theme ({ themeName, themeCss }) is materialized
+ * into its own read-only /themes mount (the org-library /script pattern) and
+ * registered with --theme-set; the deck's `theme:` front matter picks it by
+ * the CSS's `@theme` name.
+ */
+export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null } = {}, spawnImpl) {
   const spec = MARP_FORMATS[format];
   if (!spec) {
     throw new SandboxError('failed', `No marp output format: ${format}`);
   }
-  return renderViaSandbox(projectId, sourcePath, {
-    image: config.sandbox.marpImage,
-    makeCmd: (src, out) => [spec.flag, '--allow-local-files', '-o', out, src],
-    outputName: spec.outputName,
-    env: { MARP_USER: `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}` },
-    memory: config.sandbox.marp.memory,
-    timeoutMs: config.sandbox.marp.timeoutMs,
-  }, spawnImpl);
+  const extraMounts = [];
+  const extraArgs = [];
+  let themeDir = null;
+  if (themeCss != null) {
+    // Same placement rationale as .render-tmp (macOS bind-mount shared paths).
+    const themeTmpRoot = join(config.agent.projectsRoot, '.theme-tmp');
+    await mkdir(themeTmpRoot, { recursive: true });
+    themeDir = await mkdtemp(join(themeTmpRoot, 'theme-'));
+    await writeFile(join(themeDir, `${themeName}.css`), themeCss);
+    extraMounts.push({ hostDir: themeDir, containerDir: '/themes', readonly: true });
+    extraArgs.push('--theme-set', '/themes');
+  }
+  try {
+    return await renderViaSandbox(projectId, sourcePath, {
+      image: config.sandbox.marpImage,
+      makeCmd: (src, out) => [spec.flag, '--allow-local-files', ...extraArgs, '-o', out, src],
+      outputName: spec.outputName,
+      env: { MARP_USER: `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}` },
+      memory: config.sandbox.marp.memory,
+      timeoutMs: config.sandbox.marp.timeoutMs,
+      extraMounts,
+    }, spawnImpl);
+  } finally {
+    if (themeDir) await rm(themeDir, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------

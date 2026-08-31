@@ -1911,3 +1911,12 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   color: var(--ink-3); margin-top: 8px;
 }
 .ol-row:hover .ol-delete.is-locked { opacity: .45; cursor: not-allowed; }
+
+/* ---- Slide-themes admin tab (STH-58) -------------------------------- */
+.theme-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.theme-row .theme-name { color: var(--ink-3); font-size: 12px; }
+.theme-row .theme-meta { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.theme-upload { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 4px; }

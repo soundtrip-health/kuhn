@@ -26,9 +26,20 @@ vi.mock('./sandbox.js', async (importOriginal) => {
   };
 });
 
+// STH-58: theme resolution hits the project row and the theme library —
+// both mocked here; the SQL substance lives in db/slide-themes.test.js.
+vi.mock('./db/projects.js', () => ({
+  getProject: vi.fn(async (id) => ({ id: Number(id), org_id: 10 })),
+}));
+vi.mock('./db/slide-themes.js', () => ({
+  MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
+  resolveThemeCss: vi.fn(async () => null),
+}));
+
 import { config } from './config.js';
 import { pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
-import { renderPdf, exportDocument, isMarpSource } from './render.js';
+import { resolveThemeCss } from './db/slide-themes.js';
+import { renderPdf, exportDocument, isMarpSource, marpThemeName } from './render.js';
 
 let root;
 let savedProjectsRoot;
@@ -164,7 +175,7 @@ describe('marp slide decks (STH-57)', () => {
     const { pdf, cached } = await renderPdf(1, 'draft/deck.md');
     expect(pdf.toString()).toBe('%PDF-marp');
     expect(cached).toBe(false);
-    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/deck.md', 'pdf');
+    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/deck.md', 'pdf', { themeName: undefined, themeCss: undefined });
     expect(pandocConvert).not.toHaveBeenCalled();
     expect(renderTypstPdf).not.toHaveBeenCalled();
     const again = await renderPdf(1, 'draft/deck.md');
@@ -174,12 +185,41 @@ describe('marp slide decks (STH-57)', () => {
 
   it('exports pptx via marp for any markdown; docx still goes through pandoc', async () => {
     const out = await exportDocument(1, 'draft/main.md', 'pptx');
-    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/main.md', 'pptx');
+    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/main.md', 'pptx', { themeName: undefined, themeCss: undefined });
     expect(out.filename).toBe('main.pptx');
     expect(out.contentType).toMatch(/presentationml/);
     expect(pandocConvert).not.toHaveBeenCalled();
 
     await exportDocument(1, 'draft/main.md', 'docx');
     expect(pandocConvert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('marp slide themes (STH-58)', () => {
+  it('marpThemeName reads only the leading front matter', () => {
+    expect(marpThemeName('---\nmarp: true\ntheme: kuhn-dark\n---\n')).toBe('kuhn-dark');
+    expect(marpThemeName('---\nmarp: true\ntheme: "kuhn"\n---\n')).toBe('kuhn');
+    expect(marpThemeName('---\nmarp: true\n---\n\ntheme: nope\n')).toBe(null);
+    expect(marpThemeName('# no front matter\n')).toBe(null);
+  });
+
+  it('resolves a custom theme via the org and busts the cache when its CSS changes', async () => {
+    await writeFile(join(root, '1', 'draft', 'themed.md'), '---\nmarp: true\ntheme: kuhn\n---\n\n# T\n');
+    resolveThemeCss.mockResolvedValueOnce({ name: 'kuhn', css: 'CSS1', source: 'catalog' });
+    const first = await renderPdf(1, 'draft/themed.md');
+    expect(first.cached).toBe(false);
+    expect(resolveThemeCss).toHaveBeenCalledWith(10, 'kuhn'); // the project's org
+    expect(renderMarp).toHaveBeenLastCalledWith(1, 'draft/themed.md', 'pdf', { themeName: 'kuhn', themeCss: 'CSS1' });
+
+    // Same source bytes, changed theme CSS → a fresh render, not a cache hit.
+    resolveThemeCss.mockResolvedValueOnce({ name: 'kuhn', css: 'CSS2', source: 'org' });
+    const second = await renderPdf(1, 'draft/themed.md');
+    expect(second.cached).toBe(false);
+    expect(renderMarp).toHaveBeenLastCalledWith(1, 'draft/themed.md', 'pdf', { themeName: 'kuhn', themeCss: 'CSS2' });
+  });
+
+  it('built-in theme names skip the library entirely', async () => {
+    await renderPdf(1, 'draft/deck.md'); // fixture uses theme: default
+    expect(resolveThemeCss).not.toHaveBeenCalled();
   });
 });

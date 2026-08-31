@@ -21,7 +21,8 @@ kuhn/
 ├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
 ├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
 ├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
-└── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
+├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
+└── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from

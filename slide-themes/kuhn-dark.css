@@ -1,0 +1,29 @@
+/* @theme kuhn-dark */
+/*
+ * Kuhn Dark — the kuhn theme for dim rooms (STH-58): deep slate ground,
+ * light ink, the same rust accent.
+ */
+@import "default";
+
+section {
+  background: #1b232c;
+  color: #dde4ea;
+  font-family: "Georgia", "Times New Roman", serif;
+  font-size: 30px;
+  line-height: 1.45;
+  padding: 64px 72px;
+}
+h1, h2, h3 { color: #f2f5f7; font-family: "Helvetica Neue", "Arial", sans-serif; }
+h1 { font-size: 1.7em; border-bottom: 3px solid #d3703d; padding-bottom: 0.25em; }
+h2 { font-size: 1.3em; }
+a { color: #e08a5a; }
+strong { color: #ffffff; }
+code { background: #2b3641; color: #e8b491; padding: 0.1em 0.3em; border-radius: 4px; }
+pre code { background: transparent; color: inherit; }
+pre { background: #10161c; color: #dde4ea; border-radius: 8px; padding: 0.7em 1em; }
+blockquote { border-left: 4px solid #d3703d; color: #9aa7b2; padding-left: 0.8em; }
+table { font-size: 0.85em; }
+th { background: #2b3641; color: #f2f5f7; }
+section.lead h1 { border-bottom: none; font-size: 2.2em; }
+section.lead { text-align: center; }
+footer, header { color: #71808d; font-size: 0.5em; }

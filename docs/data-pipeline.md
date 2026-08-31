@@ -110,7 +110,11 @@ leaked), an insufficient role or a suspended org gets a 403.
 - **Render & export** (`render.js`, `sandbox.js`): markdown → Typst → PDF
   preview, Pandoc `.docx`/`.tex` export, and Marp slide decks (STH-57: a
   `marp: true` front matter routes preview through Marp, and `.pptx`/`.html`
-  export converts any markdown). All of it runs in Docker with
+  export converts any markdown) Slide themes (STH-58): a deck's `theme:`
+  front matter resolves through the org/catalog theme library — an active
+  org-uploaded CSS shadows a Kuhn-seeded one of the same name — and the
+  resolved CSS is materialized into a read-only `/themes` mount registered
+  with `--theme-set`. All of it runs in Docker with
   `--network none`, CPU/memory/pid limits, a kill timer (60 s; 120 s for
   Marp's Chromium), and the project mounted **read-only**; output goes to a
   scratch dir that is read back and deleted. Sandbox output is treated as
