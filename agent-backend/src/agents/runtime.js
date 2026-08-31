@@ -30,6 +30,7 @@ import {
   addManualReference, verifyProjectReferences, updateReference, removeReference,
   isDerivedBibPath,
 } from '../citations.js';
+import { extractProjectPdfText } from '../ingest.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
 import { addReply, createThread, listThreads, resolveQuote, setResolved } from '../db/comments.js';
 import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
@@ -858,7 +859,7 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
   if (agent.tools.includes('file_read')) {
     tools.push(tool(
       'read_file',
-      'Read a file from the project workspace. Path is relative to the workspace root.',
+      'Read a file from the project workspace. Path is relative to the workspace root. PDF files are returned as extracted text.',
       { path: z.string().describe('Workspace-relative file path') },
       async ({ path }) => fileToolResult(async () => {
         // Suggestion-mode coherence (issue #42): if this path has a pending
@@ -871,7 +872,23 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
             return `[${path} has a pending proposed update awaiting user review. The content below is the PROPOSED version; the file on disk keeps its previous content until the user accepts.]\n\n${proposal}`;
           }
         }
+        // STH-54: PDFs are binary — route through sandboxed pdftotext (the
+        // same pipeline org-library ingestion uses) instead of returning
+        // undecodable bytes the agent mistakes for an unreadable file.
+        if (/\.pdf$/i.test(path)) {
+          const text = await extractProjectPdfText(projectId, path);
+          if (!text.trim()) {
+            throw new Error(
+              `${path}: PDF contains no extractable text (it may be scanned images). `
+              + 'Ask the user for a text version if you need its contents.',
+            );
+          }
+          return `[${path}: text extracted from PDF (pdftotext, first ${config.ingest.maxPdfPages} pages)]\n\n${text}`;
+        }
         const buf = await readProjectFile(projectId, path);
+        if (buf.includes(0)) {
+          throw new Error(`${path} is a binary file and cannot be read as text.`);
+        }
         return buf.toString('utf-8');
       }),
     ));

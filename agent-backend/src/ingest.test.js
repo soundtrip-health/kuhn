@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 // Real in-memory SQLite (FTS5 + triggers are the substance) + temp org root.
 // The sandbox is never invoked for real: binary-format tests inject a fake
@@ -13,9 +13,9 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let exec; let querySync; let config;
-let extractText; let chunkText; let ingestOrgDocument; let IngestError;
+let extractText; let chunkText; let ingestOrgDocument; let IngestError; let extractProjectPdfText;
 let insertOrgDocument; let searchOrgKnowledge; let countDocumentChunks; let getOrgDocument;
-let writeOrgFile;
+let writeOrgFile; let writeProjectFile; let resolveProjectDir;
 let subscribeOrgEvents;
 let orgsRoot;
 
@@ -26,10 +26,10 @@ beforeAll(async () => {
   orgsRoot = await mkdtemp(join(tmpdir(), 'kuhn-ingest-'));
   config.storage.orgsRoot = orgsRoot;
 
-  ({ extractText, chunkText, ingestOrgDocument, IngestError } = await import('./ingest.js'));
+  ({ extractText, chunkText, ingestOrgDocument, IngestError, extractProjectPdfText } = await import('./ingest.js'));
   ({ insertOrgDocument, searchOrgKnowledge, countDocumentChunks, getOrgDocument } =
     await import('./db/org-documents.js'));
-  ({ writeOrgFile } = await import('./storage.js'));
+  ({ writeOrgFile, writeProjectFile, resolveProjectDir } = await import('./storage.js'));
   ({ subscribeOrgEvents } = await import('./project-events.js'));
 });
 
@@ -181,5 +181,44 @@ describe('ingestOrgDocument lifecycle', () => {
     expect(hits[0]).toMatchObject({ docId: doc.id, filename: 'margins.txt' });
     // A single absent term alone never matches anything even via OR.
     expect(searchOrgKnowledge(1, 'levitation')).toEqual([]);
+  });
+});
+
+describe('extractProjectPdfText (STH-54)', () => {
+  let projectsRoot; let savedProjectsRoot;
+
+  beforeEach(async () => {
+    savedProjectsRoot = config.agent.projectsRoot;
+    projectsRoot = await mkdtemp(join(tmpdir(), 'kuhn-proj-'));
+    config.agent.projectsRoot = projectsRoot;
+    querySync('DELETE FROM projects');
+    querySync("INSERT INTO projects (id, name, project_type) VALUES (77, 'P', 'manuscript')");
+    await writeProjectFile(77, 'papers/guide.pdf', 'fake-pdf-bytes');
+  });
+
+  afterEach(async () => {
+    config.agent.projectsRoot = savedProjectsRoot;
+    await rm(projectsRoot, { recursive: true, force: true });
+  });
+
+  it('runs pdftotext over the project-mounted file and returns stdout', async () => {
+    const runner = vi.fn(async () => ({ exitCode: 0, stdout: 'pdf text', stderr: '' }));
+    expect(await extractProjectPdfText(77, 'papers/guide.pdf', runner)).toBe('pdf text');
+    const call = runner.mock.calls[0][0];
+    expect(call).toMatchObject({ image: config.sandbox.popplerImage });
+    expect(call.projectDir).toBe(await resolveProjectDir(77));
+    expect(call.cmd).toEqual([
+      'pdftotext', '-layout', '-l', String(config.ingest.maxPdfPages), '/work/papers/guide.pdf', '-',
+    ]);
+  });
+
+  it('missing file and extractor failure surface as IngestError', async () => {
+    const runner = vi.fn();
+    await expect(extractProjectPdfText(77, 'papers/nope.pdf', runner)).rejects.toBeInstanceOf(IngestError);
+    expect(runner).not.toHaveBeenCalled();
+
+    runner.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'Syntax Error: bad xref' });
+    await expect(extractProjectPdfText(77, 'papers/guide.pdf', runner))
+      .rejects.toThrow(/pdftotext\): Syntax Error: bad xref/);
   });
 });
