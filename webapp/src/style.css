@@ -667,9 +667,17 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 #chat-filter-toggle { font-size: 12px; }
 .chat-filtered-out { display: none !important; }
-/* Context size readout + fresh-start button (issue #43) */
-#chat-context-size { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-#chat-context-size.is-high { color: var(--warn); }
+/* Per-agent context meter (STH-52): bottom of the chat window, next to the
+   agent selector — how much context the selected agent carries into its
+   next reply, live during a run. is-high mirrors the fresh-start
+   suggestion threshold (issue #43). */
+.chat-composer-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#chat-context-meter { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+#chat-context-meter[hidden] { display: none; }
+#chat-context-bar { width: 44px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#chat-context-fill { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--ink-3); transition: width var(--dur) var(--ease); }
+#chat-context-meter.is-high { color: var(--warn); }
+#chat-context-meter.is-high #chat-context-fill { background: var(--warn); }
 #chat-clear-btn { margin-left: auto; padding: 5px 7px; color: var(--ink-3); }
 #chat-clear-btn:hover { color: var(--ink); }
 
@@ -757,7 +765,24 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-system-error { color: var(--warn); }
 
 /* ---- Chat input ----------------------------------------------------- */
-#chat-form { padding: 12px 16px 14px; border-top: 1px solid var(--line-2); }
+#chat-form { position: relative; padding: 12px 16px 14px; border-top: 1px solid var(--line-2); }
+
+/* Autoscroll re-engage pill (STH-50): floats above the composer while new
+   output lands below the user's scroll position. */
+#chat-jump {
+  position: absolute; top: -10px; left: 50%;
+  transform: translate(-50%, -100%);
+  z-index: 40;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: none; border-radius: var(--r-pill);
+  background: var(--ink); color: var(--ink-inv);
+  font: var(--ui-body); cursor: pointer;
+  box-shadow: var(--shadow-pop);
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+#chat-jump:hover { opacity: 0.92; }
+#chat-jump svg { display: block; }
+#chat-jump[hidden] { display: none; }
 .chat-field {
   border: 1px solid var(--line); border-radius: var(--r);
   background: var(--soft); padding: 10px 12px;
@@ -1223,6 +1248,32 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-notice-overload .notice-action,
 .chat-notice-context .notice-action { margin-top: 2px; }
 
+/* STH-55: hand-off note card + capture opt-out on the long-context card. */
+.chat-notice-handoff {
+  margin: 10px 0;
+  padding: 13px 15px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-left: 2.5px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+.chat-notice-handoff .notice-title {
+  display: flex; align-items: center; gap: 7px;
+  font-weight: 600; font-size: 13px; color: var(--ink);
+  margin-bottom: 6px;
+}
+.chat-notice-handoff .notice-title svg { color: var(--accent); }
+.chat-notice-handoff .handoff-note {
+  margin: 0 0 8px; font: var(--ui-body); color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.chat-notice-context .notice-checkbox {
+  display: flex; align-items: center; gap: 7px;
+  font: var(--ui-body); color: var(--ink-2);
+  margin: 0 0 8px; cursor: pointer;
+}
+
 /* Overload is a transient infra hiccup, not a project limit — accent it. */
 .chat-notice-overload { border-left-color: var(--accent); }
 .chat-notice-overload .notice-title svg { color: var(--accent); }
@@ -1353,14 +1404,20 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
    struck-through deletions inline, green insertion previews per hunk. --role
    carries the proposing agent's color (write-suggestion convention). */
 .suggestion-bar {
+  /* STH-53: sticky inside #editor-scroll so pending suggestions can't be
+     scrolled out of sight — missing the bar was the core complaint. */
+  position: sticky; top: 8px; z-index: 6;
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--line);
   border-left: 2.5px solid var(--role, var(--writer));
-  background: var(--soft);
+  background: var(--chrome);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   padding: 10px 14px; margin: 0 0 18px;
   font-family: var(--font-ui); user-select: none;
+  box-shadow: var(--shadow-pop);
   animation: kuhn-rise var(--dur) var(--ease) both;
 }
+.sh-jump { display: inline-flex; align-items: center; gap: 4px; }
 .sh-bar-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--role, var(--writer)); }
 .sh-bar-text { flex: 1; min-width: 0; font: var(--ui-small); font-weight: 500; color: var(--ink-2); }
 .sh-bar-sep { color: var(--ink-3); }
@@ -1404,6 +1461,24 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 
 /* Side-by-side fallback modal reuses the history-panel (hy-*) shell. */
 .sh-modal-actions { display: flex; align-items: center; gap: 8px; }
+
+/* Change-by-change decisions inside the side-by-side review (STH-53). */
+.sh-hunk-list {
+  width: 300px; flex: 0 0 300px; min-height: 0;
+  border-left: 1px solid var(--line);
+  overflow-y: auto; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sh-hunk-list-title { font: var(--ui-small); font-weight: 600; color: var(--ink-2); }
+.sh-hunk-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.sh-hunk-row-text { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.sh-row-del, .sh-row-add { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sh-row-del { color: var(--warn); text-decoration: line-through; }
+.sh-row-add { color: var(--good); }
+.sh-hunk-row .sh-hunk-actions { margin-top: 0; flex: none; }
 
 /* ---- Responsive collapse (graceful to ~1100px) --------------------- */
 @media (max-width: 1240px) {
@@ -1862,3 +1937,12 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   color: var(--ink-3); margin-top: 8px;
 }
 .ol-row:hover .ol-delete.is-locked { opacity: .45; cursor: not-allowed; }
+
+/* ---- Slide-themes admin tab (STH-58) -------------------------------- */
+.theme-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.theme-row .theme-name { color: var(--ink-3); font-size: 12px; }
+.theme-row .theme-meta { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.theme-upload { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 4px; }

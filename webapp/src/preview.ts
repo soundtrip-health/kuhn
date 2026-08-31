@@ -128,7 +128,7 @@ export async function previewStoredFile(path: string): Promise<void> {
   }
 }
 
-async function download(format: 'docx' | 'tex'): Promise<void> {
+async function download(format: 'docx' | 'tex' | 'pptx'): Promise<void> {
   const path = currentDocumentPath();
   if (!path) {
     setStatus('No document open');
@@ -164,6 +164,7 @@ export function initPreview(activeProjectId: number): void {
   document.getElementById('preview-refresh')!.addEventListener('click', () => void render());
   document.getElementById('export-docx')!.addEventListener('click', () => void download('docx'));
   document.getElementById('export-tex')!.addEventListener('click', () => void download('tex'));
+  document.getElementById('export-pptx')!.addEventListener('click', () => void download('pptx'));
   wireFloatingWindow();
 }
 

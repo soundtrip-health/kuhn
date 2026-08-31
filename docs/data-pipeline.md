@@ -108,11 +108,18 @@ leaked), an insufficient role or a suspended org gets a 403.
   text is chunked (~3.2k chars, heading-aware) into `org_document_chunks` and
   FTS-indexed. Original bytes are kept; re-ingestion replaces chunks.
 - **Render & export** (`render.js`, `sandbox.js`): markdown → Typst → PDF
-  preview, and Pandoc `.docx`/`.tex` export. All of it runs in Docker with
-  `--network none`, CPU/memory/pid limits, a 60s kill timer, and the project
-  mounted **read-only**; output goes to a scratch dir that is read back and
-  deleted. Sandbox output is treated as untrusted. Images:
-  `ghcr.io/typst/typst`, `pandoc/core`, `minidocks/poppler`.
+  preview, Pandoc `.docx`/`.tex` export, and Marp slide decks (STH-57: a
+  `marp: true` front matter routes preview through Marp, and `.pptx`/`.html`
+  export converts any markdown) Slide themes (STH-58): a deck's `theme:`
+  front matter resolves through the org/catalog theme library — an active
+  org-uploaded CSS shadows a Kuhn-seeded one of the same name — and the
+  resolved CSS is materialized into a read-only `/themes` mount registered
+  with `--theme-set`. All of it runs in Docker with
+  `--network none`, CPU/memory/pid limits, a kill timer (60 s; 120 s for
+  Marp's Chromium), and the project mounted **read-only**; output goes to a
+  scratch dir that is read back and deleted. Sandbox output is treated as
+  untrusted. Images: `ghcr.io/typst/typst`, `pandoc/core`,
+  `minidocks/poppler`, `marpteam/marp-cli`.
 - **Analyst script execution** (`run_script`, issue #68b): R scripts — from the
   org script library or the project's `analyst/` — run through the same
   `sandbox.js` wrapper with the same invariants (no network, project read-only,

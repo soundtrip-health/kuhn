@@ -97,7 +97,7 @@ export interface TreeNode {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link' | 'context';
   agent: string;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
   ts?: string;
@@ -119,6 +119,8 @@ export interface AgentEvent {
   usage?: { inputTokens: number; outputTokens: number };
   // Per-task token budget snapshot (weighted tokens), carried on done/error.
   budget?: { used: number; limit: number };
+  // Live per-agent context-window state (STH-52), emitted each assistant turn.
+  context?: { tokens: number; window: number };
   // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
   // 'provider_overloaded' on a transient-error notice/terminal error (story 029).
   reason?: string;
@@ -162,6 +164,11 @@ export interface Job {
   role: string;
   status: string;
   session_id: string | null;
+  // Dispatching job when this ran as a sub-agent (STH-52: those sessions
+  // and token counts belong to the dispatch, not to a user conversation).
+  parent_job_id: number | null;
+  // Context the session carried into its last reply (input + cache tokens).
+  input_tokens: number;
   created_at: string;
 }
 
@@ -1343,6 +1350,69 @@ export async function putOrgAgentPrompt(
   return ((await res.json()) as { addition: AgentPromptAddition | null }).addition;
 }
 
+// ---- Slide themes (STH-58) ----
+
+export interface CatalogSlideTheme {
+  name: string;
+  title: string;
+  description: string | null;
+  available: boolean;
+  /** An ACTIVE org theme of the same name wins at render time. */
+  shadowed?: boolean;
+}
+
+export interface OrgSlideTheme {
+  id: number;
+  name: string;
+  title: string;
+  status: 'active' | 'disabled';
+  css_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgSlideThemesPayload {
+  catalog: CatalogSlideTheme[];
+  themes: OrgSlideTheme[];
+}
+
+export async function getOrgSlideThemes(orgId: number): Promise<OrgSlideThemesPayload> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes`));
+  return (await res.json()) as OrgSlideThemesPayload;
+}
+
+/** Upload/replace an org slide theme (owner-only); the name comes from the CSS @theme header. */
+export async function uploadOrgSlideTheme(
+  orgId: number,
+  css: string,
+  title?: string,
+): Promise<OrgSlideThemesPayload & { theme: OrgSlideTheme }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ css, title }),
+    }),
+  );
+  return (await res.json()) as OrgSlideThemesPayload & { theme: OrgSlideTheme };
+}
+
+/** Enable/disable one org slide theme (owner-only). */
+export async function setOrgSlideThemeStatus(
+  orgId: number,
+  name: string,
+  status: 'active' | 'disabled',
+): Promise<OrgSlideTheme> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+  return ((await res.json()) as { theme: OrgSlideTheme }).theme;
+}
+
 // ---- Shared scripts (issue #68) ----
 
 export interface ScriptArg {
@@ -1724,7 +1794,7 @@ export async function renderPdf(projectId: number, path: string): Promise<Blob> 
 }
 
 /** URL of the Pandoc export endpoint (served with Content-Disposition: attachment). */
-export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex'): string {
+export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex' | 'pptx'): string {
   return `${BACKEND_URL}/api/projects/${projectId}/export?path=${encodeURIComponent(path)}&format=${format}`;
 }
 
@@ -1864,6 +1934,23 @@ export async function runAgentTask(
     }),
   );
   await readEventStream(res, onEvent);
+}
+
+/**
+ * STH-55: scan the recent recorded conversation with an agent for a clear
+ * hand-off (open action items, pending decisions) and return a short note,
+ * or null when the conversation ended clean.
+ */
+export async function captureHandoff(projectId: number, role: string): Promise<string | null> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/agent/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, role }),
+    }),
+  );
+  const { handoff } = await res.json();
+  return handoff ?? null;
 }
 
 /**

@@ -112,7 +112,7 @@ export function runSandboxed(opts, spawnImpl = spawn) {
  * project read-only, and collects one output file from the sandbox's
  * write-only /out dir.
  */
-async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputName }, spawnImpl) {
+async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputName, env, memory, timeoutMs, extraMounts }, spawnImpl) {
   const { root, abs } = await resolveSafe(projectId, sourcePath);
   await stat(abs).catch(() => {
     throw new SandboxError('failed', `No such source file: ${sourcePath}`);
@@ -131,6 +131,10 @@ async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputN
       cmd: makeCmd(`/work/${sourceRel}`, `/out/${outputName}`),
       projectDir: root,
       outDir,
+      env,
+      memory,
+      timeoutMs,
+      extraMounts,
     }, spawnImpl);
 
     if (result.exitCode !== 0) {
@@ -180,6 +184,57 @@ export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [],
     makeCmd: (src, out) => [src, ...extraArgs, '-o', out],
     outputName,
   }, spawnImpl);
+}
+
+// STH-57: slide decks. The official Marp CLI image bundles Chromium; it gets
+// more memory/time than the typst/pandoc defaults but the same isolation (no
+// network, project read-only, write-only /out). MARP_USER maps the container
+// user to the backend's uid so Chromium's output lands writable in /out.
+// --allow-local-files lets Chromium read project images during conversion —
+// with /work the only (read-only) mount and no network, that stays contained.
+const MARP_FORMATS = {
+  pdf: { flag: '--pdf', outputName: 'output.pdf' },
+  pptx: { flag: '--pptx', outputName: 'export.pptx' },
+  html: { flag: '--html', outputName: 'export.html' },
+};
+
+/**
+ * Convert a project markdown file with Marp. Returns { output, stdout, stderr }.
+ * STH-58: a resolved custom theme ({ themeName, themeCss }) is materialized
+ * into its own read-only /themes mount (the org-library /script pattern) and
+ * registered with --theme-set; the deck's `theme:` front matter picks it by
+ * the CSS's `@theme` name.
+ */
+export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null } = {}, spawnImpl) {
+  const spec = MARP_FORMATS[format];
+  if (!spec) {
+    throw new SandboxError('failed', `No marp output format: ${format}`);
+  }
+  const extraMounts = [];
+  const extraArgs = [];
+  let themeDir = null;
+  if (themeCss != null) {
+    // Same placement rationale as .render-tmp (macOS bind-mount shared paths).
+    const themeTmpRoot = join(config.agent.projectsRoot, '.theme-tmp');
+    await mkdir(themeTmpRoot, { recursive: true });
+    themeDir = await mkdtemp(join(themeTmpRoot, 'theme-'));
+    await writeFile(join(themeDir, `${themeName}.css`), themeCss);
+    extraMounts.push({ hostDir: themeDir, containerDir: '/themes', readonly: true });
+    extraArgs.push('--theme-set', '/themes');
+  }
+  try {
+    return await renderViaSandbox(projectId, sourcePath, {
+      image: config.sandbox.marpImage,
+      makeCmd: (src, out) => [spec.flag, '--allow-local-files', ...extraArgs, '-o', out, src],
+      outputName: spec.outputName,
+      env: { MARP_USER: `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}` },
+      memory: config.sandbox.marp.memory,
+      timeoutMs: config.sandbox.marp.timeoutMs,
+      extraMounts,
+    }, spawnImpl);
+  } finally {
+    if (themeDir) await rm(themeDir, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@
           <div id="export-menu" class="export-menu" hidden role="menu">
             <button id="export-docx" type="button" class="export-item" role="menuitem" title="Export as Word document">Word&nbsp;(.docx)</button>
             <button id="export-tex" type="button" class="export-item" role="menuitem" title="Export as LaTeX">LaTeX&nbsp;(.tex)</button>
+            <button id="export-pptx" type="button" class="export-item" role="menuitem" title="Export as PowerPoint slides (rendered with Marp)">Slides&nbsp;(.pptx)</button>
           </div>
         </div>
         <span class="topbar-divider" aria-hidden="true"></span>
@@ -61,8 +62,6 @@
         <!-- Conversation filter (issue #45): chat.ts fills label + toggle -->
         <div id="chat-filter-bar">
           <span id="chat-filter-label"></span>
-          <!-- Context size + fresh-start (issue #43): chat.ts fills both -->
-          <span id="chat-context-size" title="Approximate context the selected agent carries into its next reply"></span>
           <button id="chat-filter-toggle" type="button" class="btn btn-quiet btn-sm" aria-pressed="false"
             title="Toggle between the selected agent's conversation and the full history"></button>
         </div>
@@ -72,6 +71,7 @@
             <textarea id="chat-input" rows="1"
               placeholder="Ask an agent, or describe an edit…"></textarea>
             <div class="chat-field-row">
+              <div class="chat-composer-left">
               <div class="agent-selector">
                 <button id="agent-selector-btn" type="button" class="agent-pill"
                   aria-haspopup="listbox" aria-expanded="false" title="Choose which agent to address"></button>
@@ -85,6 +85,12 @@
                   <option value="reviewer">Reviewer</option>
                   <option value="analyst">Analyst</option>
                 </select>
+              </div>
+              <!-- Per-agent context meter (STH-52): chat.ts fills/updates -->
+              <span id="chat-context-meter" hidden>
+                <span id="chat-context-bar"><span id="chat-context-fill"></span></span>
+                <span id="chat-context-text"></span>
+              </span>
               </div>
               <button id="chat-clear-btn" type="button" class="btn btn-quiet btn-sm"
                 title="Start a fresh conversation with the selected agent (clears its chat context)"

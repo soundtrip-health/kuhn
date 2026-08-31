@@ -15,6 +15,8 @@ import {
   searchProjectFiles,
   moveProjectEntry,
 } from '../../storage.js';
+import { config } from '../../config.js';
+import { extractProjectPdfText } from '../../ingest.js';
 import { findPendingEditConflicts } from '../../db/move-paths.js';
 import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../../pending-edits.js';
 import { isDerivedBibPath } from '../../citations.js';
@@ -77,7 +79,7 @@ export function createFileTools(ctx) {
     grants: ['file_read'],
     readOnly: true,
     effect: 'read',
-    description: 'Read a file from the project workspace. Path is relative to the workspace root.',
+    description: 'Read a file from the project workspace. Path is relative to the workspace root. PDF files are returned as extracted text.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Workspace-relative file path' } },
@@ -97,7 +99,23 @@ export function createFileTools(ctx) {
             );
           }
         }
+        // STH-54: PDFs are binary — route through sandboxed pdftotext (the
+        // same pipeline org-library ingestion uses) instead of returning
+        // undecodable bytes the agent mistakes for an unreadable file.
+        if (/\.pdf$/i.test(path)) {
+          const text = await extractProjectPdfText(projectId, path);
+          if (!text.trim()) {
+            return toolError(
+              `${path}: PDF contains no extractable text (it may be scanned images). `
+              + 'Ask the user for a text version if you need its contents.',
+            );
+          }
+          return toolOk(`[${path}: text extracted from PDF (pdftotext, first ${config.ingest.maxPdfPages} pages)]\n\n${text}`);
+        }
         const buf = await readProjectFile(projectId, path);
+        if (buf.includes(0)) {
+          return toolError(`${path} is a binary file and cannot be read as text.`);
+        }
         return toolOk(buf.toString('utf-8'));
       } catch (err) {
         return toolError(err.message);

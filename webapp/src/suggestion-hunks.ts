@@ -12,10 +12,13 @@
 //     normal file_change (Yjs eviction + history commit included), so the open
 //     editor refreshes through the same path as agent direct writes. Hunks are
 //     NEVER applied to the doc client-side.
-//  3. A stale row, or a hunk whose old-side text can't be located in the doc,
-//     degrades to side-by-side review: a modal (the history-panel
-//     unifiedMergeView pattern) with "Replace document with proposed"
-//     (accept + force) and "Discard suggestion" (reject all).
+//  3. A stale row degrades to side-by-side review: a modal (the
+//     history-panel unifiedMergeView pattern) with per-hunk verdicts
+//     (non-stale rows), "Replace document with proposed" (accept + force)
+//     and "Discard suggestion" (reject all). A hunk whose old-side text
+//     can't be located in the doc routes there too — but only that hunk:
+//     the rest still render inline (STH-53; anchoring used to be
+//     all-or-nothing, which dumped every review into the bulk modal).
 //
 // State is re-fetched (debounced) on ANY file_change event — main.ts calls
 // refreshSuggestionsSoon() — and on document open (editor.ts attaches).
@@ -149,7 +152,8 @@ function render(ctx: Attached, edit: PendingEdit | null): void {
     return;
   }
   const anchored = anchorHunks(ctx.view, edit.hunks);
-  if (!anchored) {
+  const unanchoredCount = anchored.filter((a) => a == null).length;
+  if (unanchoredCount > 0) {
     // Content may not have synced into the view yet — retry before degrading.
     if (anchorRetries < ANCHOR_RETRIES) {
       anchorRetries++;
@@ -158,14 +162,20 @@ function render(ctx: Attached, edit: PendingEdit | null): void {
       }, ANCHOR_RETRY_MS);
       return;
     }
-    renderFallback(ctx, edit, 'unanchored');
-    return;
+    if (unanchoredCount === edit.hunks.length) {
+      renderFallback(ctx, edit, 'unanchored');
+      return;
+    }
+    // Partial anchor (STH-53): render what anchors inline — per-hunk ✓/✗
+    // stays available — and route only the stragglers to side-by-side.
+  } else {
+    anchorRetries = 0;
   }
-  anchorRetries = 0;
-  closeModal();
+  // An open review modal is left alone: the user is mid-decision, and
+  // modalMutate manages its lifecycle (reopen on the refreshed row / close).
 
   const decos: Decoration[] = [
-    Decoration.widget(0, buildHeader(ctx, edit, 'inline'), {
+    Decoration.widget(0, buildHeader(ctx, edit, 'inline', unanchoredCount), {
       key: 'sh-bar',
       side: -1,
       ignoreSelection: true,
@@ -175,6 +185,7 @@ function render(ctx: Attached, edit: PendingEdit | null): void {
   for (let i = 0; i < edit.hunks.length; i++) {
     const hunk = edit.hunks[i];
     const anchor = anchored[i];
+    if (!anchor) continue; // reviewable via the header's side-by-side button
     for (const range of anchor.removed) {
       decos.push(Decoration.inline(range.from, range.to, { class: 'sh-del' }));
     }
@@ -287,16 +298,11 @@ function blockMatches(blockNorm: string, lineNorm: string): boolean {
   return lineNorm.length > 12 && (blockNorm.includes(lineNorm) || lineNorm.includes(blockNorm));
 }
 
-/** Anchor every hunk's old side in the doc; null if any hunk fails. */
-function anchorHunks(view: EditorView, hunks: PendingHunk[]): AnchoredHunk[] | null {
+/** Anchor each hunk's old side in the doc — null per hunk that fails, so
+ *  one unanchorable hunk no longer sinks the whole inline review (STH-53). */
+function anchorHunks(view: EditorView, hunks: PendingHunk[]): (AnchoredHunk | null)[] {
   const blocks = docBlocks(view);
-  const anchored: AnchoredHunk[] = [];
-  for (const hunk of hunks) {
-    const anchor = anchorHunk(hunk, blocks);
-    if (!anchor) return null;
-    anchored.push(anchor);
-  }
-  return anchored;
+  return hunks.map((hunk) => anchorHunk(hunk, blocks));
 }
 
 function anchorHunk(hunk: PendingHunk, blocks: Block[]): AnchoredHunk | null {
@@ -388,6 +394,7 @@ function buildHeader(
   ctx: Attached,
   edit: PendingEdit,
   mode: 'inline' | 'stale' | 'unanchored',
+  unanchoredCount = 0,
 ): HTMLElement {
   const bar = document.createElement('div');
   bar.className = 'suggestion-bar';
@@ -401,6 +408,7 @@ function buildHeader(
   label.textContent =
     mode === 'inline'
       ? `${n} suggested change${n === 1 ? '' : 's'} from ${agentLabel(edit)}`
+        + (unanchoredCount > 0 ? ` — ${unanchoredCount} not shown inline` : '')
       : mode === 'stale'
         ? `Suggested changes from ${agentLabel(edit)} — the document moved on; review side-by-side`
         : `Suggested changes from ${agentLabel(edit)} — review side-by-side`;
@@ -410,6 +418,7 @@ function buildHeader(
   bar.append(dot, label);
 
   if (mode === 'inline') {
+    if (n > unanchoredCount) bar.append(jumpButton());
     bar.append(
       barButton('Accept all', 'sh-accept-all btn btn-accent', () =>
         mutate(ctx, () => acceptPendingEdit(ctx.projectId, edit.id), 'Suggestion applied'),
@@ -419,6 +428,14 @@ function buildHeader(
         mutate(ctx, () => rejectPendingEdit(ctx.projectId, edit.id), 'Suggestion discarded'),
       ),
     );
+    if (unanchoredCount > 0) {
+      bar.append(
+        barSep(),
+        barButton(`Review ${unanchoredCount} side-by-side`, 'sh-review btn btn-ghost', () =>
+          void openReviewModal(ctx, edit),
+        ),
+      );
+    }
   } else {
     bar.append(
       barButton('Review', 'sh-review btn btn-accent', () => void openReviewModal(ctx, edit)),
@@ -445,6 +462,23 @@ function barButton(text: string, className: string, onClick: () => void): HTMLBu
   b.textContent = text;
   b.addEventListener('mousedown', (e) => e.preventDefault());
   b.addEventListener('click', onClick);
+  return b;
+}
+
+/** The bar is sticky (STH-53) — from anywhere in the doc, one click lands
+ *  on the first rendered change. */
+function jumpButton(): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'sh-jump btn btn-ghost';
+  b.title = 'Scroll to the first change';
+  b.innerHTML = `${icon('chevron-down', { size: 13, stroke: 2 })}<span>First change</span>`;
+  b.addEventListener('mousedown', (e) => e.preventDefault());
+  b.addEventListener('click', () => {
+    document
+      .querySelector('.sh-del, .suggestion-hunk')
+      ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
   return b;
 }
 
@@ -651,6 +685,19 @@ async function openReviewModal(ctx: Attached, edit: PendingEdit): Promise<void> 
   const diff = document.createElement('div');
   diff.className = 'hy-diff';
   body.append(diff);
+  // Change-by-change decisions (STH-53): the fallback used to offer only
+  // whole-file replace/discard. Non-stale rows keep server-side hunk math,
+  // so each hunk gets its own verdict here too.
+  if (!edit.stale && edit.hunks.length > 0) {
+    const list = document.createElement('div');
+    list.className = 'sh-hunk-list';
+    const title = document.createElement('div');
+    title.className = 'sh-hunk-list-title';
+    title.textContent = 'Decide change by change';
+    list.append(title);
+    for (const hunk of edit.hunks) list.append(buildModalHunkRow(ctx, edit, hunk));
+    body.append(list);
+  }
   modalDiff = new CmEditorView({
     parent: diff,
     state: CmEditorState.create({
@@ -694,4 +741,90 @@ async function openReviewModal(ctx: Attached, edit: PendingEdit): Promise<void> 
   card.append(head, body, foot);
   modal.append(card);
   document.body.append(modal);
+}
+
+// ---- Change-by-change review in the modal (STH-53) --------------------------
+
+/** First changed line on each side of a hunk — a legible row label. */
+function hunkExcerpt(hunk: PendingHunk): { del: string; add: string } {
+  const first = (prefix: string) =>
+    hunk.lines.find((l) => l.startsWith(prefix) && l.slice(1).trim())?.slice(1).trim() ?? '';
+  return { del: first('-'), add: first('+') };
+}
+
+function modalHunkButton(kind: 'accept' | 'reject', onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = kind === 'accept' ? 'sh-accept' : 'sh-reject';
+  b.title = kind === 'accept' ? 'Accept this change' : 'Reject this change';
+  b.innerHTML = icon(kind === 'accept' ? 'check' : 'x', { size: 13, stroke: 2.2 });
+  b.addEventListener('mousedown', (e) => e.preventDefault());
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function buildModalHunkRow(ctx: Attached, edit: PendingEdit, hunk: PendingHunk): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'sh-hunk-row';
+  const text = document.createElement('div');
+  text.className = 'sh-hunk-row-text';
+  const { del, add } = hunkExcerpt(hunk);
+  if (del) {
+    const d = document.createElement('div');
+    d.className = 'sh-row-del';
+    d.textContent = del;
+    text.append(d);
+  }
+  if (add) {
+    const a = document.createElement('div');
+    a.className = 'sh-row-add';
+    a.textContent = add;
+    text.append(a);
+  }
+  if (!del && !add) text.textContent = `Change ${hunk.index + 1}`;
+  const actions = document.createElement('div');
+  actions.className = 'sh-hunk-actions';
+  const ref = { index: hunk.index, hash: hunk.hash };
+  actions.append(
+    modalHunkButton('accept', () => modalMutate(ctx, edit, ref, true)),
+    modalHunkButton('reject', () => modalMutate(ctx, edit, ref, false)),
+  );
+  row.append(text, actions);
+  return row;
+}
+
+/**
+ * One per-hunk verdict from inside the modal. Unlike mutate(), the modal
+ * re-opens on the refreshed row — the reviewer is working down a list, and
+ * yanking the dialog away after every decision would send them back to the bar.
+ */
+function modalMutate(
+  ctx: Attached,
+  edit: PendingEdit,
+  ref: { index: number; hash: string },
+  accept: boolean,
+): void {
+  if (busy) return;
+  busy = true;
+  void (async () => {
+    try {
+      await ctx.flush();
+      const res = accept
+        ? await acceptPendingEdit(ctx.projectId, edit.id, { hunk: ref })
+        : await rejectPendingEdit(ctx.projectId, edit.id, ref);
+      clearDecorations(ctx.view);
+      toast(accept ? 'Change applied' : 'Change discarded');
+      if (attached === ctx && res.remaining > 0 && res.edit) {
+        await openReviewModal(ctx, res.edit);
+      } else {
+        closeModal();
+      }
+    } catch (err) {
+      // 409 = the hunk moved underneath us — the refresh below re-fetches.
+      toast(`Could not update the suggestion: ${(err as Error).message}`);
+    } finally {
+      busy = false;
+      refreshSuggestionsSoon();
+    }
+  })();
 }

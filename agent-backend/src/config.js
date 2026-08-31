@@ -17,6 +17,14 @@ function parseModelWeights(env) {
 
 export const config = {
   port: parseInt(process.env.PORT || '3002'),
+  // Structured logging (STH-51): leveled console output + append-only NDJSON
+  // audit files, one per UTC day, under <dataDir>/logs. LOG_LEVEL:
+  // debug|info|warn|error (default info). KUHN_LOG_DIR relocates the audit
+  // files; set it to '' to disable the file sink (console only).
+  log: {
+    level: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+    dir: process.env.KUHN_LOG_DIR ?? join(dataDir, 'logs'),
+  },
   // SQLite database file. In-process, no service to run; lives under the data dir.
   db: {
     path: process.env.KUHN_SQLITE_PATH || join(dataDir, 'db', 'kuhn.sqlite'),
@@ -124,6 +132,9 @@ export const config = {
     modelWeights: parseModelWeights(process.env.AGENT_MODEL_WEIGHTS),
     // Max nested dispatch depth (writer -> research is depth 1)
     maxDispatchDepth: parseInt(process.env.AGENT_MAX_DISPATCH_DEPTH || '2'),
+    // Approximate model context-window size (tokens), reported with each
+    // turn's context state so the UI meter has a denominator (STH-52).
+    contextWindow: parseInt(process.env.AGENT_CONTEXT_WINDOW || '200000'),
     // How long ask_user waits for a reply before proceeding. Default null =
     // wait indefinitely (if the PI steps away, the question just waits). Set
     // AGENT_QUESTION_TIMEOUT_MS to a number to re-enable an auto-default.
@@ -184,6 +195,15 @@ export const config = {
     // Scripts are code text: small, diffable, stored in the DB.
     maxScriptBytes: parseInt(process.env.SCRIPTS_MAX_BYTES || String(256 * 1024)),
   },
+  slideThemes: {
+    // STH-58: Kuhn-curated Marp theme catalog — slide-themes/catalog.json plus
+    // the CSS files it points at, shipped in the repo tree and read-only at
+    // runtime; same deployment contract as the script catalog above.
+    catalogRoot: process.env.KUHN_SLIDE_THEMES
+      || new URL('../../slide-themes', import.meta.url).pathname,
+    // Theme CSS is text: small, diffable, stored in the DB for org uploads.
+    maxThemeBytes: parseInt(process.env.SLIDE_THEME_MAX_BYTES || String(256 * 1024)),
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).
@@ -191,6 +211,13 @@ export const config = {
     minTextChars: parseInt(process.env.INGEST_MIN_TEXT_CHARS || '20'),
     chunkTargetChars: parseInt(process.env.INGEST_CHUNK_TARGET_CHARS || '3200'),
     chunkMaxChars: parseInt(process.env.INGEST_CHUNK_MAX_CHARS || '4400'),
+  },
+  handoff: {
+    // STH-55: "start fresh" hand-off capture — one small Messages API call
+    // that scans the tail of the recorded conversation for open action items.
+    model: process.env.HANDOFF_MODEL || 'claude-opus-5',
+    maxMessages: parseInt(process.env.HANDOFF_MAX_MESSAGES || '12'),
+    maxCharsPerMessage: parseInt(process.env.HANDOFF_MAX_CHARS_PER_MESSAGE || '4000'),
   },
   fileActivity: {
     // Per-project cap on retained file_events rows (story 005-002); oldest
@@ -205,11 +232,18 @@ export const config = {
     pandocImage: process.env.SANDBOX_PANDOC_IMAGE || 'pandoc/core:latest',
     // PDF text extraction for org-library ingestion (story 006-002)
     popplerImage: process.env.SANDBOX_POPPLER_IMAGE || 'minidocks/poppler:latest',
+    // Slide-deck rendering (STH-57): official Marp CLI image (bundles Chromium).
+    marpImage: process.env.SANDBOX_MARP_IMAGE || 'marpteam/marp-cli:latest',
     timeoutMs: parseInt(process.env.SANDBOX_TIMEOUT_MS || '60000'),
     cpus: process.env.SANDBOX_CPUS || '1',
     memory: process.env.SANDBOX_MEMORY || '512m',
     // Cap on captured stdout/stderr and on produced output files
     maxOutputBytes: parseInt(process.env.SANDBOX_MAX_OUTPUT_BYTES || String(32 * 1024 * 1024)),
+    // Marp runs Chromium — more headroom than the typst/pandoc defaults above.
+    marp: {
+      timeoutMs: parseInt(process.env.MARP_TIMEOUT_MS || '120000'),
+      memory: process.env.MARP_MEMORY || '1g',
+    },
     // Issue #68b: the analyst run_script runtime. A Kuhn-BUILT image
     // (docker/r-analysis/Dockerfile — rocker/r-ver + a curated package set),
     // not pulled from a registry: with --network none there are no runtime

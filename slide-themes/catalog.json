@@ -1,0 +1,17 @@
+{
+  "catalog_version": 1,
+  "themes": [
+    {
+      "name": "kuhn",
+      "title": "Kuhn",
+      "path": "kuhn.css",
+      "description": "Clean academic look: warm paper ground, serif body, rust accent. Good default for scientific talks."
+    },
+    {
+      "name": "kuhn-dark",
+      "title": "Kuhn Dark",
+      "path": "kuhn-dark.css",
+      "description": "The Kuhn look on a deep slate ground for dim rooms and screen sharing."
+    }
+  ]
+}

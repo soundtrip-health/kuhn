@@ -5,6 +5,7 @@ import { query, querySync, transaction } from '../db.js';
 import { AGENTS, TOOLS, ASSIGNMENTS, DEFAULT_ORG, DEFAULT_USER } from './seed-data.js';
 import { catalogFileExists, loadCatalogManifest } from './knowledge-catalog.js';
 import { scriptFileExists, loadScriptManifest } from './script-catalog.js';
+import { themeFileExists, loadThemeManifest } from './slide-themes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -80,6 +81,7 @@ export async function seed() {
 
   await seedKnowledgeCatalog();
   await seedScriptCatalog();
+  await seedSlideThemeCatalog();
 
   console.log('[seed] Applied default tenant, agents, tools, assignments, and catalogs.');
 }
@@ -245,4 +247,48 @@ if (isMain) {
   seed()
     .then(() => { console.log('[seed] Done.'); process.exit(0); })
     .catch((err) => { console.error('[seed] Failed:', err); process.exit(1); });
+}
+
+/**
+ * STH-58: seed catalog_slide_themes from slide-themes/catalog.json — same
+ * discipline as the script catalog: idempotent upserts, missing CSS marks
+ * the row unavailable, rows that leave the manifest go available = 0.
+ */
+export async function seedSlideThemeCatalog() {
+  const manifest = await loadThemeManifest();
+  if (!manifest) {
+    console.warn('[seed] slide-themes/catalog.json not found — slide theme catalog not seeded.');
+    return;
+  }
+
+  const rows = [];
+  for (const theme of manifest.themes) {
+    const exists = await themeFileExists(theme.path);
+    if (!exists) {
+      console.warn(`[seed] slide theme ${theme.name}: CSS file missing (${theme.path}) — marked unavailable.`);
+    }
+    rows.push({ ...theme, available: exists ? 1 : 0 });
+  }
+
+  transaction(() => {
+    for (const t of rows) {
+      querySync(
+        `INSERT INTO catalog_slide_themes (name, title, path, description, available)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (name) DO UPDATE SET
+           title = excluded.title,
+           path = excluded.path,
+           description = excluded.description,
+           available = excluded.available`,
+        [t.name, t.title, t.path, t.description ?? null, t.available],
+      );
+    }
+    querySync(
+      `UPDATE catalog_slide_themes SET available = 0
+       WHERE name NOT IN (SELECT value FROM json_each($1))`,
+      [JSON.stringify(rows.map((t) => t.name))],
+    );
+  });
+
+  console.log(`[seed] Slide theme catalog v${manifest.catalog_version}: ${rows.length} themes.`);
 }

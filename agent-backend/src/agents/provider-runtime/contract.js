@@ -59,7 +59,10 @@
  * the Kuhn `execute` implementation is never invoked for them.
  *
  * Event vocabulary: `provider` (identity — provider/model/api, plus
- * `sessionId` once the provider has allocated a session), `text_delta`,
+ * `sessionId` once the provider has allocated a session, and optional
+ * `capabilities` — e.g. a declared `contextWindow` the model metadata
+ * reports, used as the context meter's denominator when present),
+ * `text_delta`,
  * `text`, `tool_call`, `tool_result`, per-turn `usage` (canonical
  * RuntimeUsage), and exactly one terminal event: `done` (cumulative
  * `usage` + canonical `continuation`) or `error` (normalized `error`, plus

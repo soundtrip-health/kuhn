@@ -32,12 +32,15 @@ vi.mock('../config.js', () => ({
       tokenBudget: 250000,
       budgetGrace: 1.1,
       maxDispatchDepth: 2,
+      contextWindow: 200000,
       questionTimeoutMs: 15 * 60 * 1000,
       model: undefined,
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
       // Zero delays so the backoff retry path (story 029) runs instantly in tests.
       retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
     },
+    // read_file's PDF preamble names the extraction page cap (STH-54).
+    ingest: { maxPdfPages: 200 },
     // The real project-events hub runs in these tests (the channel tee
     // publishes into it); subscribing to it needs this cap (story 012-002).
     projectEvents: { maxSubscribers: 25 },
@@ -52,6 +55,9 @@ vi.mock('../storage.js', () => ({
   searchProjectFiles: vi.fn(async () => []),
   moveProjectEntry: vi.fn(async () => ({})),
 }));
+// STH-54: read_file routes PDFs through sandboxed extraction; the sandbox
+// substance is covered in ingest.test.js.
+vi.mock('../ingest.js', () => ({ extractProjectPdfText: vi.fn(async () => 'extracted pdf text') }));
 vi.mock('../db/agents.js', () => ({ getAgentWithTools: vi.fn() }));
 vi.mock('../db/conversation.js', () => ({
   createConversation: vi.fn(async () => ({ id: 7 })),
@@ -138,7 +144,8 @@ import { query as sdkQuery, createSdkMcpServer } from '@anthropic-ai/claude-agen
 import { isProposable, proposeEdit, effectiveContent, pendingProposalContent } from '../pending-edits.js';
 import { isDerivedBibPath, updateReference, removeReference } from '../citations.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
-import { writeProjectFile, moveProjectEntry } from '../storage.js';
+import { readProjectFile, writeProjectFile, moveProjectEntry } from '../storage.js';
+import { extractProjectPdfText } from '../ingest.js';
 import { recordFileEvent } from '../db/file-activity.js';
 import { applyMove, findPendingEditConflicts } from '../db/move-paths.js';
 import { listThreads, addReply, setResolved } from '../db/comments.js';
@@ -202,6 +209,8 @@ describe('runAgentTask', () => {
     // when a write actually happens (STH-44), and none ran here.
     expect(events).toEqual([
       { type: 'text', agent: 'ra', content: 'Drafting now.' },
+      // Per-turn context-window state for the UI meter (STH-52)
+      { type: 'context', agent: 'ra', jobId: 42, context: { tokens: 10, window: 200000 } },
       {
         type: 'done',
         agent: 'ra',
@@ -215,7 +224,7 @@ describe('runAgentTask', () => {
     // Canonical continuation (STH-47): a provider-neutral record carrying
     // the stable Kuhn tool names — the MCP-qualified names never leave the
     // Claude adapter, so this record can be resumed by any adapter.
-    const continuation = events[1].continuation;
+    const continuation = events[2].continuation;
     expect(validateContinuation(continuation)).toEqual([]);
     expect(continuation.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool_result', 'tool_result']);
     expect(continuation.messages[1].content.filter((b) => b.type === 'tool_call')).toEqual([
@@ -234,7 +243,7 @@ describe('runAgentTask', () => {
     // silently switch provider mechanics.
     const terminal = updateJob.mock.calls.map((c) => c[1]).at(-1);
     expect(terminal.provider).toBe('anthropic');
-    expect(terminal.continuation).toEqual(events[1].continuation);
+    expect(terminal.continuation).toEqual(events[2].continuation);
 
     // Conversation logging: user input, assistant turn, tool result
     const roles = logMessage.mock.calls.map(([m]) => m.role);
@@ -538,6 +547,38 @@ describe('suggestion mode (story 008-001)', () => {
     const result = await read.handler({ path: 'draft/main.md' });
     expect(pendingProposalContent).not.toHaveBeenCalled();
     expect(result.content[0].text).toBe('file body');
+  });
+
+  it('read_file on a .pdf returns sandbox-extracted text, not raw bytes (STH-54)', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['file_read'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go' });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const read = tools.find((t) => t.name === 'read_file');
+    const result = await read.handler({ path: 'papers/Study.PDF' });
+    expect(extractProjectPdfText).toHaveBeenCalledWith(7, 'papers/Study.PDF');
+    expect(readProjectFile).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/text extracted from PDF/);
+    expect(result.content[0].text).toMatch(/extracted pdf text$/);
+  });
+
+  it('read_file on a textless PDF and on a non-PDF binary returns a readable error (STH-54)', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['file_read'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go' });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const read = tools.find((t) => t.name === 'read_file');
+
+    extractProjectPdfText.mockResolvedValueOnce('  \n ');
+    const scanned = await read.handler({ path: 'papers/scan.pdf' });
+    expect(scanned.isError).toBe(true);
+    expect(scanned.content[0].text).toMatch(/no extractable text/);
+
+    readProjectFile.mockResolvedValueOnce(Buffer.from([0x50, 0x4b, 0x00, 0x01]));
+    const bin = await read.handler({ path: 'figures/plot.png' });
+    expect(bin.isError).toBe(true);
+    expect(bin.content[0].text).toMatch(/binary file/);
   });
 
   it('write_file and edit_file refuse a derived bibliography path (issue #42)', async () => {

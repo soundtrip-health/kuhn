@@ -21,6 +21,7 @@ import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { resolveProjectDir } from '../storage.js';
 import { publishProjectEvent } from '../project-events.js';
+import { log } from '../logger.js';
 import { EventChannel } from './events.js';
 import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
@@ -67,6 +68,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
+ *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, continuation } — continuation is the canonical record (STH-47) a follow-up task can resume
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
@@ -106,7 +108,7 @@ export async function* runAgentTask(task, internal = {}) {
 
   const pump = runTask(task, internal, channel, state)
     .catch(async (err) => {
-      console.error('[agent] Task failed:', err);
+      log.error('job_failed', { jobId: state.job?.id, agent: task.role, projectId: task.projectId, err });
       // Provider failures no longer throw — the runtime adapter surfaces
       // them as its terminal `error` event (with the retry/notice handling
       // in runTask). Anything that escapes here is a non-provider failure
@@ -314,6 +316,18 @@ async function runTask(task, internal, channel, state) {
     initialSessionId: sessionId,
   });
   state.runtime = runtime;
+  // Audit (STH-51): the normalized runtime identity is the effective
+  // provider/model of this job — the same value stamped on the job row at
+  // the terminal (jobIdentity). resumeSession null at depth > 0 is the
+  // receipt that a dispatched sub-agent starts a FRESH context: nothing
+  // but the task text crosses the boundary; there is no shared chat history.
+  log.info('job_start', {
+    jobId: job.id, agent: agent.slug, projectId: Number(projectId), userId,
+    depth, parentJobId,
+    provider: runtime.identity?.provider ?? null,
+    model: runtime.identity?.model ?? null,
+    resumeSession: sessionId, seeding, compose,
+  });
   state.controller = new AbortController();
 
   const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);
@@ -377,6 +391,11 @@ async function runTask(task, internal, channel, state) {
         // another runtime) can resume provider-neutrally (STH-47).
         continuation: state.continuation ?? null,
       });
+      log.info('job_end', {
+        jobId: job.id, agent: agent.slug, depth, status: 'done',
+        contextTokens: productUsage.inputTokens, outputTokens: productUsage.outputTokens,
+        budgetUsed: Math.round(budget.used),
+      });
       channel.push({
         type: 'done', agent: agent.slug, jobId: job.id, sessionId: state.sessionId,
         usage: productUsage,
@@ -397,6 +416,10 @@ async function runTask(task, internal, channel, state) {
 
     if (perr.retryable && attempt < retry.maxAttempts) {
       const delay = backoffDelay(attempt + 1, retry);
+      log.warn('provider_retry', {
+        jobId: job.id, agent: agent.slug, attempt: attempt + 1,
+        maxAttempts: retry.maxAttempts, nextRetryMs: delay, err: perr,
+      });
       channel.push({
         type: 'notice',
         agent: agent.slug,
@@ -432,6 +455,11 @@ async function runTask(task, internal, channel, state) {
       inputTokens: jobTokens.inputTokens,
       outputTokens: jobTokens.outputTokens,
       ...jobIdentity(),
+    });
+    log.error('job_end', {
+      jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
+      contextTokens: jobTokens.inputTokens, outputTokens: jobTokens.outputTokens,
+      budgetUsed: Math.round(budget.used),
     });
     channel.push({
       type: 'error', agent: agent.slug, jobId: job.id, message,
@@ -480,11 +508,30 @@ async function runTask(task, internal, channel, state) {
     for await (const event of runtime.runTurn(turn)) {
       switch (event.type) {
         case 'provider': {
-          if (event.sessionId && event.sessionId !== state.sessionId) {
-            state.sessionId = event.sessionId;
-            // Record the session so a retry resumes it and a terminal
-            // transient error can hand it back to a chat retry (story 029).
-            updateJob(job.id, { sessionId: event.sessionId }).catch(() => {});
+          if (event.sessionId) {
+            const priorSession = state.sessionId;
+            if (event.sessionId !== state.sessionId) {
+              state.sessionId = event.sessionId;
+              // Record the session so a retry resumes it and a terminal
+              // transient error can hand it back to a chat retry (story 029).
+              updateJob(job.id, { sessionId: event.sessionId }).catch(() => {});
+            }
+            // Audit (STH-51): per-attempt session initialization, sourced
+            // from the normalized identity event — never provider message
+            // parsing. Runtimes without provider sessions (Pi) simply emit
+            // no sessionId; their identity is the job_start record.
+            log.info('session_init', {
+              jobId: job.id, agent: agent.slug, depth, sessionId: event.sessionId,
+              freshContext: priorSession == null,
+              provider: runtime.identity?.provider ?? null,
+            });
+          }
+          // The adapter's declared model context window (e.g. Pi's model
+          // metadata) is the live meter's denominator when present (STH-52);
+          // otherwise the operator-configured default applies.
+          const declaredWindow = event.capabilities?.contextWindow;
+          if (typeof declaredWindow === 'number' && Number.isFinite(declaredWindow)) {
+            state.contextWindow = declaredWindow;
           }
           break;
         }
@@ -498,13 +545,25 @@ async function runTask(task, internal, channel, state) {
           turnLog.text = event.content;
           channel.push({ type: 'text', agent: agent.slug, content: event.content });
           break;
-        case 'tool_call':
+        case 'tool_call': {
           // File events for write_file/edit_file are pushed by the tool
           // executors themselves (STH-44) — they alone know whether a write
           // landed on disk or as a proposal, and a failed write emits nothing.
           turnLog.open = true;
           turnLog.calls.push({ id: event.id, name: event.name, input: event.arguments ?? {} });
+          // Audit (STH-51): the neutral Kuhn tool name — MCP-qualified
+          // names never leave the adapters (STH-47 review A).
+          const callArgs = event.arguments ?? {};
+          log.info('tool_use', {
+            jobId: job.id, agent: agent.slug,
+            tools: [{
+              name: event.name,
+              ...(callArgs.path ? { path: callArgs.path } : {}),
+              ...(callArgs.agent_slug ? { agent_slug: callArgs.agent_slug } : {}),
+            }],
+          });
           break;
+        }
         case 'usage': {
           const u = event.usage;
           const effectiveIn = effectiveInputTokens(u);
@@ -514,10 +573,28 @@ async function runTask(task, internal, channel, state) {
           usage.outputTokens += out;
           turnLog.tokenCount = u.outputTokens ?? null;
           await closeTurn();
+          // Per-agent context-window state (STH-51): what the model context
+          // carried into this turn (the turn's effective input tokens) —
+          // the same figure the UI meter receives on the channel below.
+          log.info('context_state', {
+            jobId: job.id, agent: agent.slug, sessionId: state.sessionId, depth,
+            contextTokens: effectiveIn, turnOutputTokens: out,
+            budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
+          });
+          // Live per-agent context meter (STH-52); sub-agent events reach the
+          // client via dispatch forwarding, tagged with the child's slug.
+          channel.push({
+            type: 'context', agent: agent.slug, jobId: job.id,
+            context: { tokens: effectiveIn, window: state.contextWindow ?? config.agent.contextWindow },
+          });
           // A grace margin lets an in-flight task overshoot the budget so the
           // current piece of work can finish instead of being cut off
           // abruptly.
           if (budget.used > budget.limit * config.agent.budgetGrace) {
+            log.warn('budget_exceeded', {
+              jobId: job.id, agent: agent.slug,
+              budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
+            });
             await updateJob(job.id, {
               status: 'error',
               error: 'token budget exceeded',
@@ -550,6 +627,11 @@ async function runTask(task, internal, channel, state) {
             userId,
             isError: event.isError === true, // audit trail (issue #42)
           });
+          if (event.isError === true) {
+            // Audit (STH-51): the normalized tool_result event marks the
+            // failure for both runtimes identically.
+            log.warn('tool_error', { jobId: job.id, agent: agent.slug, toolUseId: event.id });
+          }
           break;
         case 'done':
           await closeTurn();

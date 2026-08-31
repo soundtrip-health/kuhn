@@ -28,10 +28,12 @@ import promotionsRouter from './routes/promotions.js';
 import renderRouter from './routes/render.js';
 import reviewRouter from './routes/review.js';
 import scriptsRouter from './routes/scripts.js';
+import slideThemesRouter from './routes/slide-themes.js';
 import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
+import { log } from './logger.js';
 
 const app = express();
 // Deployed behind a TLS-terminating proxy/tunnel (cloudflared, nginx), the
@@ -95,7 +97,8 @@ app.use(projectsRouter);
 app.use(promotionsRouter); // owner-gated promotion-approval queue (story 011-004)
 app.use(renderRouter);
 app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013)
-app.use(scriptsRouter); // shared-script library: catalog, org scripts, promotions (issue #68)
+app.use(scriptsRouter);
+app.use(slideThemesRouter); // shared-script library: catalog, org scripts, promotions (issue #68)
 
 const server = createServer(app);
 
@@ -133,6 +136,9 @@ async function main() {
 
   server.listen(config.port, () => {
     console.log(`[kuhn] Agent backend listening on http://localhost:${config.port}`);
+    log.info('server_start', {
+      port: config.port, logLevel: config.log.level, logDir: config.log.dir || null,
+    });
     console.log(`[kuhn] Yjs signaling:  ws://localhost:${config.port}/yjs-signaling`);
     console.log(`[kuhn] Yjs websocket:  ws://localhost:${config.port}/yjs-websocket/<room>`);
     console.log(`[kuhn] Health check:   http://localhost:${config.port}/health`);

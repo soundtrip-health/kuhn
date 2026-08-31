@@ -14,6 +14,7 @@
 import { marked } from 'marked';
 
 import {
+  captureHandoff,
   getConversations,
   getPendingQuestions,
   listJobs,
@@ -40,6 +41,9 @@ const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor r
 
 // SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
+// STH-55: hand-off notes captured at "start fresh", delivered with the next
+// message to that agent so the fresh session picks up where the old one left.
+const pendingHandoffs = new Map<string, string>();
 
 let activeProjectId = 0;
 // Whether the active project has already been seeded/configured. Gates the
@@ -98,6 +102,14 @@ function applyComposerRole(): void {
 // persists across reloads.
 const SHOW_ALL_KEY = 'kuhn-chat-show-all';
 let showAllAgents = localStorage.getItem(SHOW_ALL_KEY) === '1';
+
+// Smart autoscroll (STH-50): the log follows new output only while the user
+// is at (or near) the bottom. Scrolling back into the history parks
+// autoscroll so earlier output stays readable while tokens stream; new
+// content then lights the “new messages” pill, which (like scrolling back
+// down manually) re-engages following.
+let stickToBottom = true;
+const NEAR_BOTTOM_PX = 40;
 // The role the in-flight run is addressed to. Everything appended during the
 // run — including subagent bubbles and file-change lines — belongs to that
 // conversation, not to the event's author agent.
@@ -109,6 +121,9 @@ let conversationAgent: string | null = null;
 // re-armed by a fresh start) clearing between tasks; the user can also clear
 // manually any time via the fresh-start button next to the send button.
 const CONTEXT_SUGGEST_TOKENS = 100_000;
+// Denominator for the context meter (STH-52); refined by live 'context'
+// events, which carry the backend's configured window size.
+let contextWindow = 200_000;
 const contextTokens = new Map<string, number>();
 const contextSuggested = new Set<string>();
 
@@ -129,7 +144,9 @@ export function initChat(
   running = false;
   pendingQuestionJobId = null;
   activeQuestionCard = null;
+  pendingHandoffs.clear(); // per-project reset (STH-55)
   document.getElementById('chat-log')!.replaceChildren();
+  setStickToBottom(true);
   const seedingPanel = document.getElementById('seeding-panel');
   if (seedingPanel) seedingPanel.hidden = true;
   applyChatFilter(); // refresh the filter bar for the (possibly new) project
@@ -158,6 +175,21 @@ export function initChat(
   // The agent-selector pill mirrors picks into the hidden select and fires
   // change — re-filter the log for the newly addressed agent.
   document.getElementById('chat-role')?.addEventListener('change', () => applyChatFilter());
+
+  // Smart autoscroll (STH-50): park following when the user scrolls up;
+  // re-engage when they return to the bottom. Our own programmatic scrolls
+  // land at the bottom, so this listener is a no-op for them.
+  const logEl = document.getElementById('chat-log')!;
+  logEl.addEventListener('scroll', () => {
+    setStickToBottom(logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= NEAR_BOTTOM_PX);
+  });
+  const jump = document.createElement('button');
+  jump.type = 'button';
+  jump.id = 'chat-jump';
+  jump.hidden = true;
+  jump.innerHTML = `${icon('chevron-down', { size: 14, stroke: 2 })}<span>New messages</span>`;
+  jump.addEventListener('click', () => scrollLog(true));
+  document.getElementById('chat-form')!.append(jump);
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
@@ -233,7 +265,7 @@ function applyChatFilter(): void {
     toggle.setAttribute('aria-pressed', String(showAllAgents));
   }
   updateContextIndicator();
-  scrollLog();
+  scrollLog(true);
 }
 
 // ---- Context assessment & clearing (issue #43) -----------------------------
@@ -244,13 +276,28 @@ function compactTokens(n: number): string {
   return String(n);
 }
 
-/** Show the selected agent's carried context in the filter bar, if known. */
+/** Per-agent context meter (STH-52), bottom of the chat window: how much
+ * context the selected agent carries into its next reply, as a share of
+ * its model's window. Fed live by 'context' events during a run, by done
+ * usage, and on reload from recorded jobs (input_tokens = last-turn
+ * context). Hidden until something is known. */
 function updateContextIndicator(): void {
-  const el = document.getElementById('chat-context-size');
-  if (!el) return;
+  const meter = document.getElementById('chat-context-meter');
+  if (!meter) return;
   const tokens = contextTokens.get(selectedAgent());
-  el.textContent = tokens ? `context ~${compactTokens(tokens)} tokens` : '';
-  el.classList.toggle('is-high', (tokens ?? 0) >= CONTEXT_SUGGEST_TOKENS);
+  if (!tokens) {
+    meter.hidden = true;
+    return;
+  }
+  const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
+  const fill = document.getElementById('chat-context-fill') as HTMLElement;
+  fill.style.width = `${Math.max(pct, 2)}%`;
+  document.getElementById('chat-context-text')!.textContent =
+    `${compactTokens(tokens)} / ${compactTokens(contextWindow)}`;
+  meter.classList.toggle('is-high', tokens >= CONTEXT_SUGGEST_TOKENS);
+  meter.title = `${agentLabel(selectedAgent())} carries ~${compactTokens(tokens)} tokens `
+    + `(${pct}% of a ${compactTokens(contextWindow)}-token window) into its next reply`;
+  meter.hidden = false;
 }
 
 /** Record a finished run's context size and suggest a fresh start when it has
@@ -270,6 +317,15 @@ function assessContext(agent: string, inputTokens: number): void {
     `<p>${label} is carrying ~${compactTokens(inputTokens)} tokens of chat context into every reply, which ` +
     `costs more and can bury what matters. If you're between tasks, a fresh start keeps ${label} sharp — ` +
     `your files and drafts are untouched, only the chat context resets.</p>`;
+  // STH-55: hand-off capture opt-out — ON by default; read at click time.
+  const carry = document.createElement('label');
+  carry.className = 'notice-checkbox';
+  const carryBox = document.createElement('input');
+  carryBox.type = 'checkbox';
+  carryBox.checked = true;
+  carry.append(carryBox, document.createTextNode(
+    ' Carry a short hand-off note (open action items) into the fresh conversation',
+  ));
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn btn-accent btn-sm notice-action';
@@ -278,9 +334,9 @@ function assessContext(agent: string, inputTokens: number): void {
     btn.disabled = true;
     // A refused clear (agent still running) leaves the card — re-arm the
     // button; a successful one removes the card via clearConversation.
-    if (!clearConversation(agent, { confirm: false })) btn.disabled = false;
+    if (!clearConversation(agent, { confirm: false, handoff: carryBox.checked })) btn.disabled = false;
   });
-  card.append(btn);
+  card.append(carry, btn);
   log.append(card);
   scrollLog();
 }
@@ -303,7 +359,7 @@ function dismissContextNotices(agent: string): void {
  * the break so the context boundary is visible in the log. Returns whether the
  * context was actually cleared (false when refused or cancelled).
  */
-function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
+function clearConversation(agent: string, opts: { confirm: boolean; handoff?: boolean }): boolean {
   const label = agentLabel(agent);
   if (running) {
     notify(`${label} is still working — wait for the task to finish before clearing`);
@@ -315,9 +371,10 @@ function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   }
   // Documented exception (story 005-004): native confirm(), as with delete.
   if (opts.confirm && !window.confirm(
-    `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.`,
+    `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.\nKuhn will scan the recent chat for open action items and carry a short hand-off note forward.`,
   )) return false;
   sessions.delete(agent);
+  pendingHandoffs.delete(agent); // a stale note must not outlive two clears
   contextTokens.delete(agent);
   contextSuggested.delete(agent);
   dismissContextNotices(agent);
@@ -327,8 +384,52 @@ function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   tagConversation(divider, agent);
   document.getElementById('chat-log')!.append(divider);
   updateContextIndicator();
-  scrollLog();
+  scrollLog(true);
+  if (opts.handoff !== false) void captureAndShowHandoff(agent);
   return true;
+}
+
+/**
+ * STH-55: after a fresh start, scan the recorded conversation tail for a
+ * clear hand-off (open question, agreed next step, hard-won guidance) and
+ * park it as a note delivered with the user's next message to that agent.
+ * "No hand-off" is a normal outcome and reads as starting clean; a failed
+ * scan degrades to exactly the pre-STH-55 behavior.
+ */
+async function captureAndShowHandoff(agent: string): Promise<void> {
+  appendSystemLine(`scanning the previous conversation with ${agentLabel(agent)} for open action items…`);
+  let note: string | null = null;
+  try {
+    note = await captureHandoff(activeProjectId, agent);
+  } catch (err) {
+    appendSystemLine(`hand-off scan failed: ${(err as Error).message} — starting clean`, 'error');
+    return;
+  }
+  if (!note) {
+    appendSystemLine('no open hand-off found — starting clean');
+    return;
+  }
+  pendingHandoffs.set(agent, note);
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-handoff';
+  tagConversation(card, agent);
+  card.innerHTML =
+    `<div class="notice-title">${icon('arrow-right', { size: 14, stroke: 2 })} Hand-off note — goes out with your next message to ${agentLabel(agent)}</div>`;
+  const body = document.createElement('div');
+  body.className = 'handoff-note';
+  body.textContent = note;
+  card.append(body);
+  const discard = document.createElement('button');
+  discard.type = 'button';
+  discard.className = 'btn btn-quiet btn-sm notice-action';
+  discard.textContent = 'Discard note';
+  discard.addEventListener('click', () => {
+    pendingHandoffs.delete(agent);
+    card.remove();
+  });
+  card.append(discard);
+  document.getElementById('chat-log')!.append(card);
+  scrollLog();
 }
 
 // Restore prior state on page load (story 020): render the recent transcript
@@ -340,9 +441,20 @@ async function restore(): Promise<void> {
     applyChatFilter(); // restored messages carry mixed conversation tags
     const jobs = await listJobs(activeProjectId);
     for (const job of jobs) {
-      // Jobs are newest first; keep the most recent session per role
-      if (job.session_id && !sessions.has(job.role)) sessions.set(job.role, job.session_id);
+      // Jobs are newest first; keep the most recent session per role.
+      // Sub-agent dispatch jobs are skipped (STH-52): resuming one would
+      // silently continue a dispatched sub-task's context in a direct
+      // chat, and its token count describes that context, not this
+      // conversation's.
+      if (job.parent_job_id != null) continue;
+      if (job.session_id && !sessions.has(job.role)) {
+        sessions.set(job.role, job.session_id);
+        // input_tokens is the context that session carried into its last
+        // reply — seed the meter so it survives a reload (STH-52).
+        if (job.input_tokens > 0) contextTokens.set(job.role, job.input_tokens);
+      }
     }
+    updateContextIndicator();
     await reconnectPendingQuestion();
   } catch (err) {
     // A fresh project restores an *empty* transcript without erroring, so a
@@ -517,6 +629,19 @@ function createEventHandler(): (event: AgentEvent) => void {
         }
         break;
       }
+      case 'context': {
+        // Live context-window state (STH-52). Sub-agent 'context' events
+        // (forwarded by dispatch under the child's slug) describe their own
+        // fresh sessions — only the addressed agent's belongs on the meter.
+        if (event.context) {
+          if (event.context.window) contextWindow = event.context.window;
+          if (!conversationAgent || event.agent === conversationAgent) {
+            contextTokens.set(event.agent, event.context.tokens);
+            updateContextIndicator();
+          }
+        }
+        break;
+      }
       case 'done': {
         if (event.sessionId) sessions.set(event.agent, event.sessionId);
         if (event.usage) {
@@ -594,8 +719,19 @@ async function send(): Promise<void> {
   autoGrow(input);
 
   appendUserMessage(text, role);
-  retryAction = () => dispatchTask(role, text);
-  await dispatchTask(role, text);
+  // STH-55: deliver a parked hand-off note with this first message, so the
+  // fresh session starts with the previous conversation's action items.
+  const note = pendingHandoffs.get(role);
+  const outgoing = note
+    ? `[Hand-off note carried from your previous conversation with this user]\n${note}\n\n---\n\n${text}`
+    : text;
+  if (note) {
+    pendingHandoffs.delete(role);
+    // The note is delivered — retire the card's discard button.
+    document.querySelector(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(role)}"] .notice-action`)?.remove();
+  }
+  retryAction = () => dispatchTask(role, outgoing);
+  await dispatchTask(role, outgoing);
 }
 
 /**
@@ -815,7 +951,7 @@ function appendUserMessage(text: string, agent?: string): void {
   main.append(body);
   wrapper.append(avatar, main);
   log.append(wrapper);
-  scrollLog();
+  scrollLog(true);
 }
 
 /** Toggle the single-active-agent color treatment on a message. */
@@ -1043,7 +1179,28 @@ function textFragment(text: string): DocumentFragment {
   return fragment;
 }
 
-function scrollLog(): void {
+/**
+ * Follow new content to the bottom of the log — unless the user has
+ * scrolled back into the history (STH-50). While parked, appended content
+ * reveals the “new messages” pill instead. `force` marks user actions
+ * (sending, the pill, filter/agent switches, fresh starts) that re-engage
+ * following regardless of scroll position.
+ */
+function scrollLog(force = false): void {
   const log = document.getElementById('chat-log')!;
-  log.scrollTop = log.scrollHeight;
+  if (force) setStickToBottom(true);
+  if (stickToBottom) {
+    log.scrollTop = log.scrollHeight;
+  } else {
+    const pill = document.getElementById('chat-jump');
+    if (pill) pill.hidden = false;
+  }
+}
+
+function setStickToBottom(on: boolean): void {
+  stickToBottom = on;
+  if (on) {
+    const pill = document.getElementById('chat-jump');
+    if (pill) pill.hidden = true;
+  }
 }

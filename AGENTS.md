@@ -21,7 +21,8 @@ kuhn/
 ├── webapp/          # Browser app (Vite + TypeScript): chat, Milkdown/Crepe editor, file manager
 ├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
 ├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
-└── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
+├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
+└── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from
@@ -58,7 +59,7 @@ project files both live under an explicit data directory, `KUHN_DATA_DIR`
 `data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
 or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
-(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network).
+(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest marpteam/marp-cli:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network).
 
 **The local data directory is disposable.** There is no production data in a
 dev checkout: every project under `data/` is a test project. Delete

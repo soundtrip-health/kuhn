@@ -10,7 +10,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../config.js', () => ({
-  config: { agent: { maxDispatchDepth: 3, questionTimeoutMs: 30000, tokenBudget: 250000 } },
+  config: {
+    agent: { maxDispatchDepth: 3, questionTimeoutMs: 30000, tokenBudget: 250000 },
+    // read_file's PDF preamble names the extraction page cap (STH-54).
+    ingest: { maxPdfPages: 200 },
+  },
 }));
 vi.mock('../../db.js', () => ({ query: vi.fn(async () => ({ rows: [] })) }));
 vi.mock('../../db/projects.js', () => ({
@@ -24,6 +28,9 @@ vi.mock('../../storage.js', () => ({
   searchProjectFiles: vi.fn(async () => []),
   moveProjectEntry: vi.fn(async (_p, from, to) => ({ from, to })),
 }));
+// STH-54: read_file routes PDFs through sandboxed extraction; the sandbox
+// substance is covered in ingest.test.js.
+vi.mock('../../ingest.js', () => ({ extractProjectPdfText: vi.fn(async () => 'extracted pdf text') }));
 vi.mock('../../pending-edits.js', () => ({
   isProposable: vi.fn(async (_p, path) => path.startsWith('draft/')),
   proposeEdit: vi.fn(async (_p, spec) => ({ id: 7, path: spec.path })),
@@ -78,7 +85,8 @@ vi.mock('../project-config.js', () => ({ applyProjectConfig: vi.fn(async () => (
 import { createToolContext, listTools, findTool } from './registry.js';
 import { toolOk, toolError, toolResult } from './envelope.js';
 import { validateArgs } from './validate.js';
-import { writeProjectFile } from '../../storage.js';
+import { readProjectFile, writeProjectFile } from '../../storage.js';
+import { extractProjectPdfText } from '../../ingest.js';
 import { isProposable, proposeEdit } from '../../pending-edits.js';
 import { createThread } from '../../db/comments.js';
 import { deliverReply } from '../questions.js';
@@ -266,6 +274,33 @@ describe('storage and proposal behavior (STH-1 / STH-44)', () => {
     expect(pushed).toContainEqual({
       type: 'file_change', agent: 'ra', path: 'b/a.md', kind: 'moved', meta: { from: 'a.md' },
     });
+  });
+  // STH-54 (provider-neutral port): the neutral read_file — the single
+  // executor both the Claude and the Pi adapters run — extracts PDF text
+  // through the sandboxed pipeline and guards binary files. Identical
+  // capability on both runtimes by construction.
+  it('read_file on a .pdf returns sandbox-extracted text, not raw bytes (STH-54)', async () => {
+    const ctx = makeCtx({ agent: agent(['file_read']) });
+    const result = await run(findTool(ctx, 'read_file'), { path: 'papers/Study.PDF' });
+    expect(extractProjectPdfText).toHaveBeenCalledWith(1, 'papers/Study.PDF');
+    expect(readProjectFile).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/text extracted from PDF/);
+    expect(result.content[0].text).toMatch(/first 200 pages/);
+    expect(result.content[0].text).toMatch(/extracted pdf text$/);
+  });
+  it('read_file on a textless PDF and on a non-PDF binary returns a readable error (STH-54)', async () => {
+    const ctx = makeCtx({ agent: agent(['file_read']) });
+
+    extractProjectPdfText.mockResolvedValueOnce('  \n ');
+    const scanned = await run(findTool(ctx, 'read_file'), { path: 'papers/scan.pdf' });
+    expect(scanned.isError).toBe(true);
+    expect(scanned.content[0].text).toMatch(/no extractable text/);
+
+    readProjectFile.mockResolvedValueOnce(Buffer.from([0x50, 0x4b, 0x00, 0x01]));
+    const bin = await run(findTool(ctx, 'read_file'), { path: 'figures/plot.png' });
+    expect(bin.isError).toBe(true);
+    expect(bin.content[0].text).toMatch(/binary file/);
   });
 });
 

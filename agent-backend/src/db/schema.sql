@@ -682,6 +682,34 @@ CREATE TABLE IF NOT EXISTS script_promotion_requests (
 );
 
 -- ============================================================
+-- Slide themes (STH-58): Marp theme CSS. catalog_slide_themes mirrors
+-- catalog_scripts — Kuhn-shipped rows seeded from slide-themes/catalog.json,
+-- dropped entries go available = 0. org_slide_themes holds org-uploaded
+-- theme CSS as DB text (small, diffable); an ACTIVE org theme shadows a
+-- catalog theme of the same name at render time. Disable ≠ delete.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS catalog_slide_themes (
+  name        TEXT PRIMARY KEY,             -- the front-matter `theme:` handle
+  title       TEXT NOT NULL,
+  path        TEXT NOT NULL,                -- manifest-relative CSS file
+  description TEXT,
+  available   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS org_slide_themes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  name       TEXT NOT NULL,                 -- from the CSS /* @theme */ header
+  title      TEXT NOT NULL,
+  css        TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, name)
+);
+
+-- ============================================================
 -- Script runs (issue #68b): provenance for every run_script execution — which
 -- script (org-library reference or project-local path), which version, what
 -- arguments, how it ended, and where its outputs landed. Append-only; the

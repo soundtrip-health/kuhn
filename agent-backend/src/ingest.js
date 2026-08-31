@@ -6,6 +6,7 @@
 // db/org-documents.js. Documents move pending → ingesting → ready|failed,
 // with each transition published on the org event hub.
 
+import { stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 
 import { config } from './config.js';
@@ -16,7 +17,7 @@ import {
 } from './db/org-documents.js';
 import { publishOrgEvent } from './project-events.js';
 import { runSandboxed } from './sandbox.js';
-import { readOrgFile, resolveOrgSafe } from './storage.js';
+import { readOrgFile, resolveOrgSafe, resolveSafe } from './storage.js';
 
 /** Thrown for expected, user-readable ingestion failures. */
 export class IngestError extends Error {}
@@ -76,6 +77,31 @@ export async function extractText(orgId, doc, runner = runSandboxed) {
 }
 
 const firstLine = (s) => String(s ?? '').split('\n')[0].slice(0, 200);
+
+/**
+ * STH-54: sandboxed PDF -> text for a file in a PROJECT workspace, so agent
+ * file tools can return prose instead of undecodable bytes. Same pdftotext
+ * invocation (and page cap) as org-library ingestion above; resolveSafe
+ * enforces the project-root containment invariant and the project directory
+ * is mounted read-only.
+ * @param {Function} [runner] - injectable sandbox runner for tests
+ */
+export async function extractProjectPdfText(projectId, relPath, runner = runSandboxed) {
+  const { root, abs } = await resolveSafe(projectId, relPath);
+  await stat(abs).catch(() => {
+    throw new IngestError(`No such file: ${relPath}`);
+  });
+  const sourceRel = abs.slice(root.length + 1);
+  const result = await runner({
+    image: config.sandbox.popplerImage,
+    cmd: ['pdftotext', '-layout', '-l', String(config.ingest.maxPdfPages), `/work/${sourceRel}`, '-'],
+    projectDir: root,
+  });
+  if (result.exitCode !== 0) {
+    throw new IngestError(`PDF text extraction failed (pdftotext): ${firstLine(result.stderr)}`);
+  }
+  return result.stdout;
+}
 
 /**
  * Split extracted text into indexable chunks. Markdown-shaped text is split
