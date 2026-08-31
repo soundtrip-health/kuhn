@@ -244,12 +244,26 @@ export const followUpContinuation = {
   assert: async (ctx) => {
     const dones = ctx.eventsOf('done');
     ctx.check('both runs completed', dones.length === 2, String(dones.length));
-    ctx.check('the follow-up resumed the same session',
-      dones[0]?.sessionId != null && dones[1]?.sessionId === dones[0]?.sessionId,
-      JSON.stringify(dones.map((d) => d.sessionId)));
+    const isPi = ctx.driver.kind === 'pi';
+    if (isPi) {
+      ctx.check('the follow-up resumed the canonical record (Pi has no provider session)',
+        dones[0]?.continuation != null && dones[1]?.continuation != null
+        && JSON.stringify(dones[1].continuation?.messages ?? []).includes('Introduction drafted.'),
+        JSON.stringify(dones.map((d) => d.sessionId)));
+    } else {
+      ctx.check('the follow-up resumed the same session',
+        dones[0]?.sessionId != null && dones[1]?.sessionId === dones[0]?.sessionId,
+        JSON.stringify(dones.map((d) => d.sessionId)));
+    }
     const obs = ctx.driver.observations.filter((o) => o.role === 'writer');
-    ctx.check('driver saw the resume on the second query',
-      obs[1]?.resume === obs[0]?.sessionId, JSON.stringify(obs.map((o) => o.resume)));
+    if (isPi) {
+      ctx.check('the driver saw the continuation on the second run',
+        obs[0]?.continuation === false && obs[1]?.continuation === true,
+        JSON.stringify(obs.map((o) => o.continuation)));
+    } else {
+      ctx.check('driver saw the resume on the second query',
+        obs[1]?.resume === obs[0]?.sessionId, JSON.stringify(obs.map((o) => o.resume)));
+    }
     ctx.check('two jobs, two conversations',
       ctx.jobs().length === 2 && ctx.conversations().length === 2);
     const convs = ctx.conversations();
@@ -286,8 +300,13 @@ export const jobConversationState = {
     ctx.check('three retry notices (the full budget)', ctx.eventsOf('notice').length === 3,
       JSON.stringify(ctx.eventsOf('notice').map((n) => n.attempt)));
     const err = ctx.lastEventOf('error');
-    ctx.check('terminal error is tagged provider_overloaded with the session id',
-      err?.reason === 'provider_overloaded' && typeof err?.sessionId === 'string' && err.sessionId.length > 0,
+    const isPi = ctx.driver.kind === 'pi';
+    ctx.check(isPi
+      ? 'terminal error is tagged provider_overloaded (Pi has no session id to hand back)'
+      : 'terminal error is tagged provider_overloaded with the session id',
+      isPi
+        ? err?.reason === 'provider_overloaded' && err?.sessionId == null
+        : err?.reason === 'provider_overloaded' && typeof err?.sessionId === 'string' && err.sessionId.length > 0,
       JSON.stringify(err));
     const job = ctx.job(ctx.runs[0].jobId);
     ctx.check('job errored and retains the session id for a client retry',

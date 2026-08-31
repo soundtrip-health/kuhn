@@ -35,6 +35,8 @@ import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME } from './claude-tools.js';
 import { validateRuntimeEventSequence } from './contract.js';
 import { validateContinuation } from './continuation.js';
 import { WEB_SEARCH_TOOL } from '../tools/registry.js';
+import { Type, fauxAssistantMessage } from '@earendil-works/pi-ai';
+import { createFauxPiRuntime } from './pi-adapter.js';
 
 let calls;
 const kuhnTool = () => ({
@@ -139,11 +141,12 @@ describe('tool call / result lifecycle (STH-7)', () => {
 
     const call = events.find((e) => e.type === 'tool_call');
     const result = events.find((e) => e.type === 'tool_result');
-    // The events carry the name Claude reports (the MCP-qualified name);
-    // the neutral mapping is the adapter's toolNames/allowedTools surface.
-    expect(call).toMatchObject({ id: 't1', name: `mcp__${CLAUDE_MCP_SERVER_NAME}__write_file`, arguments: { path: 'draft.md', content: 'x' } });
+    // The canonical events carry the stable neutral Kuhn tool name (STH-47):
+    // Claude's MCP-qualified name is reverse-mapped at the adapter boundary;
+    // nothing outside the adapter ever sees it.
+    expect(call).toMatchObject({ id: 't1', name: 'write_file', arguments: { path: 'draft.md', content: 'x' } });
     expect(events.indexOf(call)).toBeLessThan(events.indexOf(result));
-    expect(result).toMatchObject({ id: 't1', name: `mcp__${CLAUDE_MCP_SERVER_NAME}__write_file`, isError: false });
+    expect(result).toMatchObject({ id: 't1', name: 'write_file', isError: false });
     expect(result.content).toEqual([{ type: 'text', text: 'Saved draft.md' }]);
     // The MCP handler (what the real SDK invokes) executes the neutral tool
     // and forwards its envelope verbatim.
@@ -170,6 +173,63 @@ describe('tool call / result lifecycle (STH-7)', () => {
     const result = events.find((e) => e.type === 'tool_result');
     expect(result).toMatchObject({ id: 't9', isError: true });
     expect(result.content[0].text).toBe('disk full');
+  });
+});
+
+describe('cross-adapter continuation portability (STH-47)', () => {
+  it('a Claude-produced continuation with a tool call resumes on Pi without name translation', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's-1' };
+      yield {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Writing the draft.' },
+            { type: 'tool_use', id: 't1', name: `mcp__${CLAUDE_MCP_SERVER_NAME}__write_file`, input: { path: 'draft.md', content: 'x' } },
+          ],
+        },
+      };
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Saved draft.md' }] } };
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 10, output_tokens: 5 } };
+    })();
+
+    const claudeEvents = await drain(makeRuntime(), { input: 'write the draft' });
+    expect(claudeEvents.at(-1)).toMatchObject({ type: 'done' });
+    const continuation = claudeEvents.at(-1).continuation;
+    expect(validateContinuation(continuation)).toEqual([]);
+
+    // The record carries the NEUTRAL name — the MCP-qualified name stayed
+    // inside the Claude adapter.
+    const toolCall = continuation.messages
+      .flatMap((m) => m.content)
+      .find((b) => b.type === 'tool_call');
+    expect(toolCall).toMatchObject({ id: 't1', name: 'write_file' });
+
+    // Resume the same record on the Pi adapter: it accepts it verbatim and
+    // the Pi model sees the neutral tool name — no translation outside the
+    // adapters.
+    const { runtime: piRuntime } = createFauxPiRuntime({
+      tools: [{
+        name: 'write_file',
+        label: 'Write file',
+        description: 'Write a project file',
+        parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+        execute: async () => ({ content: [{ type: 'text', text: 'Saved' }] }),
+      }],
+      responses: [(context) => {
+        const sawClaudeToolCall = context.messages.some((m) => m.role === 'assistant'
+          && m.content.some?.((b) => b.type === 'toolCall' && b.name === 'write_file' && b.id === 't1'));
+        const sawResult = context.messages.some((m) => m.role === 'toolResult' && m.toolCallId === 't1');
+        return fauxAssistantMessage(
+          sawClaudeToolCall && sawResult ? 'Pi resumed the Claude record.' : 'Name translation needed — portability broken.',
+        );
+      }],
+    });
+
+    const piEvents = await drain(piRuntime, { input: 'continue', continuation });
+    expect(piEvents.find((e) => e.type === 'text'))
+      .toEqual({ type: 'text', content: 'Pi resumed the Claude record.' });
+    expect(validateContinuation(piEvents.at(-1).continuation)).toEqual([]);
   });
 });
 

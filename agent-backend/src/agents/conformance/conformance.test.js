@@ -35,6 +35,24 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async () => {
   };
 });
 
+// The Pi provider constructors (imported by the production runtime factory,
+// provider-runtime/factory.js) are replaced by a scripted registry: the Pi
+// driver installs its faux-runtime factory per scenario (mock-pi-adapter.js).
+// Everything else the pi-adapter module exports (PiAgentRuntime,
+// createFauxPiRuntime, the continuation converters) stays REAL — the harness
+// runs the production Pi adapter end to end; only the model behind it is
+// scripted.
+vi.mock('../provider-runtime/pi-adapter.js', async () => {
+  const original = await vi.importActual('../provider-runtime/pi-adapter.js');
+  const mock = await import('./mock-pi-adapter.js');
+  return {
+    ...original,
+    createOpenRouterPiRuntime: mock.scriptedPiFactory('openrouter'),
+    createOpenAIPiRuntime: mock.scriptedPiFactory('openai'),
+    createOpenAICompatiblePiRuntime: mock.scriptedPiFactory('openai-compatible'),
+  };
+});
+
 // Pin the app config: in-memory DB, unique temp project roots, zero retry
 // delays, 3-attempt retry budget, dispatch depth 2.
 vi.mock('../../config.js', async () => {
@@ -76,7 +94,7 @@ import { initDb } from '../../db/init.js';
 import { runSuite } from './harness.js';
 import { restoreFetchFake } from './fakes.js';
 import { createClaudeBridge } from './drivers/claude.js';
-import { createPiBridge } from './drivers/pi.js';
+import { createPiDriver } from './drivers/pi.js';
 import { createBrokenClaudeBridge } from './scenarios/broken.js';
 import { SCENARIOS } from './scenarios/index.js';
 
@@ -106,7 +124,7 @@ describe('application conformance harness (STH-5)', () => {
   }, 300_000);
 
   it('passes the full suite on the Pi driver', async () => {
-    const { entries } = await runSuite(SCENARIOS, createPiBridge);
+    const { entries } = await runSuite(SCENARIOS, createPiDriver);
     assertSuitePasses('pi', entries);
   }, 300_000);
 
@@ -115,7 +133,7 @@ describe('application conformance harness (STH-5)', () => {
     // driver-agnostic. The Pi driver reports usage through the same declared
     // per-turn tokens, so the totals match the Claude driver exactly.
     const claude = await runSuite(SCENARIOS, createClaudeBridge);
-    const pi = await runSuite(SCENARIOS, createPiBridge);
+    const pi = await runSuite(SCENARIOS, createPiDriver);
     for (let i = 0; i < SCENARIOS.length; i += 1) {
       const a = claude.entries[i];
       const b = pi.entries[i];

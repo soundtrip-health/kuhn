@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { validateContinuation } from './provider-runtime/continuation.js';
 
 // --- Mocks -----------------------------------------------------------------
 
@@ -185,8 +186,8 @@ describe('runAgentTask', () => {
         message: {
           content: [
             { type: 'text', text: 'Drafting now.' },
-            { type: 'tool_use', id: 't1', name: 'mcp__kuhn__write_file', input: { path: 'draft.md', content: 'x' } },
-            { type: 'tool_use', id: 't2', name: 'mcp__kuhn__edit_file', input: { path: 'notes.md', old_string: 'a', new_string: 'b' } },
+            { type: 'tool_use', id: 't1', name: 'mcp__kuhn__read_file', input: { path: 'draft.md' } },
+            { type: 'tool_use', id: 't2', name: 'mcp__kuhn__pubmed_search', input: { query: 'introduction' } },
           ],
           usage: { input_tokens: 10, output_tokens: 5 },
         },
@@ -208,13 +209,32 @@ describe('runAgentTask', () => {
         sessionId: 'sess-1',
         usage: { inputTokens: 100, outputTokens: 50 },
         budget: { used: 15, limit: 250000 },
+        continuation: expect.objectContaining({ version: 1 }),
       },
     ]);
+    // Canonical continuation (STH-47): a provider-neutral record carrying
+    // the stable Kuhn tool names — the MCP-qualified names never leave the
+    // Claude adapter, so this record can be resumed by any adapter.
+    const continuation = events[1].continuation;
+    expect(validateContinuation(continuation)).toEqual([]);
+    expect(continuation.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool_result', 'tool_result']);
+    expect(continuation.messages[1].content.filter((b) => b.type === 'tool_call')).toEqual([
+      { type: 'tool_call', id: 't1', name: 'read_file', arguments: { path: 'draft.md' } },
+      { type: 'tool_call', id: 't2', name: 'pubmed_search', arguments: { query: 'introduction' } },
+    ]);
+    expect(continuation.messages[2]).toMatchObject({ role: 'tool_result', toolCallId: 't1', toolName: 'read_file', isError: false });
+    expect(continuation.messages[3]).toMatchObject({ role: 'tool_result', toolCallId: 't2', toolName: 'pubmed_search', isError: true });
 
     // Job lifecycle: running with conversation -> session recorded -> done with usage
     expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7 });
     expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'sess-1' });
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'done', inputTokens: 100, outputTokens: 50 });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', inputTokens: 100, outputTokens: 50 }));
+    // The job terminal stamps the effective runtime identity and the
+    // canonical continuation (STH-47): a follow-up or retry can never
+    // silently switch provider mechanics.
+    const terminal = updateJob.mock.calls.map((c) => c[1]).at(-1);
+    expect(terminal.provider).toBe('anthropic');
+    expect(terminal.continuation).toEqual(events[1].continuation);
 
     // Conversation logging: user input, assistant turn, tool result
     const roles = logMessage.mock.calls.map(([m]) => m.role);

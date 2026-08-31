@@ -26,6 +26,14 @@ const PROVIDER_BUILTIN_MAP = {
   web_search: ['WebSearch', 'WebFetch'],
 };
 
+// Claude built-in (provider-native) tool names → the neutral Kuhn grant
+// name they ride. The canonical runtime contract carries neutral names;
+// Claude's built-in spellings are adapter-internal.
+const CLAUDE_BUILTIN_TO_NEUTRAL = new Map([
+  ['WebSearch', 'web_search'],
+  ['WebFetch', 'web_search'],
+]);
+
 /**
  * Compile a neutral JSON Schema (the subset Kuhn's tool schemas use — see
  * tools/validate.js) to a Zod schema. Optionality and defaults are applied
@@ -156,10 +164,34 @@ export function buildClaudeToolSet(neutralTools = []) {
     ...builtinTools,
     ...kuhnTools.map((t) => `mcp__${CLAUDE_MCP_SERVER_NAME}__${t.name}`),
   ];
+  // Reverse map Claude MCP-qualified name → neutral Kuhn name. Built from
+  // the actual projected tool surface (authoritative), consumed by the
+  // adapter when emitting normalized events and canonical continuation.
+  const claudeToNeutral = new Map(kuhnTools.map((t) => [`mcp__${CLAUDE_MCP_SERVER_NAME}__${t.name}`, t.name]));
   return {
     mcpServer,
     builtinTools,
     allowedTools,
     toolNames: kuhnTools.map((t) => t.name),
+    claudeToNeutral,
   };
+}
+
+/**
+ * Reverse-map a Claude SDK/MCP tool name to the stable neutral Kuhn tool
+ * name (STH-47): `mcp__kuhn__write_file` → `write_file`, `WebSearch` →
+ * `web_search`. The canonical runtime contract (normalized `tool_call` /
+ * `tool_result` events and canonical continuation) must carry the neutral
+ * name so a continuation produced by Claude resumes on Pi without any
+ * name translation outside the adapters. Unknown names (other MCP
+ * servers, unlisted built-ins) pass through unchanged.
+ *
+ * @param {string} claudeToolName name as the Claude SDK reports it
+ * @param {Map<string, string>} [claudeToNeutral] from buildClaudeToolSet()
+ * @returns {string} the neutral Kuhn tool name
+ */
+export function toNeutralToolName(claudeToolName, claudeToNeutral = new Map()) {
+  return claudeToNeutral.get(claudeToolName)
+    ?? CLAUDE_BUILTIN_TO_NEUTRAL.get(claudeToolName)
+    ?? claudeToolName;
 }

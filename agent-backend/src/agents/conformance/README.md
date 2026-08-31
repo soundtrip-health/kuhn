@@ -23,16 +23,26 @@ unique temp project roots.
 | Layer | Status |
 | --- | --- |
 | `runAgentTask()` (agents/runtime.js) | **real, unmodified** |
+| `createAgentRuntime()` (provider-runtime/factory.js) | **real, unmodified** |
+| `ClaudeAgentRuntime` adapter (provider-runtime/claude-runtime.js) | **real** (the Claude driver scripts the SDK below it) |
+| `PiAgentRuntime` adapter (provider-runtime/pi-adapter.js) | **real** (the Pi driver scripts the model below it) |
 | All Kuhn tool handlers, tool grants, compose-mode denials | real |
 | Storage containment, pending edits, references, comments, jobs | real |
 | Retry loop, budget accounting, question registry, teardown | real |
 | PubMed/ArXiv search + efetch + registry fetch, Docker sandbox | fixture fakes (`fakes.js`) |
 | The model | **scripted** — deterministic turns per scenario |
 
-The seam at which the model is scripted is the **provider boundary of the
-production code at this commit**: `@anthropic-ai/claude-agent-sdk`'s
-`query()`. `mock-sdk.js` replaces that module with a bridge registry; the
-active **driver** (installed per scenario by `harness.js`) supplies the model.
+The app post-#94 consumes the normalized provider-runtime contract from
+whichever `AgentRuntime` the production factory builds; it no longer imports
+a provider SDK directly. Each driver scripts the **model below the real
+adapter**:
+
+- the Claude driver replaces `@anthropic-ai/claude-agent-sdk` (the module the
+  real `ClaudeAgentRuntime` imports) with the `mock-sdk.js` bridge registry;
+- the Pi driver replaces the Pi provider constructors that the production
+  factory imports (`provider-runtime/factory.js` → `pi-adapter.js`) with the
+  `mock-pi-adapter.js` scripted factory, and hands the factory the real
+  `PiAgentRuntime` built on a deterministic faux model.
 
 ## Scenario suite
 
@@ -42,7 +52,8 @@ retry attempts), optional fixtures (files, literature, arXiv records, sandbox
 scripts, org knowledge), and provider-neutral assertions on **domain events +
 DB state**. No scenario references Claude SDK message shapes, `sdkQuery`, or
 `mcp__kuhn__*` names — tool calls use Kuhn registry names, so the same file
-runs unchanged under both drivers.
+runs unchanged under both drivers. Where the two providers legitimately differ
+(Pi has no provider-side sessions), assertions branch on `ctx.driver.kind`.
 
 Coverage (20 scenarios):
 
@@ -68,69 +79,47 @@ Coverage (20 scenarios):
 
 | Driver | Module | What it runs |
 | --- | --- | --- |
-| `claude` | `drivers/claude.js` (`createClaudeBridge`) | Scripted Claude-SDK-shaped turns replayed through the bridge — the pre-migration baseline behavior |
-| `pi` | `drivers/pi.js` (`createPiBridge`) | The **real Pi runtime** (`provider-runtime/pi-spike.js`, `createFauxPiRuntime` with a deterministic faux model) whose normalized events (`provider-runtime/contract.js`) are translated into the SDK-shaped stream the app consumes |
+| `claude` | `drivers/claude.js` (`createClaudeBridge`) | The **real `ClaudeAgentRuntime`** with a scripted Claude-SDK-shaped model replayed through the SDK bridge — the baseline behavior |
+| `pi` | `drivers/pi.js` (`createPiDriver`) | The **real `PiAgentRuntime`** (`provider-runtime/pi-adapter.js`, `createFauxPiRuntime` with a deterministic faux model), built by the real production factory exactly as a `KUHN_AGENT_RUNTIME=pi` deployment would build it |
+
+Neither driver translates provider events into the other provider's message
+shape: the app consumes the normalized contract from both, and each driver's
+`transcripts` record the raw contract.js event stream of the real adapter.
 
 `conformance.test.js` asserts: full suite passes on `claude`, full suite
 passes on `pi`, and both drivers produce **identical objective results**
-(per-scenario check outcomes, terminal events, job state, usage totals). The
-Pi driver records raw contract.js event streams verbatim in
-`bridge.transcripts` for inspection.
+(per-scenario check outcomes, terminal events, job state, usage totals — the
+Pi driver feeds the same declared per-turn tokens to its faux model).
 
 ## Registering a runtime with the harness
 
-A driver is a module that exports `createXBridge(scenario)` returning
-`{ name, kind, observations, transcripts, query(args, mockState) }`, where
-`query()` returns an async iterable (with `interrupt()`) speaking the message
-protocol the production seam consumes. `harness.js` installs one bridge per
-scenario (`installBridge`); `mock-sdk.js` routes the app's `query()` call to
-it. Scenarios, assertions, and the suite runner are driver-agnostic.
+A driver is a module that exports `createX(scenario)` returning
+`{ name, kind, observations, transcripts, ... }` plus one of:
 
-### Claude (current)
+- `query(args, mockState)` (Claude-side drivers): an async iterable (with
+  `interrupt()`) speaking the Claude-SDK message protocol, installed via
+  `mock-sdk.js`'s `installBridge`; or
+- `buildRuntime(options)` (Pi-side drivers): returns `{ runtime }` — a real
+  `AgentRuntime` (contract.js) whose model is scripted — installed via
+  `mock-pi-adapter.js`'s `installPiFactory` in place of the Pi provider
+  constructors.
 
-`drivers/claude.js` — nothing to register; it is the baseline. After STH-7
-makes `provider-runtime/claude-runtime.js` the production seam, the SDK mock
-moves one level **below** the real Claude adapter (which imports the SDK), so
-the driver keeps working unchanged and additionally exercises the adapter's
-real SDK→contract event translation.
-
-### Pi (current)
-
-`drivers/pi.js` — consumes `createFauxPiRuntime()` from
-`provider-runtime/pi-spike.js`. The scripted model comes from
-`scenario.tasks[].model` (turns → `fauxAssistantMessage`/`fauxToolCall`
-responses; a faux `error` stop-reason for provider failures).
-
-**When STH-8 lands** (`pi-spike.js` → `pi-adapter.js`): change the import on
-the `createFauxPiRuntime` line in `drivers/pi.js` from `pi-spike.js` to
-`pi-adapter.js`. STH-8 keeps the export and its signature
-(`{ responses, tools, systemPrompt, provider, continuation }` →
-`{ runtime, faux, models }`); the `PiAgentRuntime` constructor is identical
-to the spike's, and the driver only consumes the frozen contract.js event
-protocol, so no other change is expected. Verify by running the conformance
-suite (the driver's own transcript recording makes any event-protocol drift
-visible).
-
-### Pi (after the full cutover)
-
-Once the production runtime factory selects the Pi `AgentRuntime` (contract.js
-`runTurn`) instead of the Claude SDK, re-point the seam: `conformance.test.js`
-mocks the runtime-factory module instead of the SDK, and `drivers/pi.js`
-yields contract.js events directly (dropping the SDK-shape translation — its
-raw transcript is already contract-native). The Claude driver becomes the real
-`createClaudeRuntime` plus the same scripted-model plumbing. Scenario and
-assertion files do not change at any step — that invariant is the design
-point of this harness.
+`harness.js` installs the matching seam per scenario (and resets both, plus
+the runtime selector, between scenarios). Scenarios, assertions, and the
+suite runner are driver-agnostic.
 
 ### Adding a third runtime
 
 1. Implement the `AgentRuntime` contract (`provider-runtime/contract.js`:
    normalized streaming events, exactly one terminal event, canonical
-   continuation in/out).
-2. Add `drivers/<name>.js` with `createXBridge(scenario)` (SDK-seam era) or a
-   `runTurn` adapter (post-cutover).
+   continuation in/out) and a provider factory in
+   `provider-runtime/factory.js`.
+2. Add `drivers/<name>.js` whose `createX(scenario)` builds a real adapter
+   over a scripted model, and register its factory replacement in
+   `conformance.test.js` (vi.mock of the adapter module's provider
+   constructors, as the Pi driver does).
 3. Add one `it(...)` in `conformance.test.js` running `runSuite` with your
-   bridge and `assertSuitePasses` — the whole 20-scenario suite plus the
+   driver and `assertSuitePasses` — the whole 20-scenario suite plus the
    negative proof runs against it with no further work.
 
 ## Layout
@@ -138,16 +127,17 @@ point of this harness.
 ```
 conformance/
 ├── conformance.test.js   # suite entry: claude / pi / parity / broken-runtime
-├── harness.js            # scenario runner: seed, bridge, runAgentTask, ctx
+├── harness.js            # scenario runner: seed, driver seams, runAgentTask, ctx
 ├── assertions.js         # check recorder + driver observation context
-├── mock-sdk.js           # vi.mock target for the SDK (bridge registry)
+├── mock-sdk.js           # vi.mock target for the Claude SDK (bridge registry)
+├── mock-pi-adapter.js    # vi.mock target for the Pi provider constructors
 ├── fakes.js              # fixture fakes: search, sandbox, efetch, arXiv API
 ├── env.js                # pinned conformance config (in-memory DB, temp roots)
 ├── result.js             # per-run result normalization for cross-driver parity
 ├── drivers/
-│   ├── claude.js         # scripted Claude-SDK-shaped bridge
-│   ├── pi.js             # real Pi runtime bridge (faux model)
-│   └── error-rendering.js # shared provider-error rendering for both bridges
+│   ├── claude.js         # scripted Claude-SDK-shaped model (real Claude adapter)
+│   ├── pi.js             # scripted faux model (real Pi adapter + factory)
+│   └── error-rendering.js # shared provider-error rendering for both drivers
 └── scenarios/
     ├── index.js          # SCENARIOS export
     ├── app-behavior.js   # 13 product-behavior scenarios

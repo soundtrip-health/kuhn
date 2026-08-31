@@ -12,6 +12,7 @@ import { getRun, listLiveRuns } from '../agents/runs.js';
 import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
 import { requireProjectRole } from './guards.js';
 import { streamEvents } from './sse.js';
+import { assertContinuation } from '../agents/provider-runtime/continuation.js';
 
 const router = Router();
 
@@ -33,16 +34,27 @@ async function requireJobRole(req, res, minRole) {
 
 /**
  * POST /api/agent/task
- * Body: { role, projectId, input, context?, sessionId?, compose? }
+ * Body: { role, projectId, input, context?, sessionId?, compose?, continuation? }
  * `compose: true` runs the task in compose mode — file-mutating tools are
  * withheld so the agent returns text only (the /write contract, story 017).
+ * `continuation` (STH-47): the canonical Kuhn continuation envelope from a
+ * prior run's `done` event — a follow-up task resumes that provider-neutral
+ * record (the only way Pi-runtimed conversations carry context forward).
  * Streams AgentEvents to the browser as Server-Sent Events.
  */
 router.post('/api/agent/task', async (req, res) => {
-  const { role, projectId, input, context, sessionId, compose } = req.body ?? {};
+  const { role, projectId, input, context, sessionId, compose, continuation } = req.body ?? {};
   if (!role || projectId == null || !input) {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
+  }
+  if (continuation != null) {
+    try {
+      assertContinuation(continuation);
+    } catch {
+      res.status(400).json({ error: 'continuation must be a canonical continuation envelope (version 1)' });
+      return;
+    }
   }
   const project = await requireProjectRole(req, res, projectId, 'editor');
   if (!project) return;
@@ -52,7 +64,7 @@ router.post('/api/agent/task', async (req, res) => {
   // disconnect even while parked (no events arrive to unblock channel.next()).
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, userId: req.user.id, detachable: true, signal: ac.signal }));
+  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, userId: req.user.id, detachable: true, signal: ac.signal }));
 });
 
 /**

@@ -57,6 +57,11 @@ export function getConformanceConfig() {
     knowledge: { catalogRoot: join(dataDir, 'knowledge-catalog') },
     scripts: { catalogRoot: join(dataDir, 'scripts-catalog') },
     auth: { superadminEmails: [] },
+    // Runtime selector (STH-47): 'claude' by default; the Pi conformance
+    // driver switches this to 'pi' for its suite run and the harness resets
+    // it per scenario. The pi preview config here is the driver's — the
+    // production env-driven values (KUHN_PI_*) never apply in harness runs.
+    agentRuntime: { kind: 'claude', pi: { provider: '', model: '', baseUrl: '', apiKeyEnv: '' } },
     dataDir,
   };
   return cached;

@@ -12,6 +12,7 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { EventChannel } from '../events.js';
 import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
+import { validateArgs } from '../tools/validate.js';
 
 /**
  * Production Pi adapter (STH-8). Implements the provider-neutral
@@ -76,7 +77,7 @@ export class PiAgentRuntime {
    * @param {string} [options.thinkingLevel] defaults to 'medium' for reasoning
    *   models and 'off' otherwise
    */
-  constructor({ models, model, systemPrompt = '', tools = [], continuation, thinkingLevel } = {}) {
+  constructor({ models, model, systemPrompt = '', tools = [], continuation, thinkingLevel, maxTurns = null } = {}) {
     if (!models || typeof models.streamSimple !== 'function') {
       throw new Error('PiAgentRuntime requires a pi-ai Models collection');
     }
@@ -111,7 +112,15 @@ export class PiAgentRuntime {
         ...tool,
         label: tool.label ?? tool.name,
         execute: async (toolCallId, args, signal, onUpdate) => {
-          const result = await tool.execute(toolCallId, args, signal, onUpdate);
+          // Neutral argument contract (STH-1): Kuhn's validator — not the
+          // provider's JSON-schema layer — decides whether a model-supplied
+          // argument set is valid, and applies the schema defaults before
+          // the handler runs. Claude and Pi therefore agree on validity.
+          const validated = validateArgs(tool.parameters, args);
+          if (!validated.ok) {
+            throw new Error(`Invalid arguments: ${validated.errors.join('; ')}`);
+          }
+          const result = await tool.execute(toolCallId, validated.value, signal, onUpdate);
           if (result?.isError === true) {
             const text = (result.content ?? [])
               .filter((block) => block?.type === 'text')
@@ -122,6 +131,10 @@ export class PiAgentRuntime {
           return { content: result?.content ?? [], details: result?.details };
         },
       }));
+    if (maxTurns != null && (!Number.isInteger(maxTurns) || maxTurns < 1)) {
+      throw new Error('maxTurns must be a positive integer or null');
+    }
+    this.maxTurns = maxTurns;
     if (continuation) assertContinuation(continuation);
     this.initialMessages = continuation ? piMessagesFromContinuation(continuation, model) : [];
     this.thinkingLevel = thinkingLevel ?? (model.reasoning ? 'medium' : 'off');
@@ -161,16 +174,45 @@ export class PiAgentRuntime {
   /**
    * @param {{ input: string, signal?: AbortSignal,
    *   continuation?: {version: number, messages: Array<object>},
-   *   systemPrompt?: string, resume?: string|null }} turn
+   *   systemPrompt?: string, resume?: string|null,
+   *   retry?: boolean }} turn
    * @returns {AsyncGenerator<object>} normalized provider-runtime events
    */
-  async *runTurn({ input, signal, continuation, systemPrompt, resume = null } = {}) {
+  async *runTurn({ input, signal, continuation, systemPrompt, resume = null, retry = false } = {}) {
     if (typeof input !== 'string' || input.length === 0) {
       throw new Error('runTurn input must be a non-empty string');
     }
-    const history = continuation
+    // One active turn per instance (STH-47): the cancellation state is
+    // instance-global and Kuhn's runtime is request/job-scoped, so a second
+    // concurrent runTurn on the same instance would share ambiguous
+    // state. Refuse it loudly (identity opens the transcript, then exactly
+    // one non-retryable error); separate instances run concurrently.
+    if (this.activeAgent) {
+      yield this.identityEvent(resume);
+      yield {
+        type: 'error',
+        error: {
+          code: 'invalid_request',
+          message: 'one active turn per runtime instance: a turn is already in flight',
+          retryable: false,
+          status: null,
+        },
+      };
+      return;
+    }
+    let history = continuation
       ? piMessagesFromContinuation(assertContinuation(continuation), this.model)
       : this.initialMessages;
+    let promptMode = 'prompt';
+    if (continuation && retry) {
+      // A retry resumes the failed attempt's canonical record, which already
+      // carries this logical user input — appending it again would duplicate
+      // the turn. Trim the trailing partial assistant message the failure
+      // left behind and continue from the record; the record then ends with
+      // a user or tool-result message (the continue path's requirement).
+      while (history.at(-1)?.role === 'assistant') history.pop();
+      promptMode = 'continue';
+    }
     const prompt = systemPrompt ?? this.systemPrompt;
     if (typeof prompt !== 'string') throw new Error('systemPrompt must be a string');
     if (resume !== null && typeof resume !== 'string') throw new Error('resume must be a string or null');
@@ -193,6 +235,7 @@ export class PiAgentRuntime {
 
     // Request-scoped agent: fresh transcript, queues, and abort state per
     // turn; nothing is shared between concurrent runs.
+    let assistantTurns = 0;
     const agent = new Agent({
       initialState: {
         systemPrompt: prompt,
@@ -207,6 +250,12 @@ export class PiAgentRuntime {
       ...(resume ? { sessionId: resume } : {}),
       streamFn: this.models.streamSimple.bind(this.models),
       toolExecution: 'sequential',
+      // Max-turn parity (STH-47): the product's per-run turn cap (Claude's
+      // AGENT_MAX_TURNS) stops the loop once the cap is reached and a tool
+      // result is pending — the same cutoff the Claude SDK applies.
+      ...(this.maxTurns != null
+        ? { shouldStopAfterTurn: () => assistantTurns >= this.maxTurns }
+        : {}),
     });
 
     this.activeAgent = agent;
@@ -248,6 +297,7 @@ export class PiAgentRuntime {
         return;
       }
       if (event.type === 'message_end' && event.message.role === 'assistant') {
+        assistantTurns += 1;
         const messageUsage = normalizeUsage(event.message.usage);
         const text = event.message.content
           .filter((block) => block.type === 'text')
@@ -261,23 +311,51 @@ export class PiAgentRuntime {
       if (event.type !== 'agent_end') return;
 
       const lastAssistant = [...agent.state.messages].reverse().find((message) => message.role === 'assistant');
+      // The caller's explicit abort is the strong signal, ahead of the
+      // agent's own final stop reason: the product can abort on this very
+      // turn's usage event (budget cutoff) or the moment the consumer
+      // disconnects — the agent loop may then finish its final message
+      // naturally before the abort lands. In that case the terminal is a
+      // cancelled error, not done: the product already stamped the job's
+      // abort status, and a done terminal would overwrite it.
+      if (signal?.aborted || this.cancelRequested) {
+        finish({
+          type: 'error',
+          error: normalizeProviderError(
+            signal?.reason ?? new DOMException('This operation was aborted', 'AbortError'),
+            { stopReason: 'aborted' },
+          ),
+          usage,
+          continuation: agent.state.messages.length > 0 ? continuationFromPiMessages(agent.state.messages) : null,
+        });
+        return;
+      }
+      // Max-turn parity (STH-47): the product cap stopped the loop with a
+      // pending tool call — the same terminal the Claude SDK's
+      // error_max_turns result subtype produces. The record is structurally
+      // closed (the executed tool result is in it), so a retry can resume
+      // from that tool result.
+      if (this.maxTurns != null && assistantTurns >= this.maxTurns && lastAssistant?.stopReason === 'toolUse') {
+        finish({
+          type: 'error',
+          error: { code: 'max_turns', message: 'max turns', retryable: false, status: null },
+          usage,
+          continuation: continuationFromPiMessages(agent.state.messages),
+        });
+        return;
+      }
       if (lastAssistant?.stopReason === 'error' || lastAssistant?.stopReason === 'aborted') {
         // When Kuhn's signal aborted (or cancel() interrupted the turn), Pi
         // can surface the abort through internal setup steps (auth
         // resolution, stream start) as an 'error' stop with the abort reason
-        // as its message — the abort context is lost at the Pi boundary. The
-        // caller's explicit abort is the strong signal the contract
-        // requires, so the terminal is classified as cancelled.
-        const callerAborted = signal?.aborted || this.cancelRequested;
-        const error = callerAborted
-          ? normalizeProviderError(
-            signal?.reason ?? new DOMException('This operation was aborted', 'AbortError'),
-            { stopReason: 'aborted' },
-          )
-          : normalizeProviderError(
-            new Error(lastAssistant.errorMessage ?? `Provider stopped with ${lastAssistant.stopReason}`),
-            { stopReason: lastAssistant.stopReason },
-          );
+        // as its message — the abort context is lost at the Pi boundary.
+        // (Caller aborts are classified above, before the stop reason is
+        // read; this path keeps the provider-error rendering for aborts
+        // surfaced through internal setup steps.)
+        const error = normalizeProviderError(
+          new Error(lastAssistant.errorMessage ?? `Provider stopped with ${lastAssistant.stopReason}`),
+          { stopReason: lastAssistant.stopReason },
+        );
         const piMessages = agent.state.messages;
         finish({
           type: 'error',
@@ -296,12 +374,15 @@ export class PiAgentRuntime {
       });
     });
 
-    const onAbort = () => agent.abort();
+    const onAbort = () => {
+      this.cancelRequested = true;
+      agent.abort();
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
 
     channel.push(this.identityEvent(resume));
 
-    const pump = agent.prompt(input)
+    const pump = (promptMode === 'continue' ? agent.continue() : agent.prompt(input))
       .catch((error) => {
         const piMessages = agent.state.messages;
         finish({
@@ -444,10 +525,18 @@ function emptyPiUsage() {
  * Deterministic faux-provider runtime for tests; no credentials or network.
  * `models`/`modelId` may declare a non-default model (e.g. a reasoning
  * model); by default the faux provider's single `faux-1` text model.
+ *
+ * `declaredUsage` (conformance harness): a per-model-call slot list. The
+ * faux provider estimates usage from content; the declared-usage contract
+ * replaces every final message's usage with the scenario's declared tokens
+ * (the same declared-only inputs the Claude conformance driver scripts), so
+ * the app's budget logic never sees a provider content estimate. A missing
+ * or null slot (a model call the scenario did not script, e.g. the
+ * provider-failure response) reports zero.
  */
 export function createFauxPiRuntime({
   responses = [], tools = [], systemPrompt = '', provider = 'kuhn-faux', models, modelId,
-  continuation, tokensPerSecond, thinkingLevel,
+  continuation, tokensPerSecond, thinkingLevel, maxTurns, declaredUsage,
 } = {}) {
   const fauxOptions = {
     provider,
@@ -459,6 +548,40 @@ export function createFauxPiRuntime({
   faux.setResponses(responses);
   const collection = createModels();
   collection.setProvider(faux.provider);
+  if (declaredUsage) {
+    const originalStreamSimple = collection.streamSimple.bind(collection);
+    let usageIndex = 0;
+    collection.streamSimple = (model, context, options) => {
+      const stream = originalStreamSimple(model, context, options);
+      const declared = declaredUsage[usageIndex] ?? { input: 0, output: 0 };
+      usageIndex += 1;
+      const innerResult = stream.result();
+      return {
+        [Symbol.asyncIterator]: () => {
+          const it = stream[Symbol.asyncIterator]();
+          return { next: () => it.next(), return: (v) => it.return?.(v), throw: (e) => it.throw?.(e) };
+        },
+        result: async () => {
+          const final = await innerResult;
+          if (!final) return final;
+          const usage = {
+            input: declared.input ?? 0,
+            output: declared.output ?? 0,
+            cacheRead: declared.cacheRead ?? 0,
+            cacheWrite: declared.cacheWrite ?? 0,
+          };
+          return {
+            ...final,
+            usage: {
+              ...usage,
+              totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          };
+        },
+      };
+    };
+  }
   const model = modelId ? faux.getModel(modelId) : faux.models[0];
   if (!model) throw new Error(`Unknown faux model: ${modelId}`);
   const runtime = new PiAgentRuntime({
@@ -468,6 +591,7 @@ export function createFauxPiRuntime({
     tools,
     continuation,
     thinkingLevel,
+    maxTurns,
   });
   return { runtime, faux, models: collection, model };
 }

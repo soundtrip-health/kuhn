@@ -72,12 +72,25 @@
  * @typedef {object} RuntimeTurn
  * @property {string} input
  * @property {AbortSignal} [signal]
- * @property {{version: 1, messages: Array<object>}} [continuation] canonical Kuhn continuation (continuation.js)
+ * @property {{version: 1, messages: Array<object>}} [continuation] canonical Kuhn continuation (continuation.js).
+ *   - null/absent: a fresh context — the turn's `input` is a new user
+ *     message and is appended to the record exactly once.
+ *   - non-null with `retry: false` (the default): a FOLLOW-UP — the
+ *     record holds prior turns; the turn's `input` is a new user message
+ *     appended to the record exactly once.
+ *   - non-null with `retry: true`: a RETRY — the record is the failed
+ *     attempt's transcript of THIS SAME logical request and already
+ *     contains its user input; the adapter must NOT append `input` again
+ *     and resumes the record where the failure landed.
+ * In every case one logical user request appears exactly once in the
+ * canonical record across initial attempt, partial output, retry, and
+ * completion. The distinction is the product's explicit `retry` flag —
+ * never provider-specific string matching on the input text.
+ * @property {boolean} [retry] true when this turn retries the same logical
+ *   request as a failed attempt whose canonical record is `continuation`
+ *   (the product's transient-failure retry). Default false.
  * @property {string} [systemPrompt] - Kuhn's server-built system prompt; the
  *   adapter owns how the provider receives it
- * @property {string|null} [resume] - opaque provider-native resume token
- *   (e.g. a Claude session id). Diagnostics/optimization only — the
- *   canonical continuation is the correctness-critical state.
  *
  * @typedef {object} AgentRuntime
  * @property {(turn: RuntimeTurn) => AsyncIterable<object>} runTurn
@@ -197,11 +210,16 @@ export function addUsage(left, right) {
      || /unauthorized|forbidden|invalid api key|authentication|credential/.test(haystack)) {
      return runtimeError('auth', message, false, status);
    }
+   // Context-window exhaustion is classified BEFORE the generic 400
+   // invalid-request rule: providers report an over-long prompt as a 400
+   // ("maximum context length exceeded", "prompt is too long"), and that is
+   // context_overflow, not invalid_request — retrying it cannot succeed
+   // and the product must see a distinct, actionable classification.
+   if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context|prompt is too long/.test(haystack)) {
+     return runtimeError('context_overflow', message, false, status);
+   }
    if (status === 400 || /invalid (request|parameter|input)|malformed|unrecognized/.test(haystack)) {
      return runtimeError('invalid_request', message, false, status);
-   }
-   if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context/.test(haystack)) {
-     return runtimeError('context_overflow', message, false, status);
    }
    if (status === 408 || /\btimeout\b|timed out|etimedout/.test(haystack)) {
      return runtimeError('timeout', message, true, status);

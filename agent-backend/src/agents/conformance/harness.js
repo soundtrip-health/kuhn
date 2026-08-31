@@ -35,6 +35,8 @@ import { createResultRecord, sha256Of, canonicalJson } from './result.js';
 import { validateRuntimeEventSequence } from '../provider-runtime/contract.js';
 import { validateContinuation } from '../provider-runtime/continuation.js';
 import { installBridge, resetBridge } from './mock-sdk.js';
+import { installPiFactory, resetPiFactory } from './mock-pi-adapter.js';
+import { config } from '../../config.js';
 import { subscribeProjectEvents } from '../../project-events.js';
 
 import {
@@ -199,7 +201,7 @@ export async function resetDatabase() {
  *
  * @param {object} scenario - a validated scenario definition
  * @param {(scenario: object) => object} driverFactory - createClaudeBridge |
- *   createPiBridge
+ *   createPiDriver
  * @returns {Promise<object>} the result entry for this scenario
  */
 export async function runScenario(scenarioInput, driverFactory) {
@@ -224,18 +226,22 @@ export async function runScenario(scenarioInput, driverFactory) {
   // shared model object in place, right before the owning task starts.
   const COMMENT_TOKEN = '$first_comment_id';
   const SESSION_TOKEN = '$last_session';
-  /** Resolve a task's `sessionId` token: '$last_session' becomes the
-   * provider session id the most recent run reported on its `done` event.
-   * Provider-neutral — the app reads session ids from provider messages and
-   * re-publishes them on done; the harness never invents a session id. */
-  const resolveSessionToken = (sessionId) => {
-    if (sessionId !== SESSION_TOKEN) return sessionId;
-    const lastDone = [...events].reverse().find((e) => e.type === 'done' && e.sessionId != null);
+  const resolveFollowUp = (sessionId) => {
+    if (sessionId !== SESSION_TOKEN) return { sessionId, continuation: null };
+    // Claude: the prior run's provider session id. Pi (no provider
+    // sessions): the prior run's canonical continuation. The app consumes
+    // both through the same runtime seam.
+    const lastDone = [...events].reverse().find(
+      (e) => e.type === 'done' && (e.sessionId != null || e.continuation != null),
+    );
     if (!lastDone) {
-      fail(`token ${SESSION_TOKEN} unresolved (no prior run reported a session id)`);
-      return null;
+      fail(`token ${SESSION_TOKEN} unresolved (no prior run reported a session or continuation)`);
+      return { sessionId: null, continuation: null };
     }
-    return lastDone.sessionId;
+    return {
+      sessionId: lastDone.sessionId ?? null,
+      continuation: lastDone.continuation ?? null,
+    };
   };
   const resolveModelTokens = (model) => {
     if (!JSON.stringify(model).includes(COMMENT_TOKEN)) return;
@@ -284,9 +290,16 @@ export async function runScenario(scenarioInput, driverFactory) {
   setFetchFixture({ pmids: scenario.fixture?.literature?.pmids ?? {}, arxivIds: scenario.fixture?.literature?.arxivIds ?? {} });
   installFetchFake();
 
+  // Each driver owns how the app's runtime factory is satisfied: the Claude
+  // and broken drivers bridge the SDK; the Pi driver replaces the Pi provider
+  // constructors. Reset both (and the runtime selector, which the Pi driver
+  // points at 'pi') so suites never leak state between scenarios.
   resetBridge();
+  resetPiFactory();
+  config.agentRuntime = { kind: 'claude', pi: { provider: '', model: '', baseUrl: '', apiKeyEnv: '' } };
   const driver = driverFactory(scenario);
-  installBridge(driver);
+  if (driver.kind === 'pi') installPiFactory(driver.buildRuntime);
+  else installBridge(driver);
 
   const events = [];       // every domain event, all tasks, in order
   const feed = [];         // would be the project feed envelopes (top-level)
@@ -312,14 +325,15 @@ export async function runScenario(scenarioInput, driverFactory) {
 
   for (const task of rootTasks) {
     const ac = new AbortController();
-    taskSignals[task._index] = ac;
     if (task.model) resolveModelTokens(task.model);
+    const followUp = resolveFollowUp(task.sessionId ?? null);
     const appTask = {
       role: task.role,
       projectId: fixture.projectId,
       input: task.input,
       context: task.context ?? null,
-      sessionId: resolveSessionToken(task.sessionId ?? null),
+      sessionId: followUp.sessionId,
+      continuation: followUp.continuation,
       compose: task.compose ?? false,
       seeding: task.seeding ?? false,
       userId: task.userId ?? fixture.userId,

@@ -33,8 +33,10 @@ export const streamingText = {
     const text = ctx.lastEventOf('text');
     ctx.check('final text event matches', text?.content === 'The draft is ready.');
     const done = ctx.lastEventOf('done');
-    ctx.check('done terminal carries sessionId and usage',
-      done?.sessionId != null && done?.usage?.inputTokens === 12 && done?.usage?.outputTokens === 7,
+    const isPi = ctx.driver.kind === 'pi';
+    ctx.check(isPi ? 'done terminal carries continuation and usage' : 'done terminal carries sessionId and usage',
+      (isPi ? done?.continuation != null : done?.sessionId != null)
+      && done?.usage?.inputTokens === 12 && done?.usage?.outputTokens === 7,
       JSON.stringify(done));
     const job = ctx.runs[0].jobId != null ? ctx.job(ctx.runs[0].jobId) : null;
     ctx.check('job row holds the tokens', job?.status === 'done' && job.input_tokens === 12 && job.output_tokens === 7);

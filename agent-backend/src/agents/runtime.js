@@ -25,7 +25,7 @@ import { EventChannel } from './events.js';
 import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun } from './runs.js';
 import { createToolContext, listTools } from './tools/index.js';
-import { createClaudeRuntime } from './provider-runtime/claude-runtime.js';
+import { createAgentRuntime } from './provider-runtime/factory.js';
 import { PROVIDER_ERROR_CODES, normalizeProviderError } from './provider-runtime/contract.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
@@ -45,6 +45,10 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   has open in the editor; when absent (and not seeding) it falls back to the
  *   project's persisted last-open document, and sub-agent dispatches inherit it.
  * @param {string} [task.sessionId] - Continue a prior provider session
+ * @param {object} [task.continuation] - Canonical Kuhn continuation (STH-47)
+ *   to resume from: the provider-neutral record of a prior run (a follow-up
+ *   task). Runtimes without provider-side sessions (Pi) resume the model
+ *   context from this record.
  * @param {boolean} [task.compose] - Compose mode (story 017): withhold file-mutating
  *   tools so the agent returns text only and emits no file_change (the /write contract)
  * @param {boolean} [task.seeding] - Seeding-pipeline bypass (story 008-001):
@@ -63,7 +67,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
- *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
+ *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, continuation } — continuation is the canonical record (STH-47) a follow-up task can resume
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
@@ -88,7 +92,9 @@ export async function* runAgentTask(task, internal = {}) {
     // handoff. Kuhn treats it as an opaque string.
     sessionId: task.sessionId ?? null,
     // Canonical Kuhn continuation threaded across attempts (STH-7).
-    continuation: null,
+    // Seeded from the caller for follow-up tasks (STH-47): a prior run's
+    // provider-neutral record the adapters resume instead of starting cold.
+    continuation: task.continuation ?? null,
     // 'budget' when the budget cutoff aborts the in-flight turn; 'disconnect'
     // when the consumer dropped; null while the run is healthy.
     cancelReason: null,
@@ -292,10 +298,12 @@ async function runTask(task, internal, channel, state) {
   });
   const neutralTools = listTools(toolContext);
 
-  // The model-execution boundary (STH-7): the Claude AgentRuntime adapter
-  // owns model execution, streaming, tool-loop mechanics, provider
-  // errors/identity, usage, canonical continuation, and cancellation.
-  const runtime = createClaudeRuntime({
+  // The model-execution boundary (STH-7/STH-8): the provider adapter
+  // selected by the deployment (STH-47: KUHN_AGENT_RUNTIME — claude
+  // default, pi opt-in) owns model execution, streaming, tool-loop
+  // mechanics, provider errors/identity, usage, canonical continuation,
+  // and cancellation. This module consumes the normalized contract only.
+  const runtime = createAgentRuntime({
     // Per-agent model (story 021): each role runs on its DB-configured model
     // (sub-agents dispatched via dispatch_agent load their own row, so a
     // Haiku RA can serve an Opus PM); AGENT_MODEL is the global fallback.
@@ -315,6 +323,14 @@ async function runTask(task, internal, channel, state) {
   // canonical usage is disjoint-component and is converted per turn.
   const usage = { inputTokens: 0, outputTokens: 0 };
 
+  // Effective runtime identity (STH-47): the provider/model that actually
+  // ran the job, stamped at the job terminal so a continuation or retry can
+  // never silently switch mechanics.
+  const jobIdentity = () => ({
+    provider: runtime.identity?.provider ?? null,
+    model: runtime.identity?.model ?? null,
+  });
+
   // Transient provider failures (rate limit / overload / 5xx / network) are
   // upstream and stateless: retry the turn with exponential backoff before
   // giving up, resuming the session so completed turns aren't re-run
@@ -330,9 +346,23 @@ async function runTask(task, internal, channel, state) {
       signal: state.controller.signal,
       resume: state.sessionId,
       continuation: state.continuation,
+      // The product's explicit retry flag (STH-47): attempts after the
+      // first retry the same logical request over the failed attempt's
+      // canonical record — the adapters must not re-append its input.
+      retry: attempt > 0,
     }, { agent, job, conversation, channel, budget, costRatio, usage, userId, state });
 
     if (outcome.kind === 'done') {
+      if (outcome.continuation) state.continuation = outcome.continuation;
+      if (state.controller?.signal.aborted) {
+        // The product aborted this turn (budget cutoff or consumer
+        // disconnect) and the adapter's done terminal raced the abort
+        // (the final message completed before the abort landed). The
+        // abort wins: the job already carries the abort status and the
+        // client already got the abort event — a done terminal would
+        // overwrite both.
+        return;
+      }
       const doneUsage = outcome.usage ?? {};
       const productUsage = {
         inputTokens: effectiveInputTokens(doneUsage),
@@ -342,11 +372,16 @@ async function runTask(task, internal, channel, state) {
         status: 'done',
         inputTokens: productUsage.inputTokens,
         outputTokens: productUsage.outputTokens,
+        ...jobIdentity(),
+        // Persist the canonical record so a follow-up (and a rollback to
+        // another runtime) can resume provider-neutrally (STH-47).
+        continuation: state.continuation ?? null,
       });
       channel.push({
         type: 'done', agent: agent.slug, jobId: job.id, sessionId: state.sessionId,
         usage: productUsage,
         budget: { used: Math.round(budget.used), limit: budget.limit },
+        continuation: state.continuation ?? null,
       });
       return;
     }
@@ -396,6 +431,7 @@ async function runTask(task, internal, channel, state) {
       error: reason,
       inputTokens: jobTokens.inputTokens,
       outputTokens: jobTokens.outputTokens,
+      ...jobIdentity(),
     });
     channel.push({
       type: 'error', agent: agent.slug, jobId: job.id, message,
@@ -421,9 +457,13 @@ async function runTask(task, internal, channel, state) {
     // pre-seam DB row order (the assistant row before its tool rows). A turn
     // without a usage event is closed at the terminal.
     const turnLog = { open: false, text: null, calls: [], tokenCount: null };
-    const closeTurn = () => {
+    // Assistant logging is awaited at every close site: a DB/logging
+    // failure must not silently coexist with a successfully completed job
+    // (STH-47 review). It still lands in the historical row order — the
+    // assistant row is written before its tool rows.
+    const closeTurn = async () => {
       if (!turnLog.open) return;
-      logMessage({
+      await logMessage({
         conversationId: conversation.id,
         role: 'assistant',
         content: turnLog.text,
@@ -473,7 +513,7 @@ async function runTask(task, internal, channel, state) {
           usage.inputTokens += effectiveIn;
           usage.outputTokens += out;
           turnLog.tokenCount = u.outputTokens ?? null;
-          closeTurn();
+          await closeTurn();
           // A grace margin lets an in-flight task overshoot the budget so the
           // current piece of work can finish instead of being cut off
           // abruptly.
@@ -496,7 +536,6 @@ async function runTask(task, internal, channel, state) {
               message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
               budget: { used: Math.round(budget.used), limit: budget.limit },
             });
-            state.cancelReason = 'budget';
             state.controller.abort();
           }
           break;
@@ -513,10 +552,10 @@ async function runTask(task, internal, channel, state) {
           });
           break;
         case 'done':
-          closeTurn();
-          return { kind: 'done', usage: event.usage };
+          await closeTurn();
+          return { kind: 'done', usage: event.usage, continuation: event.continuation ?? null };
         case 'error':
-          closeTurn();
+          await closeTurn();
           return { kind: 'error', error: event.error, usage: event.usage ?? null, continuation: event.continuation ?? null };
         default:
           break;
@@ -524,7 +563,7 @@ async function runTask(task, internal, channel, state) {
     }
     // The runtime is contractually obliged to end with exactly one terminal
     // event; a stream that ends without one is a contract violation.
-    closeTurn();
+    await closeTurn();
     return {
       kind: 'error',
       error: normalizeProviderError(new Error('agent runtime stream ended without a terminal event')),

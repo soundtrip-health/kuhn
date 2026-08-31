@@ -11,7 +11,7 @@ import {
 } from '@earendil-works/pi-ai';
 
 import { addUsage, normalizeUsage, validateRuntimeEventSequence } from './contract.js';
-import { validateContinuation } from './continuation.js';
+import { createContinuation, validateContinuation } from './continuation.js';
 import {
   PiAgentRuntime,
   createFauxPiRuntime,
@@ -785,36 +785,97 @@ describe('Pi adapter server-mode safety', () => {
     expect(validateRuntimeEventSequence(rightEvents)).toEqual([]);
   });
 
-  it('serves concurrent turns from one adapter instance with request-scoped state', async () => {
+  it('rejects a concurrent turn on one instance (one active turn per instance)', async () => {
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    const execute = vi.fn(async (_id, args) => {
+      await firstGate;
+      return { content: [{ type: 'text', text: args.text.toUpperCase() }] };
+    });
     const { runtime } = createFauxPiRuntime({
+      tools: [{
+        name: 'slow',
+        label: 'Slow',
+        description: 'Slow echo',
+        parameters: Type.Object({ text: Type.String() }),
+        execute,
+      }],
       responses: [
-        (context) => {
-          const input = context.messages.at(-1).content.map((block) => block.text).join('');
-          return fauxAssistantMessage(`Reply to: ${input}`);
-        },
-        (context) => {
-          const input = context.messages.at(-1).content.map((block) => block.text).join('');
-          return fauxAssistantMessage(`Reply to: ${input}`);
-        },
+        fauxAssistantMessage([fauxToolCall('slow', { text: 'one' }, { id: 'slow-1' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('First done.'),
       ],
     });
 
-    const [first, second] = await Promise.all([
-      collect(runtime.runTurn({ input: 'first' })),
-      collect(runtime.runTurn({ input: 'second' })),
-    ]);
+    const first = collect(runtime.runTurn({ input: 'first' }));
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    // One active turn per instance (STH-47): the concurrent call is refused
+    // loudly instead of sharing the in-flight turn's state.
+    const second = await collect(runtime.runTurn({ input: 'second' }));
 
-    expect(first.find((event) => event.type === 'text').content).toBe('Reply to: first');
-    expect(second.find((event) => event.type === 'text').content).toBe('Reply to: second');
-    // Each turn's continuation holds only its own exchange.
-    expect(first.at(-1).continuation.messages).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'first' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'Reply to: first' }] },
-    ]);
-    expect(second.at(-1).continuation.messages).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'second' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'Reply to: second' }] },
-    ]);
+    releaseFirst();
+    const firstEvents = await first;
+
+    expect(second[0]).toMatchObject({ type: 'provider' });
+    expect(second).toHaveLength(2);
+    expect(second[1]).toMatchObject({
+      type: 'error',
+      error: { code: 'invalid_request', retryable: false },
+    });
+    expect(validateRuntimeEventSequence(second)).toEqual([]);
+    // The in-flight turn completes normally, unaffected.
+    expect(firstEvents.find((event) => event.type === 'text').content).toBe('First done.');
+    expect(validateRuntimeEventSequence(firstEvents)).toEqual([]);
+  });
+
+  it('stops at the product max-turn limit with the normalized max_turns error', async () => {
+    const { runtime } = createFauxPiRuntime({
+      tools: [{
+        name: 'echo',
+        label: 'Echo',
+        description: 'Echo text',
+        parameters: Type.Object({ text: Type.String() }),
+        execute: async (_id, args) => ({ content: [{ type: 'text', text: args.text.toUpperCase() }] }),
+      }],
+      maxTurns: 1,
+      responses: [
+        // Turn 1 ends with a tool call; without the limit the loop would
+        // start a second assistant turn.
+        fauxAssistantMessage([fauxToolCall('echo', { text: 'loop' }, { id: 'loop-1' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('Second turn that must not run.'),
+      ],
+    });
+    const events = await collect(runtime.runTurn({ input: 'loop' }));
+
+    const terminal = events.at(-1);
+    expect(terminal).toMatchObject({
+      type: 'error',
+      error: { code: 'max_turns', retryable: false },
+    });
+    // The record is structurally closed: the executed tool result is in it,
+    // so a retry can resume from the tool result.
+    expect(validateContinuation(terminal.continuation)).toEqual([]);
+    expect(terminal.continuation.messages.at(-1))
+      .toMatchObject({ role: 'tool_result', toolCallId: 'loop-1', isError: false });
+  });
+
+  it('lets a turn finish naturally at the max-turn boundary with no pending tool call', async () => {
+    const { runtime } = createFauxPiRuntime({
+      maxTurns: 2,
+      responses: [
+        fauxAssistantMessage([fauxToolCall('noop', { text: 'x' }, { id: 'n-1' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('Finished within the limit.'),
+      ],
+      tools: [{
+        name: 'noop',
+        label: 'Noop',
+        description: 'No-op',
+        parameters: Type.Object({ text: Type.String() }),
+        execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+      }],
+    });
+    const events = await collect(runtime.runTurn({ input: 'go' }));
+    expect(events.at(-1)).toMatchObject({ type: 'done', finishReason: 'stop' });
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 });
 
@@ -924,6 +985,111 @@ describe('canonical continuation across Pi instances', () => {
     }))).rejects.toThrow(/non-canonical field "usage"/);
     expect(() => createFauxPiRuntime({ continuation: { version: 99, messages: [] } }))
       .toThrow(/unsupported continuation version 99/);
+  });
+
+  it("retry: the failed attempt's user input is never re-appended (exactly once in the record)", async () => {
+    const { runtime } = createFauxPiRuntime({
+      responses: [fauxAssistantMessage('Recovering.')],
+    });
+    // The failed attempt's canonical record: the user input plus a partial
+    // assistant message left by the interruption.
+    const failedRecord = createContinuation([
+      { role: 'user', content: [{ type: 'text', text: 'Do the thing' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Partial ou' }] },
+    ]);
+
+    const events = await collect(runtime.runTurn({
+      input: 'Do the thing',
+      continuation: failedRecord,
+      retry: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    const texts = events.at(-1).continuation.messages
+      .flatMap((m) => m.content)
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text);
+    // One logical user request: the input appears exactly once; the partial
+    // assistant from the failed attempt is dropped on the retried attempt.
+    expect(texts.filter((t) => t === 'Do the thing')).toHaveLength(1);
+    expect(texts).not.toContain('Partial ou');
+    expect(texts).toContain('Recovering.');
+    expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('retry: a record that ended with a tool result resumes from that tool result', async () => {
+    const { runtime } = createFauxPiRuntime({
+      responses: [fauxAssistantMessage('Continuing after the tool.')],
+    });
+    const record = createContinuation([
+      { role: 'user', content: [{ type: 'text', text: 'Use echo' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Calling.' },
+          { type: 'tool_call', id: 'c-1', name: 'echo', arguments: { text: 'x' } },
+        ],
+      },
+      { role: 'tool_result', toolCallId: 'c-1', toolName: 'echo', content: [{ type: 'text', text: 'X' }], isError: false },
+    ]);
+
+    const events = await collect(runtime.runTurn({
+      input: 'Use echo',
+      continuation: record,
+      retry: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    const roles = events.at(-1).continuation.messages.map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool_result', 'assistant']);
+    expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('follow-up (no retry flag): the new input is appended once on the record', async () => {
+    const { runtime } = createFauxPiRuntime({
+      responses: [fauxAssistantMessage('Follow-up answer.')],
+    });
+    const record = createContinuation([
+      { role: 'user', content: [{ type: 'text', text: 'First question' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'First answer' }] },
+    ]);
+
+    const events = await collect(runtime.runTurn({ input: 'Second question', continuation: record }));
+
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    expect(events.at(-1).continuation.messages.map((m) => m.role))
+      .toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
+  });
+
+  it('normalizes model arguments with the neutral Kuhn validator before execution', async () => {
+    const execute = vi.fn(async (_id, args) => ({ content: [{ type: 'text', text: `got ${args.text}` }] }));
+    const { runtime } = createFauxPiRuntime({
+      tools: [{
+        name: 'greet',
+        label: 'Greet',
+        description: 'Greet someone',
+        parameters: Type.Object({
+          text: Type.String(),
+          loud: Type.Optional(Type.Boolean({ default: false })),
+        }),
+        execute,
+      }],
+      responses: [
+        fauxAssistantMessage([fauxToolCall('greet', { text: 'hi' }, { id: 'g-1' })], { stopReason: 'toolUse' }),
+        (context) => {
+          const result = context.messages.find((m) => m.role === 'toolResult');
+          return fauxAssistantMessage(`Result: ${result.content[0].text}`);
+        },
+      ],
+    });
+
+    const events = await collect(runtime.runTurn({ input: 'Greet' }));
+
+    // The handler sees the neutral-normalized arguments (default applied),
+    // not the raw model arguments.
+    expect(execute).toHaveBeenCalledWith('g-1', { text: 'hi', loud: false }, expect.any(AbortSignal), expect.any(Function));
+    expect(events.find((event) => event.type === 'text' && event.content === 'Result: got hi')).toBeDefined();
   });
 });
 describe('Pi adapter STH-1/STH-7 contract conformance', () => {

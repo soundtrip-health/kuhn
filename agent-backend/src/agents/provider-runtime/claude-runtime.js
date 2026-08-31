@@ -13,10 +13,15 @@
  * product layer.
  *
  * Continuation semantics: the canonical transcript is threaded across
- * attempts. A resumed Claude session is the model's source of truth (the
- * adapter passes `resume` and does not re-send the record to the model),
- * while `done.continuation` is always the FULL record — the input
- * continuation plus everything this attempt streamed — so a later
+ * attempts. Retry semantics (contract.js): a turn with a `null`
+ * continuation starts a fresh record — the input is appended exactly once.
+ * A turn carrying a continuation RESUMES that record: the record already
+ * contains the turn's user input (recorded by the failed attempt), so it
+ * is never appended again — one logical user request appears exactly once
+ * in the canonical record across attempts. The Claude session (when one
+ * was allocated) is the model's source of truth (the adapter passes
+ * `resume` and does not re-send the record to the model), while
+ * `done.continuation` is always the FULL record — so a later
  * provider-neutral adapter (Pi) can resume the same conversation natively.
  * Error terminals carry the partial transcript the same way (`error.
  * continuation`) so a retried attempt keeps the record complete.
@@ -31,7 +36,7 @@
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
-import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME } from './claude-tools.js';
+import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME, toNeutralToolName } from './claude-tools.js';
 
 export const CLAUDE_PROVIDER = 'anthropic';
 const CLAUDE_API = 'claude-agent-sdk';
@@ -62,7 +67,7 @@ const RESULT_SUBTYPE_CODES = {
 export function createClaudeRuntime({
   model, projectDir, tools = [], maxTurns, initialSessionId = null,
 } = {}) {
-  const { mcpServer, builtinTools, allowedTools } = buildClaudeToolSet(tools);
+  const { mcpServer, builtinTools, allowedTools, claudeToNeutral } = buildClaudeToolSet(tools);
   let activeQuery = null;
 
   /** Interrupt the in-flight SDK query (task teardown / budget cutoff). */
@@ -105,9 +110,10 @@ export function createClaudeRuntime({
 
   /**
    * @param {{ input: string, signal?: AbortSignal, resume?: string|null,
-   *   systemPrompt?: string, continuation?: {version: number, messages: Array<object>}|null }} turn
+   *   systemPrompt?: string, continuation?: {version: number, messages: Array<object>}|null,
+   *   retry?: boolean }} turn
    */
-  async function* runTurn({ input, signal, resume = null, systemPrompt, continuation = null } = {}) {
+  async function* runTurn({ input, signal, resume = null, systemPrompt, continuation = null, retry = false } = {}) {
     const sessionId = resume ?? initialSessionId ?? null;
     // Identity first, before any provider work (contract pre-abort rule).
     yield identityEvent(sessionId);
@@ -117,12 +123,20 @@ export function createClaudeRuntime({
     }
 
     // Canonical transcript: the threaded record (previous attempts,
-    // including a failed partial) plus this turn's messages.
-    let messages = [];
-    if (continuation) {
-      messages = structuredClone(assertContinuation(continuation).messages);
+    // including a failed partial) plus this turn's messages. Retry
+    // semantics (contract.js): only a RETRY turn (retry: true with a
+    // non-null continuation) skips the append — that record is the
+    // failed attempt's transcript of this same request and already
+    // contains its user input. Fresh turns and follow-ups append the
+    // input exactly once. The distinction is the product's explicit
+    // flag — never string matching on the input text.
+    const isRetry = continuation != null && retry;
+    const messages = continuation
+      ? structuredClone(assertContinuation(continuation).messages)
+      : [];
+    if (!isRetry) {
+      messages.push({ role: 'user', content: [{ type: 'text', text: input }] });
     }
-    messages.push({ role: 'user', content: [{ type: 'text', text: input }] });
 
     const pendingCalls = new Map(); // tool_use id → tool name
     let assistantBlocks = [];
@@ -218,10 +232,16 @@ export function createClaudeRuntime({
               yield { type: 'text', content: text };
             }
             for (const block of blocks.filter((b) => b.type === 'tool_use')) {
-              pendingCalls.set(block.id, block.name);
-              const call = { type: 'tool_call', id: block.id, name: block.name, arguments: structuredClone(block.input ?? {}) };
+              // Neutral Kuhn tool name in the canonical contract (STH-47):
+              // the SDK reports Claude MCP-qualified names
+              // (mcp__kuhn__write_file); the canonical events and
+              // continuation carry the stable neutral name so the same
+              // record resumes on any adapter.
+              const neutralName = toNeutralToolName(block.name, claudeToNeutral);
+              pendingCalls.set(block.id, neutralName);
+              const call = { type: 'tool_call', id: block.id, name: neutralName, arguments: structuredClone(block.input ?? {}) };
               assistantBlocks.push(call);
-              yield { type: 'tool_call', id: block.id, name: block.name, arguments: structuredClone(call.arguments) };
+              yield { type: 'tool_call', id: block.id, name: neutralName, arguments: structuredClone(call.arguments) };
             }
             const msgUsage = message.message?.usage;
             if (msgUsage) {
@@ -314,9 +334,15 @@ export function createClaudeRuntime({
     }
   }
 
+  const identity = {
+    provider: CLAUDE_PROVIDER,
+    model,
+    api: CLAUDE_API,
+  };
   return {
     provider: CLAUDE_PROVIDER,
     model,
+    identity,
     cancel,
     runTurn,
   };
