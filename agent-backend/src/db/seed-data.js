@@ -104,6 +104,11 @@ export const TOOLS = [
     slug: 'run_script', name: 'Run Script', description: 'List and run shared org scripts (or a project script) in the no-network sandbox (issue #68)',
     parameterSchema: { type: 'object', properties: { script: { type: 'string', description: 'Org script slug' }, path: { type: 'string', description: 'Project-relative script path' }, args: { type: 'array', items: { type: 'string' }, description: 'Script arguments' } } },
   },
+  {
+    // STH-61: slide-theme discovery — agents kept guessing theme names.
+    slug: 'list_slide_themes', name: 'List Slide Themes', description: 'List the Marp slide themes available to this project (marp built-ins, Kuhn catalog, organization uploads)',
+    parameterSchema: { type: 'object', properties: {} },
+  },
 ];
 
 // [agentSlug, toolSlug] pairs — the agent→tool matrix.
@@ -131,6 +136,9 @@ export const ASSIGNMENTS = [
   ['reviewer', 'manage_comments'], ['pm', 'manage_comments'], ['writer', 'manage_comments'],
   ['pm', 'spawn_agent'], ['writer', 'spawn_agent'],
   ['pm', 'ask_user'], ['pm', 'project_config'],
+  // Slide themes (STH-61): the roles that author decks pick a real theme
+  // name instead of guessing.
+  ['pm', 'list_slide_themes'], ['writer', 'list_slide_themes'],
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],

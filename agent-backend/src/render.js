@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { dirname, basename } from 'node:path';
 
-import { pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
+import { SandboxError, pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
 import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } from './storage.js';
 import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
 import { getProject } from './db/projects.js';
@@ -174,9 +174,21 @@ export async function exportDocument(projectId, sourcePath, format) {
   let output;
   if (spec.marp) {
     const theme = await resolveMarpTheme(projectId, source);
-    ({ output } = await renderMarp(projectId, sourcePath, format, {
-      themeName: theme?.name, themeCss: theme?.css,
-    }));
+    const marpOpts = { themeName: theme?.name, themeCss: theme?.css };
+    if (format === 'pptx') {
+      // STH-61: prefer an EDITABLE pptx (real text boxes). It needs
+      // LibreOffice in the marp image (docker/marp); on a stock marp-cli
+      // image the conversion fails, so fall back to marp's default
+      // slides-as-images pptx rather than failing the export.
+      try {
+        ({ output } = await renderMarp(projectId, sourcePath, format, { ...marpOpts, editablePptx: true }));
+      } catch (err) {
+        if (!(err instanceof SandboxError) || err.code !== 'failed') throw err;
+        ({ output } = await renderMarp(projectId, sourcePath, format, marpOpts));
+      }
+    } else {
+      ({ output } = await renderMarp(projectId, sourcePath, format, marpOpts));
+    }
   } else {
     const bibPath = DEFAULT_BIB_PATH;
     await materializeBib(projectId, bibPath).catch(() => {});

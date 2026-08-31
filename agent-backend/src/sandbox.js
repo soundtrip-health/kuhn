@@ -205,13 +205,17 @@ const MARP_FORMATS = {
  * registered with --theme-set; the deck's `theme:` front matter picks it by
  * the CSS's `@theme` name.
  */
-export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null } = {}, spawnImpl) {
+export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null, editablePptx = false } = {}, spawnImpl) {
   const spec = MARP_FORMATS[format];
   if (!spec) {
     throw new SandboxError('failed', `No marp output format: ${format}`);
   }
   const extraMounts = [];
   const extraArgs = [];
+  // STH-61: editable pptx (real text boxes, not slide images) — needs
+  // LibreOffice in the image (docker/marp); the caller falls back to the
+  // default pptx when the conversion fails on a stock marp-cli image.
+  if (editablePptx && format === 'pptx') extraArgs.push('--pptx-editable');
   let themeDir = null;
   if (themeCss != null) {
     // Same placement rationale as .render-tmp (macOS bind-mount shared paths).

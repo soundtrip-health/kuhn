@@ -208,8 +208,12 @@ export const config = {
     pandocImage: process.env.SANDBOX_PANDOC_IMAGE || 'pandoc/core:latest',
     // PDF text extraction for org-library ingestion (story 006-002)
     popplerImage: process.env.SANDBOX_POPPLER_IMAGE || 'minidocks/poppler:latest',
-    // Slide-deck rendering (STH-57): official Marp CLI image (bundles Chromium).
-    marpImage: process.env.SANDBOX_MARP_IMAGE || 'marpteam/marp-cli:latest',
+    // Slide-deck rendering (STH-57): marp-cli + Chromium. Default is the
+    // Kuhn-BUILT image (docker/marp — the official image plus LibreOffice,
+    // which editable pptx export needs, STH-61): docker build -t
+    // kuhn/marp:latest docker/marp. The stock marpteam/marp-cli image also
+    // works — editable pptx then falls back to slides-as-images.
+    marpImage: process.env.SANDBOX_MARP_IMAGE || 'kuhn/marp:latest',
     timeoutMs: parseInt(process.env.SANDBOX_TIMEOUT_MS || '60000'),
     cpus: process.env.SANDBOX_CPUS || '1',
     memory: process.env.SANDBOX_MEMORY || '512m',
