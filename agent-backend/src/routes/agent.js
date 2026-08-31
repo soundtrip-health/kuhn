@@ -6,6 +6,7 @@
 // (editor); inspecting jobs and traces is a read (viewer).
 
 import { Router } from 'express';
+import { captureHandoff } from '../agents/handoff.js';
 import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
 import { runAgentTask, reattach } from '../agents/runtime.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
@@ -53,6 +54,30 @@ router.post('/api/agent/task', async (req, res) => {
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, userId: req.user.id, detachable: true, signal: ac.signal }));
+});
+
+/**
+ * POST /api/agent/handoff — body { projectId, role } (STH-55).
+ * Scan the tail of the recorded conversation with `role` for a clear
+ * hand-off and return { handoff: string | null }. Called by the webapp when
+ * the user starts a fresh conversation; editor-gated like dispatching work,
+ * since it spends model quota and feeds the next dispatch.
+ */
+router.post('/api/agent/handoff', async (req, res) => {
+  const { projectId, role } = req.body ?? {};
+  if (!role || projectId == null) {
+    res.status(400).json({ error: 'role and projectId are required' });
+    return;
+  }
+  const project = await requireProjectRole(req, res, projectId, 'editor');
+  if (!project) return;
+  try {
+    const { handoff } = await captureHandoff(project.id, role);
+    res.json({ handoff });
+  } catch (err) {
+    console.error('[handoff] scan failed:', err);
+    res.status(502).json({ error: `hand-off scan failed: ${err.message}` });
+  }
 });
 
 /**

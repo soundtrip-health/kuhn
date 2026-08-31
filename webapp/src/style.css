@@ -1248,6 +1248,32 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-notice-overload .notice-action,
 .chat-notice-context .notice-action { margin-top: 2px; }
 
+/* STH-55: hand-off note card + capture opt-out on the long-context card. */
+.chat-notice-handoff {
+  margin: 10px 0;
+  padding: 13px 15px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-left: 2.5px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  animation: kuhn-rise var(--dur) var(--ease) both;
+}
+.chat-notice-handoff .notice-title {
+  display: flex; align-items: center; gap: 7px;
+  font-weight: 600; font-size: 13px; color: var(--ink);
+  margin-bottom: 6px;
+}
+.chat-notice-handoff .notice-title svg { color: var(--accent); }
+.chat-notice-handoff .handoff-note {
+  margin: 0 0 8px; font: var(--ui-body); color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.chat-notice-context .notice-checkbox {
+  display: flex; align-items: center; gap: 7px;
+  font: var(--ui-body); color: var(--ink-2);
+  margin: 0 0 8px; cursor: pointer;
+}
+
 /* Overload is a transient infra hiccup, not a project limit — accent it. */
 .chat-notice-overload { border-left-color: var(--accent); }
 .chat-notice-overload .notice-title svg { color: var(--accent); }

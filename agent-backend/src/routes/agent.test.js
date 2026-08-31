@@ -10,9 +10,14 @@ vi.mock('../db/projects.js', () => ({
 vi.mock('../db/orgs.js', () => ({
   checkOrgAccess: vi.fn(),
 }));
+// STH-55: the scan's model call + tail query are covered in agents/handoff.test.js.
+vi.mock('../agents/handoff.js', () => ({
+  captureHandoff: vi.fn(async () => ({ handoff: 'note' })),
+}));
 
 import { query } from '../db.js';
 import { checkOrgAccess } from '../db/orgs.js';
+import { captureHandoff } from '../agents/handoff.js';
 import { waitForReply, deliverReply } from '../agents/questions.js';
 import { EventChannel } from '../agents/events.js';
 import { registerRun, unregisterRun } from '../agents/runs.js';
@@ -254,5 +259,32 @@ describe('POST /api/agent/jobs/:id/reconnect (story 027)', () => {
       expect(frames.some((f) => f.type === 'done')).toBe(true);
       unregisterRun(50);
     });
+  });
+});
+
+describe('POST /api/agent/handoff (STH-55)', () => {
+  const post = (body) => fetch(`${base}/api/agent/handoff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  it('rejects a missing role/projectId', async () => {
+    expect((await post({})).status).toBe(400);
+    expect((await post({ role: 'pm' })).status).toBe(400);
+  });
+
+  it('returns the captured note', async () => {
+    const res = await post({ projectId: 5, role: 'pm' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ handoff: 'note' });
+    expect(captureHandoff).toHaveBeenCalledWith(5, 'pm');
+  });
+
+  it('maps a failed scan to a readable 502', async () => {
+    captureHandoff.mockRejectedValueOnce(new Error('model down'));
+    const res = await post({ projectId: 5, role: 'pm' });
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toMatch(/model down/);
   });
 });

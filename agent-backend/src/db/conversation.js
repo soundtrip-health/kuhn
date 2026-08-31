@@ -125,3 +125,35 @@ export async function getHistory(conversationId, { limit = 100, before = null } 
   );
   return rows.map(parseMessage);
 }
+
+/**
+ * STH-55: the tail of a project's conversation with one agent — the last
+ * user/assistant messages across its recent top-level conversations
+ * (sub-agent dispatches and seeding stages excluded, mirroring
+ * listProjectConversations), returned in chronological order. Feeds the
+ * "start fresh" hand-off scan.
+ * @returns {Promise<Array<{ role: string, content: string, created_at: string }>>}
+ */
+export async function getRecentAgentMessages(projectId, agentSlug, { limit = 12 } = {}) {
+  const { rows } = await query(
+    `SELECT role, content, created_at FROM (
+       SELECT m.role, m.content, m.created_at, m.id
+       FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE c.project_id = $1
+         AND c.agent_slug = $2
+         AND m.role IN ('user', 'assistant')
+         AND m.content IS NOT NULL AND m.content <> ''
+         AND EXISTS (
+           SELECT 1 FROM jobs j
+           WHERE j.conversation_id = c.id
+             AND j.parent_job_id IS NULL
+             AND (j.context IS NULL OR json_extract(j.context, '$.seedStage') IS NULL)
+         )
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT $3
+     ) ORDER BY created_at ASC, id ASC`,
+    [projectId, agentSlug, limit],
+  );
+  return rows.map(({ role, content, created_at }) => ({ role, content, created_at }));
+}
