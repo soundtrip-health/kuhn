@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../db.js', () => ({ query: vi.fn() }));
 
 import { query } from '../db.js';
-import { createConversation, logMessage, listProjectConversations } from './conversation.js';
+import { createConversation, logMessage, listProjectConversations, getRecentAgentMessages } from './conversation.js';
 
 beforeEach(() => {
   query.mockReset();
@@ -104,5 +104,24 @@ describe('listProjectConversations (story 020)', () => {
     const conversations = await listProjectConversations(3);
     expect(conversations).toEqual([]);
     expect(query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getRecentAgentMessages (STH-55)', () => {
+  it('queries one agent\'s top-level tail and maps rows', async () => {
+    query.mockResolvedValueOnce({ rows: [
+      { role: 'user', content: 'fix refs', created_at: 't1' },
+      { role: 'assistant', content: 'Want me to resume?', created_at: 't2' },
+    ] });
+    const out = await getRecentAgentMessages(7, 'pm', { limit: 5 });
+    const [sql, params] = query.mock.calls[0];
+    expect(params).toEqual([7, 'pm', 5]);
+    expect(sql).toContain('agent_slug');
+    expect(sql).toContain('parent_job_id IS NULL'); // sub-agent dispatches excluded
+    expect(sql).toContain('seedStage'); // seeding-stage conversations excluded
+    expect(out).toEqual([
+      { role: 'user', content: 'fix refs', created_at: 't1' },
+      { role: 'assistant', content: 'Want me to resume?', created_at: 't2' },
+    ]);
   });
 });

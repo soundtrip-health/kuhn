@@ -179,6 +179,13 @@ export const config = {
     chunkTargetChars: parseInt(process.env.INGEST_CHUNK_TARGET_CHARS || '3200'),
     chunkMaxChars: parseInt(process.env.INGEST_CHUNK_MAX_CHARS || '4400'),
   },
+  handoff: {
+    // STH-55: "start fresh" hand-off capture — one small Messages API call
+    // that scans the tail of the recorded conversation for open action items.
+    model: process.env.HANDOFF_MODEL || 'claude-opus-5',
+    maxMessages: parseInt(process.env.HANDOFF_MAX_MESSAGES || '12'),
+    maxCharsPerMessage: parseInt(process.env.HANDOFF_MAX_CHARS_PER_MESSAGE || '4000'),
+  },
   fileActivity: {
     // Per-project cap on retained file_events rows (story 005-002); oldest
     // pruned on insert. Badges only need the recent tail.

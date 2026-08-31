@@ -14,6 +14,7 @@
 import { marked } from 'marked';
 
 import {
+  captureHandoff,
   getConversations,
   getPendingQuestions,
   listJobs,
@@ -40,6 +41,9 @@ const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor r
 
 // SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
+// STH-55: hand-off notes captured at "start fresh", delivered with the next
+// message to that agent so the fresh session picks up where the old one left.
+const pendingHandoffs = new Map<string, string>();
 
 let activeProjectId = 0;
 // Whether the active project has already been seeded/configured. Gates the
@@ -140,6 +144,7 @@ export function initChat(
   running = false;
   pendingQuestionJobId = null;
   activeQuestionCard = null;
+  pendingHandoffs.clear(); // per-project reset (STH-55)
   document.getElementById('chat-log')!.replaceChildren();
   setStickToBottom(true);
   const seedingPanel = document.getElementById('seeding-panel');
@@ -312,6 +317,15 @@ function assessContext(agent: string, inputTokens: number): void {
     `<p>${label} is carrying ~${compactTokens(inputTokens)} tokens of chat context into every reply, which ` +
     `costs more and can bury what matters. If you're between tasks, a fresh start keeps ${label} sharp — ` +
     `your files and drafts are untouched, only the chat context resets.</p>`;
+  // STH-55: hand-off capture opt-out — ON by default; read at click time.
+  const carry = document.createElement('label');
+  carry.className = 'notice-checkbox';
+  const carryBox = document.createElement('input');
+  carryBox.type = 'checkbox';
+  carryBox.checked = true;
+  carry.append(carryBox, document.createTextNode(
+    ' Carry a short hand-off note (open action items) into the fresh conversation',
+  ));
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn btn-accent btn-sm notice-action';
@@ -320,9 +334,9 @@ function assessContext(agent: string, inputTokens: number): void {
     btn.disabled = true;
     // A refused clear (agent still running) leaves the card — re-arm the
     // button; a successful one removes the card via clearConversation.
-    if (!clearConversation(agent, { confirm: false })) btn.disabled = false;
+    if (!clearConversation(agent, { confirm: false, handoff: carryBox.checked })) btn.disabled = false;
   });
-  card.append(btn);
+  card.append(carry, btn);
   log.append(card);
   scrollLog();
 }
@@ -345,7 +359,7 @@ function dismissContextNotices(agent: string): void {
  * the break so the context boundary is visible in the log. Returns whether the
  * context was actually cleared (false when refused or cancelled).
  */
-function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
+function clearConversation(agent: string, opts: { confirm: boolean; handoff?: boolean }): boolean {
   const label = agentLabel(agent);
   if (running) {
     notify(`${label} is still working — wait for the task to finish before clearing`);
@@ -357,9 +371,10 @@ function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   }
   // Documented exception (story 005-004): native confirm(), as with delete.
   if (opts.confirm && !window.confirm(
-    `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.`,
+    `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.\nKuhn will scan the recent chat for open action items and carry a short hand-off note forward.`,
   )) return false;
   sessions.delete(agent);
+  pendingHandoffs.delete(agent); // a stale note must not outlive two clears
   contextTokens.delete(agent);
   contextSuggested.delete(agent);
   dismissContextNotices(agent);
@@ -370,7 +385,51 @@ function clearConversation(agent: string, opts: { confirm: boolean }): boolean {
   document.getElementById('chat-log')!.append(divider);
   updateContextIndicator();
   scrollLog(true);
+  if (opts.handoff !== false) void captureAndShowHandoff(agent);
   return true;
+}
+
+/**
+ * STH-55: after a fresh start, scan the recorded conversation tail for a
+ * clear hand-off (open question, agreed next step, hard-won guidance) and
+ * park it as a note delivered with the user's next message to that agent.
+ * "No hand-off" is a normal outcome and reads as starting clean; a failed
+ * scan degrades to exactly the pre-STH-55 behavior.
+ */
+async function captureAndShowHandoff(agent: string): Promise<void> {
+  appendSystemLine(`scanning the previous conversation with ${agentLabel(agent)} for open action items…`);
+  let note: string | null = null;
+  try {
+    note = await captureHandoff(activeProjectId, agent);
+  } catch (err) {
+    appendSystemLine(`hand-off scan failed: ${(err as Error).message} — starting clean`, 'error');
+    return;
+  }
+  if (!note) {
+    appendSystemLine('no open hand-off found — starting clean');
+    return;
+  }
+  pendingHandoffs.set(agent, note);
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-handoff';
+  tagConversation(card, agent);
+  card.innerHTML =
+    `<div class="notice-title">${icon('arrow-right', { size: 14, stroke: 2 })} Hand-off note — goes out with your next message to ${agentLabel(agent)}</div>`;
+  const body = document.createElement('div');
+  body.className = 'handoff-note';
+  body.textContent = note;
+  card.append(body);
+  const discard = document.createElement('button');
+  discard.type = 'button';
+  discard.className = 'btn btn-quiet btn-sm notice-action';
+  discard.textContent = 'Discard note';
+  discard.addEventListener('click', () => {
+    pendingHandoffs.delete(agent);
+    card.remove();
+  });
+  card.append(discard);
+  document.getElementById('chat-log')!.append(card);
+  scrollLog();
 }
 
 // Restore prior state on page load (story 020): render the recent transcript
@@ -660,8 +719,19 @@ async function send(): Promise<void> {
   autoGrow(input);
 
   appendUserMessage(text, role);
-  retryAction = () => dispatchTask(role, text);
-  await dispatchTask(role, text);
+  // STH-55: deliver a parked hand-off note with this first message, so the
+  // fresh session starts with the previous conversation's action items.
+  const note = pendingHandoffs.get(role);
+  const outgoing = note
+    ? `[Hand-off note carried from your previous conversation with this user]\n${note}\n\n---\n\n${text}`
+    : text;
+  if (note) {
+    pendingHandoffs.delete(role);
+    // The note is delivered — retire the card's discard button.
+    document.querySelector(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(role)}"] .notice-action`)?.remove();
+  }
+  retryAction = () => dispatchTask(role, outgoing);
+  await dispatchTask(role, outgoing);
 }
 
 /**

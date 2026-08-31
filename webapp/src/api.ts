@@ -1874,6 +1874,23 @@ export async function runAgentTask(
 }
 
 /**
+ * STH-55: scan the recent recorded conversation with an agent for a clear
+ * hand-off (open action items, pending decisions) and return a short note,
+ * or null when the conversation ended clean.
+ */
+export async function captureHandoff(projectId: number, role: string): Promise<string | null> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/agent/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, role }),
+    }),
+  );
+  const { handoff } = await res.json();
+  return handoff ?? null;
+}
+
+/**
  * Run the project seeding pipeline (story 015), invoking onEvent for each
  * stage marker and agent event. Resolves when the pipeline ends.
  */
