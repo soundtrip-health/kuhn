@@ -114,9 +114,10 @@ variables, Cloudflare Tunnel configuration, inviting users, and running as a ser
 
 ### Additional prerequisites
 
-- Typst + Pandoc + Poppler sandbox images for rendering/export and org-library
-  PDF ingestion (one-time: `docker pull ghcr.io/typst/typst:latest &&
-  docker pull pandoc/core:latest && docker pull minidocks/poppler:latest`)
+- Typst + Pandoc + Poppler + Marp sandbox images for rendering/export,
+  org-library PDF ingestion, and slide decks (one-time: `docker pull
+  ghcr.io/typst/typst:latest && docker pull pandoc/core:latest &&
+  docker pull minidocks/poppler:latest && docker pull marpteam/marp-cli:latest`)
 - The analyst's R runtime image, built locally (issue #68b — the sandbox has no
   network, so packages are baked in): `docker build -t kuhn/r-analysis:latest
   docker/r-analysis` (see `docker/r-analysis/README.md`)

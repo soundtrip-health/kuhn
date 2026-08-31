@@ -22,12 +22,13 @@ vi.mock('./sandbox.js', async (importOriginal) => {
     ...actual,
     pandocConvert: vi.fn(async () => ({ output: Buffer.from('= typst'), stdout: '', stderr: '' })),
     renderTypstPdf: vi.fn(async () => ({ output: Buffer.from('%PDF-fake'), stdout: '', stderr: '' })),
+    renderMarp: vi.fn(async () => ({ output: Buffer.from('%PDF-marp'), stdout: '', stderr: '' })),
   };
 });
 
 import { config } from './config.js';
-import { pandocConvert, renderTypstPdf } from './sandbox.js';
-import { renderPdf, exportDocument } from './render.js';
+import { pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
+import { renderPdf, exportDocument, isMarpSource } from './render.js';
 
 let root;
 let savedProjectsRoot;
@@ -39,6 +40,8 @@ beforeAll(async () => {
   await mkdir(join(root, '1', 'draft'), { recursive: true });
   await writeFile(join(root, '1', 'draft', 'main.md'), '# Hello [@key]\n');
   await writeFile(join(root, '1', 'draft', 'references.bib'), '@article{key, title={T}}\n');
+  // A Marp slide deck (STH-57) — routed through renderMarp, not pandoc/typst.
+  await writeFile(join(root, '1', 'draft', 'deck.md'), '---\nmarp: true\ntheme: default\n---\n\n# Slide\n');
   // A document nested away from draft/ — must still cite against the one
   // canonical bib (story 012-003), with the temp .typ staged next to itself.
   await mkdir(join(root, '1', 'notes', 'sub'), { recursive: true });
@@ -144,5 +147,39 @@ describe('exportDocument', () => {
 
   it('rejects unknown formats', async () => {
     await expect(exportDocument(1, 'draft/main.md', 'pdf')).rejects.toThrow(RangeError);
+  });
+});
+
+describe('marp slide decks (STH-57)', () => {
+  it('isMarpSource: only marp: true in the LEADING front matter opts in', () => {
+    expect(isMarpSource('---\nmarp: true\n---\n\n# Hi\n')).toBe(true);
+    expect(isMarpSource('---\ntheme: x\nmarp: true\n---\n\nbody')).toBe(true);
+    expect(isMarpSource(Buffer.from('---\r\nmarp: true\r\n---\r\n# H'))).toBe(true);
+    expect(isMarpSource('# Hi\n\nmarp: true\n')).toBe(false);
+    expect(isMarpSource('---\nmarp: false\n---\n')).toBe(false);
+    expect(isMarpSource('body first\n\n---\nmarp: true\n---\n')).toBe(false);
+  });
+
+  it('renders a marp deck through renderMarp, skipping pandoc/typst and the bib', async () => {
+    const { pdf, cached } = await renderPdf(1, 'draft/deck.md');
+    expect(pdf.toString()).toBe('%PDF-marp');
+    expect(cached).toBe(false);
+    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/deck.md', 'pdf');
+    expect(pandocConvert).not.toHaveBeenCalled();
+    expect(renderTypstPdf).not.toHaveBeenCalled();
+    const again = await renderPdf(1, 'draft/deck.md');
+    expect(again.cached).toBe(true);
+    expect(renderMarp).toHaveBeenCalledTimes(1);
+  });
+
+  it('exports pptx via marp for any markdown; docx still goes through pandoc', async () => {
+    const out = await exportDocument(1, 'draft/main.md', 'pptx');
+    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/main.md', 'pptx');
+    expect(out.filename).toBe('main.pptx');
+    expect(out.contentType).toMatch(/presentationml/);
+    expect(pandocConvert).not.toHaveBeenCalled();
+
+    await exportDocument(1, 'draft/main.md', 'docx');
+    expect(pandocConvert).toHaveBeenCalledTimes(1);
   });
 });

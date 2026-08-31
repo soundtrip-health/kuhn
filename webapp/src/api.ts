@@ -1731,7 +1731,7 @@ export async function renderPdf(projectId: number, path: string): Promise<Blob> 
 }
 
 /** URL of the Pandoc export endpoint (served with Content-Disposition: attachment). */
-export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex'): string {
+export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex' | 'pptx'): string {
   return `${BACKEND_URL}/api/projects/${projectId}/export?path=${encodeURIComponent(path)}&format=${format}`;
 }
 
