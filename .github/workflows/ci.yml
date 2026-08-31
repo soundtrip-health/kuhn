@@ -33,10 +33,6 @@ jobs:
     name: backend
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      # Isolated, disposable data dir: tests must never touch a shared
-      # checkout path (the default is repo-root ./data).
-      KUHN_DATA_DIR: ${{ runner.temp }}/kuhn-data
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,10 +51,16 @@ jobs:
 
       - name: Test suite
         working-directory: agent-backend
+        # Isolated, disposable data dir: tests must never touch a shared
+        # checkout path (the default is repo-root ./data).
+        env:
+          KUHN_DATA_DIR: ${{ runner.temp }}/kuhn-data
         run: npm test
 
       - name: Provider runtime contract
         working-directory: agent-backend
+        env:
+          KUHN_DATA_DIR: ${{ runner.temp }}/kuhn-data
         run: npm run test:runtime-contract
 
   webapp:
