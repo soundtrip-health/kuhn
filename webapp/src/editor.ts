@@ -505,7 +505,11 @@ async function openDocumentInner(
   }
   setModeToggle('rich');
 
-  const stored = await readTextFile(projectId, path);
+  // STH-61: strip through the shield — this pre-read hands `stored` straight
+  // to openDoc, so without stripping here the front matter would reach Crepe
+  // on every normal open and be mangled on the next save (the transport's
+  // readFile only covers the paths that DON'T pass `stored` explicitly).
+  const stored = stripFrontMatter(path, await readTextFile(projectId, path));
   if (seq !== openSeq) return; // switched away before we touched the singletons
 
   // Viewers open read-only (010-003): no seeding, no saves, no slash commands,
