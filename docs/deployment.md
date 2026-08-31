@@ -22,11 +22,11 @@ as a Cloudflare Tunnel.
 
 - **Node.js LTS** (e.g. 24). Node 26 currently fails to build the native
   `better-sqlite3` dependency.
-- **Docker**, with the sandbox images pulled (rendering, export, and PDF
-  ingestion run in network-isolated containers):
+- **Docker**, with the sandbox images pulled (rendering, export, slide decks,
+  and PDF ingestion run in network-isolated containers):
 
   ```bash
-  docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest
+  docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest marpteam/marp-cli:latest
   docker build -t kuhn/r-analysis:latest docker/r-analysis   # analyst R runtime (issue #68b) — built, not pulled
   ```
 
