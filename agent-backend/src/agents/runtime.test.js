@@ -889,19 +889,43 @@ describe('transient API error retry (story 029)', () => {
   });
 });
 
-describe('isTransientApiError (story 029)', () => {
-  it('classifies overload / rate-limit / 5xx / network as transient', async () => {
-    const { isTransientApiError } = await import('./runtime.js');
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 529 }))).toBe(true);
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 503 }))).toBe(true);
-    expect(isTransientApiError(new Error('API Error: 429 rate limit'))).toBe(true);
-    expect(isTransientApiError(new Error('Overloaded'))).toBe(true);
-    expect(isTransientApiError(new Error('read ECONNRESET'))).toBe(true);
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 400 }))).toBe(false);
-    expect(isTransientApiError(new Error('Unknown agent role: nope'))).toBe(false);
-    expect(isTransientApiError(null)).toBe(false);
-  });
-});
+describe('normalizeProviderError (story 029, STH-7)', () => {
+   // The retryable set is story 029's historical transient classification,
+   // now owned by the provider-neutral contract (the runtime adapter
+   // surfaces these as its terminal `error` events; the product layer keeps
+   // the retry/backoff policy).
+   it('classifies overload / rate-limit / 5xx / network as retryable provider failures', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 529 }))).toMatchObject({ code: 'overloaded', retryable: true });
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 503 }))).toMatchObject({ code: 'server', retryable: true });
+     expect(normalizeProviderError(new Error('API Error: 429 rate limit'))).toMatchObject({ code: 'rate_limit', retryable: true });
+     expect(normalizeProviderError(new Error('Overloaded'))).toMatchObject({ code: 'overloaded', retryable: true });
+     expect(normalizeProviderError(new Error('read ECONNRESET'))).toMatchObject({ code: 'network', retryable: true });
+     expect(normalizeProviderError(new Error('getaddrinfo EAI_AGAIN'))).toMatchObject({ code: 'network', retryable: true });
+     expect(normalizeProviderError(new Error('read ETIMEDOUT'))).toMatchObject({ code: 'timeout', retryable: true });
+   });
+
+   it('classifies non-retryable failures and unknown shapes', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 400 }))).toMatchObject({ code: 'invalid_request', retryable: false });
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 401 }))).toMatchObject({ code: 'auth', retryable: false });
+     expect(normalizeProviderError(new Error('content policy violation'))).toMatchObject({ code: 'safety', retryable: false });
+     expect(normalizeProviderError(new Error('maximum context length exceeded'))).toMatchObject({ code: 'context_overflow', retryable: false });
+     expect(normalizeProviderError(new Error('Unknown agent role: nope'))).toMatchObject({ code: 'provider_error', retryable: false });
+     expect(normalizeProviderError(null)).toMatchObject({ code: 'provider_error', retryable: false });
+   });
+
+   it('classifies cancellation only on strong signals, never on wording', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(new Error('request cancelled due to rate limit'), { stopReason: 'aborted' })).toMatchObject({ code: 'cancelled', retryable: false });
+     const abortErr = new Error('aborted');
+     abortErr.name = 'AbortError';
+     expect(normalizeProviderError(abortErr)).toMatchObject({ code: 'cancelled', retryable: false });
+     // A rate-limit notice that mentions cancellation keeps its retryable
+     // category.
+     expect(normalizeProviderError(new Error('cancelled due to rate limit'))).toMatchObject({ code: 'rate_limit', retryable: true });
+   });
+ });
 
 // --- Story 020: model-cost-weighted budget accounting ------------------------
 
