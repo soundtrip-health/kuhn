@@ -13,6 +13,8 @@ import { dirname, basename } from 'node:path';
 import { pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
 import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } from './storage.js';
 import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
+import { getProject } from './db/projects.js';
+import { MARP_BUILTIN_THEMES, resolveThemeCss } from './db/slide-themes.js';
 
 export const EXPORT_FORMATS = {
   docx: { outputName: 'export.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
@@ -31,6 +33,26 @@ export const EXPORT_FORMATS = {
 export function isMarpSource(source) {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source.toString('utf-8'));
   return fm != null && /^\s*marp\s*:\s*true\s*$/m.test(fm[1]);
+}
+
+/** STH-58: the deck's front-matter `theme:` name (leading block only). */
+export function marpThemeName(source) {
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source.toString('utf-8'));
+  if (!fm) return null;
+  const m = /^\s*theme\s*:\s*["']?([A-Za-z0-9][\w-]*)["']?\s*$/m.exec(fm[1]);
+  return m ? m[1] : null;
+}
+
+/**
+ * STH-58: resolve a deck's custom theme through the org/catalog library.
+ * Built-in marp themes (and unknown names) resolve to null — marp then
+ * handles the name itself, exactly as before themes existed.
+ */
+async function resolveMarpTheme(projectId, source) {
+  const name = marpThemeName(source);
+  if (!name || MARP_BUILTIN_THEMES.includes(name)) return null;
+  const project = await getProject(projectId);
+  return resolveThemeCss(project?.org_id ?? null, name);
 }
 
 // Rendered PDFs keyed by content hash — re-render only when the source or
@@ -76,13 +98,17 @@ export async function renderPdf(projectId, sourcePath) {
   // anywhere else is ignored by design: users are steered to the RA/DB).
   // Marp decks skip citeproc entirely (STH-57): slides cite informally.
   let bib = null;
-  if (!marp) {
+  let theme = null;
+  if (marp) {
+    theme = await resolveMarpTheme(projectId, source); // theme edits must re-render (hash below)
+  } else {
     await materializeBib(projectId, bibPath).catch(() => {});
     bib = await readIfExists(projectId, bibPath);
   }
 
   const hash = createHash('sha256')
     .update(`${projectId}:${sourcePath}:${marp ? 'marp:' : ''}`).update(source).update(bib ?? '')
+    .update(theme?.css ?? '')
     .digest('hex');
   if (pdfCache.has(hash)) return { pdf: pdfCache.get(hash), cached: true };
   if (inFlight.has(hash)) {
@@ -90,7 +116,7 @@ export async function renderPdf(projectId, sourcePath) {
   }
 
   const run = marp
-    ? doRenderMarp(projectId, sourcePath, hash)
+    ? doRenderMarp(projectId, sourcePath, hash, theme)
     : doRender(projectId, sourcePath, bibPath, bib, hash);
   inFlight.set(hash, run);
   try {
@@ -120,8 +146,10 @@ async function doRender(projectId, sourcePath, bibPath, bib, hash) {
 }
 
 /** STH-57: slide-deck preview — one sandboxed Marp run, straight to PDF. */
-async function doRenderMarp(projectId, sourcePath, hash) {
-  const { output: pdf } = await renderMarp(projectId, sourcePath, 'pdf');
+async function doRenderMarp(projectId, sourcePath, hash, theme) {
+  const { output: pdf } = await renderMarp(projectId, sourcePath, 'pdf', {
+    themeName: theme?.name, themeCss: theme?.css,
+  });
   cachePdf(hash, pdf);
   return pdf;
 }
@@ -142,10 +170,13 @@ export async function exportDocument(projectId, sourcePath, format) {
   if (!spec) {
     throw new RangeError(`Unsupported export format: ${format}`);
   }
-  await readProjectFile(projectId, sourcePath); // throws not_found early
+  const source = await readProjectFile(projectId, sourcePath); // throws not_found early
   let output;
   if (spec.marp) {
-    ({ output } = await renderMarp(projectId, sourcePath, format));
+    const theme = await resolveMarpTheme(projectId, source);
+    ({ output } = await renderMarp(projectId, sourcePath, format, {
+      themeName: theme?.name, themeCss: theme?.css,
+    }));
   } else {
     const bibPath = DEFAULT_BIB_PATH;
     await materializeBib(projectId, bibPath).catch(() => {});

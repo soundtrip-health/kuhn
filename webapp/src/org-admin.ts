@@ -20,6 +20,7 @@ import {
   getOrgKnowledge,
   getOrgScript,
   getOrgScripts,
+  getOrgSlideThemes,
   getOrgSettings,
   getScriptPromotion,
   importCatalogScripts,
@@ -37,6 +38,8 @@ import {
   removeOrgMember,
   revokeInvitation,
   setOrgScriptStatus,
+  setOrgSlideThemeStatus,
+  uploadOrgSlideTheme,
   updateMemberRole,
   updateOrgSettings,
   type Invitation,
@@ -45,6 +48,7 @@ import {
   type OrgKnowledgeItem,
   type OrgMember,
   type OrgScriptsPayload,
+  type OrgSlideThemesPayload,
   type OrgSettings,
   type PromotionRequest,
   type ScriptPromotion,
@@ -58,11 +62,11 @@ import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'agents';
+type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'themes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'agents'];
-const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'themes', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'themes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -121,6 +125,12 @@ const scriptContents = new Map<number, { content: string; versions: ScriptVersio
 let openScriptReviewId: number | null = null;
 type ScriptReview = Awaited<ReturnType<typeof getScriptPromotion>>;
 const scriptReviews = new Map<number, ScriptReview>();
+
+// Themes tab (STH-58): the Marp theme catalog + this org's uploaded themes.
+let themesData: OrgSlideThemesPayload | null = null;
+let themesLoading = false;
+let themesError: string | null = null;
+let themesBusy = false;
 
 // Agents tab (issue #67): base prompts + this org's additions.
 let agentPrompts: OrgAgentPrompt[] | null = null;
@@ -208,6 +218,9 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   scriptContents.clear();
   openScriptReviewId = null;
   scriptReviews.clear();
+  themesData = null;
+  themesError = null;
+  themesBusy = false;
 
   render();
   if (owner) {
@@ -219,6 +232,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   void reloadKnowledge();
   void reloadAgentPrompts();
   void reloadScripts();
+    void reloadThemes();
 
   // Live import status for the Knowledge tab: doc_status events land on the
   // shared org feed; a poll tick (feed down) refetches the merged state.
@@ -367,6 +381,23 @@ async function reloadScripts(): Promise<void> {
     scriptsError = (err as Error).message;
   } finally {
     scriptsLoading = false;
+  }
+  render();
+}
+
+async function reloadThemes(): Promise<void> {
+  const orgId = adminOrgId;
+  themesLoading = themesData === null;
+  render();
+  try {
+    const payload = await getOrgSlideThemes(orgId);
+    if (orgId !== adminOrgId) return;
+    themesData = payload;
+    themesError = null;
+  } catch (err) {
+    themesError = (err as Error).message;
+  } finally {
+    themesLoading = false;
   }
   render();
 }
@@ -1727,6 +1758,118 @@ function agentsTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Themes tab (STH-58) ---------------------------------------------------------
+
+async function themeAction(fn: () => Promise<unknown>): Promise<void> {
+  themesBusy = true;
+  render();
+  try {
+    await fn();
+    themesError = null;
+  } catch (err) {
+    themesError = (err as Error).message;
+  } finally {
+    themesBusy = false;
+  }
+  await reloadThemes();
+}
+
+function themeRow(name: string, title: string, meta: string, control: HTMLElement | null): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'theme-row';
+  const label = document.createElement('div');
+  label.innerHTML = '<strong></strong> <code class="theme-name"></code><div class="theme-meta"></div>';
+  (label.querySelector('strong') as HTMLElement).textContent = title;
+  (label.querySelector('.theme-name') as HTMLElement).textContent = name;
+  (label.querySelector('.theme-meta') as HTMLElement).textContent = meta;
+  row.append(label);
+  if (control) row.append(control);
+  return row;
+}
+
+function themesTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (themesError) parts.push(inlineError(themesError));
+  if (themesLoading || themesData === null) {
+    if (!themesError) parts.push(emptyRow('Loading slide themes…'));
+    return parts;
+  }
+  const owner = workspace.isOwner();
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'Marp slide themes. A deck picks one with `theme: <name>` front matter; an active org theme shadows a Kuhn theme of the same name.'
+    : 'Slide themes available to this organization’s decks. Only owners can upload or disable themes.';
+  parts.push(blurb);
+
+  parts.push(sectionTitle('Kuhn themes'));
+  if (themesData.catalog.length === 0) parts.push(emptyRow('No seeded themes in this deployment.'));
+  for (const t of themesData.catalog) {
+    const meta = [
+      t.description ?? '',
+      t.available ? '' : 'unavailable in this deploy',
+      t.shadowed ? 'shadowed by an org theme of the same name' : '',
+    ].filter(Boolean).join(' — ');
+    parts.push(themeRow(t.name, t.title, meta, null));
+  }
+
+  parts.push(sectionTitle('Organization themes'));
+  if (themesData.themes.length === 0) parts.push(emptyRow('No uploaded themes yet.'));
+  for (const t of themesData.themes) {
+    let control: HTMLElement | null = null;
+    if (owner) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-quiet btn-sm';
+      btn.textContent = t.status === 'active' ? 'Disable' : 'Enable';
+      btn.disabled = themesBusy;
+      btn.addEventListener('click', () => void themeAction(
+        () => setOrgSlideThemeStatus(adminOrgId, t.name, t.status === 'active' ? 'disabled' : 'active'),
+      ));
+      control = btn;
+    }
+    const meta = `${t.status} · ${(t.css_bytes / 1024).toFixed(1)} KB · updated ${formatDate(t.updated_at)}`;
+    parts.push(themeRow(t.name, t.title, meta, control));
+  }
+
+  if (owner) {
+    parts.push(sectionTitle('Upload a theme'));
+    const form = document.createElement('form');
+    form.className = 'theme-upload';
+    const hint = document.createElement('p');
+    hint.className = 'ol-blurb';
+    hint.textContent = 'Pick a Marp theme CSS file. Its /* @theme <name> */ header names the theme; re-uploading a name replaces it.';
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.accept = '.css,text/css';
+    const title = document.createElement('input');
+    title.type = 'text';
+    title.placeholder = 'Display title (optional)';
+    title.className = 'invite-input';
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'btn btn-solid btn-sm';
+    submit.textContent = 'Upload theme';
+    submit.disabled = themesBusy;
+    form.append(hint, file, title, submit);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const picked = file.files?.[0];
+      if (!picked) {
+        themesError = 'Choose a CSS file to upload.';
+        render();
+        return;
+      }
+      void themeAction(async () => {
+        const css = await picked.text();
+        await uploadOrgSlideTheme(adminOrgId, css, title.value.trim() || undefined);
+      });
+    });
+    parts.push(form);
+  }
+  return parts;
+}
+
 // ---- Render ----------------------------------------------------------------------
 
 const TAB_LABEL: Record<Tab, string> = {
@@ -1735,6 +1878,7 @@ const TAB_LABEL: Record<Tab, string> = {
   promotions: 'Promotions',
   knowledge: 'Knowledge',
   scripts: 'Scripts',
+  themes: 'Themes',
   agents: 'Agents',
 };
 
@@ -1814,6 +1958,7 @@ function render(): void {
     : activeTab === 'promotions' ? promotionsTab()
     : activeTab === 'agents' ? agentsTab()
     : activeTab === 'scripts' ? scriptsTab()
+    : activeTab === 'themes' ? themesTab()
     : knowledgeTab();
   body.append(...parts);
 

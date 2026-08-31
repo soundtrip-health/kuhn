@@ -171,6 +171,15 @@ export const config = {
     // Scripts are code text: small, diffable, stored in the DB.
     maxScriptBytes: parseInt(process.env.SCRIPTS_MAX_BYTES || String(256 * 1024)),
   },
+  slideThemes: {
+    // STH-58: Kuhn-curated Marp theme catalog — slide-themes/catalog.json plus
+    // the CSS files it points at, shipped in the repo tree and read-only at
+    // runtime; same deployment contract as the script catalog above.
+    catalogRoot: process.env.KUHN_SLIDE_THEMES
+      || new URL('../../slide-themes', import.meta.url).pathname,
+    // Theme CSS is text: small, diffable, stored in the DB for org uploads.
+    maxThemeBytes: parseInt(process.env.SLIDE_THEME_MAX_BYTES || String(256 * 1024)),
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).

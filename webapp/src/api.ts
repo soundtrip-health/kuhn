@@ -1350,6 +1350,69 @@ export async function putOrgAgentPrompt(
   return ((await res.json()) as { addition: AgentPromptAddition | null }).addition;
 }
 
+// ---- Slide themes (STH-58) ----
+
+export interface CatalogSlideTheme {
+  name: string;
+  title: string;
+  description: string | null;
+  available: boolean;
+  /** An ACTIVE org theme of the same name wins at render time. */
+  shadowed?: boolean;
+}
+
+export interface OrgSlideTheme {
+  id: number;
+  name: string;
+  title: string;
+  status: 'active' | 'disabled';
+  css_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgSlideThemesPayload {
+  catalog: CatalogSlideTheme[];
+  themes: OrgSlideTheme[];
+}
+
+export async function getOrgSlideThemes(orgId: number): Promise<OrgSlideThemesPayload> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes`));
+  return (await res.json()) as OrgSlideThemesPayload;
+}
+
+/** Upload/replace an org slide theme (owner-only); the name comes from the CSS @theme header. */
+export async function uploadOrgSlideTheme(
+  orgId: number,
+  css: string,
+  title?: string,
+): Promise<OrgSlideThemesPayload & { theme: OrgSlideTheme }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ css, title }),
+    }),
+  );
+  return (await res.json()) as OrgSlideThemesPayload & { theme: OrgSlideTheme };
+}
+
+/** Enable/disable one org slide theme (owner-only). */
+export async function setOrgSlideThemeStatus(
+  orgId: number,
+  name: string,
+  status: 'active' | 'disabled',
+): Promise<OrgSlideTheme> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/slide-themes/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+  return ((await res.json()) as { theme: OrgSlideTheme }).theme;
+}
+
 // ---- Shared scripts (issue #68) ----
 
 export interface ScriptArg {
