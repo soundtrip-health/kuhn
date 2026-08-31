@@ -24,6 +24,7 @@ import {
 import { commitNow } from './history.js';
 import { publishProjectEvent } from './project-events.js';
 import { StorageError, readProjectFile, writeProjectFile } from './storage.js';
+import { log } from './logger.js';
 
 /**
  * The always-suggest scope: paths whose FIRST segment is exactly `draft`
@@ -304,6 +305,11 @@ export async function acceptEdit(projectId, id, { hunk = null, force = false, us
         baseContent: newBase, baseHash: sha256(newBase), baseMissing: false,
       }));
     }
+    log.info('suggestion_accept', {
+      projectId: Number(projectId), editId: row.id, path: row.path,
+      agent: row.agent_slug ?? null, jobId: row.job_id ?? null, userId,
+      hunk: hunk.index, remaining: remaining.length,
+    });
     publishApplied(projectId, row, kind, userId);
     await commitNow(projectId, { agent: row.agent_slug ?? null, userId, label: commitLabel(row) });
     return { applied: true, remaining: remaining.length, ...(edit ? { edit } : {}) };
@@ -312,6 +318,11 @@ export async function acceptEdit(projectId, id, { hunk = null, force = false, us
   // Accept all (including force on a stale row): the proposal becomes the file.
   await writeProjectFile(projectId, row.path, row.proposed_content);
   deletePendingEdit(row.id);
+  log.info('suggestion_accept', {
+    projectId: Number(projectId), editId: row.id, path: row.path,
+    agent: row.agent_slug ?? null, jobId: row.job_id ?? null, userId,
+    hunk: null, force, remaining: 0,
+  });
   publishApplied(projectId, row, kind, userId);
   await commitNow(projectId, { agent: row.agent_slug ?? null, userId, label: commitLabel(row) });
   return { applied: true, remaining: 0 };
@@ -331,6 +342,11 @@ export async function rejectEdit(projectId, id, { hunk = null, userId = null } =
 
   if (hunk == null) {
     deletePendingEdit(row.id);
+    log.info('suggestion_reject', {
+      projectId: Number(projectId), editId: row.id, path: row.path,
+      agent: row.agent_slug ?? null, jobId: row.job_id ?? null, userId,
+      hunk: null, remaining: 0,
+    });
     publishProposed(projectId, row, userId);
     return { rejected: true, remaining: 0 };
   }
@@ -354,6 +370,11 @@ export async function rejectEdit(projectId, id, { hunk = null, userId = null } =
   } else {
     edit = toEdit(updatePendingEdit(row.id, { proposedContent: newProposed }));
   }
+  log.info('suggestion_reject', {
+    projectId: Number(projectId), editId: row.id, path: row.path,
+    agent: row.agent_slug ?? null, jobId: row.job_id ?? null, userId,
+    hunk: hunk.index, remaining: remaining.length,
+  });
   publishProposed(projectId, row, userId);
   return { rejected: true, remaining: remaining.length, ...(edit ? { edit } : {}) };
 }

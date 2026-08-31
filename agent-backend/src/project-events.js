@@ -30,6 +30,7 @@ import {
   evictRoom, evictRoomsUnder,
   plantMoveTombstone, clearMoveTombstonesUnder,
 } from './yjs-websocket.js';
+import { log } from './logger.js';
 
 /** @type {Map<number, Set<(event: object) => void>>} */
 const subscribers = new Map();
@@ -65,6 +66,17 @@ export function publishProjectEvent(projectId, event, { jobId, userId } = {}) {
   if (event == null || typeof event !== 'object') return;
   if (seen.has(event)) return;
   seen.add(event);
+  // Durable artifact audit (STH-51): file_events rows are pruned per project
+  // and 'proposed' suggestions never reach that table at all — the NDJSON
+  // stream is the record that survives.
+  if (event.type === 'file_change' && event.path) {
+    log.info('file_event', {
+      projectId: Number(projectId), path: event.path, kind: event.kind,
+      agent: event.agent ?? null, jobId: event.jobId ?? jobId ?? null,
+      userId: userId ?? null,
+      ...(event.kind === 'moved' && event.meta?.from ? { from: event.meta.from } : {}),
+    });
+  }
   // Persist file activity here — the one point every file_change crosses,
   // with or without live subscribers (story 005-002). Failure must never
   // break event delivery or the emitting run. `userId` attributes the event
