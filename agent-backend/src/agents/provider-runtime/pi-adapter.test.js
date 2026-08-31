@@ -17,6 +17,7 @@ import {
   createFauxPiRuntime,
   createOpenAICompatiblePiRuntime,
   createOpenAIPiRuntime,
+  createOpenRouterPiRuntime,
 } from './pi-adapter.js';
 import { ScriptedRuntime } from './scripted-runtime.js';
 
@@ -686,6 +687,78 @@ describe('Pi production adapter', () => {
   ])('rejects unsafe custom endpoint %s', (baseUrl, message) => {
     expect(() => createOpenAICompatiblePiRuntime({ baseUrl, modelId: 'm' })).toThrow(message);
   });
+
+  it.each([
+    ['openrouter', 7, () => createOpenRouterPiRuntime({ maxTurns: 7 })],
+    ['openai', 3, () => createOpenAIPiRuntime({ maxTurns: 3 })],
+    ['openai-compatible', 9, () => createOpenAICompatiblePiRuntime({
+      baseUrl: 'http://127.0.0.1:8000/v1', modelId: 'qwen-science', maxTurns: 9,
+    })],
+  ])('propagates the product max-turn limit to the %s live factory', (path, maxTurns, build) => {
+    // Regression (STH-47): the live factories used to drop the cap that the
+    // factory seam and PiAgentRuntime both carry — only the faux path
+    // forwarded it. Every live path must configure the runtime with it.
+    const { runtime } = build();
+    expect(runtime.maxTurns).toBe(maxTurns);
+  });
+
+  const LIVE_CREDENTIAL_PATHS = [
+    ['openrouter', 'openai/gpt-oss-20b', (options) => createOpenRouterPiRuntime(options), 'OPENROUTER_API_KEY'],
+    ['openai', 'gpt-5-mini', (options) => createOpenAIPiRuntime(options), 'OPENAI_API_KEY'],
+  ];
+
+  it.each(LIVE_CREDENTIAL_PATHS)(
+    'resolves the %s credential from the named environment variable only (no default-name fallback)',
+    async (path, modelId, build, defaultEnv) => {
+      const customEnv = path === 'openrouter' ? 'KUHN_S47_OR_CRED_KEY' : 'KUHN_S47_OA_CRED_KEY';
+      const savedCustom = process.env[customEnv];
+      const savedDefault = process.env[defaultEnv];
+      delete process.env[customEnv];
+      delete process.env[defaultEnv];
+      try {
+        // The named variable is consulted and its value is used...
+        process.env[customEnv] = `sk-custom-${path}`;
+        const custom = build({ modelId, apiKeyEnv: customEnv });
+        const customAuth = await custom.models.getAuth(custom.model);
+        expect(customAuth).toMatchObject({ source: customEnv });
+        expect(customAuth.auth.apiKey).toBe(`sk-custom-${path}`);
+        // ...and the secret never enters runtime identity or model metadata.
+        expect(JSON.stringify(custom.runtime.identity)).not.toContain(`sk-custom-${path}`);
+        expect(JSON.stringify(custom.model)).not.toContain(`sk-custom-${path}`);
+
+        // ...and the provider's default name is NOT silently consulted as a
+        // fallback when the named variable is unset (the pre-fix bug:
+        // openai/openrouter hard-wired their default env names).
+        delete process.env[customEnv];
+        process.env[defaultEnv] = `sk-default-${path}`;
+        const unset = build({ modelId, apiKeyEnv: customEnv });
+        expect(await unset.models.getAuth(unset.model)).toBeUndefined();
+      } finally {
+        if (savedCustom === undefined) delete process.env[customEnv];
+        else process.env[customEnv] = savedCustom;
+        if (savedDefault === undefined) delete process.env[defaultEnv];
+        else process.env[defaultEnv] = savedDefault;
+      }
+    },
+  );
+
+  it.each(LIVE_CREDENTIAL_PATHS)(
+    'keeps the %s provider default credential variable when no name is given',
+    async (path, modelId, build, defaultEnv) => {
+      const saved = process.env[defaultEnv];
+      delete process.env[defaultEnv];
+      try {
+        process.env[defaultEnv] = `sk-default-${path}`;
+        const { models, model } = build({ modelId });
+        const auth = await models.getAuth(model);
+        expect(auth).toMatchObject({ source: defaultEnv });
+        expect(auth.auth.apiKey).toBe(`sk-default-${path}`);
+      } finally {
+        if (saved === undefined) delete process.env[defaultEnv];
+        else process.env[defaultEnv] = saved;
+      }
+    },
+  );
 });
 
 describe('Pi adapter server-mode safety', () => {

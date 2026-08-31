@@ -6,8 +6,9 @@ import {
   fauxProvider,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
-import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
-import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
+import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
+import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
+import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
 
 import { EventChannel } from '../events.js';
 import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
@@ -30,11 +31,13 @@ import { validateArgs } from '../tools/validate.js';
  *   `systemPrompt` — Pi reads no AGENTS.md/CLAUDE.md, project context, or
  *   personal configuration; the core agent loop performs no filesystem
  *   access.
- * - Credentials come only from explicitly named environment variables
- *   (or the faux provider's no-op auth). No personal Pi auth store, OAuth
- *   profile, or ambient credential file is consulted; a missing key fails
- *   the turn with a normalized `provider_error` instead of silently
- *   borrowing another credential.
+ * - Credentials come only from the explicitly named credential
+ *   environment variable for the provider path (or the faux provider's
+ *   no-op auth): the named variable is the only one consulted — the
+ *   provider's default name is never silently consulted as a fallback —
+ *   and no personal Pi auth store, OAuth profile, or ambient credential
+ *   file is read. A missing key fails the turn with a normalized
+ *   `provider_error` instead of borrowing another credential.
  * - Pi's transport-level request retry is left at its default of zero, so
  *   provider failures surface as exactly one terminal `error` event. Any
  *   retry policy stays above the runtime seam.
@@ -615,6 +618,7 @@ export function createOpenAICompatiblePiRuntime({
   tools = [],
   systemPrompt = '',
   continuation,
+  maxTurns,
 } = {}) {
   const endpoint = validateEndpoint(baseUrl);
   if (!modelId) throw new Error('modelId is required');
@@ -643,39 +647,80 @@ export function createOpenAICompatiblePiRuntime({
   const collection = createModels();
   collection.setProvider(provider);
   return {
-    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation }),
+    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation, maxTurns }),
     models: collection,
     model,
     provider,
   };
 }
 
-/** Real, non-Anthropic OpenAI path used by the optional live smoke. */
-export function createOpenAIPiRuntime({ modelId = 'gpt-5-mini', tools = [], systemPrompt = '', continuation } = {}) {
-  const provider = openaiProvider();
+/**
+ * Real, non-Anthropic OpenAI path used by the optional live smoke. Built
+ * exactly like pi-ai's `openaiProvider()` (same id, endpoint, model
+ * catalog, and API), except the credential resolves from the explicitly
+ * named environment variable (`apiKeyEnv`; default `OPENAI_API_KEY`) — the
+ * only variable consulted. The key is never read by name in Kuhn code and
+ * never enters model metadata or continuation state.
+ */
+export function createOpenAIPiRuntime({
+  modelId = 'gpt-5-mini',
+  apiKeyEnv = 'OPENAI_API_KEY',
+  tools = [],
+  systemPrompt = '',
+  continuation,
+  maxTurns,
+} = {}) {
+  const provider = createProvider({
+    id: 'openai',
+    name: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    auth: { apiKey: envApiKeyAuth('OpenAI API key', [apiKeyEnv]) },
+    models: Object.values(OPENAI_MODELS),
+    api: openAIResponsesApi(),
+  });
   const collection = createModels();
   collection.setProvider(provider);
   const model = collection.getModel('openai', modelId);
   if (!model) throw new Error(`Unknown OpenAI model: ${modelId}`);
   return {
-    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation }),
+    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation, maxTurns }),
     models: collection,
     model,
     provider,
   };
 }
 
-/** Real non-Anthropic model path through OpenRouter for the optional live smoke. */
+/**
+ * Real non-Anthropic model path through OpenRouter for the optional live
+ * smoke. Built exactly like pi-ai's `openrouterProvider()` (same id,
+ * endpoint, model catalog, and API), except the credential resolves from
+ * the explicitly named environment variable (`apiKeyEnv`; default
+ * `OPENROUTER_API_KEY`) — the only variable consulted — and the built-in
+ * OAuth entry is omitted: the preview documents the API-key path only and
+ * no OAuth profile is consulted.
+ */
 export function createOpenRouterPiRuntime({
-  modelId = 'openai/gpt-oss-20b', tools = [], systemPrompt = '', continuation,
+  modelId = 'openai/gpt-oss-20b',
+  apiKeyEnv = 'OPENROUTER_API_KEY',
+  tools = [],
+  systemPrompt = '',
+  continuation,
+  maxTurns,
 } = {}) {
-  const provider = openrouterProvider();
+  const provider = createProvider({
+    id: 'openrouter',
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    auth: { apiKey: envApiKeyAuth('OpenRouter API key', [apiKeyEnv]) },
+    models: Object.values(OPENROUTER_MODELS),
+    api: openAICompletionsApi(),
+  });
   const collection = createModels();
   collection.setProvider(provider);
   const model = collection.getModel('openrouter', modelId);
   if (!model) throw new Error(`Unknown OpenRouter model: ${modelId}`);
   return {
-    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation }),
+    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation, maxTurns }),
     models: collection,
     model,
     provider,

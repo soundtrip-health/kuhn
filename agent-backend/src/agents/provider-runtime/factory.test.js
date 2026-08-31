@@ -124,3 +124,61 @@ describe('createAgentRuntime', () => {
     expect(runtime.identity.provider).toBe('openrouter');
   });
 });
+
+/**
+ * Option propagation through the real provider seam (STH-47 regressions):
+ * the product's max-turn limit and the KUHN_PI_API_KEY_ENV credential name
+ * must reach the runtime on EVERY live Pi provider path — not only the
+ * faux and OpenAI-compatible paths.
+ */
+describe('createAgentRuntime pi option propagation (live paths)', () => {
+  const LIVE_PATHS = [
+    ['openrouter', { provider: 'openrouter', model: 'openai/gpt-oss-20b' }, 'OPENROUTER_API_KEY'],
+    ['openai', { provider: 'openai', model: 'gpt-5-mini' }, 'OPENAI_API_KEY'],
+    ['openai-compatible', {
+      provider: 'openai-compatible', model: 'qwen-science', baseUrl: 'http://127.0.0.1:8000/v1',
+    }, 'OPENAI_COMPATIBLE_API_KEY'],
+  ];
+
+  it.each(LIVE_PATHS)('propagates the product max-turn limit on the %s live path', (label, cfg) => {
+    configMock.config = { agentRuntime: piConfig(cfg) };
+    const runtime = createAgentRuntime({ model: 'claude-sonnet-4-6', projectDir: '/p', maxTurns: 50 });
+    expect(runtime.identity).toMatchObject({ provider: cfg.provider, model: cfg.model });
+    expect(runtime.maxTurns).toBe(50);
+  });
+
+  it.each(LIVE_PATHS)(
+    'resolves the %s credential from the configured name only (no default-name fallback)',
+    async (label, cfg, defaultEnv) => {
+      const customEnv = `KUHN_S47_FACTORY_${label.toUpperCase().replace(/-/g, '_')}_KEY`;
+      const savedCustom = process.env[customEnv];
+      const savedDefault = process.env[defaultEnv];
+      delete process.env[customEnv];
+      delete process.env[defaultEnv];
+      try {
+        process.env[customEnv] = `sk-factory-${label}`;
+        configMock.config = { agentRuntime: piConfig({ ...cfg, apiKeyEnv: customEnv }) };
+        const runtime = createAgentRuntime({ model: 'claude-sonnet-4-6', projectDir: '/p', maxTurns: 25 });
+
+        const auth = await runtime.models.getAuth(runtime.model);
+        expect(auth).toMatchObject({ source: customEnv });
+        expect(auth.auth.apiKey).toBe(`sk-factory-${label}`);
+        expect(runtime.maxTurns).toBe(25);
+        expect(JSON.stringify(runtime.identity)).not.toContain(`sk-factory-${label}`);
+
+        // The provider's default credential name is never consulted as a
+        // fallback when the configured name is unset (the pre-fix bug:
+        // openai/openrouter ignored the configured name entirely).
+        delete process.env[customEnv];
+        process.env[defaultEnv] = `sk-ambient-${label}`;
+        const unconfigured = createAgentRuntime({ model: 'claude-sonnet-4-6', projectDir: '/p' });
+        expect(await unconfigured.models.getAuth(unconfigured.model)).toBeUndefined();
+      } finally {
+        if (savedCustom === undefined) delete process.env[customEnv];
+        else process.env[customEnv] = savedCustom;
+        if (savedDefault === undefined) delete process.env[defaultEnv];
+        else process.env[defaultEnv] = savedDefault;
+      }
+    },
+  );
+});

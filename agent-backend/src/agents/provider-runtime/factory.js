@@ -80,7 +80,7 @@ function createPiAgentRuntime({ tools = [], maxTurns, systemPrompt = '' } = {}) 
       + '(set KUHN_PI_MODEL; Kuhn per-agent Claude model ids are not Pi model ids)',
     );
   }
-  const common = { modelId: pi.model, tools, systemPrompt, maxTurns };
+  const common = { modelId: pi.model, tools, systemPrompt, maxTurns, apiKeyEnv };
   if (provider === 'openrouter') return createOpenRouterPiRuntime(common).runtime;
   if (provider === 'openai') return createOpenAIPiRuntime(common).runtime;
   if (!pi.baseUrl) {
@@ -88,9 +88,5 @@ function createPiAgentRuntime({ tools = [], maxTurns, systemPrompt = '' } = {}) 
       "Pi preview: an OpenAI-compatible base URL is required for the 'openai-compatible' provider path (set KUHN_PI_BASE_URL)",
     );
   }
-  return createOpenAICompatiblePiRuntime({
-    baseUrl: pi.baseUrl,
-    apiKeyEnv,
-    ...common,
-  }).runtime;
+  return createOpenAICompatiblePiRuntime({ baseUrl: pi.baseUrl, ...common }).runtime;
 }
