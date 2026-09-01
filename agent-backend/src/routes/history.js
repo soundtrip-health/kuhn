@@ -4,10 +4,10 @@
 // Tenancy (story 010-003): reads need viewer, restore needs editor.
 
 import { Router } from 'express';
-import { extname } from 'node:path';
 
 import { commitNow, fileAtVersion, listHistory } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
+import { sendRawFile } from '../raw-content.js';
 import { StorageError, writeProjectFile } from '../storage.js';
 import { requireProjectRole } from './guards.js';
 
@@ -54,9 +54,7 @@ router.get('/api/projects/:projectId/history/file', handle('viewer', async (proj
     return;
   }
   const buf = await fileAtVersion(projectId, path, ref);
-  const TEXT_TYPES = { '.md': 'text/markdown; charset=utf-8' };
-  res.set('Content-Type', TEXT_TYPES[extname(path).toLowerCase()] ?? 'text/plain; charset=utf-8');
-  res.send(buf);
+  sendRawFile(res, path, buf);
 }));
 
 /**
