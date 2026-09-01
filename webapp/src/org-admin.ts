@@ -54,6 +54,10 @@ import {
   type ScriptPromotion,
   type ScriptVersionInfo,
   type Role,
+  listOrgSecrets,
+  putOrgSecret,
+  deleteOrgSecret,
+  type OrgSecret,
 } from './api';
 import { trapFocus } from './a11y';
 import { agentIdentity } from './agents';
@@ -62,11 +66,11 @@ import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'themes' | 'agents';
+type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'themes', 'agents'];
-const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'themes', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -131,6 +135,12 @@ let themesData: OrgSlideThemesPayload | null = null;
 let themesLoading = false;
 let themesError: string | null = null;
 let themesBusy = false;
+
+// Secrets tab (org secrets store): metadata only — values are write-only.
+let secretsRows: OrgSecret[] | null = null;
+let secretsLoading = false;
+let secretsError: string | null = null;
+let secretsBusy = false;
 
 // Agents tab (issue #67): base prompts + this org's additions.
 let agentPrompts: OrgAgentPrompt[] | null = null;
@@ -221,6 +231,9 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   themesData = null;
   themesError = null;
   themesBusy = false;
+  secretsRows = null;
+  secretsError = null;
+  secretsBusy = false;
 
   render();
   if (owner) {
@@ -233,6 +246,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   void reloadAgentPrompts();
   void reloadScripts();
     void reloadThemes();
+  void reloadSecrets();
 
   // Live import status for the Knowledge tab: doc_status events land on the
   // shared org feed; a poll tick (feed down) refetches the merged state.
@@ -398,6 +412,23 @@ async function reloadThemes(): Promise<void> {
     themesError = (err as Error).message;
   } finally {
     themesLoading = false;
+  }
+  render();
+}
+
+async function reloadSecrets(): Promise<void> {
+  const orgId = adminOrgId;
+  secretsLoading = secretsRows === null;
+  render();
+  try {
+    const rows = await listOrgSecrets(orgId);
+    if (orgId !== adminOrgId) return;
+    secretsRows = rows;
+    secretsError = null;
+  } catch (err) {
+    secretsError = (err as Error).message;
+  } finally {
+    secretsLoading = false;
   }
   render();
 }
@@ -1872,12 +1903,118 @@ function themesTab(): HTMLElement[] {
 
 // ---- Render ----------------------------------------------------------------------
 
+// ---- Secrets tab (org secrets store) ---------------------------------------------
+// Values are write-only: create/replace/delete only; the list is metadata.
+// Editors and up manage; viewers get a read-only list.
+
+function secretsTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  parts.push(sectionTitle('Org secrets'));
+  const intro = document.createElement('p');
+  intro.className = 'admin-setting-hint';
+  intro.textContent =
+    'Credentials agents use server-side — e.g. a database DSN the analyst\u2019s '
+    + 'sandboxed scripts connect with (run_script secrets), or an ncbi-api-key for '
+    + 'PubMed rate limits. Values are write-only: they can be replaced or deleted, '
+    + 'never viewed, and they are never shown to agents or models.';
+  parts.push(intro);
+
+  if (secretsError) parts.push(inlineError(secretsError));
+  if (secretsLoading || secretsRows === null) {
+    parts.push(emptyRow('Loading secrets…'));
+    return parts;
+  }
+
+  const canEdit = workspace.canEdit();
+
+  if (secretsRows.length === 0) {
+    parts.push(emptyRow('No secrets yet.'));
+  }
+  for (const secret of secretsRows) {
+    const row = document.createElement('div');
+    row.className = 'admin-form-row';
+    const label = document.createElement('div');
+    label.innerHTML = `<code></code><span class="admin-setting-hint"></span>`;
+    (label.querySelector('code') as HTMLElement).textContent = secret.name;
+    (label.querySelector('span') as HTMLElement).textContent =
+      ` ${secret.description ?? ''} · updated ${formatDate(secret.updated_at)}`;
+    row.append(label);
+    if (canEdit) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn btn-ghost btn-sm';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete secret ${secret.name}`);
+      del.disabled = secretsBusy;
+      del.addEventListener('click', () => {
+        if (!confirm(`Delete secret "${secret.name}"? Agent runs that reference it will fail.`)) return;
+        secretsBusy = true;
+        render();
+        void deleteOrgSecret(adminOrgId, secret.name)
+          .then(() => toast(`Deleted ${secret.name}`))
+          .catch((err) => { secretsError = (err as Error).message; })
+          .finally(() => { secretsBusy = false; void reloadSecrets(); });
+      });
+      row.append(del);
+    }
+    parts.push(row);
+  }
+
+  if (canEdit) {
+    parts.push(sectionTitle('Add or replace a secret'));
+    const form = document.createElement('form');
+    form.className = 'admin-form';
+    const name = document.createElement('input');
+    name.className = 'pb-input';
+    name.placeholder = 'name (e.g. nsduh-db)';
+    name.pattern = '[a-z][a-z0-9-]{0,63}';
+    name.required = true;
+    name.setAttribute('aria-label', 'Secret name');
+    const value = document.createElement('input');
+    value.className = 'pb-input';
+    value.type = 'password';
+    value.placeholder = 'value (stored write-only)';
+    value.required = true;
+    value.setAttribute('aria-label', 'Secret value');
+    const desc = document.createElement('input');
+    desc.className = 'pb-input';
+    desc.placeholder = 'description (optional)';
+    desc.setAttribute('aria-label', 'Secret description');
+    const save = document.createElement('button');
+    save.type = 'submit';
+    save.className = 'btn btn-ghost btn-sm';
+    save.textContent = 'Save';
+    save.disabled = secretsBusy;
+    form.append(name, value, desc, save);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const existing = secretsRows?.some((r) => r.name === name.value.trim());
+      if (existing && !confirm(`Replace the value of "${name.value.trim()}"?`)) return;
+      secretsBusy = true;
+      render();
+      void putOrgSecret(adminOrgId, name.value.trim(), value.value, desc.value.trim() || undefined)
+        .then((row) => toast(`Saved ${row.name}`))
+        .catch((err) => { secretsError = (err as Error).message; })
+        .finally(() => { secretsBusy = false; void reloadSecrets(); });
+    });
+    parts.push(form);
+    const hint = document.createElement('p');
+    hint.className = 'admin-setting-hint';
+    hint.textContent =
+      'Agents reference a secret by name (analyst: run_script secrets → env '
+      + 'KUHN_SECRET_<NAME>). To rotate, save the same name with a new value.';
+    parts.push(hint);
+  }
+  return parts;
+}
+
 const TAB_LABEL: Record<Tab, string> = {
   members: 'Members',
   settings: 'Settings',
   promotions: 'Promotions',
   knowledge: 'Knowledge',
   scripts: 'Scripts',
+  secrets: 'Secrets',
   themes: 'Themes',
   agents: 'Agents',
 };
@@ -1958,6 +2095,7 @@ function render(): void {
     : activeTab === 'promotions' ? promotionsTab()
     : activeTab === 'agents' ? agentsTab()
     : activeTab === 'scripts' ? scriptsTab()
+    : activeTab === 'secrets' ? secretsTab()
     : activeTab === 'themes' ? themesTab()
     : knowledgeTab();
   body.append(...parts);

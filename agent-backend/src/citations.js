@@ -5,6 +5,7 @@
 // rule). The pure helpers are exported for tests.
 
 import { arxivFetchById, crossrefFetchByDoi, pubmedSearch } from './agents/search.js';
+import { getSecretValueForProject } from './db/org-secrets.js';
 import { StorageError, writeProjectFile } from './storage.js';
 import {
   insertReference, materializeBib, findByPmid, listProjectReferences,
@@ -37,15 +38,27 @@ async function rateLimit() {
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 }
 
+// The org's `ncbi-api-key` secret (if saved) rides along for the higher
+// E-utilities rate limit. Resolved server-side at the point of use; the value
+// is never logged, returned, or shown to a model.
+function ncbiKey(projectId) {
+  if (projectId == null) return null;
+  try {
+    return getSecretValueForProject(projectId, 'ncbi-api-key');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Search PubMed for citation candidates.
  * @returns {Promise<Array<{pmid, title, authors, journal, year, doi}>>}
  */
-export async function searchCitations(query, maxResults = 8) {
+export async function searchCitations(query, maxResults = 8, { projectId = null } = {}) {
   await rateLimit();
   let results;
   try {
-    results = await pubmedSearch(query, maxResults);
+    results = await pubmedSearch(query, maxResults, { apiKey: ncbiKey(projectId) });
   } catch (err) {
     throw new UpstreamError(err.message);
   }
@@ -64,13 +77,15 @@ export async function searchCitations(query, maxResults = 8) {
  * normalize it to the fields a BibTeX entry needs. Returns null when PubMed
  * has no record for the id.
  */
-export async function fetchPubmedRecord(pmid) {
+export async function fetchPubmedRecord(pmid, { projectId = null } = {}) {
   const params = new URLSearchParams({
     db: 'pubmed',
     id: String(pmid),
     rettype: 'medline',
     retmode: 'text',
   });
+  const apiKey = ncbiKey(projectId);
+  if (apiKey) params.set('api_key', apiKey);
   let res;
   for (let attempt = 0; ; attempt++) {
     await rateLimit();
@@ -225,7 +240,7 @@ export async function upsertCitation(projectId, pmid, bibPath = DEFAULT_BIB_PATH
     return { key: existing.cite_key, created: false, bibtex: null, path: bibPath };
   }
 
-  const record = await fetchPubmedRecord(pmid);
+  const record = await fetchPubmedRecord(pmid, { projectId });
   if (!record) throw new StorageError('not_found', `No PubMed record for PMID ${pmid}`);
 
   const ref = pubmedToRef(record);

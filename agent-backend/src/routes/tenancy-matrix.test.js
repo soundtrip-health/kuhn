@@ -122,7 +122,7 @@ beforeAll(async () => {
     './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
-  ]) {
+    './org-secrets.js']) {
     app.use((await import(mod)).default);
   }
   await new Promise((ok) => { server = app.listen(0, ok); });

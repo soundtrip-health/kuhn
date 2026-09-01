@@ -106,7 +106,25 @@ KUHN_SUPERADMIN_EMAILS=you@example.com
 # Data root: SQLite DB and uploaded project files. Defaults to ./data in the
 # repo. Point it at backed-up, access-controlled storage in production.
 # KUHN_DATA_DIR=/srv/kuhn/data
+
+# Org secrets store (encrypted credentials agents use server-side — DB DSNs,
+# API keys). Set a dedicated key and keep it OUT of database backups
+# (ciphertext and key in different domains). Falls back to a key derived from
+# KUHN_SESSION_SECRET when unset.
+KUHN_SECRETS_KEY=<output of: openssl rand -hex 32>
+
+# Secrets-enabled analyst script runs join this docker network to reach org
+# data services (instead of --network none). Create it INTERNAL so sandboxes
+# still cannot reach the internet:
+#   docker network create --internal kuhn-data
+# SANDBOX_SECRETS_NETWORK=kuhn-data
 ```
+
+For a worked, end-to-end example of wiring an instance to a data warehouse —
+least-privilege DB role (read-only data schema + writable scratch schema),
+internal network, secret creation, per-project data brief — see
+[`test-projects/02-nsduh-psychedelics/`](../test-projects/02-nsduh-psychedelics/README.md),
+which doubles as the admin's guide for real private databases.
 
 Notes:
 

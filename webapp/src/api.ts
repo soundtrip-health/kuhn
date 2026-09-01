@@ -407,6 +407,47 @@ export async function updateOrgSettings(
   };
 }
 
+// ---- Org secrets (secrets store) ------------------------------------------------
+// Values are write-only: the API returns metadata only, never a stored value.
+
+export interface OrgSecret {
+  name: string;
+  description: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listOrgSecrets(orgId: number): Promise<OrgSecret[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/secrets`));
+  return ((await res.json()) as { secrets: OrgSecret[] }).secrets;
+}
+
+/** Create or replace a secret (editor+); the value can never be read back. */
+export async function putOrgSecret(
+  orgId: number,
+  name: string,
+  value: string,
+  description?: string,
+): Promise<OrgSecret> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/secrets/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, ...(description ? { description } : {}) }),
+    }),
+  );
+  return ((await res.json()) as { secret: OrgSecret }).secret;
+}
+
+export async function deleteOrgSecret(orgId: number, name: string): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/secrets/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  );
+}
+
 /** All organizations on the platform (super-admin only). */
 export async function adminListOrgs(): Promise<AdminOrg[]> {
   const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/admin/orgs`));

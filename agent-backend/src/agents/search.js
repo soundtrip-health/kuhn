@@ -1,5 +1,7 @@
 // Literature search backends for agent tools (story 011).
-// Direct API calls — no API key required at low request rates.
+// Direct API calls — no API key required at low request rates. PubMed calls
+// optionally attach an NCBI api_key (the org's `ncbi-api-key` secret, resolved
+// by the caller) for the higher E-utilities rate limit.
 
 const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 
@@ -9,7 +11,7 @@ const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
  * @param {number} [maxResults=10]
  * @returns {Promise<Array<{pmid: string, title: string, authors: string[], journal: string, pubdate: string, doi: string|null}>>}
  */
-export async function pubmedSearch(searchQuery, maxResults = 10) {
+export async function pubmedSearch(searchQuery, maxResults = 10, { apiKey = null } = {}) {
   const esearch = new URLSearchParams({
     db: 'pubmed',
     term: searchQuery,
@@ -17,6 +19,7 @@ export async function pubmedSearch(searchQuery, maxResults = 10) {
     retmode: 'json',
     sort: 'relevance',
   });
+  if (apiKey) esearch.set('api_key', apiKey);
   const searchRes = await fetch(`${EUTILS}/esearch.fcgi?${esearch}`);
   if (!searchRes.ok) throw new Error(`PubMed esearch failed: HTTP ${searchRes.status}`);
   const { esearchresult } = await searchRes.json();
@@ -28,6 +31,7 @@ export async function pubmedSearch(searchQuery, maxResults = 10) {
     id: ids.join(','),
     retmode: 'json',
   });
+  if (apiKey) esummary.set('api_key', apiKey);
   const summaryRes = await fetch(`${EUTILS}/esummary.fcgi?${esummary}`);
   if (!summaryRes.ok) throw new Error(`PubMed esummary failed: HTTP ${summaryRes.status}`);
   const { result } = await summaryRes.json();

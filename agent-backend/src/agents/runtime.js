@@ -15,6 +15,7 @@ import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-scripts.js';
 import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, RUNNABLE_LANGUAGES, runScriptSandboxed } from '../sandbox.js';
+import { getSecretValueForProject, listSecretNamesForProject, secretEnvName } from '../db/org-secrets.js';
 import { Semaphore } from '../sandbox-semaphore.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
 import { MARP_BUILTIN_THEMES, listCatalogThemes, listOrgThemes } from '../db/slide-themes.js';
@@ -734,16 +735,39 @@ function addRunScriptTools(tools, agent, { projectId, parentJob, channel }) {
     },
   ));
 
+  // Secrets store: names only — values are resolved server-side at run time
+  // and never enter the model context.
+  tools.push(tool(
+    'list_secrets',
+    'List the names of the organization\'s stored secrets (credentials the PI/operators saved — e.g. a database DSN). Values are never shown; pass a name in run_script\'s `secrets` to have it injected into that run\'s environment.',
+    {},
+    async () => {
+      try {
+        const secrets = listSecretNamesForProject(projectId);
+        if (secrets.length === 0) {
+          return { content: [{ type: 'text', text: 'No org secrets are configured. Ask the user to add one (Org admin → Secrets) if this task needs a credential.' }] };
+        }
+        const text = secrets.map((sec) =>
+          `- ${sec.name} → env ${secretEnvName(sec.name)}${sec.description ? ` — ${sec.description}` : ''}`).join('\n');
+        return { content: [{ type: 'text', text }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `list_secrets failed: ${err.message}` }], isError: true };
+      }
+    },
+  ));
+
   tools.push(tool(
     'run_script',
-    'Run a script in the sandbox: a shared org script by slug (see list_scripts), or a project file by path while iterating before promotion. The sandbox has NO network and a read-only project mount; scripts read inputs via workspace-relative paths and write every output under $OUT_DIR. Outputs are copied into analyst/output/run-<id>/ and listed in the result.',
+    'Run a script in the sandbox: a shared org script by slug (see list_scripts), or a project file by path while iterating before promotion. The sandbox has NO internet and a read-only project mount; scripts read inputs via workspace-relative paths and write every output under $OUT_DIR. Outputs are copied into analyst/output/run-<id>/ and listed in the result. To reach an org data service (e.g. the org database), pass `secrets`: each named org secret (see list_secrets) is injected as a KUHN_SECRET_<NAME> env var and the run joins the internal data network. Never print secret values in script output.',
     {
       script: z.string().optional().describe('Org script slug to run (current version)'),
       path: z.string().optional().describe('Project-relative script file to run instead (e.g. analyst/fit.R)'),
       args: z.array(z.string().regex(SCRIPT_ARG_PATTERN, 'plain values and workspace-relative paths only'))
         .max(16).default([]).describe('Arguments passed to the script'),
+      secrets: z.array(z.string()).max(8).default([])
+        .describe('Org secret names to inject as KUHN_SECRET_* env vars (see list_secrets)'),
     },
-    async ({ script, path, args }) => {
+    async ({ script, path, args, secrets = [] }) => {
       const errorResult = (text) => ({ content: [{ type: 'text', text }], isError: true });
       if ((script == null) === (path == null)) {
         return errorResult('Pass exactly one of `script` (org slug) or `path` (project file).');
@@ -783,6 +807,22 @@ function addRunScriptTools(tools, agent, { projectId, parentJob, channel }) {
         return errorResult(`run_script failed: ${err.message}`);
       }
 
+      // Resolve requested secrets server-side. Values go ONLY into the
+      // container env (sandbox.js); the tool result and the model context
+      // never see them — an unknown name reports names, not values.
+      let secretsEnv = null;
+      if (secrets.length > 0) {
+        secretsEnv = {};
+        for (const name of secrets) {
+          const value = getSecretValueForProject(projectId, name);
+          if (value == null) {
+            const available = listSecretNamesForProject(projectId).map((sec) => sec.name);
+            return errorResult(`No org secret "${name}". Available: ${available.length > 0 ? available.join(', ') : '(none — ask the user to add one in Org admin → Secrets)'}`);
+          }
+          secretsEnv[secretEnvName(name)] = value;
+        }
+      }
+
       runSeq += 1;
       const outputDir = `analyst/output/run-${parentJob.id}-${runSeq}`;
       const record = (fields) => recordScriptRun({
@@ -791,7 +831,7 @@ function addRunScriptTools(tools, agent, { projectId, parentJob, channel }) {
 
       let result;
       try {
-        result = await getScriptSemaphore().run(() => runScriptSandboxed(projectId, run));
+        result = await getScriptSemaphore().run(() => runScriptSandboxed(projectId, { ...run, secretsEnv }));
       } catch (err) {
         if (err instanceof SandboxError) {
           const status = err.code === 'timeout' ? 'timeout' : 'failed';
@@ -1065,7 +1105,10 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         query: z.string().describe('Search query (keywords, MeSH terms, or author searches)'),
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
-      async ({ query, max_results }) => searchToolResult(() => pubmedSearch(query, max_results)),
+      // An org's `ncbi-api-key` secret (if saved) rides along server-side for
+      // the higher NCBI rate limit; the model never sees the value.
+      async ({ query, max_results }) => searchToolResult(() =>
+        pubmedSearch(query, max_results, { apiKey: getSecretValueForProject(projectId, 'ncbi-api-key') })),
     ));
   }
 

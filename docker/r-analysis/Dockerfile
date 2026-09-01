@@ -28,4 +28,16 @@ RUN install2.r --error --skipinstalled \
 RUN install2.r --error --skipinstalled \
     tidyverse patchwork ggrepel scales
 
+# Complex-survey analysis (NSDUH-style weighted estimates — test-projects/02).
+RUN install2.r --error --skipinstalled \
+    survey srvyr
+
+# Database clients (org-secrets feature: secrets-enabled runs reach org data
+# services over the internal sandbox network). RPostgres needs libpq to build.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN install2.r --error --skipinstalled \
+    DBI RPostgres
+
 CMD ["R", "--version"]

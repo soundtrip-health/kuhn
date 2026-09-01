@@ -93,6 +93,11 @@ vi.mock('../db/org-scripts.js', () => ({
   listOrgScripts: vi.fn(() => []),
 }));
 vi.mock('../db/script-runs.js', () => ({ recordScriptRun: vi.fn() }));
+vi.mock('../db/org-secrets.js', () => ({
+  getSecretValueForProject: vi.fn(() => null),
+  listSecretNamesForProject: vi.fn(() => []),
+  secretEnvName: (name) => `KUHN_SECRET_${name.toUpperCase().replace(/-/g, '_')}`,
+}));
 vi.mock('../sandbox.js', () => {
   class SandboxError extends Error {
     constructor(code, message) {
@@ -1541,7 +1546,7 @@ describe('run_script tools (issue #68b)', () => {
 
     expect(runScriptSandboxed).toHaveBeenCalledWith(9, {
       language: 'r', entrypoint: 'fit.R', scriptContent: 'library(mgcv)',
-      args: ['--input', 'data.csv'],
+      args: ['--input', 'data.csv'], secretsEnv: null,
     });
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('exit code 0');
@@ -1557,6 +1562,56 @@ describe('run_script tools (issue #68b)', () => {
     }));
     getOrgScript.mockReturnValue(null);
     getScriptVersion.mockReturnValue(null);
+  });
+
+  it('injects requested org secrets into the sandbox env; values stay out of the result (secrets store)', async () => {
+    const { getSecretValueForProject } = await import('../db/org-secrets.js');
+    getSecretValueForProject.mockReturnValue('postgresql://kuhn_analyst:hunter2@db:5432/nsduh');
+    runScriptSandboxed.mockResolvedValue({
+      exitCode: 0, stdout: '42 rows', stderr: '', truncated: false, durationMs: 100,
+      outputs: [], skippedOutputs: 0,
+    });
+
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/query.R', args: [], secrets: ['nsduh-db'] });
+
+    expect(getSecretValueForProject).toHaveBeenCalledWith(9, 'nsduh-db');
+    expect(runScriptSandboxed).toHaveBeenCalledWith(9, expect.objectContaining({
+      secretsEnv: { KUHN_SECRET_NSDUH_DB: 'postgresql://kuhn_analyst:hunter2@db:5432/nsduh' },
+    }));
+    expect(result.isError).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+    getSecretValueForProject.mockReturnValue(null);
+    runScriptSandboxed.mockReset();
+  });
+
+  it('refuses an unknown secret with available names only — never values', async () => {
+    const { listSecretNamesForProject } = await import('../db/org-secrets.js');
+    listSecretNamesForProject.mockReturnValue([{ name: 'other-db', description: 'x' }]);
+
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/query.R', args: [], secrets: ['nsduh-db'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No org secret "nsduh-db"');
+    expect(result.content[0].text).toContain('other-db');
+    expect(runScriptSandboxed).not.toHaveBeenCalled();
+    listSecretNamesForProject.mockReturnValue([]);
+  });
+
+  it('list_secrets renders names and env vars, never values', async () => {
+    const { listSecretNamesForProject } = await import('../db/org-secrets.js');
+    listSecretNamesForProject.mockReturnValue([
+      { name: 'nsduh-db', description: 'NSDUH warehouse (read-only)' },
+    ]);
+    getAgentWithTools.mockResolvedValue(ANALYST);
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    await collect({ role: 'analyst', projectId: 9, input: 'go' });
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    const list = tools.find((t) => t.name === 'list_secrets');
+    const result = await list.handler({});
+    expect(result.content[0].text).toContain('nsduh-db → env KUHN_SECRET_NSDUH_DB — NSDUH warehouse (read-only)');
+    listSecretNamesForProject.mockReturnValue([]);
   });
 
   it('returns nonzero exits as isError with the stderr tail and records status error', async () => {
