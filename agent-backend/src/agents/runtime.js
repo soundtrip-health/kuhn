@@ -17,6 +17,7 @@ import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, RUNNABLE_LANGUAGES, runScriptSandboxed } from '../sandbox.js';
 import { Semaphore } from '../sandbox-semaphore.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../db/org-documents.js';
+import { MARP_BUILTIN_THEMES, listCatalogThemes, listOrgThemes } from '../db/slide-themes.js';
 import {
   resolveProjectDir,
   readProjectFile,
@@ -1393,6 +1394,35 @@ function buildMcpTools(agent, { projectId, depth, budget, parentJob, channel, us
         max_results: z.number().int().min(1).max(50).default(10).describe('Maximum results to return'),
       },
       async ({ query, max_results }) => searchToolResult(() => arxivSearch(query, max_results)),
+    ));
+  }
+
+  if (agent.tools.includes('list_slide_themes')) {
+    // STH-61: slide-theme discovery — agents kept guessing theme names. The
+    // org is derived server-side from the task's project (no org parameter),
+    // same stance as search_org_knowledge below.
+    tools.push(tool(
+      'list_slide_themes',
+      'List the Marp slide themes available to this project: marp built-ins, Kuhn catalog themes, and this organization\'s uploaded themes. A slide deck opts in with `marp: true` and selects a theme with `theme: <name>` in its leading YAML front matter.',
+      {},
+      async () => {
+        try {
+          const project = await getProject(projectId);
+          const orgId = project?.org_id ?? null;
+          const org = orgId == null ? [] : listOrgThemes(orgId).filter((t) => t.status === 'active');
+          const orgNames = new Set(org.map((t) => t.name));
+          const catalog = listCatalogThemes().filter((t) => t.available && !orgNames.has(t.name));
+          const lines = [
+            'Available slide themes (use as `theme: <name>` in the deck\'s front matter):',
+            ...MARP_BUILTIN_THEMES.map((name) => `- ${name} (marp built-in)`),
+            ...catalog.map((t) => `- ${t.name} — ${t.title}${t.description ? `: ${t.description}` : ''}`),
+            ...org.map((t) => `- ${t.name} — ${t.title} (organization theme)`),
+          ];
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `Could not list slide themes: ${err.message}` }], isError: true };
+        }
+      },
     ));
   }
 

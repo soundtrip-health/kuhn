@@ -37,7 +37,7 @@ vi.mock('./db/slide-themes.js', () => ({
 }));
 
 import { config } from './config.js';
-import { pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
+import { SandboxError, pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
 import { resolveThemeCss } from './db/slide-themes.js';
 import { renderPdf, exportDocument, isMarpSource, marpThemeName } from './render.js';
 
@@ -185,7 +185,7 @@ describe('marp slide decks (STH-57)', () => {
 
   it('exports pptx via marp for any markdown; docx still goes through pandoc', async () => {
     const out = await exportDocument(1, 'draft/main.md', 'pptx');
-    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/main.md', 'pptx', { themeName: undefined, themeCss: undefined });
+    expect(renderMarp).toHaveBeenCalledWith(1, 'draft/main.md', 'pptx', { themeName: undefined, themeCss: undefined, editablePptx: true });
     expect(out.filename).toBe('main.pptx');
     expect(out.contentType).toMatch(/presentationml/);
     expect(pandocConvert).not.toHaveBeenCalled();
@@ -221,5 +221,21 @@ describe('marp slide themes (STH-58)', () => {
   it('built-in theme names skip the library entirely', async () => {
     await renderPdf(1, 'draft/deck.md'); // fixture uses theme: default
     expect(resolveThemeCss).not.toHaveBeenCalled();
+  });
+});
+
+describe('editable pptx fallback (STH-61)', () => {
+  it('falls back to the default pptx when the editable conversion fails', async () => {
+    renderMarp.mockRejectedValueOnce(new SandboxError('failed', 'LibreOffice soffice binary could not be found'));
+    const out = await exportDocument(1, 'draft/main.md', 'pptx');
+    expect(out.filename).toBe('main.pptx');
+    expect(renderMarp).toHaveBeenCalledTimes(2);
+    expect(renderMarp.mock.calls[0][3]).toMatchObject({ editablePptx: true });
+    expect(renderMarp.mock.calls[1][3]).not.toHaveProperty('editablePptx');
+  });
+
+  it('does not mask timeouts as a fallback', async () => {
+    renderMarp.mockRejectedValueOnce(new SandboxError('timeout', 'Sandbox timed out'));
+    await expect(exportDocument(1, 'draft/main.md', 'pptx')).rejects.toMatchObject({ code: 'timeout' });
   });
 });

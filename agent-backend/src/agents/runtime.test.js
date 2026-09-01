@@ -70,6 +70,18 @@ vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
   getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
 }));
+// STH-61: theme discovery — the SQL substance lives in db/slide-themes.test.js.
+vi.mock('../db/slide-themes.js', () => ({
+  MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
+  listCatalogThemes: vi.fn(() => [
+    { name: 'kuhn', title: 'Kuhn', description: 'clean academic', available: 1 },
+    { name: 'gone', title: 'Gone', description: null, available: 0 },
+  ]),
+  listOrgThemes: vi.fn(() => [
+    { name: 'acme', title: 'Acme', status: 'active' },
+    { name: 'old', title: 'Old', status: 'disabled' },
+  ]),
+}));
 // Same reason as file-activity.js: the real module imports db.js. The SQL
 // substance is covered in db/org-agent-prompts.test.js.
 vi.mock('../db/org-agent-prompts.js', () => ({ getOrgAgentPrompt: vi.fn(() => null) }));
@@ -559,6 +571,20 @@ describe('suggestion mode (story 008-001)', () => {
     const bin = await read.handler({ path: 'figures/plot.png' });
     expect(bin.isError).toBe(true);
     expect(bin.content[0].text).toMatch(/binary file/);
+  });
+
+  it('list_slide_themes reports built-ins, available catalog, and active org themes (STH-61)', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['list_slide_themes'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go' });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const list = tools.find((t) => t.name === 'list_slide_themes');
+    const text = (await list.handler({})).content[0].text;
+    expect(text).toContain('- default (marp built-in)');
+    expect(text).toContain('- kuhn — Kuhn: clean academic');
+    expect(text).toContain('- acme — Acme (organization theme)');
+    expect(text).not.toContain('gone'); // unavailable catalog rows hidden
+    expect(text).not.toContain('- old'); // disabled org themes hidden
   });
 
   it('write_file and edit_file refuse a derived bibliography path (issue #42)', async () => {

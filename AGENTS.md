@@ -59,7 +59,7 @@ project files both live under an explicit data directory, `KUHN_DATA_DIR`
 `data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
 or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
-(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest marpteam/marp-cli:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network).
+(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network). The marp slide renderer is also built: `docker build -t kuhn/marp:latest docker/marp` (STH-61; adds LibreOffice for editable pptx — the pulled `marpteam/marp-cli` image works too, minus editable pptx).
 
 **The local data directory is disposable.** There is no production data in a
 dev checkout: every project under `data/` is a test project. Delete
