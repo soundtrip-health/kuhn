@@ -104,12 +104,16 @@ export const cancelDisconnect = {
     model: {
       attempts: [{
         turns: [
-          // A real event first, so the harness has something to observe before
-          // it aborts; the trailing park keeps the provider run in flight.
-          // No tool call is in flight when the interrupt lands: the Phase-1
-          // contract requires every tool_call to be paired with a tool_result,
-          // and an interrupted in-flight call has no result (pi-spike aborts
-          // the same way — on a text event).
+          // A real event first, so the harness has something to observe
+          // before it aborts; the trailing park keeps the provider run in
+          // flight. The interrupt lands on a text-only turn: the
+          // cancellation edge with a finalized-but-unexecuted tool call
+          // (the runtime closes it with one synthetic error tool_result
+          // before the cancelled terminal) cannot be placed
+          // deterministically behind the scripted model's stream, so it is
+          // pinned where the stream is controlled — the Pi adapter's abort
+          // regression (provider-runtime/pi-adapter.test.js) and the
+          // seam's persisted-audit regression (agents/runtime.test.js).
           {
             text: 'Working on the outline…',
             deltas: ['Working on the outline…'],

@@ -372,6 +372,80 @@ describe('runAgentTask', () => {
     expect(roles).toEqual(['user', 'assistant', 'tool', 'assistant']);
   });
 
+  it('persists the unresolved-call closure when a cancelled turn ends before tool execution (strict seam contract)', async () => {
+    // The exact normalized stream the Pi adapter emits when a turn is
+    // cancelled after the assistant message finalized a tool call but
+    // before the tool executed: the message's tool_call, its usage, one
+    // synthetic error tool_result closing the unresolved call, and the
+    // cancelled terminal. The seam must persist the audit in that order —
+    // the assistant row (written on the usage event) already carries the
+    // requested call, the error tool-result row follows it, and the job
+    // lands cancelled — so the persisted conversation agrees with the
+    // canonical continuation the terminal carries.
+    const UNRESOLVED = '(unresolved: the turn ended before this tool call produced a result)';
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'check the workspace' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Checking the workspace first.' },
+        { type: 'tool_call', id: 'cancel-1', name: 'list_files', arguments: {} },
+      ] },
+      { role: 'tool_result', toolCallId: 'cancel-1', toolName: 'list_files',
+        content: [{ type: 'text', text: UNRESOLVED }], isError: true },
+    ];
+    mockSeam.runtime = {
+      identity: { provider: 'seam-test', model: 'seam-test-1' },
+      cancel: () => {},
+      runTurn: async function* () {
+        yield { type: 'provider', provider: 'seam-test', model: 'seam-test-1', api: 'seam-test' };
+        yield { type: 'text', content: 'Checking the workspace first.' };
+        yield { type: 'tool_call', id: 'cancel-1', name: 'list_files', arguments: {} };
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 15 } };
+        yield { type: 'tool_result', id: 'cancel-1', name: 'list_files', isError: true,
+          content: [{ type: 'text', text: UNRESOLVED }] };
+        yield { type: 'error',
+          error: { code: 'cancelled', message: 'cancelled', retryable: false, status: null },
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 15 },
+          continuation: createContinuation(messages) };
+      },
+    };
+
+    const ac = new AbortController();
+    const events = [];
+    for await (const ev of runAgentTask({
+      role: 'ra', projectId: 1, input: 'check the workspace', signal: ac.signal,
+    })) {
+      events.push(ev);
+      // The consumer drops after the first text event — the product
+      // teardown interrupts the turn and cancels the job.
+      if (ev.type === 'text') ac.abort();
+    }
+
+    // The cancelled terminal returns without a domain terminal event: the
+    // teardown stamped the job and the aborted consumer is the one who
+    // stopped the stream.
+    expect(events.filter((e) => e.type === 'done' || e.type === 'error')).toEqual([]);
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    // The persisted conversation audit: assistant(requested call) ->
+    // tool(error result), in row order — the assistant row written on the
+    // usage event already carries the call the message requested.
+    const roles = logMessage.mock.calls.map(([m]) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool']);
+    const assistantRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'assistant');
+    expect(assistantRows).toHaveLength(1);
+    expect(assistantRows[0]).toMatchObject({
+      content: 'Checking the workspace first.',
+      toolCalls: [{ id: 'cancel-1', name: 'list_files', input: {} }],
+    });
+    const toolRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'tool');
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]).toMatchObject({
+      role: 'tool',
+      content: UNRESOLVED,
+      toolCallId: 'cancel-1',
+      isError: true,
+    });
+  });
+
   it('confines the SDK to the role tool allowlist and project workspace', async () => {
     sdkState.messages = [
       { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },

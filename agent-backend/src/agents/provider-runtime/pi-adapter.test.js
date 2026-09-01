@@ -559,15 +559,17 @@ describe('Pi production adapter', () => {
     expect(validateContinuation(events.at(-1).continuation)).toEqual([]);
   });
 
-  it('ends an abort mid tool-call with a cancelled terminal and a canonical record that closes the call', async () => {
+  it('ends an abort mid tool-call with a contract-valid cancelled stream and a canonical record that closes the call', async () => {
     // The stream finalizes with PARTIAL content that already carries a
     // toolCall block whose arguments never finished streaming. The turn
-    // ends before that call can execute: the event stream carries the
-    // attempted tool_call and no tool_result for it (the Phase-1 stance,
-    // identical to the Claude adapter's interrupted stream), while the
-    // canonical record closes the call with an explicit error tool_result
-    // so a retry can resume from it. Before the closure fix this path
-    // threw inside continuationFromPiMessages and hung the stream.
+    // ends before that call can execute. The normalized contract is
+    // exactly-once, so the cancelled terminal is preceded by exactly one
+    // synthetic error tool_result for the unresolved call — the same
+    // closure the canonical record carries, so the event stream and the
+    // record describe the same history and a retry can resume from it.
+    // Before the event-stream closure this path left a dangling tool_call
+    // (the old Phase-1 stance); before the record closure it threw inside
+    // continuationFromPiMessages and hung the stream.
     const { collection, model } = createScriptedPiProvider({
       steps: [
         (stamped, stream, { signal }) => {
@@ -621,15 +623,27 @@ describe('Pi production adapter', () => {
 
     const terminal = events.at(-1);
     expect(terminal).toMatchObject({ type: 'error', error: { code: 'cancelled', retryable: false } });
+    // Exactly one terminal cancelled error, and no done terminal.
+    expect(events.filter((event) => event.type === 'error' && event.error?.code === 'cancelled')).toHaveLength(1);
     expect(events.some((event) => event.type === 'done')).toBe(false);
-    // Exactly one attempted tool_call, and no tool_result event for it.
+    // Exactly one attempted tool_call and exactly one matching error
+    // tool_result for it: the synthetic closure is emitted before the
+    // terminal, never after, and never duplicated.
     expect(events.filter((event) => event.type === 'tool_call'))
       .toEqual([{ type: 'tool_call', id: 'dangle-1', name: 'echo', arguments: {} }]);
-    expect(events.filter((event) => event.type === 'tool_result')).toEqual([]);
-    // The Phase-1 stance for an interrupted in-flight call: the event
-    // stream carries no result for it (the closure lives in the record).
-    expect(validateRuntimeEventSequence(events))
-      .toEqual(['tool_call dangle-1 has no tool_result']);
+    expect(events.filter((event) => event.type === 'tool_result')).toEqual([{
+      type: 'tool_result',
+      id: 'dangle-1',
+      name: 'echo',
+      content: [{ type: 'text', text: '(unresolved: the turn ended before this tool call produced a result)' }],
+      isError: true,
+    }]);
+    // The cancelled stream is contract-valid end to end: no dangling-call
+    // violation, exactly one terminal, and the per-message order is
+    // tool_call -> usage -> synthetic tool_result -> error (cancelled).
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
+    expect(events.map((event) => event.type))
+      .toEqual(['provider', 'text_delta', 'text', 'tool_call', 'usage', 'tool_result', 'error']);
     // The record is canonical and closed: a retry can resume from the
     // explicit error result instead of a dangling call.
     expect(terminal.continuation).toBeDefined();
@@ -651,6 +665,13 @@ describe('Pi production adapter', () => {
         isError: true,
       },
     ]);
+    // The event stream and the canonical continuation agree on the
+    // closure: the synthetic tool_result event and the record's error
+    // tool_result describe the same unresolved call.
+    const synthetic = events.find((event) => event.type === 'tool_result');
+    const recordClosure = terminal.continuation.messages.find((message) => message.role === 'tool_result');
+    expect(recordClosure).toMatchObject({ toolCallId: 'dangle-1', toolName: 'echo', isError: true });
+    expect(recordClosure.content).toEqual(synthetic.content);
   });
 
   it('reports missing usage without inventing zeros', async () => {

@@ -278,10 +278,32 @@ export class PiAgentRuntime {
     const channel = new EventChannel();
     let usage = normalizeUsage();
     let terminal = false;
+    // Exactly-once tool lifecycle (STH-47): every normalized tool_call
+    // emitted from a message's message_end must be paired with exactly one
+    // tool_result before the terminal event. Pi finalizes every call it
+    // starts — tool_execution_end always lands for an executed call — but
+    // a turn that ends (abort, max-turns cutoff, provider error) before
+    // execution begins never reaches it. The normalized contract closes
+    // such a call with one synthetic error tool_result — the same closure
+    // the canonical continuation carries (UNRESOLVED_TOOL_RESULT_TEXT) —
+    // and finish() is the single exactly-once terminal site, so no
+    // cancellation path can leave a dangling call in the stream.
+    const emittedToolCalls = new Map(); // call id -> name, from message_end
+    const resolvedToolCalls = new Set(); // call ids that reached tool_execution_end
 
     const finish = (event) => {
       if (terminal) return;
       terminal = true;
+      for (const [id, name] of emittedToolCalls) {
+        if (resolvedToolCalls.has(id)) continue;
+        channel.push({
+          type: 'tool_result',
+          id,
+          name,
+          content: [{ type: 'text', text: UNRESOLVED_TOOL_RESULT_TEXT }],
+          isError: true,
+        });
+      }
       channel.push(event);
     };
 
@@ -296,6 +318,9 @@ export class PiAgentRuntime {
       // when the usage arrives and must already carry the message's tool
       // calls). Pi's tool_execution_start is execution bookkeeping only.
       if (event.type === 'tool_execution_end') {
+        // This call reached execution: its real result is the exactly-once
+        // pairing — the terminal must not synthesize a second one.
+        resolvedToolCalls.add(event.toolCallId);
         channel.push({
           type: 'tool_result',
           id: event.toolCallId,
@@ -324,6 +349,7 @@ export class PiAgentRuntime {
         // from tool_execution_start is gone).
         for (const block of event.message.content) {
           if (block.type !== 'toolCall' || !block.id || !block.name) continue;
+          emittedToolCalls.set(block.id, block.name);
           channel.push({
             type: 'tool_call',
             id: block.id,
