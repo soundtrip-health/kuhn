@@ -176,6 +176,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   error            TEXT,
   input_tokens     INTEGER NOT NULL DEFAULT 0,
   output_tokens    INTEGER NOT NULL DEFAULT 0,
+  -- Last turn's prompt size (input + cache read/write) — the context the
+  -- session carries forward (STH-52 meter). input_tokens above is cumulative
+  -- task throughput; mirrored in init.js COLUMN_MIGRATIONS.
+  context_tokens   INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

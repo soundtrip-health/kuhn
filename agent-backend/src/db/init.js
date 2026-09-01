@@ -39,6 +39,10 @@ const COLUMN_MIGRATIONS = [
   // uploads/promotions stay NULL.
   { table: 'org_documents', column: 'catalog_item_id', ddl: 'TEXT' },
   { table: 'org_documents', column: 'catalog_item_version', ddl: 'INTEGER' },
+  // Context-meter fix: last-turn prompt size per job (input_tokens is
+  // cumulative throughput and overstates context). Default 0 = unknown for
+  // pre-migration rows; the webapp leaves the meter unseeded for those.
+  { table: 'jobs', column: 'context_tokens', ddl: 'INTEGER NOT NULL DEFAULT 0' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK

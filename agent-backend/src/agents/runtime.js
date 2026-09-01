@@ -90,7 +90,8 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient API error before retrying (story 029)
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
- *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens } }
+ *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window } }
+ *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52)
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
@@ -319,6 +320,10 @@ async function runTask(task, internal, channel, state) {
   ];
 
   const usage = { inputTokens: 0, outputTokens: 0 };
+  // Last turn's prompt size (input + cache read/write) — what the session
+  // actually carries forward. Distinct from usage.inputTokens, which sums
+  // across turns (cache reads re-counted each turn) and only measures cost.
+  let lastContextTokens = 0;
   let sdkSessionId = sessionId;
 
   // Transient model-provider errors (529 Overloaded / 429 / 5xx) are upstream
@@ -446,6 +451,7 @@ async function runTask(task, internal, channel, state) {
         });
         // Live per-agent context meter (STH-52); sub-agent events reach the
         // client via dispatch forwarding, tagged with the child's slug.
+        lastContextTokens = inputTokens;
         channel.push({
           type: 'context', agent: agent.slug, jobId: job.id,
           context: { tokens: inputTokens, window: config.agent.contextWindow },
@@ -464,6 +470,7 @@ async function runTask(task, internal, channel, state) {
           error: 'token budget exceeded',
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          contextTokens: lastContextTokens,
         });
         channel.push({
           type: 'error',
@@ -511,14 +518,17 @@ async function runTask(task, internal, channel, state) {
           status: 'done',
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          contextTokens: lastContextTokens,
         });
         log.info('job_end', {
           jobId: job.id, agent: agent.slug, depth, status: 'done',
-          contextTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+          contextTokens: lastContextTokens, inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
           budgetUsed: Math.round(budget.used),
         });
         channel.push({
           type: 'done', agent: agent.slug, jobId: job.id, sessionId: sdkSessionId, usage,
+          context: { tokens: lastContextTokens, window: config.agent.contextWindow },
           budget: { used: Math.round(budget.used), limit: budget.limit },
         });
       } else {
@@ -528,6 +538,7 @@ async function runTask(task, internal, channel, state) {
           error: reason,
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          contextTokens: lastContextTokens,
         });
         log.error('job_end', {
           jobId: job.id, agent: agent.slug, depth, status: 'error', reason,

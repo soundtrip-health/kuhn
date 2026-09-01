@@ -233,6 +233,7 @@ describe('runAgentTask', () => {
         jobId: 42,
         sessionId: 'sess-1',
         usage: { inputTokens: 100, outputTokens: 50 },
+        context: { tokens: 10, window: 200000 },
         budget: { used: 15, limit: 250000 },
       },
     ]);
@@ -240,7 +241,7 @@ describe('runAgentTask', () => {
     // Job lifecycle: running with conversation -> session recorded -> done with usage
     expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7 });
     expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'sess-1' });
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'done', inputTokens: 100, outputTokens: 50 });
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'done', inputTokens: 100, outputTokens: 50, contextTokens: 10 });
 
     // Conversation logging: user input, assistant turn, tool result
     const roles = logMessage.mock.calls.map(([m]) => m.role);

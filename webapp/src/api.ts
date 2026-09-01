@@ -169,6 +169,8 @@ export interface Job {
   parent_job_id: number | null;
   // Context the session carried into its last reply (input + cache tokens).
   input_tokens: number;
+  /** Last turn's prompt size — the context the session carries forward (STH-52). 0 = unknown (pre-migration rows). */
+  context_tokens: number;
   created_at: string;
 }
 
