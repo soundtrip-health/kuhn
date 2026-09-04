@@ -39,6 +39,13 @@ const COLUMN_MIGRATIONS = [
   // uploads/promotions stay NULL.
   { table: 'org_documents', column: 'catalog_item_id', ddl: 'TEXT' },
   { table: 'org_documents', column: 'catalog_item_version', ddl: 'INTEGER' },
+  // STH-47: effective runtime identity per job (provider/model that ran it).
+  // Nullable — pre-migration rows stay NULL.
+  { table: 'jobs', column: 'provider', ddl: 'TEXT' },
+  { table: 'jobs', column: 'model', ddl: 'TEXT' },
+  // STH-47: canonical continuation persisted after a run, so a follow-up
+  // (and a rollback to another runtime) resumes provider-neutrally.
+  { table: 'jobs', column: 'continuation', ddl: 'TEXT' },
   // Context-meter fix: last-turn prompt size per job (input_tokens is
   // cumulative throughput and overstates context). Default 0 = unknown for
   // pre-migration rows; the webapp leaves the meter unseeded for those.

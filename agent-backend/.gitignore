@@ -1,7 +1,9 @@
 node_modules/
 .env
-projects/
-data/
+# Anchored: src/agents/eval/corpus/data/ is source, not the data dir.
+/projects/
+/data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+eval-results/

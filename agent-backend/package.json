@@ -11,6 +11,7 @@
     "db:seed": "node src/db/seed.js",
     "import:guidance": "node scripts/import-guidance.mjs",
     "eval:org-search": "node scripts/eval-org-search.mjs",
+    "eval:baseline": "node src/agents/eval/run.js",
     "smoke": "node scripts/smoke-research.js",
     "smoke:pi-runtime": "node scripts/smoke-pi-runtime.js",
     "test": "vitest run",
@@ -20,6 +21,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",
     "@anthropic-ai/sdk": "^0.122.0",
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
     "better-sqlite3": "^11.8.0",
     "cors": "^2.8.5",
     "diff": "^9.0.0",
@@ -34,8 +37,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.84.2",
-    "@earendil-works/pi-ai": "0.84.2",
     "vitest": "^4.1.4"
   }
 }

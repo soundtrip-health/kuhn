@@ -33,6 +33,30 @@ export const config = {
   db: {
     path: process.env.KUHN_SQLITE_PATH || join(dataDir, 'db', 'kuhn.sqlite'),
   },
+  // Agent runtime selector (STH-47 preview). 'claude' (default) keeps the
+  // Claude Agent SDK path exactly as before; 'pi' routes every agent task
+  // through the Pi AgentRuntime adapter with an explicit provider/model
+  // configuration below. There is no silent fallback: a misconfigured 'pi'
+  // selection fails the task with the Pi failure — it never quietly runs
+  // Claude. Switching back is an explicit operator change of this variable.
+  agentRuntime: {
+    kind: (process.env.KUHN_AGENT_RUNTIME || 'claude').trim().toLowerCase(),
+    // Explicit Pi preview configuration. Kuhn's per-agent Claude model ids
+    // (agents.model) are deliberately NOT reinterpreted as Pi model ids;
+    // this model is the one the Pi preview actually runs.
+    pi: {
+      // Provider path: 'openrouter' | 'openai' | 'openai-compatible'.
+      provider: (process.env.KUHN_PI_PROVIDER || 'openrouter').trim().toLowerCase(),
+      // The Pi model id to run (e.g. 'openai/gpt-oss-20b' on OpenRouter).
+      model: process.env.KUHN_PI_MODEL || '',
+      // Required for the 'openai-compatible' path (vLLM/Ollama/LiteLLM/...).
+      baseUrl: process.env.KUHN_PI_BASE_URL || '',
+      // Explicitly named credential environment variable. Defaults per
+      // provider when unset (OPENROUTER_API_KEY / OPENAI_API_KEY /
+      // OPENAI_COMPATIBLE_API_KEY); credentials are never reinterpreted.
+      apiKeyEnv: process.env.KUHN_PI_API_KEY_ENV || '',
+    },
+  },
   cors: {
     // Comma-separated allowlist; the webapp dev server is pinned to 5174
     origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')

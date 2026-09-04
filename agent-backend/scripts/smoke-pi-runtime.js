@@ -1,12 +1,12 @@
 import { validateRuntimeEventSequence } from '../src/agents/provider-runtime/contract.js';
-import { createOpenRouterPiRuntime } from '../src/agents/provider-runtime/pi-spike.js';
+import { createOpenRouterPiRuntime } from '../src/agents/provider-runtime/pi-adapter.js';
 
 if (!process.env.OPENROUTER_API_KEY) {
   console.log('[pi-smoke] skipped: OPENROUTER_API_KEY is not configured');
   process.exit(0);
 }
 
-const modelId = process.env.KUHN_PI_SMOKE_MODEL || 'openai/gpt-oss-20b:free';
+const modelId = process.env.KUHN_PI_SMOKE_MODEL || 'openai/gpt-oss-20b';
 const controller = new AbortController();
 const timeout = setTimeout(() => controller.abort(new Error('live smoke timed out')), 60_000);
 const { runtime } = createOpenRouterPiRuntime({

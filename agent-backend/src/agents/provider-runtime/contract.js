@@ -19,7 +19,15 @@
  * @property {string} [endpoint]
  *
  * @typedef {object} RuntimeError
- * @property {'rate_limit'|'overloaded'|'server'|'network'|'timeout'|'cancelled'|'context_overflow'|'provider_error'} code
+ * @property {string} code
+ *   - Normalized PROVIDER FAILURES (the PROVIDER_ERROR_CODES vocabulary):
+ *     'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server',
+ *     'network', 'timeout', 'context_overflow', 'safety', 'tool',
+ *     'cancelled', 'provider_error' — an upstream failure surfaced while
+ *     the turn was in flight; `retryable` marks the transient ones.
+ *   - TURN TERMINATIONS: the provider finished the turn and reported why
+ *     (e.g. 'max_turns', 'during_execution' from Claude result subtypes) —
+ *     never retryable, outside the PROVIDER_ERROR_CODES set.
  * @property {string} message
  * @property {boolean} retryable
  * @property {number|null} status
@@ -30,11 +38,48 @@
  * @property {object} parameters JSON Schema supplied by Kuhn
  * @property {(toolCallId: string, args: object, signal?: AbortSignal) => Promise<{content: Array<object>, details?: unknown}>} execute
  *
+ * Kuhn's tool registry (agents/tools/) supplies RuntimeTool instances with
+ * these additional provider-neutral metadata fields:
+ *
+ *   - grants:   the DB tool slugs (agent_tools assignments) that expose the
+ *     tool; one broad grant may expose several generated variants;
+ *   - readOnly: true when the tool has no product-side effects;
+ *   - effect:   'read' | 'write' | 'external-read' | 'external' | 'control';
+ *   - kind:     'kuhn' (an execute callback) or 'provider_builtin'
+ *     (execute is null — the provider must supply the capability natively,
+ *     e.g. Claude's WebSearch/WebFetch behind the web_search grant; adapters
+ *     that cannot supply it must omit the tool);
+ *   - visible:  optional (ctx) => boolean predicate (e.g. dispatch_agent is
+ *     withheld at the max dispatch depth).
+ *
  * Tool event semantics: `tool_call` records that the model requested a tool
  * with particular arguments — an attempted call, before Kuhn's schema
  * validation. The validation/execution outcome is always the matching
  * `tool_result`; invalid arguments produce `tool_result.isError === true` and
  * the Kuhn `execute` implementation is never invoked for them.
+ *
+ * Ordering: an assistant message's `tool_call` events precede that
+ * message's `usage` event, and the matching `tool_result` follows the
+ * usage — per message, `text -> tool_call(s) -> usage -> tool_result(s)`.
+ * The product seam writes the assistant conversation row when the message's
+ * usage arrives, so the row must already carry the message's tool calls.
+ * A turn that ends before a requested call executed (abort, provider
+ * failure, turn cutoff) closes it with exactly one synthetic error
+ * `tool_result` event (UNRESOLVED_TOOL_RESULT_TEXT) ahead of the terminal,
+ * and the canonical continuation carries the same closure so the record
+ * stays canonical for resume; validateRuntimeEventSequence rejects a
+ * dangling call. Both adapters close identically.
+ *
+ * Event vocabulary: `provider` (identity — provider/model/api, plus
+ * `sessionId` once the provider has allocated a session, and optional
+ * `capabilities` — e.g. a declared `contextWindow` the model metadata
+ * reports, used as the context meter's denominator when present),
+ * `text_delta`,
+ * `text`, `tool_call`, `tool_result`, per-turn `usage` (canonical
+ * RuntimeUsage), and exactly one terminal event: `done` (cumulative
+ * `usage` + canonical `continuation`) or `error` (normalized `error`, plus
+ * the cumulative `usage` and the partial canonical `continuation` when the
+ * transcript exists, so a retried attempt keeps the record complete).
  *
  * Continuation is the canonical Kuhn schema defined in continuation.js —
  * never raw provider or framework messages.
@@ -42,15 +87,56 @@
  * @typedef {object} RuntimeTurn
  * @property {string} input
  * @property {AbortSignal} [signal]
- * @property {{version: 1, messages: Array<object>}} [continuation] canonical Kuhn continuation (continuation.js)
+ * @property {{version: 1, messages: Array<object>}} [continuation] canonical Kuhn continuation (continuation.js).
+ *   - null/absent: a fresh context — the turn's `input` is a new user
+ *     message and is appended to the record exactly once.
+ *   - non-null with `retry: false` (the default): a FOLLOW-UP — the
+ *     record holds prior turns; the turn's `input` is a new user message
+ *     appended to the record exactly once.
+ *   - non-null with `retry: true`: a RETRY — the record is the failed
+ *     attempt's transcript of THIS SAME logical request and already
+ *     contains its user input; the adapter must NOT append `input` again
+ *     and resumes the record where the failure landed.
+ * In every case one logical user request appears exactly once in the
+ * canonical record across initial attempt, partial output, retry, and
+ * completion. The distinction is the product's explicit `retry` flag —
+ * never provider-specific string matching on the input text.
+ * @property {boolean} [retry] true when this turn retries the same logical
+ *   request as a failed attempt whose canonical record is `continuation`
+ *   (the product's transient-failure retry). Default false.
+ * @property {string} [systemPrompt] - Kuhn's server-built system prompt; the
+ *   adapter owns how the provider receives it
  *
  * @typedef {object} AgentRuntime
  * @property {(turn: RuntimeTurn) => AsyncIterable<object>} runTurn
+ * @property {() => void} [cancel] - interrupt the in-flight turn (teardown,
+ *   budget cutoff); the adapter still yields its one terminal `error`
+ *   (code 'cancelled') for the in-flight stream
  */
 
 import { validateContinuation } from './continuation.js';
 
 export const TERMINAL_RUNTIME_EVENTS = new Set(['done', 'error']);
+
+/**
+ * The persisted/model-facing text of a normalized `tool_result` content
+ * array (or an SDK-shaped string/block content): every text block is
+ * preserved — a multi-block result is joined, never reduced to
+ * `content[0]` — and a result without text blocks is serialized as JSON so
+ * nothing is silently dropped. Adapters use it when flattening a provider
+ * tool result into the canonical single-text-block record; the product seam
+ * uses it when persisting the tool row from the normalized event.
+ */
+export function toolResultText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const texts = content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text);
+    if (texts.length > 0) return texts.join('\n');
+  }
+  return JSON.stringify(content ?? null);
+}
 
 /** Raw usage fields (canonical names plus adapter aliases) read by normalizeUsage(). */
 const USAGE_FIELDS = [
@@ -75,12 +161,13 @@ const USAGE_FIELDS = [
  * provider-reported total always wins over derivation; cost/dollar
  * reconciliation stays out of scope until PLA-233.
  */
-export function normalizeUsage(usage = {}) {
-  const inputTokens = finiteOrNull(usage.inputTokens ?? usage.input);
-  const outputTokens = finiteOrNull(usage.outputTokens ?? usage.output);
-  const cacheReadTokens = finiteOrNull(usage.cacheReadTokens ?? usage.cacheRead);
-  const cacheWriteTokens = finiteOrNull(usage.cacheWriteTokens ?? usage.cacheWrite);
-  const reportedTotal = finiteOrNull(usage.totalTokens);
+export function normalizeUsage(usage) {
+  const value = usage ?? {};
+  const inputTokens = finiteOrNull(value.inputTokens ?? value.input);
+  const outputTokens = finiteOrNull(value.outputTokens ?? value.output);
+  const cacheReadTokens = finiteOrNull(value.cacheReadTokens ?? value.cacheRead);
+  const cacheWriteTokens = finiteOrNull(value.cacheWriteTokens ?? value.cacheWrite);
+  const reportedTotal = finiteOrNull(value.totalTokens);
   const knownComponents = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens]
     .filter((value) => value != null);
 
@@ -109,7 +196,35 @@ export function addUsage(left, right) {
   };
 }
 
-/** Normalize provider-specific failures before product retry policy sees them. */
+/**
+ * The normalized provider-failure vocabulary: codes normalizeProviderError()
+ * can return for an upstream failure, as opposed to a provider-reported
+ * turn termination (max_turns, …). The product layer (agents/runtime.js)
+ * uses this set to shape terminal errors — the story-029 friendly
+ * overload message and `reason: 'provider_overloaded'` tag apply only to
+ * codes in this set, rendered from the provider message.
+ */
+export const PROVIDER_ERROR_CODES = new Set([
+  'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server', 'network',
+  'timeout', 'context_overflow', 'safety', 'tool', 'cancelled', 'provider_error',
+]);
+
+/**
+ * Closure content for a tool call the turn ended before executing (abort,
+ * provider failure, turn cutoff). Every adapter emits it as the call's one
+ * synthetic error tool_result event and records it in the continuation.
+ */
+export const UNRESOLVED_TOOL_RESULT_TEXT =
+  '(unresolved: the turn ended before this tool call produced a result)';
+
+/**
+ * Normalize provider-specific failures before product retry policy sees
+ * them. The retryable set preserves story 029's historical behavior
+ * (408/409/425/429/5xx/529 statuses, ETIMEDOUT/ECONNRESET/ECONNREFUSED/
+ * ENOTFOUND/EAI_AGAIN/socket wording, and "overloaded"/"rate limit"
+ * wording) — a retry here is safe because these failures are upstream and
+ * stateless.
+ */
 export function normalizeProviderError(error, { stopReason } = {}) {
   const message = String(error?.message ?? error?.errorMessage ?? error ?? 'Provider error');
   const status = finiteOrNull(error?.status ?? error?.statusCode ?? error?.response?.status);
@@ -129,19 +244,56 @@ export function normalizeProviderError(error, { stopReason } = {}) {
   if (status === 529 || /overload|capacity/.test(haystack)) {
     return runtimeError('overloaded', message, true, status);
   }
-  if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context/.test(haystack)) {
+  // Content-safety refusals (a "content policy" 400, a safety block): not a
+  // provider outage and not retryable — the model declined the turn.
+  if (/content.?policy|safety|self.?block/.test(haystack)) {
+    return runtimeError('safety', message, false, status);
+  }
+  if (status === 401 || status === 403
+    || /unauthorized|forbidden|invalid api key|authentication|credential/.test(haystack)) {
+    return runtimeError('auth', message, false, status);
+  }
+  // Context-window exhaustion is classified BEFORE the generic 400
+  // invalid-request rule: providers report an over-long prompt as a 400
+  // ("maximum context length exceeded", "prompt is too long"), and that is
+  // context_overflow, not invalid_request — retrying it cannot succeed
+  // and the product must see a distinct, actionable classification.
+  if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context|prompt is too long/.test(haystack)) {
     return runtimeError('context_overflow', message, false, status);
   }
-  if (status === 408 || /\btimeout\b|timed out/.test(haystack)) {
+  if (status === 400 || /invalid (request|parameter|input)|malformed|unrecognized/.test(haystack)) {
+    return runtimeError('invalid_request', message, false, status);
+  }
+  if (status === 408 || /\btimeout\b|timed out|etimedout/.test(haystack)) {
     return runtimeError('timeout', message, true, status);
   }
-  if (/econn|enotfound|network|socket|fetch failed/.test(haystack)) {
+  if (/econn|enotfound|network|socket|fetch failed|eai_again/.test(haystack)) {
     return runtimeError('network', message, true, status);
   }
-  if (status != null && status >= 500) {
+  // 409 Conflict / 425 Too Early: historically in Kuhn's retryable set
+  // (story 029) — treat them as upstream transients.
+  if (status === 409 || status === 425 || (status != null && status >= 500)) {
     return runtimeError('server', message, true, status);
   }
+  // The Claude Agent SDK surfaces HTTP failures as plain text ("API Error:
+  // 503") with no status property — story 029's isTransientApiError matched
+  // bare codes in the text for exactly that reason. A bare code in the
+  // message routes like a structured status would. Last, so the wording
+  // rules above (overflow, safety, auth, invalid_request) still win.
+  const textStatus = status ?? bareStatusCode(haystack);
+  if (textStatus === 429) return runtimeError('rate_limit', message, true, textStatus);
+  if (textStatus === 529) return runtimeError('overloaded', message, true, textStatus);
+  if (textStatus === 408) return runtimeError('timeout', message, true, textStatus);
+  if (textStatus === 409 || textStatus === 425 || (textStatus != null && textStatus >= 500)) {
+    return runtimeError('server', message, true, textStatus);
+  }
   return runtimeError('provider_error', message, false, status);
+}
+
+/** A bare HTTP status code in error text ("API Error: 503"), or null. */
+function bareStatusCode(haystack) {
+  const match = /\b(4\d\d|5\d\d)\b/.exec(haystack);
+  return match ? Number(match[1]) : null;
 }
 
 /**

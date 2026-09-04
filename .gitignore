@@ -10,8 +10,9 @@ dist/
 .next/
 *.tsbuildinfo
 
-# Data dir (SQLite DB + uploaded project files) — see KUHN_DATA_DIR
-data/
+# Data dir (SQLite DB + uploaded project files) — see KUHN_DATA_DIR.
+# Anchored: nested data/ directories (e.g. the eval corpus) are source.
+/data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

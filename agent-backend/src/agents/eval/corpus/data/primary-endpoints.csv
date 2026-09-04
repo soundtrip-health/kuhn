@@ -1,0 +1,11 @@
+endpoint,endpoint_type,arm,n,events,event_rate_pct,estimate,estimate_type,ci_lower,ci_upper,p_value
+MACE composite,time-to-event,mirasatide,1240,98,7.9,0.82,hazard_ratio,0.71,0.94,0.008
+MACE composite,time-to-event,placebo,1242,120,9.7,,,,,
+HF hospitalization,time-to-event,mirasatide,1240,61,4.9,0.74,hazard_ratio,0.61,0.90,0.003
+HF hospitalization,time-to-event,placebo,1242,83,6.7,,,,,
+All-cause mortality,time-to-event,mirasatide,1240,34,2.7,0.79,hazard_ratio,0.57,1.10,0.16
+All-cause mortality,time-to-event,placebo,1242,41,3.3,,,,,
+HbA1c change at week 52,continuous,mirasatide,1240,,,-1.4,mean_change_pct_points,-1.6,-1.2,
+HbA1c change at week 52,continuous,placebo,1242,,,-0.2,mean_change_pct_points,,,
+Nausea,safety,mirasatide,1240,285,23.0,,,,,0.002
+Nausea,safety,placebo,1242,174,14.0,,,,,

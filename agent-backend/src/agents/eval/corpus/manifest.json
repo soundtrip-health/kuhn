@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "kuhn-quality-baseline-corpus",
+  "description": "Synthetic scientific-writing evaluation corpus for the pre-migration quality baseline (STH-31). Every name, trial, drug, statistic, person, and identifier in this corpus is fictional. PMIDs follow the numeric shape of real PubMed IDs but do not resolve on the live service; the baseline runner serves them from the literature fixture and never contacts the network.",
+  "study": {
+    "name": "MIRAS-T2D",
+    "disclaimer": "fictional phase II randomized trial"
+  },
+  "files": [
+    { "path": "notes/aims-outline.md", "role": "grant source material (writer-grant-aims, pm-dispatch-subagent)" },
+    { "path": "notes/study-summary.md", "role": "grounding source for manuscript statistics (writer-manuscript-section, writer-narrow-edit)" },
+    { "path": "draft/main.md", "role": "manuscript draft with planted flaws (reviewer-manuscript-critique, writer-narrow-edit)" },
+    { "path": "data/primary-endpoints.csv", "role": "endpoint table; immutable input (analyst-data-summary, writer-manuscript-section)" },
+    { "path": "org/grant-writing-sop.md", "role": "org-knowledge document with checkable rules (advisor-org-guidance)" },
+    { "path": "literature.json", "role": "fixture literature: PMID metadata, search query map (ra-literature-research, writer-grant-aims, pm-dispatch-subagent)" }
+  ]
+}

@@ -173,6 +173,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   input            TEXT NOT NULL,
   context          TEXT,  -- JSON
   session_id       TEXT,
+  -- Effective runtime identity (STH-47): which provider/model actually ran
+  -- this job, so a continuation or retry can never silently switch
+  -- mechanics. NULL for pre-migration rows.
+  provider         TEXT,
+  model            TEXT,
+  -- Canonical Kuhn continuation after the run's final attempt (STH-47):
+  -- the provider-neutral record a follow-up task can resume from. NULL for
+  -- failed runs without a record and pre-migration rows.
+  continuation     TEXT,  -- JSON
   error            TEXT,
   input_tokens     INTEGER NOT NULL DEFAULT 0,
   output_tokens    INTEGER NOT NULL DEFAULT 0,

@@ -1,0 +1,36 @@
+{
+  "note": "Synthetic fixture literature. PMIDs are fictional identifiers in the numeric shape of real PubMed IDs; they do not resolve on the live service. The baseline runner (src/agents/eval/run.js) serves these records through a fetch interceptor, so no network call is made.",
+  "pmids": {
+    "38450214": {
+      "title": "Cardiovascular outcomes with metformin in type 2 diabetes: a systematic review and meta-analysis",
+      "authors": ["Smith, Jane L", "Okafor, David", "Lindgren, Anna"],
+      "journal": "Journal of Cardiovascular Pharmacology",
+      "pubdate": "2024 Mar",
+      "doi": "10.1097/FJC.0000000000000214"
+    },
+    "39120455": {
+      "title": "GLP-1 receptor agonists and heart failure hospitalization: a pooled patient-level analysis",
+      "authors": ["Chen, Wei", "Marchetti, Luca", "Andersen, Kari"],
+      "journal": "Circulation",
+      "pubdate": "2024 Sep",
+      "doi": "10.1161/CIR.0000000000001245"
+    },
+    "40233871": {
+      "title": "SGLT2 inhibitors and mortality after myocardial infarction: a randomized trial",
+      "authors": ["Novak, Petra", "Haddad, Sami", "Weber, Thomas"],
+      "journal": "JAMA",
+      "pubdate": "2025 Jan",
+      "doi": "10.1001/jama.2025.00871"
+    }
+  },
+  "searches": {
+    "metformin cardioprotection": ["38450214"],
+    "metformin cardiovascular": ["38450214"],
+    "glp-1 heart failure": ["39120455"],
+    "glp-1 receptor agonist heart failure": ["39120455"],
+    "glp-1 hospitalization": ["39120455"],
+    "sglt2 myocardial infarction": ["40233871"],
+    "sglt2 mortality": ["40233871"]
+  },
+  "arxiv": {}
+}

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { createContinuation, validateContinuation } from './provider-runtime/continuation.js';
 
 // --- Mocks -----------------------------------------------------------------
 
@@ -19,6 +20,20 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (name, description, schema, handler) => ({ name, description, schema, handler }),
   createSdkMcpServer: vi.fn((cfg) => ({ type: 'sdk', name: cfg.name })),
 }));
+
+// Strict seam tests drive the product seam with a scripted AgentRuntime that
+// emits the normalized contract directly (no provider adapter in between);
+// every other test falls through to the real factory (the real Claude
+// adapter on the mocked SDK above).
+const mockSeam = { runtime: null };
+vi.mock('./provider-runtime/factory.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAgentRuntime: (options) =>
+      mockSeam.runtime ?? actual.createAgentRuntime(options),
+  };
+});
 
 // Pin the agent config so tests don't depend on .env / defaults drifting
 vi.mock('../config.js', () => ({
@@ -195,6 +210,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sdkState.messages = [];
   sdkState.generator = null;
+  mockSeam.runtime = null;
   getAgentWithTools.mockResolvedValue(RA_AGENT);
 });
 
@@ -209,8 +225,8 @@ describe('runAgentTask', () => {
         message: {
           content: [
             { type: 'text', text: 'Drafting now.' },
-            { type: 'tool_use', id: 't1', name: 'mcp__kuhn__write_file', input: { path: 'draft.md', content: 'x' } },
-            { type: 'tool_use', id: 't2', name: 'mcp__kuhn__edit_file', input: { path: 'notes.md', old_string: 'a', new_string: 'b' } },
+            { type: 'tool_use', id: 't1', name: 'mcp__kuhn__read_file', input: { path: 'draft.md' } },
+            { type: 'tool_use', id: 't2', name: 'mcp__kuhn__pubmed_search', input: { query: 'introduction' } },
           ],
           usage: { input_tokens: 10, output_tokens: 5 },
         },
@@ -235,17 +251,221 @@ describe('runAgentTask', () => {
         usage: { inputTokens: 100, outputTokens: 50 },
         context: { tokens: 10, window: 200000 },
         budget: { used: 15, limit: 250000 },
+        continuation: expect.objectContaining({ version: 1 }),
       },
     ]);
+    // Canonical continuation (STH-47): a provider-neutral record carrying
+    // the stable Kuhn tool names — the MCP-qualified names never leave the
+    // Claude adapter, so this record can be resumed by any adapter.
+    const continuation = events[2].continuation;
+    expect(validateContinuation(continuation)).toEqual([]);
+    expect(continuation.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool_result', 'tool_result']);
+    expect(continuation.messages[1].content.filter((b) => b.type === 'tool_call')).toEqual([
+      { type: 'tool_call', id: 't1', name: 'read_file', arguments: { path: 'draft.md' } },
+      { type: 'tool_call', id: 't2', name: 'pubmed_search', arguments: { query: 'introduction' } },
+    ]);
+    expect(continuation.messages[2]).toMatchObject({ role: 'tool_result', toolCallId: 't1', toolName: 'read_file', isError: false });
+    expect(continuation.messages[3]).toMatchObject({ role: 'tool_result', toolCallId: 't2', toolName: 'pubmed_search', isError: true });
 
     // Job lifecycle: running with conversation -> session recorded -> done with usage
     expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7 });
     expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'sess-1' });
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'done', inputTokens: 100, outputTokens: 50, contextTokens: 10 });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', inputTokens: 100, outputTokens: 50, contextTokens: 10 }));
+    // The job terminal stamps the effective runtime identity and the
+    // canonical continuation (STH-47): a follow-up or retry can never
+    // silently switch provider mechanics.
+    const terminal = updateJob.mock.calls.map((c) => c[1]).at(-1);
+    expect(terminal.provider).toBe('anthropic');
+    expect(terminal.continuation).toEqual(events[2].continuation);
 
-    // Conversation logging: user input, assistant turn, tool result
+    // Conversation logging: user input, assistant turn, the t1 tool result,
+    // and the synthetic error result closing t2 (the fixture stream never
+    // resolved it) — the adapter emits that closure on the event stream so
+    // the seam persists it, exactly as the continuation records it.
+    const roles = logMessage.mock.calls.map(([m]) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool', 'tool']);
+    expect(logMessage.mock.calls.at(-1)[0]).toMatchObject({ role: 'tool', toolCallId: 't2', isError: true });
+  });
+
+  it('persists the complete multi-block tool result content (never content[0].text)', async () => {
+    sdkState.messages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1' },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Checking the notes.' },
+            { type: 'tool_use', id: 'seam-1', name: 'mcp__kuhn__pubmed_search', input: { query: 'notes' } },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'seam-1',
+            content: [
+              { type: 'text', text: 'first block' },
+              { type: 'text', text: 'second block' },
+            ],
+          }],
+        },
+      },
+      { type: 'result', subtype: 'success', session_id: 'sess-1', usage: { input_tokens: 12, output_tokens: 8 } },
+    ];
+
+    await collect({ role: 'ra', projectId: 1, input: 'summarize the notes' });
+
+    // The persisted tool row carries every text block, joined: end-to-end
+    // through the real Claude adapter and the seam, a multi-block result
+    // must never reduce to its first block.
+    const toolRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'tool');
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]).toMatchObject({
+      role: 'tool',
+      content: 'first block\nsecond block',
+      toolCallId: 'seam-1',
+      isError: false,
+    });
+    // Row order at the seam: the assistant row (written on the usage event)
+    // precedes its tool row.
     const roles = logMessage.mock.calls.map(([m]) => m.role);
     expect(roles).toEqual(['user', 'assistant', 'tool']);
+  });
+
+  it('persists a multi-block normalized tool_result in full (strict seam contract)', async () => {
+    // The scripted runtime emits the normalized contract directly — no
+    // provider adapter pre-flattening the content — so this pins the seam's
+    // own obligation: the persisted tool row carries the complete block
+    // array (text blocks joined; never content[0].text).
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'summarize the notes' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Reading the notes.' },
+        { type: 'tool_call', id: 'seam-1', name: 'read_file', arguments: { path: 'notes.md' } },
+      ] },
+      { role: 'tool_result', toolCallId: 'seam-1', toolName: 'read_file',
+        content: [{ type: 'text', text: 'first block' }, { type: 'text', text: 'second block' }],
+        isError: false },
+      { role: 'assistant', content: [{ type: 'text', text: 'Notes summarized.' }] },
+    ];
+    mockSeam.runtime = {
+      identity: { provider: 'seam-test', model: 'seam-test-1' },
+      cancel: () => {},
+      runTurn: async function* () {
+        yield { type: 'provider', provider: 'seam-test', model: 'seam-test-1', api: 'seam-test' };
+        yield { type: 'text', content: 'Reading the notes.' };
+        yield { type: 'tool_call', id: 'seam-1', name: 'read_file', arguments: { path: 'notes.md' } };
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 15 } };
+        yield { type: 'tool_result', id: 'seam-1', name: 'read_file', isError: false,
+          content: [{ type: 'text', text: 'first block' }, { type: 'text', text: 'second block' }] };
+        yield { type: 'text', content: 'Notes summarized.' };
+        yield { type: 'usage', usage: { inputTokens: 12, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 20 } };
+        yield { type: 'done',
+          usage: { inputTokens: 22, outputTokens: 13, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 35 },
+          continuation: createContinuation(messages) };
+      },
+    };
+
+    await collect({ role: 'ra', projectId: 1, input: 'summarize the notes' });
+
+    const toolRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'tool');
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]).toMatchObject({
+      role: 'tool',
+      content: 'first block\nsecond block',
+      toolCallId: 'seam-1',
+      isError: false,
+    });
+    // The assistant row is written when the usage arrives and already
+    // carries the call that message requested (normalized tool_call
+    // precedes the usage); the following assistant row borrows none.
+    const assistantRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'assistant');
+    expect(assistantRows).toHaveLength(2);
+    expect(assistantRows[0]).toMatchObject({
+      content: 'Reading the notes.',
+      toolCalls: [{ id: 'seam-1', name: 'read_file', input: { path: 'notes.md' } }],
+    });
+    expect(assistantRows[1]).toMatchObject({ content: 'Notes summarized.' });
+    expect(assistantRows[1].toolCalls).toBeNull();
+    const roles = logMessage.mock.calls.map(([m]) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool', 'assistant']);
+  });
+
+  it('persists the unresolved-call closure when a cancelled turn ends before tool execution (strict seam contract)', async () => {
+    // The exact normalized stream the Pi adapter emits when a turn is
+    // cancelled after the assistant message finalized a tool call but
+    // before the tool executed: the message's tool_call, its usage, one
+    // synthetic error tool_result closing the unresolved call, and the
+    // cancelled terminal. The seam must persist the audit in that order —
+    // the assistant row (written on the usage event) already carries the
+    // requested call, the error tool-result row follows it, and the job
+    // lands cancelled — so the persisted conversation agrees with the
+    // canonical continuation the terminal carries.
+    const UNRESOLVED = '(unresolved: the turn ended before this tool call produced a result)';
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'check the workspace' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Checking the workspace first.' },
+        { type: 'tool_call', id: 'cancel-1', name: 'list_files', arguments: {} },
+      ] },
+      { role: 'tool_result', toolCallId: 'cancel-1', toolName: 'list_files',
+        content: [{ type: 'text', text: UNRESOLVED }], isError: true },
+    ];
+    mockSeam.runtime = {
+      identity: { provider: 'seam-test', model: 'seam-test-1' },
+      cancel: () => {},
+      runTurn: async function* () {
+        yield { type: 'provider', provider: 'seam-test', model: 'seam-test-1', api: 'seam-test' };
+        yield { type: 'text', content: 'Checking the workspace first.' };
+        yield { type: 'tool_call', id: 'cancel-1', name: 'list_files', arguments: {} };
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 15 } };
+        yield { type: 'tool_result', id: 'cancel-1', name: 'list_files', isError: true,
+          content: [{ type: 'text', text: UNRESOLVED }] };
+        yield { type: 'error',
+          error: { code: 'cancelled', message: 'cancelled', retryable: false, status: null },
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 15 },
+          continuation: createContinuation(messages) };
+      },
+    };
+
+    const ac = new AbortController();
+    const events = [];
+    for await (const ev of runAgentTask({
+      role: 'ra', projectId: 1, input: 'check the workspace', signal: ac.signal,
+    })) {
+      events.push(ev);
+      // The consumer drops after the first text event — the product
+      // teardown interrupts the turn and cancels the job.
+      if (ev.type === 'text') ac.abort();
+    }
+
+    // The cancelled terminal returns without a domain terminal event: the
+    // teardown stamped the job and the aborted consumer is the one who
+    // stopped the stream.
+    expect(events.filter((e) => e.type === 'done' || e.type === 'error')).toEqual([]);
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    // The persisted conversation audit: assistant(requested call) ->
+    // tool(error result), in row order — the assistant row written on the
+    // usage event already carries the call the message requested.
+    const roles = logMessage.mock.calls.map(([m]) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool']);
+    const assistantRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'assistant');
+    expect(assistantRows).toHaveLength(1);
+    expect(assistantRows[0]).toMatchObject({
+      content: 'Checking the workspace first.',
+      toolCalls: [{ id: 'cancel-1', name: 'list_files', input: {} }],
+    });
+    const toolRows = logMessage.mock.calls.map(([m]) => m).filter((m) => m.role === 'tool');
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]).toMatchObject({
+      role: 'tool',
+      content: UNRESOLVED,
+      toolCallId: 'cancel-1',
+      isError: true,
+    });
   });
 
   it('confines the SDK to the role tool allowlist and project workspace', async () => {
@@ -962,19 +1182,43 @@ describe('transient API error retry (story 029)', () => {
   });
 });
 
-describe('isTransientApiError (story 029)', () => {
-  it('classifies overload / rate-limit / 5xx / network as transient', async () => {
-    const { isTransientApiError } = await import('./runtime.js');
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 529 }))).toBe(true);
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 503 }))).toBe(true);
-    expect(isTransientApiError(new Error('API Error: 429 rate limit'))).toBe(true);
-    expect(isTransientApiError(new Error('Overloaded'))).toBe(true);
-    expect(isTransientApiError(new Error('read ECONNRESET'))).toBe(true);
-    expect(isTransientApiError(Object.assign(new Error('x'), { status: 400 }))).toBe(false);
-    expect(isTransientApiError(new Error('Unknown agent role: nope'))).toBe(false);
-    expect(isTransientApiError(null)).toBe(false);
-  });
-});
+describe('normalizeProviderError (story 029, STH-7)', () => {
+   // The retryable set is story 029's historical transient classification,
+   // now owned by the provider-neutral contract (the runtime adapter
+   // surfaces these as its terminal `error` events; the product layer keeps
+   // the retry/backoff policy).
+   it('classifies overload / rate-limit / 5xx / network as retryable provider failures', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 529 }))).toMatchObject({ code: 'overloaded', retryable: true });
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 503 }))).toMatchObject({ code: 'server', retryable: true });
+     expect(normalizeProviderError(new Error('API Error: 429 rate limit'))).toMatchObject({ code: 'rate_limit', retryable: true });
+     expect(normalizeProviderError(new Error('Overloaded'))).toMatchObject({ code: 'overloaded', retryable: true });
+     expect(normalizeProviderError(new Error('read ECONNRESET'))).toMatchObject({ code: 'network', retryable: true });
+     expect(normalizeProviderError(new Error('getaddrinfo EAI_AGAIN'))).toMatchObject({ code: 'network', retryable: true });
+     expect(normalizeProviderError(new Error('read ETIMEDOUT'))).toMatchObject({ code: 'timeout', retryable: true });
+   });
+
+   it('classifies non-retryable failures and unknown shapes', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 400 }))).toMatchObject({ code: 'invalid_request', retryable: false });
+     expect(normalizeProviderError(Object.assign(new Error('x'), { status: 401 }))).toMatchObject({ code: 'auth', retryable: false });
+     expect(normalizeProviderError(new Error('content policy violation'))).toMatchObject({ code: 'safety', retryable: false });
+     expect(normalizeProviderError(new Error('maximum context length exceeded'))).toMatchObject({ code: 'context_overflow', retryable: false });
+     expect(normalizeProviderError(new Error('Unknown agent role: nope'))).toMatchObject({ code: 'provider_error', retryable: false });
+     expect(normalizeProviderError(null)).toMatchObject({ code: 'provider_error', retryable: false });
+   });
+
+   it('classifies cancellation only on strong signals, never on wording', async () => {
+     const { normalizeProviderError } = await import('./provider-runtime/contract.js');
+     expect(normalizeProviderError(new Error('request cancelled due to rate limit'), { stopReason: 'aborted' })).toMatchObject({ code: 'cancelled', retryable: false });
+     const abortErr = new Error('aborted');
+     abortErr.name = 'AbortError';
+     expect(normalizeProviderError(abortErr)).toMatchObject({ code: 'cancelled', retryable: false });
+     // A rate-limit notice that mentions cancellation keeps its retryable
+     // category.
+     expect(normalizeProviderError(new Error('cancelled due to rate limit'))).toMatchObject({ code: 'rate_limit', retryable: true });
+   });
+ });
 
 // --- Story 020: model-cost-weighted budget accounting ------------------------
 

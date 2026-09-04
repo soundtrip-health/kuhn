@@ -3,10 +3,13 @@ import { getHistory } from './conversation.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
-/** Parse a job row's JSON context column (TEXT in SQLite) to an object. */
+/** Parse a job row's JSON columns (TEXT in SQLite) to objects. */
 function parseJob(row) {
   if (row && typeof row.context === 'string') {
     row.context = JSON.parse(row.context);
+  }
+  if (row && typeof row.continuation === 'string') {
+    row.continuation = JSON.parse(row.continuation);
   }
   return row;
 }
@@ -21,14 +24,17 @@ function parseJob(row) {
  * @param {number|null} job.parentJobId - Set when dispatched by another agent
  * @param {number|null} job.userId - Whose request ran this job (story 007-001);
  *   sub-jobs inherit the parent's user
+ * @param {string|null} [job.provider] - Effective runtime provider (STH-47)
+ * @param {string|null} [job.model] - Effective runtime model (STH-47)
+ * @param {object|null} [job.continuation] - Canonical continuation envelope (STH-47)
  * @returns {Promise<object>} The inserted job row
  */
-export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null }) {
+export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null }) {
   const { rows } = await query(
-    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
-    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId],
+    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null],
   );
   return parseJob(rows[0]);
 }
@@ -43,6 +49,9 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {string} [fields.error]
  * @param {number} [fields.inputTokens]
  * @param {number} [fields.outputTokens]
+ * @param {string|null} [fields.provider] - Effective runtime provider (STH-47)
+ * @param {string|null} [fields.model] - Effective runtime model (STH-47)
+ * @param {object|null} [fields.continuation] - Canonical continuation envelope (STH-47)
  * @param {number} [fields.contextTokens] - last turn's prompt size (STH-52 meter)
  * @returns {Promise<object|undefined>} The updated job row
  */
@@ -54,13 +63,16 @@ export async function updateJob(jobId, fields) {
     error: 'error',
     inputTokens: 'input_tokens',
     outputTokens: 'output_tokens',
+    provider: 'provider',
+    model: 'model',
+    continuation: 'continuation',
     contextTokens: 'context_tokens',
   };
   const sets = [];
   const params = [];
   for (const [key, column] of Object.entries(columns)) {
     if (fields[key] !== undefined) {
-      params.push(fields[key]);
+      params.push(column === 'continuation' && fields[key] != null ? JSON.stringify(fields[key]) : fields[key]);
       sets.push(`${column} = $${params.length}`);
     }
   }
