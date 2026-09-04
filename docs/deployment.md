@@ -355,3 +355,19 @@ tightening this rule cannot lock you out of your own install.
 The sign-in form is also rate limited from this release on. The defaults suit
 a lab-sized install; raise `KUHN_LOGIN_MAX_PER_IP` if your users share one
 outbound address and report being refused.
+
+## Model providers beyond the deployment key
+
+Org owners can add provider/model profiles (OpenAI, OpenRouter, any OpenAI-compatible server,
+or an org-owned Anthropic key) under **Settings → Models** and route each agent to a ranked
+list of them by task difficulty; credentials are org secrets and never leave the server
+(`docs/specs/107-model-profiles-and-routing.md`). Two operator knobs:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KUHN_ALLOW_PRIVATE_MODEL_ENDPOINTS` | `true` in dev auth mode, else `false` | Let an org profile point at a loopback / private-network base URL (a local vLLM or Ollama). Plain `http:` is only ever accepted for such hosts. |
+| `KUHN_MODEL_TEST_TIMEOUT_MS` | `30000` | Time limit on the synthetic "Test connection" turn (no project content is sent). |
+
+To prove a provider path against a real endpoint before routing agents to it, run
+`npm run smoke:provider-matrix` in `agent-backend/` with the relevant credentials in the
+environment; the token-free wire-level proof runs with `npm test`.

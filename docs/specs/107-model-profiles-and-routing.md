@@ -169,9 +169,35 @@ naming the host, and the server's `egress.added` is toasted after the save. Warn
 route API (web search unavailable off Anthropic) render under the agent. Browser check:
 `npm run models-check` (Playwright, token-free).
 
-## 9. Follow-ups
+## 9. Multi-provider proof (#112)
 
-- **#112** — the OpenAI-compatible proof against a real HTTP server and the credential-gated
-  live matrix script.
+**Over the wire, token-free.** `conformance/conformance-http.test.js` runs the full
+provider-neutral scenario suite (22 scenarios) on the **real** OpenAI-compatible Pi runtime
+talking real HTTP to `conformance/fake-openai-server.js`, a scripted chat-completions server
+(SSE role/content/tool-call deltas, finish reasons, the `include_usage` usage chunk, held
+requests for cancellation, HTTP-rendered provider failures). The driver
+(`conformance/drivers/pi-http.js`) points the deployment default at the server and builds the
+runtime through the production factory's profile path; nothing between the product seam and
+the socket is replaced. The suite passes and reports identical terminals, job statuses, and
+usage to the Claude driver. OpenRouter shares pi-ai's completions client with this path, so the
+wire handling is the same; the OpenAI Responses API path is exercised only live.
+
+**Live, credential-gated.** `npm run smoke:provider-matrix` runs one bounded tool-using turn
+through the factory's profile path on every provider that has a credential in the environment
+(`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `KUHN_MATRIX_BASE_URL` + `KUHN_MATRIX_MODEL` for a
+self-hosted server, `ANTHROPIC_API_KEY`), checks the normalized contract, the tool call, and the
+final marker, and prints a JSON table; paths without credentials are reported as skipped, never
+faked.
+
+**Capability rejection before execution.** `requirementFailure` refuses a profile before a job
+exists (§3); `route_invalid` is covered in `runtime.test.js`.
+
+**Documented degradation.** Provider-hosted web search exists only on the Anthropic provider;
+the route API and UI warn per profile. Image input is declared per profile and not used by
+any agent today. Reasoning models get pi-ai's default effort when `capabilities.reasoning` is
+set.
+
+## 10. Follow-ups
+
 - Difficulty guidance in the PM/writer prompts, once routing is in use (prompt change, needs a
   quality pass).
