@@ -2305,5 +2305,11 @@ function render(): void {
   body.append(...parts);
 
   panel.append(head, tabsBar(), body);
+  // A re-render replaces the panel; keep the reader where they were in the
+  // scrolled body (every tab action re-renders, and jumping to the top on
+  // "Add profile" or "Save" is disorienting).
+  const previous = root.querySelector<HTMLElement>('.admin-body');
+  const scrollTop = previous?.scrollTop ?? 0;
   root.replaceChildren(panel);
+  if (scrollTop > 0) body.scrollTop = scrollTop;
 }

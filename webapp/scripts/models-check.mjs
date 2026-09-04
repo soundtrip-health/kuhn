@@ -26,7 +26,7 @@ const ORG_SLUG = 'models-check-org';
 const VIEWER = 'kuhn-models-check-viewer@check.local';
 const SECRET = 'openrouter-api-key';
 const SECRET_VALUE = 'sk-or-models-check-not-a-real-key';
-const PROFILE = 'oss-20b-check';
+const PROFILE = 'oss-20b.check';
 
 // --- API: find-or-create the check org (idempotent across runs) ---
 const me = (await json(await fetch(`${BACKEND}/api/auth/me`))).user;
@@ -77,12 +77,33 @@ check(rows.some((t) => t.includes('deployment') && t.includes('Anthropic')), 'de
 check(!rows.some((t) => t.includes('deployment') && t.includes('Edit')), 'deployment profiles have no Edit button');
 check(rows.every((t) => !t.includes(SECRET_VALUE)), 'no secret value anywhere in the table');
 
-// Create an OpenRouter profile bound to the saved secret.
+// Open the form from a scrolled position: the body must not jump to the top.
+await page.evaluate(() => { const b = document.querySelector('#org-admin .admin-body'); if (b) b.scrollTop = b.scrollHeight; });
+const scrolledBefore = await page.evaluate(() => document.querySelector('#org-admin .admin-body')?.scrollTop ?? 0);
 await page.click('#org-admin button:has-text("Add profile")');
-await page.fill('#org-admin [aria-label="Profile slug"]', PROFILE);
-await page.fill('#org-admin [aria-label="Profile name"]', 'OSS 20B (check)');
+const scrolledAfter = await page.evaluate(() => document.querySelector('#org-admin .admin-body')?.scrollTop ?? 0);
+check(scrolledBefore > 0 && scrolledAfter > 0, `body does not jump to the top on a re-render (${scrolledBefore} → ${scrolledAfter}; the click scrolls the button into view first)`);
+
+// Submitting an incomplete form shows real messages and keeps what was typed.
 await page.selectOption('#org-admin [aria-label="Provider"]', 'openrouter');
 await page.fill('#org-admin [aria-label="Model id"]', 'openai/gpt-oss-20b');
+await page.waitForTimeout(600); // catalog lookup
+const derivedSlug = await page.inputValue('#org-admin [aria-label="Profile slug"]');
+check(derivedSlug === 'openai-gpt-oss-20b', `slug is derived from the model id (${derivedSlug})`);
+const catalogHelp = await page.textContent('#org-admin .admin-profile-form');
+check(catalogHelp.includes('Published values'), 'catalog lookup fills the published limits for a known model');
+await page.click('#org-admin button:has-text("Create profile")');
+const fieldErrors = await page.$$eval('#org-admin .admin-field-error', (els) => els.map((e) => e.textContent));
+// The catalog filled the display name in, so the credential is what's missing.
+check(fieldErrors.length >= 1 && fieldErrors.some((t) => /API key/.test(t)),
+  `client-side validation names the missing field (${fieldErrors.join(' | ')})`);
+const nameFilled = await page.inputValue('#org-admin [aria-label="Profile name"]');
+check(nameFilled.length > 0, `catalog lookup suggests a display name (${nameFilled})`);
+check((await page.inputValue('#org-admin [aria-label="Model id"]')) === 'openai/gpt-oss-20b', 'a rejected submit keeps the typed values');
+
+// Now fill it in properly, with a dotted slug.
+await page.fill('#org-admin [aria-label="Profile slug"]', PROFILE);
+await page.fill('#org-admin [aria-label="Profile name"]', 'OSS 20B (check)');
 await page.selectOption('#org-admin [aria-label="Credential secret"]', SECRET);
 await page.fill('#org-admin [aria-label="Cost weight"]', '0.5');
 const egressHint = await page.textContent('#org-admin .admin-profile-form .admin-setting-hint');

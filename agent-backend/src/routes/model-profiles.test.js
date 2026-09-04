@@ -136,6 +136,16 @@ describe('profiles', () => {
     expect(events.map((e) => e.meta).join('')).not.toContain('sk-value');
   });
 
+  it('answers catalog lookups for known and unknown model ids', async () => {
+    let res = await api('GET', `/api/orgs/${ORG}/model-profiles/catalog?provider=openai&model_id=gpt-5-mini`, OWNER);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ known: true, name: 'GPT-5 Mini', suggested_cost_weight: 0.25, capabilities: { contextWindow: 400000, reasoning: true } });
+    res = await api('GET', `/api/orgs/${ORG}/model-profiles/catalog?provider=openai-compatible&model_id=qwen`, OWNER);
+    expect(await res.json()).toMatchObject({ known: false, capabilities: null });
+    expect((await api('GET', `/api/orgs/${ORG}/model-profiles/catalog?provider=mistral&model_id=x`, OWNER)).status).toBe(400);
+    expect((await api('GET', `/api/orgs/${ORG}/model-profiles/catalog?provider=openai&model_id=x`, EDITOR)).status).toBe(403);
+  });
+
   it('maps validation failures to 400 with the field', async () => {
     let res = await api('POST', `/api/orgs/${ORG}/model-profiles`, OWNER, { ...PROFILE, credential_secret: 'nope' });
     expect(res.status).toBe(400);

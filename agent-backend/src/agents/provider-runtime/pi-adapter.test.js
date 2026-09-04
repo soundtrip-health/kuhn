@@ -977,6 +977,15 @@ describe('Pi adapter org-credential and declared-model paths (issues #111/#112)'
     }
   });
 
+  it('applies explicit capability overrides to a catalogued model without touching the catalog', () => {
+    const pinned = createOpenRouterPiRuntime({ modelId: 'openai/gpt-oss-20b', capabilityOverrides: { contextWindow: 8_000, maxTokens: 512 } });
+    expect(pinned.runtime.identity.capabilities).toMatchObject({ contextWindow: 8_000, maxTokens: 512 });
+    const plain = createOpenRouterPiRuntime({ modelId: 'openai/gpt-oss-20b' });
+    expect(plain.runtime.identity.capabilities.contextWindow).not.toBe(8_000);
+    const oa = createOpenAIPiRuntime({ modelId: 'gpt-5-mini', capabilityOverrides: { contextWindow: 100_000 } });
+    expect(oa.runtime.identity.capabilities.contextWindow).toBe(100_000);
+  });
+
   it('openrouter: an uncatalogued model id runs on its declared capabilities', () => {
     const { model, runtime } = createOpenRouterPiRuntime({
       modelId: 'acme/science-70b', capabilities: { reasoning: true, contextWindow: 96_000, maxTokens: 8192 },

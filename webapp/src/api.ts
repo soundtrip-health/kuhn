@@ -202,26 +202,30 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly paths?: string[];
+  /** The offending field on a 400 { error, field } validation response. */
+  readonly field?: string;
 
-  constructor(status: number, message: string, code?: string, paths?: string[]) {
+  constructor(status: number, message: string, code?: string, paths?: string[], field?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.paths = paths;
+    this.field = field;
   }
 }
 
 async function expectOk(res: Response): Promise<Response> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
-      error?: string; code?: string; paths?: unknown;
+      error?: string; code?: string; paths?: unknown; field?: unknown;
     };
     throw new ApiError(
       res.status,
       body.error ?? `${res.status} ${res.statusText}`,
       body.code,
       Array.isArray(body.paths) ? (body.paths as string[]) : undefined,
+      typeof body.field === 'string' ? body.field : undefined,
     );
   }
   return res;
@@ -2140,13 +2144,25 @@ export interface ModelProfile {
   base_url: string | null;
   endpoint: string | null;
   credential: { kind: 'deployment' | 'secret' | 'none'; secret: string | null };
+  /** Effective values: catalog (when known) with the owner's overrides on top. */
   capabilities: ModelCapabilities;
+  /** Only what the owner pinned explicitly. */
+  capability_overrides: Partial<ModelCapabilities>;
+  /** Whether the built-in provider catalog knows this model id. */
+  catalog_known: boolean;
   cost_weight: number;
   data_policy: string | null;
   enabled: boolean;
   /** true for deployment-managed profiles (read-only). */
   managed: boolean;
   updated_at?: string;
+}
+
+export interface ModelCatalogEntry {
+  known: boolean;
+  name: string | null;
+  capabilities: ModelCapabilities | null;
+  suggested_cost_weight: number | null;
 }
 
 export interface ModelProfileInput {
@@ -2157,7 +2173,7 @@ export interface ModelProfileInput {
   base_url?: string | null;
   credential_secret?: string | null;
   capabilities?: Partial<ModelCapabilities>;
-  cost_weight?: number;
+  cost_weight?: number | null;
   data_policy?: string | null;
   enabled?: boolean;
 }
@@ -2199,6 +2215,13 @@ export interface ModelRouteSaveResult {
 export async function listModelProfiles(orgId: number): Promise<ModelProfile[]> {
   const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles`));
   return ((await res.json()) as { profiles: ModelProfile[] }).profiles;
+}
+
+/** What the built-in provider catalog knows about a model id. */
+export async function lookupModelCatalog(orgId: number, provider: ModelProvider, modelId: string): Promise<ModelCatalogEntry> {
+  const params = new URLSearchParams({ provider, model_id: modelId });
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles/catalog?${params}`));
+  return (await res.json()) as ModelCatalogEntry;
 }
 
 export async function createModelProfile(orgId: number, input: ModelProfileInput): Promise<ModelProfile> {
