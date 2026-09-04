@@ -20,6 +20,10 @@
 // Synchronous (querySync) like the other org-config stores: the agent
 // runtime resolves a route on the task hot path without another await.
 
+import { ANTHROPIC_MODELS } from '@earendil-works/pi-ai/providers/anthropic.models';
+import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
+import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
+
 import { config } from '../config.js';
 import { querySync, transaction } from '../db.js';
 import { SECRET_NAME_PATTERN } from './org-secrets.js';
@@ -33,7 +37,9 @@ export const PROVIDER_ENDPOINTS = {
   openrouter: 'https://openrouter.ai/api/v1',
 };
 
-export const SLUG_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+// Lowercase letters, digits, dots, dashes — so a model id like "gpt-4.1"
+// can double as the slug. Slugs travel in URL path segments (encoded).
+export const SLUG_PATTERN = /^[a-z][a-z0-9.-]{0,63}$/;
 export const DEPLOYMENT_PREFIX = 'deployment-';
 const MAX_NAME_CHARS = 120;
 const MAX_MODEL_ID_CHARS = 200;
@@ -49,6 +55,51 @@ export const DEFAULT_CAPABILITIES = Object.freeze({
   maxTokens: 16_384,
   tools: true,
 });
+
+// ---- Provider catalogs ---------------------------------------------------------
+// pi-ai ships model metadata for the fixed-endpoint providers. A profile's
+// effective capabilities are catalog values (when the id is known) with the
+// owner's explicit overrides on top; only the overrides are stored, so a
+// catalog update flows through unless the owner pinned a value (e.g. a
+// smaller context window to stay under a long-context surcharge).
+
+const CATALOGS = {
+  anthropic: ANTHROPIC_MODELS,
+  openai: OPENAI_MODELS,
+  openrouter: OPENROUTER_MODELS,
+};
+
+/**
+ * What the built-in catalog knows about a model id, or { known: false }.
+ * `suggested_cost_weight` is the list input price in $/M tokens — the same
+ * scale as the deployment's default AGENT_MODEL_WEIGHTS (Haiku 1, Sonnet 3,
+ * Opus 5) — so a fresh profile is metered sensibly without a lookup.
+ */
+export function catalogCapabilities(provider, modelId) {
+  const catalog = CATALOGS[provider];
+  const entry = catalog ? Object.values(catalog).find((m) => m.id === modelId) : null;
+  if (!entry) return { known: false, capabilities: null, suggested_cost_weight: null, name: null };
+  return {
+    known: true,
+    name: entry.name ?? modelId,
+    capabilities: {
+      reasoning: entry.reasoning === true,
+      input: Array.isArray(entry.input) && entry.input.length ? [...entry.input] : ['text'],
+      contextWindow: Number.isInteger(entry.contextWindow) ? entry.contextWindow : DEFAULT_CAPABILITIES.contextWindow,
+      maxTokens: Number.isInteger(entry.maxTokens) ? entry.maxTokens : DEFAULT_CAPABILITIES.maxTokens,
+      tools: true,
+    },
+    suggested_cost_weight: typeof entry.cost?.input === 'number' && entry.cost.input > 0
+      ? Math.max(0.1, Math.round(entry.cost.input * 100) / 100)
+      : null,
+  };
+}
+
+/** Effective capabilities: Kuhn defaults ← catalog ← explicit overrides. */
+export function effectiveCapabilities(provider, modelId, overrides) {
+  const catalog = catalogCapabilities(provider, modelId).capabilities ?? {};
+  return { ...DEFAULT_CAPABILITIES, ...catalog, ...(overrides ?? {}) };
+}
 
 /** Field-level validation failure — routes map to 400 { error, field }. */
 export class ProfileValidationError extends Error {
@@ -112,12 +163,13 @@ export function validateBaseUrl(value) {
 
 // ---- Capabilities --------------------------------------------------------------
 
+/** Validate the owner's explicit overrides (only the keys given are stored). */
 function validateCapabilities(input) {
-  if (input == null) return { ...DEFAULT_CAPABILITIES };
+  if (input == null) return {};
   if (typeof input !== 'object' || Array.isArray(input)) {
     throw new ProfileValidationError('capabilities must be an object', 'capabilities');
   }
-  const out = { ...DEFAULT_CAPABILITIES };
+  const out = {};
   for (const [key, value] of Object.entries(input)) {
     switch (key) {
       case 'reasoning':
@@ -150,12 +202,12 @@ function validateCapabilities(input) {
   return out;
 }
 
-function parseCapabilities(text) {
+function parseOverrides(text) {
   try {
     const parsed = JSON.parse(text || '{}');
-    return { ...DEFAULT_CAPABILITIES, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
-    return { ...DEFAULT_CAPABILITIES };
+    return {};
   }
 }
 
@@ -196,7 +248,9 @@ function anthropicDeploymentProfile(modelId) {
     base_url: null,
     endpoint: PROVIDER_ENDPOINTS.anthropic,
     credential: { kind: 'deployment', secret: null },
-    capabilities: { ...DEFAULT_CAPABILITIES, contextWindow: config.agent?.contextWindow ?? 200_000, reasoning: true },
+    capabilities: effectiveCapabilities('anthropic', modelId, catalogCapabilities('anthropic', modelId).known ? {} : { contextWindow: config.agent?.contextWindow ?? 200_000, reasoning: true }),
+    capability_overrides: {},
+    catalog_known: catalogCapabilities('anthropic', modelId).known,
     cost_weight: deploymentCostWeight(modelId),
     data_policy: null,
     enabled: true,
@@ -219,7 +273,9 @@ export function piPreviewProfile() {
     base_url: provider === 'openai-compatible' ? (pi.baseUrl || null) : null,
     endpoint: provider === 'openai-compatible' ? (pi.baseUrl || null) : PROVIDER_ENDPOINTS[provider],
     credential: { kind: 'deployment', secret: null, env: pi.apiKeyEnv || PI_DEFAULT_API_KEY_ENV[provider] },
-    capabilities: { ...DEFAULT_CAPABILITIES },
+    capabilities: effectiveCapabilities(provider, pi.model, {}),
+    capability_overrides: {},
+    catalog_known: catalogCapabilities(provider, pi.model).known,
     cost_weight: config.agent?.modelWeights?.default ?? 5,
     data_policy: null,
     enabled: true,
@@ -292,7 +348,9 @@ const publicRow = (row) => ({
   credential: row.credential_secret
     ? { kind: 'secret', secret: row.credential_secret }
     : { kind: 'none', secret: null },
-  capabilities: parseCapabilities(row.capabilities),
+  capabilities: effectiveCapabilities(row.provider, row.model_id, parseOverrides(row.capabilities)),
+  capability_overrides: parseOverrides(row.capabilities),
+  catalog_known: catalogCapabilities(row.provider, row.model_id).known,
   cost_weight: row.cost_weight,
   data_policy: row.data_policy,
   enabled: row.enabled === 1,
@@ -404,7 +462,9 @@ function validateProfileInput(orgId, input, { partial = false, current = null } 
     out.capabilities = JSON.stringify(validateCapabilities(input.capabilities));
   }
   if (!partial || has('cost_weight')) {
-    const w = has('cost_weight') ? input.cost_weight : (config.agent?.modelWeights?.default ?? 5);
+    const suggested = catalogCapabilities(provider, out.model_id ?? current?.model_id).suggested_cost_weight;
+    // null/undefined = "use the suggestion" (the UI's default choice).
+    const w = input.cost_weight ?? suggested ?? config.agent?.modelWeights?.default ?? 5;
     if (typeof w !== 'number' || !Number.isFinite(w) || w <= 0 || w > MAX_COST_WEIGHT) {
       throw new ProfileValidationError(`cost_weight must be a number in (0, ${MAX_COST_WEIGHT}]`, 'cost_weight');
     }

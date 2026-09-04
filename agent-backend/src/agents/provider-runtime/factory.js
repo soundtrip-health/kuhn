@@ -115,6 +115,9 @@ function createProfileRuntime({
   const common = {
     modelId: profile.model_id, tools, systemPrompt, maxTurns,
     apiKey, apiKeyEnv, capabilities: declaredCapabilities(profile),
+    // Explicit owner overrides apply even to catalogued models (e.g. a
+    // smaller context window); the catalog entry supplies the rest.
+    capabilityOverrides: profile.capability_overrides ?? null,
   };
   if (provider === 'openrouter') return createOpenRouterPiRuntime(common).runtime;
   if (provider === 'openai') return createOpenAIPiRuntime(common).runtime;
@@ -124,7 +127,7 @@ function createProfileRuntime({
   // The compatible path takes the declared metadata as top-level options. A
   // profile with no credential at all is a keyless local server: pi-ai then
   // sends a placeholder bearer instead of refusing the request.
-  const { capabilities, ...rest } = common;
+  const { capabilities, capabilityOverrides: _o, ...rest } = common;
   const keyless = !apiKey && (profile.credential?.kind ?? 'none') === 'none';
   return createOpenAICompatiblePiRuntime({ baseUrl: profile.base_url, ...rest, ...capabilities, keyless }).runtime;
 }

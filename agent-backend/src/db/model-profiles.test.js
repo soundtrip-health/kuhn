@@ -122,7 +122,11 @@ describe('org profiles', () => {
     expect(created).toMatchObject({
       slug: 'gpt-mini', provider: 'openai', model_id: 'gpt-5-mini', endpoint: 'https://api.openai.com/v1',
       credential: { kind: 'secret', secret: 'openai-key' }, cost_weight: 2, enabled: true, managed: false,
-      capabilities: profiles.DEFAULT_CAPABILITIES,
+      // gpt-5-mini is in the built-in catalog: capabilities come from it,
+      // nothing is stored as an override.
+      capabilities: { reasoning: true, input: ['text', 'image'], contextWindow: 400000, tools: true },
+      capability_overrides: {},
+      catalog_known: true,
     });
     expect(JSON.stringify(created)).not.toContain('sk-test-value');
     const list = profiles.listProfiles(ORG);
@@ -156,6 +160,28 @@ describe('org profiles', () => {
     try { profiles.createProfile(ORG, valid(patch)); } catch (e) { err = e; }
     expect(err).toBeInstanceOf(profiles.ProfileValidationError);
     expect(err.field).toBe(field);
+  });
+
+  it('accepts dots in slugs so a model id can double as one', () => {
+    expect(profiles.createProfile(ORG, valid({ slug: 'gpt-4.1-mini', model_id: 'gpt-4.1-mini' })).slug).toBe('gpt-4.1-mini');
+    expect(profiles.getProfile(ORG, 'gpt-4.1-mini')?.slug).toBe('gpt-4.1-mini');
+  });
+
+  it('infers capabilities and a cost weight from the provider catalog, stores only overrides', () => {
+    const inferred = profiles.createProfile(ORG, valid({ cost_weight: undefined }));
+    // Suggested weight = catalog input price ($0.25/M for gpt-5-mini).
+    expect(inferred.cost_weight).toBe(0.25);
+    const pinned = profiles.updateProfile(ORG, 'gpt-mini', { capabilities: { contextWindow: 200000 } });
+    expect(pinned.capabilities).toMatchObject({ contextWindow: 200000, reasoning: true, input: ['text', 'image'] });
+    expect(pinned.capability_overrides).toEqual({ contextWindow: 200000 });
+    const cleared = profiles.updateProfile(ORG, 'gpt-mini', { capabilities: {} });
+    expect(cleared.capabilities.contextWindow).toBe(400000);
+    expect(cleared.capability_overrides).toEqual({});
+    // Unknown ids fall back to Kuhn defaults and are flagged.
+    const unknown = profiles.createProfile(ORG, valid({ slug: 'mystery', model_id: 'acme/mystery-7b', provider: 'openrouter', cost_weight: undefined }));
+    expect(unknown).toMatchObject({ catalog_known: false, capabilities: profiles.DEFAULT_CAPABILITIES, cost_weight: 5 });
+    expect(profiles.catalogCapabilities('anthropic', 'claude-haiku-4-5')).toMatchObject({ known: true, suggested_cost_weight: 1, capabilities: { reasoning: true } });
+    expect(profiles.catalogCapabilities('openai-compatible', 'anything')).toMatchObject({ known: false });
   });
 
   it('requires a base URL for openai-compatible and allows a keyless local endpoint', () => {
