@@ -78,6 +78,9 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
  *   { type: 'notice', agent, jobId, reason: 'session_reconstructed', message } — the provider no longer held the session this task asked to resume; the run continues in a fresh session carrying Kuhn's transcript of the old one as a hand-off (issue #109). The 'done' event carries the new sessionId.
  *   { type: 'notice', agent, jobId, reason: 'budget_reached', message } — the token budget stopped this top-level run; a hand-off note is being written before the terminal 'error' (issue #110)
+ *   { type: 'model', agent, jobId, depth, model: { profile, provider, model, source, difficulty } } — the profile the org's
+ *     route picked for this job (issue #107): source 'org' (a configured route) or 'deployment' (the seeded default);
+ *     difficulty is the 0..1 value the dispatcher supplied (1 when omitted). Sub-agents emit their own, forwarded by dispatch.
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window }, continuation }
  *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
@@ -408,6 +411,10 @@ async function runTask(task, internal, channel, state) {
     model: runtime.identity?.model ?? null,
     profile: route.profile.slug,
     endpoint: runtime.identity?.endpoint ?? route.profile.endpoint ?? null,
+    // Why that profile (issue #107): queryable after the fact, and what the
+    // status-bar chip shows again after a reload.
+    difficulty: route.difficulty,
+    routeSource: route.source,
   });
   // Audit (STH-51): the normalized runtime identity is the effective
   // provider/model of this job — the same value stamped on the job row at
@@ -427,6 +434,18 @@ async function runTask(task, internal, channel, state) {
   // running job already shows which profile/provider/model/endpoint it is
   // on; the terminal stamps the same identity again with the usage.
   await updateJob(job.id, jobIdentity());
+  // Tell the UI which model this job runs on and why (status-bar chip): the
+  // visible check on whether dispatchers pick sensible difficulties.
+  channel.push({
+    type: 'model', agent: agent.slug, jobId: job.id, depth,
+    model: {
+      profile: route.profile.slug,
+      provider: runtime.identity?.provider ?? null,
+      model: runtime.identity?.model ?? null,
+      source: route.source,
+      difficulty: route.difficulty,
+    },
+  });
   state.controller = new AbortController();
 
   const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);

@@ -67,6 +67,48 @@ export function setAgentActivity(text: string): void {
   el('status-agent').textContent = text;
 }
 
+/** One routed job, as the model chip shows it (issue #107). */
+export interface ModelChip {
+  agent: string;
+  label: string;
+  model: string | null;
+  profile: string | null;
+  source?: 'org' | 'deployment';
+  difficulty?: number;
+}
+
+/** Compact model id for the chip: `claude-sonnet-4-5-20250929` → `sonnet-4-5`. */
+export function compactModel(model: string | null): string {
+  if (!model) return 'unknown model';
+  return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
+/**
+ * Show which model an agent is running on, and why — the difficulty its
+ * dispatcher supplied and whether an org route or the deployment default
+ * picked it — so route configuration can be judged from the status bar.
+ * `history` (the run so far, newest last) goes into the tooltip.
+ */
+export function setAgentModel(current: ModelChip | null, history: ModelChip[] = []): void {
+  const node = el('status-model');
+  if (!current) {
+    node.textContent = '';
+    node.removeAttribute('title');
+    return;
+  }
+  const parts = [`${current.label} · ${compactModel(current.model)}`];
+  if (current.difficulty != null) parts.push(`d=${current.difficulty}`);
+  node.textContent = parts.join(' · ');
+  node.dataset.source = current.source ?? 'unknown';
+  const line = (c: ModelChip) =>
+    `${c.label}: ${c.model ?? 'unknown model'}`
+    + (c.profile ? ` (profile ${c.profile})` : '')
+    + (c.difficulty != null ? `, difficulty ${c.difficulty}` : '')
+    + (c.source === 'org' ? ', org route' : c.source === 'deployment' ? ', deployment default' : '');
+  const rows = history.length ? history : [current];
+  node.title = `Models this run:\n${rows.map(line).join('\n')}`;
+}
+
 let totalInput = 0;
 let totalOutput = 0;
 

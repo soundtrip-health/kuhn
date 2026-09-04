@@ -26,6 +26,13 @@ describe('createJob', () => {
 });
 
 describe('updateJob', () => {
+  it('stamps the routing decision: difficulty and route source (issue #107)', async () => {
+    await updateJob(5, { difficulty: 0.3, routeSource: 'org' });
+    const [sql, params] = query.mock.calls.at(-1);
+    expect(sql).toMatch(/difficulty = \$1, route_source = \$2/);
+    expect(params).toEqual([0.3, 'org', 5]);
+  });
+
   it('updates only the provided fields', async () => {
     await updateJob(5, { status: 'done', outputTokens: 123 });
     const [sql, params] = query.mock.calls[0];

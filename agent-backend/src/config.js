@@ -28,6 +28,9 @@ export const config = {
   log: {
     level: (process.env.LOG_LEVEL || 'info').toLowerCase(),
     dir: process.env.KUHN_LOG_DIR ?? join(dataDir, 'logs'),
+    // Per-request access log (request-log.js). KUHN_LOG_REQUESTS:
+    // all (default — every /api request) | errors (4xx/5xx + aborted only) | off.
+    requests: (process.env.KUHN_LOG_REQUESTS || 'all').toLowerCase(),
   },
   // SQLite database file. In-process, no service to run; lives under the data dir.
   db: {

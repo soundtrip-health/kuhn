@@ -36,6 +36,7 @@
             <button id="export-docx" type="button" class="export-item" role="menuitem" title="Export as Word document">Word&nbsp;(.docx)</button>
             <button id="export-tex" type="button" class="export-item" role="menuitem" title="Export as LaTeX">LaTeX&nbsp;(.tex)</button>
             <button id="export-pptx" type="button" class="export-item" role="menuitem" title="Export as PowerPoint slides (rendered with Marp)">Slides&nbsp;(.pptx)</button>
+            <button id="export-pdf" type="button" class="export-item" role="menuitem" title="Download the rendered PDF">PDF&nbsp;(.pdf)</button>
           </div>
         </div>
         <span class="topbar-divider" aria-hidden="true"></span>
@@ -161,10 +162,12 @@
           <span class="panel-eyebrow">Preview</span>
           <span class="spacer"></span>
           <button id="preview-refresh" type="button" class="btn btn-quiet btn-sm" title="Re-render the PDF">Render</button>
+          <button id="preview-download" type="button" class="btn btn-quiet btn-sm" title="Save the PDF shown here">Download</button>
           <button id="preview-close" type="button" class="preview-close" title="Close preview" aria-label="Close preview">&times;</button>
         </div>
         <div id="preview-status"></div>
-        <iframe id="preview-frame" title="PDF preview"></iframe>
+        <!-- Pages painted by pdf.js (preview.ts) — no native viewer needed -->
+        <div id="preview-pages" role="document" aria-label="PDF preview"></div>
         <!-- Non-PDF file previews (images, text, download links) — story 014 -->
         <div id="preview-alt" hidden></div>
         <div id="preview-resize" title="Drag to resize"></div>
@@ -200,6 +203,8 @@
       </div>
       <div class="status-right">
         <span id="status-agent"></span>
+        <!-- Which model the running/last job was routed to and at what difficulty (issue #107) -->
+        <span id="status-model"></span>
         <span id="status-budget" data-state="ok"></span>
         <span id="status-tokens"></span>
         <span id="status-version" title="App build"></span>

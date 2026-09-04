@@ -90,9 +90,9 @@ check(
   'preview panel opens on toggle',
 );
 await page.waitForFunction(
-  () => (document.getElementById('preview-frame'))?.src?.startsWith('blob:'),
+  () => document.querySelector('#preview-pages canvas.preview-page') != null,
   { timeout: 60000 },
-).catch(() => fail('preview iframe did not receive a rendered PDF'));
+).catch(() => fail('preview pane did not paint a rendered PDF page'));
 const statusText = await page.textContent('#preview-status');
 check(statusText?.includes('draft/main.md') ?? false, `preview status shows the document (got "${statusText}")`);
 

@@ -27,6 +27,8 @@
 
 import { config } from './config.js';
 import { querySync } from './db.js';
+import { log } from './logger.js';
+import { clientIp } from './request-log.js';
 import { getSessionUser } from './db/auth.js';
 import { checkOrgAccess, isMember } from './db/orgs.js';
 import { getProject } from './db/projects.js';
@@ -121,15 +123,25 @@ function projectOrgSuspended(projectId) {
  * @returns {Promise<'write'|'read'|null>}
  */
 export async function memberRoomAccess(user, room) {
-  if (config.auth.mode === 'dev') return 'write';
-  if (!user) return null;
+  return (await memberRoomVerdict(user, room)).access;
+}
+
+/**
+ * memberRoomAccess with the reason attached — for the upgrade log, so a
+ * refused socket says WHY (2026-09-04: a member's collab socket failing with
+ * no server-side trace at all). Same verdict, one more field.
+ * @returns {Promise<{access: 'write'|'read'|null, reason: string}>}
+ */
+export async function memberRoomVerdict(user, room) {
+  if (config.auth.mode === 'dev') return { access: 'write', reason: 'dev' };
+  if (!user) return { access: null, reason: 'no-user' };
   const parsed = parseRoomName(room);
-  if (!parsed) return null;
+  if (!parsed) return { access: null, reason: 'bad-room' };
   const project = await getProject(parsed.projectId);
-  if (!project) return null;
+  if (!project) return { access: null, reason: 'unknown-project' };
   const access = await checkOrgAccess(user.id, project.org_id);
-  if (!access.ok) return null; // not-member or suspended — both refuse
-  return access.role === 'viewer' ? 'read' : 'write';
+  if (!access.ok) return { access: null, reason: access.reason }; // not-member or suspended — both refuse
+  return { access: access.role === 'viewer' ? 'read' : 'write', reason: access.role };
 }
 
 /**
@@ -152,21 +164,22 @@ export async function canPublishRoom(user, room) {
  *   stay a side door into a suspended org).
  * Reviewer principals are enforced in EVERY auth mode — dev's unconditional
  * allow stays member-only, or dev-mode reviewer tests would be vacuous.
- * @returns {Promise<{ok: boolean, access?: 'read'|'write'}>}
+ * @returns {Promise<{ok: boolean, access?: 'read'|'write', reason: string}>}
+ *   `reason` names the verdict for the upgrade log (never sent to the client).
  */
 export async function authorizeRoom(principal, room) {
-  if (!principal) return { ok: false };
+  if (!principal) return { ok: false, reason: 'no-principal' };
   if (principal.kind === 'reviewer') {
     const parsed = parseRoomName(room);
     const ok = parsed !== null
       && parsed.projectId === principal.projectId
       && parsed.path === principal.path;
-    if (!ok) return { ok: false };
-    if (projectOrgSuspended(principal.projectId)) return { ok: false };
-    return { ok: true, access: principal.mode === 'edit' ? 'write' : 'read' };
+    if (!ok) return { ok: false, reason: 'reviewer-other-room' };
+    if (projectOrgSuspended(principal.projectId)) return { ok: false, reason: 'suspended' };
+    return { ok: true, access: principal.mode === 'edit' ? 'write' : 'read', reason: `reviewer-${principal.mode}` };
   }
-  const access = await memberRoomAccess(principal.user, room);
-  return access ? { ok: true, access } : { ok: false };
+  const { access, reason } = await memberRoomVerdict(principal.user, room);
+  return access ? { ok: true, access, reason } : { ok: false, reason };
 }
 
 /**
@@ -213,11 +226,43 @@ export async function canJoinRoom(user, room) {
   return isMember(user.id, project.org_id);
 }
 
-/** Refuse a WS upgrade before completing the handshake. */
-function refuse(socket, status = 401, reason = 'Unauthorized') {
+/**
+ * Refuse a WS upgrade before completing the handshake, and say so in the log.
+ * A refusal is invisible everywhere else: cloudflared logs nothing for it,
+ * the Cloudflare edge turns the non-101 answer into a bare 502, and Chrome
+ * prints "WebSocket connection to '…' failed:" with no status. This line is
+ * the only record that the gate, not the network, said no.
+ */
+function refuse(socket, status = 401, reason = 'Unauthorized', fields = {}) {
+  log.warn('ws_upgrade_refused', { status, ...fields });
   // The socket is still raw HTTP at upgrade time; answer plainly, then close.
   socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`);
   socket.destroy();
+}
+
+/** Who a principal is, for the log — ids and emails only, never cookies. */
+function principalFields(principal) {
+  if (!principal) return { principal: null };
+  if (principal.kind === 'reviewer') {
+    return { principal: 'reviewer', linkId: principal.linkId, mode: principal.mode };
+  }
+  return { principal: 'member', userId: principal.user?.id ?? null, email: principal.user?.email ?? null };
+}
+
+/** Request facts every upgrade record carries — enough to tell a device apart. */
+function requestFields(req, pathname) {
+  const cookie = req.headers?.cookie ?? '';
+  return {
+    path: pathname,
+    ip: clientIp(req),
+    ua: req.headers?.['user-agent'],
+    origin: req.headers?.origin,
+    // Distinguishes "the browser sent no session cookie" (cross-site page,
+    // stripped by a proxy, signed out) from "it sent one that no longer
+    // resolves" (expired, revoked, secret rotated) — different bugs.
+    sessionCookie: readSessionCookie(cookie) != null,
+    reviewCookie: cookie.includes('kuhn_review_session='),
+  };
 }
 
 /**
@@ -232,7 +277,9 @@ export function createUpgradeHandler({ signalingWss, yjsWss }) {
       const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
       const isSignaling = pathname === '/yjs-signaling';
       const isDocSync = pathname.startsWith('/yjs-websocket/');
+      const facts = requestFields(req, pathname);
       if (!isSignaling && !isDocSync) {
+        log.warn('ws_upgrade_refused', { status: null, reason: 'unknown-path', ...facts });
         socket.destroy();
         return;
       }
@@ -241,16 +288,19 @@ export function createUpgradeHandler({ signalingWss, yjsWss }) {
         const room = decodeURIComponent(pathname.replace(/^\/yjs-websocket\//, ''));
         const principal = await wsPrincipal(req, room);
         if (!principal) {
-          refuse(socket);
+          refuse(socket, 401, 'Unauthorized', { reason: 'no-session', room, ...facts });
           return;
         }
         const auth = await authorizeRoom(principal, room);
         if (!auth.ok) {
           // Covers non-member members AND reviewers on any room but their own
           // — including a revoked/expired link whose cookie still parses.
-          refuse(socket, 403, 'Forbidden');
+          refuse(socket, 403, 'Forbidden', { reason: auth.reason, room, ...principalFields(principal), ...facts });
           return;
         }
+        log.info('ws_upgrade', {
+          kind: 'doc', room, access: auth.access, reason: auth.reason, ...principalFields(principal), ...facts,
+        });
         // Stamp the verdict for handleYjsConnection (same idiom as signaling's
         // req.kuhnUser below): the message-level read-only gate, the reviewer
         // registry and server-attributed presence all key off this.
@@ -264,14 +314,15 @@ export function createUpgradeHandler({ signalingWss, yjsWss }) {
       // fan-out, and the per-connection topic cache never needs eviction).
       const user = await wsUser(req);
       if (!user) {
-        refuse(socket);
+        refuse(socket, 401, 'Unauthorized', { reason: 'no-session', ...facts });
         return;
       }
+      log.info('ws_upgrade', { kind: 'signaling', userId: user.id, email: user.email, ...facts });
       // Signaling: authenticated here; topics are authorized per message.
       req.kuhnUser = user;
       signalingWss.handleUpgrade(req, socket, head, (ws) => signalingWss.emit('connection', ws, req));
     } catch (err) {
-      console.error('[collab] Upgrade failed:', err);
+      log.error('ws_upgrade_error', { path: req.url, error: err });
       socket.destroy();
     }
   };

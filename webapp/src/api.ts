@@ -96,9 +96,24 @@ export interface TreeNode {
   children?: TreeNode[];
 }
 
+/** The model a job was routed to (issue #107), on the 'model' event and job rows. */
+export interface AgentModelInfo {
+  profile: string | null;
+  provider: string | null;
+  model: string | null;
+  /** 'org' = a configured per-role route chose it; 'deployment' = the seeded default. */
+  source?: 'org' | 'deployment';
+  /** The 0..1 difficulty the dispatcher supplied (1 when omitted); unknown on job rows. */
+  difficulty?: number;
+}
+
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link' | 'context';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link' | 'context' | 'model';
   agent: string;
+  /** Dispatch depth: 0 for the addressed agent, 1+ for sub-agents (on 'model' events). */
+  depth?: number;
+  /** Routed model for this job (type 'model', issue #107). */
+  model?: AgentModelInfo;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
   ts?: string;
   content?: string;
@@ -184,6 +199,13 @@ export interface Job {
   error: string | null;
   /** Hand-off note written at a budget pause (issue #110); null otherwise. */
   handoff: string | null;
+  /** Effective runtime identity and the profile the route picked (STH-47, issue #107). */
+  provider?: string | null;
+  model?: string | null;
+  profile?: string | null;
+  /** The routing decision (issue #107): difficulty the route was resolved for, and what picked it. Null before the column existed. */
+  difficulty?: number | null;
+  route_source?: 'org' | 'deployment' | null;
   created_at: string;
 }
 
@@ -1900,8 +1922,10 @@ export async function renderPdf(projectId: number, path: string): Promise<Blob> 
   return res.blob();
 }
 
-/** URL of the Pandoc export endpoint (served with Content-Disposition: attachment). */
-export function exportUrl(projectId: number, path: string, format: 'docx' | 'tex' | 'pptx'): string {
+export type ExportFormat = 'pdf' | 'docx' | 'tex' | 'pptx';
+
+/** URL of the export endpoint (served with Content-Disposition: attachment). `pdf` is the rendered PDF itself. */
+export function exportUrl(projectId: number, path: string, format: ExportFormat): string {
   return `${BACKEND_URL}/api/projects/${projectId}/export?path=${encodeURIComponent(path)}&format=${format}`;
 }
 

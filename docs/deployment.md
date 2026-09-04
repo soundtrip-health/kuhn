@@ -156,6 +156,16 @@ ingress:
 
 - WebSockets (Yjs collaboration) are proxied by cloudflared without extra
   configuration; the webapp derives `wss://` URLs from its own origin.
+- A collaboration socket the backend **refuses** (no or stale session cookie →
+  401, not a member of the project's org → 403) does not look like a 401/403
+  from outside: the Cloudflare edge answers the upgrade with a bare `502 Bad
+  Gateway`, cloudflared logs nothing, and Chrome prints only `WebSocket
+  connection to 'wss://…/yjs-websocket/…' failed:`. The backend log is the one
+  place that says why — look for `ws_upgrade_refused` (reason, room, user,
+  whether a session cookie was present at all, user agent) next to the
+  `ws_upgrade` / `ws_room_join` lines of the sockets that were accepted. A
+  genuine tunnel outage shows up instead as `Unable to reach the origin
+  service` in `journalctl -u cloudflared`.
 - **Current security gap:** the backend trusts all proxy hops and currently builds
   login, invitation, and review URLs from request protocol/Host. A trusted tunnel often
   makes the URL look correct, but Host remains attacker-influenced if the origin is

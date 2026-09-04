@@ -157,7 +157,15 @@ describe('exportDocument', () => {
   });
 
   it('rejects unknown formats', async () => {
-    await expect(exportDocument(1, 'draft/main.md', 'pdf')).rejects.toThrow(RangeError);
+    await expect(exportDocument(1, 'draft/main.md', 'odt')).rejects.toThrow(RangeError);
+  });
+
+  it('pdf: the rendered PDF itself, named after the source (preview download)', async () => {
+    const { output, contentType, filename } = await exportDocument(1, 'draft/main.md', 'pdf');
+    expect(contentType).toBe('application/pdf');
+    expect(filename).toBe('main.pdf');
+    expect(Buffer.isBuffer(output)).toBe(true);
+    expect(pandocConvert).not.toHaveBeenCalled();
   });
 });
 
