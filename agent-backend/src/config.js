@@ -1,10 +1,14 @@
 import 'dotenv/config';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Single data root: SQLite DB + uploaded project files both live under here,
 // kept out of the source tree. Defaults to the repo-root ./data (gitignored).
+// fileURLToPath (not .pathname) so this decodes correctly when the repo path
+// itself contains URL-special characters — e.g. macOS iCloud Drive checkouts
+// under "Mobile Documents" (a literal space) and "com~apple~CloudDocs" (~).
 const dataDir = process.env.KUHN_DATA_DIR
-  || new URL('../../data', import.meta.url).pathname;
+  || fileURLToPath(new URL('../../data', import.meta.url));
 
 function parseModelWeights(env) {
   const weights = { haiku: 1, sonnet: 3, opus: 5, default: 5 };
@@ -39,7 +43,7 @@ export const config = {
     // Served only when the directory contains an index.html; set
     // KUHN_WEBAPP_DIST to another build, or to '' to disable serving.
     dist: process.env.KUHN_WEBAPP_DIST
-      ?? new URL('../../webapp/dist', import.meta.url).pathname,
+      ?? fileURLToPath(new URL('../../webapp/dist', import.meta.url)),
   },
   auth: {
     // 'dev' (default): x-kuhn-user header / seeded dev user, no login needed —
@@ -159,7 +163,7 @@ export const config = {
     // read-only at runtime. Deploys must ship guidance-docs/ alongside the
     // backend (or point this elsewhere).
     catalogRoot: process.env.KUHN_GUIDANCE_DOCS
-      || new URL('../../guidance-docs', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../guidance-docs', import.meta.url)),
   },
   scripts: {
     // Kuhn-curated shared-script catalog (issue #68): shared-scripts/
@@ -167,7 +171,7 @@ export const config = {
     // tree and read-only at runtime — same deployment contract as the
     // knowledge catalog above.
     catalogRoot: process.env.KUHN_SHARED_SCRIPTS
-      || new URL('../../shared-scripts', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../shared-scripts', import.meta.url)),
     // Scripts are code text: small, diffable, stored in the DB.
     maxScriptBytes: parseInt(process.env.SCRIPTS_MAX_BYTES || String(256 * 1024)),
   },
@@ -176,7 +180,7 @@ export const config = {
     // the CSS files it points at, shipped in the repo tree and read-only at
     // runtime; same deployment contract as the script catalog above.
     catalogRoot: process.env.KUHN_SLIDE_THEMES
-      || new URL('../../slide-themes', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../slide-themes', import.meta.url)),
     // Theme CSS is text: small, diffable, stored in the DB for org uploads.
     maxThemeBytes: parseInt(process.env.SLIDE_THEME_MAX_BYTES || String(256 * 1024)),
   },
