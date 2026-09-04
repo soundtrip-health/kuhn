@@ -36,7 +36,9 @@ async function requireJobRole(req, res, minRole) {
 
 /**
  * POST /api/agent/task
- * Body: { role, projectId, input, context?, sessionId?, compose?, continuation? }
+ * Body: { role, projectId, input, context?, sessionId?, compose?, continuation?, difficulty? }
+ * `difficulty` (0..1, issue #107) steers the org's per-role model routing;
+ * absent means the strongest configured profile.
  * `compose: true` runs the task in compose mode — file-mutating tools are
  * withheld so the agent returns text only (the /write contract, story 017).
  * `continuation` (STH-47): the canonical Kuhn continuation envelope from a
@@ -45,7 +47,7 @@ async function requireJobRole(req, res, minRole) {
  * Streams AgentEvents to the browser as Server-Sent Events.
  */
 router.post('/api/agent/task', async (req, res) => {
-  const { role, projectId, input, context, sessionId, compose, continuation } = req.body ?? {};
+  const { role, projectId, input, context, sessionId, compose, continuation, difficulty } = req.body ?? {};
   if (!role || projectId == null || !input) {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
@@ -66,7 +68,7 @@ router.post('/api/agent/task', async (req, res) => {
   // disconnect even while parked (no events arrive to unblock channel.next()).
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, userId: req.user.id, detachable: true, signal: ac.signal }));
+  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, difficulty, userId: req.user.id, detachable: true, signal: ac.signal }));
 });
 
 /**

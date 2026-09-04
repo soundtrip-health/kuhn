@@ -198,6 +198,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- relative to the top tier (runtime.js ledgerWeight), so org budgets sum a
   -- spend-like figure across models. Updated per turn. Mirrored in init.js.
   weighted_tokens  INTEGER NOT NULL DEFAULT 0,
+  -- Model routing diagnostics (issue #107/#112): the profile the route
+  -- selected for this job and the endpoint the provider call egressed to,
+  -- beside provider/model above. Mirrored in init.js COLUMN_MIGRATIONS.
+  profile          TEXT,
+  endpoint         TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -789,4 +794,52 @@ CREATE TABLE IF NOT EXISTS org_secrets (
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   UNIQUE (org_id, name)
+);
+
+-- ============================================================
+-- Model profiles and per-role routing (issue #107, #111, #112)
+-- ============================================================
+-- An org-owned model profile: one provider/model/endpoint the org may route
+-- agents to, holding a credential REFERENCE (an org_secrets name), never the
+-- credential. Deployment-managed profiles (the operator's Anthropic key and
+-- the KUHN_PI_* preview) are derived from config at read time and are not
+-- rows here — see db/model-profiles.js. Provider egress is a property of the
+-- profile, never of anything the model can choose (threat model §4.2).
+CREATE TABLE IF NOT EXISTS model_profiles (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id            INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  slug              TEXT NOT NULL,     -- [a-z][a-z0-9-]*, unique per org
+  name              TEXT NOT NULL,
+  provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter', 'openai-compatible')),
+  model_id          TEXT NOT NULL,
+  base_url          TEXT,              -- openai-compatible only; validated (https, no creds/query)
+  credential_secret TEXT,              -- org_secrets.name; NULL only for keyless local endpoints
+  capabilities      TEXT NOT NULL DEFAULT '{}',  -- JSON: reasoning, input[], contextWindow, maxTokens, tools
+  -- Budget weight relative to the deployment's model tiers (config
+  -- AGENT_MODEL_WEIGHTS units: Haiku 1, Sonnet 3, Opus 5). Feeds the per-task
+  -- budget and the org spend ledger (issue #110).
+  cost_weight       REAL NOT NULL DEFAULT 5,
+  -- Owner-facing note on the provider's data handling (logs/trains/retains).
+  -- Surfaced, not enforced (threat model §4.3).
+  data_policy       TEXT,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, slug)
+);
+
+-- Per-role ranked routing: for an agent, the profiles it may run on, each
+-- with the highest task difficulty (0..1) it is trusted with. Dispatch picks
+-- the cheapest profile whose difficulty covers the task's (agents/
+-- model-routing.js). No rows for a role → the deployment default for that
+-- role (the seeded agents.model on the operator's key).
+CREATE TABLE IF NOT EXISTS agent_model_routes (
+  org_id       INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  agent_slug   TEXT NOT NULL,
+  profile_slug TEXT NOT NULL,   -- an org profile slug or a deployment profile slug
+  difficulty   REAL NOT NULL CHECK (difficulty >= 0 AND difficulty <= 1),
+  updated_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (org_id, agent_slug, profile_slug)
 );

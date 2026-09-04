@@ -938,6 +938,60 @@ describe('Pi production adapter', () => {
   );
 });
 
+describe('Pi adapter org-credential and declared-model paths (issues #111/#112)', () => {
+  it.each([
+    ['openrouter', 'openai/gpt-oss-20b', (o) => createOpenRouterPiRuntime(o), 'OPENROUTER_API_KEY'],
+    ['openai', 'gpt-5-mini', (o) => createOpenAIPiRuntime(o), 'OPENAI_API_KEY'],
+    ['openai-compatible', 'qwen-science', (o) => createOpenAICompatiblePiRuntime({ baseUrl: 'http://127.0.0.1:8000/v1', ...o }), 'OPENAI_COMPATIBLE_API_KEY'],
+  ])('%s: a resolved apiKey value wins over every env var and never leaks', async (path, modelId, build, defaultEnv) => {
+    const saved = process.env[defaultEnv];
+    process.env[defaultEnv] = 'sk-from-env';
+    try {
+      const { models, model, runtime, provider } = build({ modelId, apiKey: 'sk-org-secret' });
+      const auth = await models.getAuth(model);
+      expect(auth).toMatchObject({ source: 'org secret' });
+      expect(auth.auth.apiKey).toBe('sk-org-secret');
+      for (const obj of [runtime.identity, model, provider.getModels()]) {
+        expect(JSON.stringify(obj)).not.toContain('sk-org-secret');
+      }
+    } finally {
+      if (saved === undefined) delete process.env[defaultEnv];
+      else process.env[defaultEnv] = saved;
+    }
+  });
+
+  it('openai-compatible: a keyless profile resolves the placeholder bearer only when asked', async () => {
+    const saved = process.env.OPENAI_COMPATIBLE_API_KEY;
+    delete process.env.OPENAI_COMPATIBLE_API_KEY;
+    try {
+      const keyless = createOpenAICompatiblePiRuntime({ baseUrl: 'http://127.0.0.1:8000/v1', modelId: 'm', keyless: true });
+      expect(await keyless.models.getAuth(keyless.model)).toMatchObject({ auth: { apiKey: 'none' }, source: 'no credential (local endpoint)' });
+      const strict = createOpenAICompatiblePiRuntime({ baseUrl: 'http://127.0.0.1:8000/v1', modelId: 'm' });
+      expect(await strict.models.getAuth(strict.model)).toBeUndefined();
+      // A resolved key still wins over the keyless placeholder.
+      const both = createOpenAICompatiblePiRuntime({ baseUrl: 'http://127.0.0.1:8000/v1', modelId: 'm', keyless: true, apiKey: 'sk-x' });
+      expect((await both.models.getAuth(both.model)).auth.apiKey).toBe('sk-x');
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_COMPATIBLE_API_KEY;
+      else process.env.OPENAI_COMPATIBLE_API_KEY = saved;
+    }
+  });
+
+  it('openrouter: an uncatalogued model id runs on its declared capabilities', () => {
+    const { model, runtime } = createOpenRouterPiRuntime({
+      modelId: 'acme/science-70b', capabilities: { reasoning: true, contextWindow: 96_000, maxTokens: 8192 },
+    });
+    expect(model).toMatchObject({ id: 'acme/science-70b', provider: 'openrouter', api: 'openai-completions', baseUrl: 'https://openrouter.ai/api/v1', reasoning: true, contextWindow: 96_000 });
+    expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(runtime.identity.capabilities).toMatchObject({ reasoning: true, contextWindow: 96_000, maxTokens: 8192 });
+    // A catalogued id keeps its catalog entry even when capabilities are passed.
+    const known = createOpenRouterPiRuntime({ modelId: 'openai/gpt-oss-20b', capabilities: { contextWindow: 1 } });
+    expect(known.model.contextWindow).not.toBe(1);
+    // Without declared capabilities an unknown id is still an error.
+    expect(() => createOpenRouterPiRuntime({ modelId: 'acme/unknown' })).toThrow(/Unknown OpenRouter model/);
+  });
+});
+
 describe('Pi adapter server-mode safety', () => {
   it('sends Kuhn system instructions verbatim and exposes exactly Kuhn tools', async () => {
     const sentinel = 'SENTINEL: Kuhn scientific-writing system instructions. No other context may be injected.';

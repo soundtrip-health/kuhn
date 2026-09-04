@@ -56,6 +56,17 @@ export const config = {
       // OPENAI_COMPATIBLE_API_KEY); credentials are never reinterpreted.
       apiKeyEnv: process.env.KUHN_PI_API_KEY_ENV || '',
     },
+    // Org model profiles (issue #107/#111/#112): whether an org-owned
+    // OpenAI-compatible profile may point at a loopback / private-network
+    // host (a local vLLM/Ollama server). Off outside dev mode by default:
+    // a private base URL from the admin UI is otherwise an SSRF vector
+    // (threat model §4.2). Enable deliberately, with network policy that
+    // matches.
+    allowPrivateEndpoints: (process.env.KUHN_ALLOW_PRIVATE_MODEL_ENDPOINTS
+      ?? ((process.env.KUHN_AUTH_MODE || 'dev') === 'dev' ? 'true' : 'false')) === 'true',
+    // Upper bound on the synthetic connectivity test an owner runs from the
+    // admin UI (POST .../model-profiles/:slug/test).
+    testTimeoutMs: parseInt(process.env.KUHN_MODEL_TEST_TIMEOUT_MS || '30000'),
   },
   cors: {
     // Comma-separated allowlist; the webapp dev server is pinned to 5174

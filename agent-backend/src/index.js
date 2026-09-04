@@ -22,6 +22,7 @@ import knowledgeRouter from './routes/knowledge.js';
 import orgsRouter from './routes/orgs.js';
 import orgAdminRouter from './routes/org-admin.js';
 import orgBudgetsRouter from './routes/org-budgets.js';
+import modelProfilesRouter from './routes/model-profiles.js';
 import orgSecretsRouter from './routes/org-secrets.js';
 import orgLibraryRouter from './routes/org-library.js';
 import pendingEditsRouter from './routes/pending-edits.js';
@@ -97,6 +98,7 @@ app.use(knowledgeRouter); // Kuhn knowledge catalog + per-org selections (issue 
 app.use(orgsRouter);
 app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)
 app.use(orgBudgetsRouter); // owner-gated token budgets: usage, overrides, reset (issue #110)
+app.use(modelProfilesRouter); // model profiles + per-role routing (issues #107/#111/#112)
 app.use(orgSecretsRouter); // org secrets store: write-only credential handles
 app.use(orgLibraryRouter);
 app.use(pendingEditsRouter);

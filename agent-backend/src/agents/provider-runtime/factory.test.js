@@ -182,3 +182,63 @@ describe('createAgentRuntime pi option propagation (live paths)', () => {
     },
   );
 });
+
+/**
+ * Profile path (issues #107/#111/#112): the factory builds from a resolved
+ * model profile + credential and never consults KUHN_AGENT_RUNTIME for it.
+ */
+describe('createAgentRuntime with a model profile', () => {
+  const profile = (overrides = {}) => ({
+    slug: 'p', provider: 'openrouter', model_id: 'openai/gpt-oss-20b', base_url: null,
+    capabilities: { reasoning: false, input: ['text'], contextWindow: 64_000, maxTokens: 4096, tools: true },
+    ...overrides,
+  });
+
+  it('ignores the deployment selector entirely', () => {
+    configMock.config = { agentRuntime: { kind: 'piii', pi: {} } };
+    const runtime = createAgentRuntime({ profile: profile(), credential: { apiKeyEnv: 'X' }, projectDir: '/p', maxTurns: 5 });
+    expect(runtime.identity).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-oss-20b' });
+    expect(runtime.maxTurns).toBe(5);
+  });
+
+  it('builds the Claude adapter for an anthropic profile (model from the profile)', () => {
+    const runtime = createAgentRuntime({ profile: profile({ provider: 'anthropic', model_id: 'claude-sonnet-4-6' }), credential: {}, projectDir: '/p' });
+    expect(runtime.identity).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-6' });
+  });
+
+  it('builds the OpenAI path, declaring an uncatalogued model from the profile capabilities', () => {
+    const runtime = createAgentRuntime({ profile: profile({ provider: 'openai', model_id: 'gpt-science-x' }), credential: { apiKey: 'sk-1' }, projectDir: '/p' });
+    expect(runtime.identity).toMatchObject({
+      provider: 'openai', model: 'gpt-science-x', api: 'openai-responses',
+      capabilities: { contextWindow: 64_000, maxTokens: 4096 },
+    });
+    expect(JSON.stringify(runtime.identity)).not.toContain('sk-1');
+  });
+
+  it('builds the OpenAI-compatible path from the profile base URL and capabilities', () => {
+    const runtime = createAgentRuntime({
+      profile: profile({ provider: 'openai-compatible', model_id: 'qwen-science', base_url: 'http://127.0.0.1:8000/v1', capabilities: { reasoning: true, contextWindow: 32_000 } }),
+      credential: {}, projectDir: '/p',
+    });
+    expect(runtime.identity).toMatchObject({
+      provider: 'openai-compatible', model: 'qwen-science', endpoint: 'http://127.0.0.1:8000/v1',
+      capabilities: { reasoning: true, contextWindow: 32_000 },
+    });
+  });
+
+  it('keyless OpenAI-compatible profiles get the placeholder bearer; credentialed ones do not', async () => {
+    const local = profile({ provider: 'openai-compatible', model_id: 'm', base_url: 'http://127.0.0.1:8000/v1', credential: { kind: 'none', secret: null } });
+    const keyless = createAgentRuntime({ profile: local, credential: {}, projectDir: '/p' });
+    expect((await keyless.models.getAuth(keyless.model)).auth.apiKey).toBe('none');
+    const secret = createAgentRuntime({ profile: { ...local, credential: { kind: 'secret', secret: 's' } }, credential: { apiKey: 'sk-local' }, projectDir: '/p' });
+    expect((await secret.models.getAuth(secret.model)).auth.apiKey).toBe('sk-local');
+  });
+
+  it.each([
+    [profile({ provider: 'mistral' }), /unknown provider 'mistral'/],
+    [profile({ provider: 'openai-compatible', base_url: null }), /base URL is required/],
+    [profile({ model_id: '' }), /model id is required/],
+  ])('fails loudly on an unusable profile %o', (bad, message) => {
+    expect(() => createAgentRuntime({ profile: bad, credential: {}, projectDir: '/p' })).toThrow(message);
+  });
+});

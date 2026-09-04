@@ -49,14 +49,84 @@ export function agentRuntimeKind() {
 /**
  * Build the AgentRuntime adapter for a task.
  *
+ * Two ways in:
+ *
+ * - `profile` (issue #107/#111): a resolved model profile (db/model-
+ *   profiles.js) plus the credential the routing layer resolved for it
+ *   (`credential`: { apiKey } for an org secret, { apiKeyEnv } for a
+ *   deployment env var, {} for a keyless local endpoint). The provider,
+ *   model, endpoint, and declared capabilities all come from the profile;
+ *   nothing here reads KUHN_AGENT_RUNTIME. The credential value is handed
+ *   to the adapter constructor and dropped.
+ * - no `profile` (legacy STH-47 path): the deployment selector picks
+ *   'claude' (the `model` option) or the KUHN_PI_* preview.
+ *
  * @param {object} [options] - the product-side runtime options
- *   ({ model, projectDir, tools, maxTurns, initialSessionId })
+ *   ({ profile?, credential?, model, projectDir, tools, maxTurns,
+ *   initialSessionId, systemPrompt })
  * @returns {object} AgentRuntime (contract.js): { identity, cancel(),
  *   runTurn(turn) } — normalized provider-runtime events only
  */
 export function createAgentRuntime(options = {}) {
+  if (options.profile) return createProfileRuntime(options);
   if (agentRuntimeKind() === 'pi') return createPiAgentRuntime(options);
   return createClaudeRuntime(options);
+}
+
+/** Every provider a profile may name (mirrors db/model-profiles.js PROVIDERS). */
+export const PROFILE_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'openai-compatible'];
+
+/** The pi-adapter model metadata a profile's declared capabilities map to. */
+function declaredCapabilities(profile) {
+  const caps = profile.capabilities ?? {};
+  return {
+    reasoning: caps.reasoning === true,
+    input: Array.isArray(caps.input) && caps.input.length ? caps.input : ['text'],
+    contextWindow: Number.isInteger(caps.contextWindow) ? caps.contextWindow : 128_000,
+    maxTokens: Number.isInteger(caps.maxTokens) ? caps.maxTokens : 16_384,
+  };
+}
+
+/**
+ * Build the runtime a model profile describes. Every failure is a
+ * configuration error that fails the task — never a fallback to another
+ * profile or provider.
+ */
+function createProfileRuntime({
+  profile, credential = {}, projectDir, tools = [], maxTurns, initialSessionId = null, systemPrompt = '',
+}) {
+  const provider = (profile.provider ?? '').toLowerCase();
+  if (!PROFILE_PROVIDERS.includes(provider)) {
+    throw new Error(
+      `model profile '${profile.slug}': unknown provider '${profile.provider ?? '(unset)'}' `
+      + `(expected: ${PROFILE_PROVIDERS.join(' | ')})`,
+    );
+  }
+  const apiKey = credential.apiKey ?? null;
+  if (provider === 'anthropic') {
+    return createClaudeRuntime({
+      model: profile.model_id ?? undefined, projectDir, tools, maxTurns, initialSessionId, apiKey,
+    });
+  }
+  if (!profile.model_id) {
+    throw new Error(`model profile '${profile.slug}': a model id is required`);
+  }
+  const apiKeyEnv = credential.apiKeyEnv ?? PI_DEFAULT_API_KEY_ENV[provider];
+  const common = {
+    modelId: profile.model_id, tools, systemPrompt, maxTurns,
+    apiKey, apiKeyEnv, capabilities: declaredCapabilities(profile),
+  };
+  if (provider === 'openrouter') return createOpenRouterPiRuntime(common).runtime;
+  if (provider === 'openai') return createOpenAIPiRuntime(common).runtime;
+  if (!profile.base_url) {
+    throw new Error(`model profile '${profile.slug}': an OpenAI-compatible base URL is required`);
+  }
+  // The compatible path takes the declared metadata as top-level options. A
+  // profile with no credential at all is a keyless local server: pi-ai then
+  // sends a placeholder bearer instead of refusing the request.
+  const { capabilities, ...rest } = common;
+  const keyless = !apiKey && (profile.credential?.kind ?? 'none') === 'none';
+  return createOpenAICompatiblePiRuntime({ baseUrl: profile.base_url, ...rest, ...capabilities, keyless }).runtime;
 }
 
 /**

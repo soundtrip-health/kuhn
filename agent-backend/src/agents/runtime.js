@@ -32,6 +32,7 @@ import { renderSessionHandoff } from './session-handoff.js';
 import { captureBudgetHandoff } from './handoff.js';
 import { BUDGET_EXCEEDED_ERROR } from './budget-pause.js';
 import { resolveBudgets } from '../db/org-budgets.js';
+import { requirementFailure, resolveCredential, resolveRoute } from './model-routing.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -49,6 +50,9 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   files, dir, activeDocument }. `activeDocument` (STH-43) is the path the user
  *   has open in the editor; when absent (and not seeding) it falls back to the
  *   project's persisted last-open document, and sub-agent dispatches inherit it.
+ * @param {number} [task.difficulty] - How hard this task is, 0..1 (issue
+ *   #107): the org's per-role model routing picks the cheapest profile
+ *   trusted with it. Absent → 1 (the strongest configured profile).
  * @param {string} [task.sessionId] - Continue a prior provider session
  * @param {object} [task.continuation] - Canonical Kuhn continuation (STH-47)
  *   to resume from: the provider-neutral record of a prior run (a follow-up
@@ -245,7 +249,7 @@ const OVERLOADED_TERMINAL_MESSAGE =
   'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.';
 
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
@@ -256,17 +260,39 @@ async function runTask(task, internal, channel, state) {
     agent = { ...agent, tools: agent.tools.filter((t) => !COMPOSE_DENIED_TOOLS.has(t)) };
   }
 
+  const project = await getProject(projectId);
+
+  // Model routing (issue #107): the org's ranked per-role route list picks
+  // the profile for this task's difficulty; no route → the deployment
+  // default (the seeded agents.model, exactly as before). A profile that
+  // cannot run a Kuhn agent at all is refused HERE, before a job exists —
+  // never after partial side effects (issue #112).
+  const route = resolveRoute({ orgId: project?.org_id ?? null, agent, difficulty });
+  const routeFailure = requirementFailure(route.profile);
+  if (routeFailure) {
+    log.warn('route_invalid', {
+      agent: agent.slug, projectId: Number(projectId), userId, depth,
+      profile: route.profile?.slug ?? null, source: route.source, reason: routeFailure,
+    });
+    channel.push({
+      type: 'error',
+      agent: agent.slug,
+      reason: 'route_invalid',
+      message: `This agent's model route cannot run: ${routeFailure}. An organization owner can fix it under Settings → Models.`,
+      profile: route.profile?.slug ?? null,
+    });
+    return;
+  }
+
   // Weighted budget accounting (story 020): the budget is denominated in
   // root-agent-tier tokens, so a cheap sub-agent (Haiku RA) burns it slower
   // than the premium root (Opus PM). The root task pins the base weight.
-  const modelWeight = modelCostWeight(agent.model ?? config.agent.model);
+  const modelWeight = modelCostWeight(route.profile);
   budget.baseWeight ??= modelWeight;
   const costRatio = modelWeight / budget.baseWeight;
   // Spend-ledger weight (issue #110): this job's tokens relative to the top
   // model tier, the unit org budgets are denominated in (Opus 1, Haiku 1/5).
   const ledgerWeight = modelWeight / topModelWeight();
-
-  const project = await getProject(projectId);
 
   // Org budgets (issue #110, parts 3–4): a user's / a project's spend across
   // runs. The tightest remaining allowance caps this task's budget, so the
@@ -359,17 +385,30 @@ async function runTask(task, internal, channel, state) {
   // default, pi opt-in) owns model execution, streaming, tool-loop
   // mechanics, provider errors/identity, usage, canonical continuation,
   // and cancellation. This module consumes the normalized contract only.
+  // The credential is resolved server-side at this moment and handed to
+  // the adapter constructor only (issue #111): it is never attached to the
+  // route, the job, a log line, or an event.
   const runtime = createAgentRuntime({
-    // Per-agent model (story 021): each role runs on its DB-configured model
-    // (sub-agents dispatched via dispatch_agent load their own row, so a
-    // Haiku RA can serve an Opus PM); AGENT_MODEL is the global fallback.
-    model: agent.model ?? config.agent.model,
+    // The routed profile (issue #107): with no org route this is the
+    // deployment default — the role's DB-configured model (story 021; a
+    // dispatched Haiku RA can serve an Opus PM) or the Pi preview.
+    profile: route.profile,
+    credential: resolveCredential(project?.org_id ?? null, route.profile),
     projectDir,
     tools: neutralTools,
     maxTurns: MAX_TURNS,
     initialSessionId: sessionId,
   });
   state.runtime = runtime;
+  // Effective runtime identity (STH-47): the provider/model that actually
+  // ran the job, stamped at the job terminal so a continuation or retry can
+  // never silently switch mechanics.
+  const jobIdentity = () => ({
+    provider: runtime.identity?.provider ?? null,
+    model: runtime.identity?.model ?? null,
+    profile: route.profile.slug,
+    endpoint: runtime.identity?.endpoint ?? route.profile.endpoint ?? null,
+  });
   // Audit (STH-51): the normalized runtime identity is the effective
   // provider/model of this job — the same value stamped on the job row at
   // the terminal (jobIdentity). resumeSession null at depth > 0 is the
@@ -380,8 +419,14 @@ async function runTask(task, internal, channel, state) {
     depth, parentJobId,
     provider: runtime.identity?.provider ?? null,
     model: runtime.identity?.model ?? null,
+    profile: route.profile.slug, routeSource: route.source, difficulty: route.difficulty,
+    endpoint: runtime.identity?.endpoint ?? route.profile.endpoint ?? null,
     resumeSession: sessionId, seeding, compose,
   });
+  // Routing diagnostics on the job row from the start (issue #112): a
+  // running job already shows which profile/provider/model/endpoint it is
+  // on; the terminal stamps the same identity again with the usage.
+  await updateJob(job.id, jobIdentity());
   state.controller = new AbortController();
 
   const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);
@@ -395,13 +440,6 @@ async function runTask(task, internal, channel, state) {
   // across turns (cache reads re-counted each turn) and only measures cost.
   let lastContextTokens = 0;
 
-  // Effective runtime identity (STH-47): the provider/model that actually
-  // ran the job, stamped at the job terminal so a continuation or retry can
-  // never silently switch mechanics.
-  const jobIdentity = () => ({
-    provider: runtime.identity?.provider ?? null,
-    model: runtime.identity?.model ?? null,
-  });
   // The org-budget ledger figure for this job so far (issue #110).
   const weightedTokens = (u = usage) => Math.round((u.inputTokens + u.outputTokens) * ledgerWeight);
 
@@ -883,11 +921,14 @@ async function writeBudgetHandoff(job, agent, projectId) {
   }
 }
 
-// Approximate model price ratio for budget weighting (story 020), matched by
-// substring of the model id ("claude-haiku-4-5" → weights.haiku).
-function modelCostWeight(model) {
+// Approximate model price ratio for budget weighting (story 020). A model
+// profile carries its own cost_weight (issue #107; deployment profiles derive
+// theirs from AGENT_MODEL_WEIGHTS by model-id substring, "claude-haiku-4-5" →
+// weights.haiku); anything else falls back to that substring match.
+function modelCostWeight(profile) {
+  if (typeof profile?.cost_weight === 'number' && profile.cost_weight > 0) return profile.cost_weight;
   const weights = config.agent.modelWeights;
-  const id = (model ?? '').toLowerCase();
+  const id = (profile?.model_id ?? '').toLowerCase();
   for (const [key, weight] of Object.entries(weights)) {
     if (key !== 'default' && id.includes(key)) return weight;
   }
