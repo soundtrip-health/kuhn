@@ -13,6 +13,7 @@
 import { toolOk, toolError } from './envelope.js';
 import { query as dbQuery } from '../../db.js';
 import { getProject } from '../../db/projects.js';
+import { getSecretValueForProject } from '../../db/org-secrets.js';
 import { searchOrgKnowledge, hasReadyOrgDocuments } from '../../db/org-documents.js';
 import { pubmedSearch, arxivSearch } from '../search.js';
 
@@ -51,7 +52,10 @@ export function createLiteratureTools(ctx) {
       },
       required: ['query'],
     },
-    execute: async (_id, { query: q, max_results }) => searchToolResult(() => pubmedSearch(q, max_results)),
+    // An org's `ncbi-api-key` secret (if saved) rides along server-side for
+    // the higher NCBI rate limit; the model never sees the value.
+    execute: async (_id, { query: q, max_results }) => searchToolResult(() =>
+      pubmedSearch(q, max_results, { apiKey: getSecretValueForProject(projectId, 'ncbi-api-key') })),
   });
 
   tools.push({

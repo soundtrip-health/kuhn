@@ -41,6 +41,7 @@ import { createLiteratureTools } from './literature.js';
 import { createScriptTools } from './scripts.js';
 import { createInteractionTools } from './interaction.js';
 import { createProjectTools } from './project.js';
+import { createSlideTools } from './slides.js';
 
 // Domain order is the stable enumeration order (deterministic for tests and
 // for the tool list a provider sees).
@@ -52,6 +53,7 @@ const DOMAIN_TOOL_FACTORIES = [
   createScriptTools,
   createInteractionTools,
   createProjectTools,
+  createSlideTools,
 ];
 
 /**

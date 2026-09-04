@@ -101,8 +101,13 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { agent_slug: { type: 'string', description: 'Slug of the agent to spawn' }, task: { type: 'string', description: 'Task description for the sub-agent' }, context: { type: 'string', description: 'Additional context for the sub-agent' } }, required: ['agent_slug', 'task'] },
   },
   {
-    slug: 'run_script', name: 'Run Script', description: 'List and run shared org scripts (or a project script) in the no-network sandbox (issue #68)',
-    parameterSchema: { type: 'object', properties: { script: { type: 'string', description: 'Org script slug' }, path: { type: 'string', description: 'Project-relative script path' }, args: { type: 'array', items: { type: 'string' }, description: 'Script arguments' } } },
+    slug: 'run_script', name: 'Run Script', description: 'List and run shared org scripts (or a project script) in the no-internet sandbox (issue #68); org secrets can be injected for data-service access (secrets store)',
+    parameterSchema: { type: 'object', properties: { script: { type: 'string', description: 'Org script slug' }, path: { type: 'string', description: 'Project-relative script path' }, args: { type: 'array', items: { type: 'string' }, description: 'Script arguments' }, secrets: { type: 'array', items: { type: 'string' }, description: 'Org secret names to inject as env vars' } } },
+  },
+  {
+    // STH-61: slide-theme discovery — agents kept guessing theme names.
+    slug: 'list_slide_themes', name: 'List Slide Themes', description: 'List the Marp slide themes available to this project (marp built-ins, Kuhn catalog, organization uploads)',
+    parameterSchema: { type: 'object', properties: {} },
   },
 ];
 
@@ -131,6 +136,9 @@ export const ASSIGNMENTS = [
   ['reviewer', 'manage_comments'], ['pm', 'manage_comments'], ['writer', 'manage_comments'],
   ['pm', 'spawn_agent'], ['writer', 'spawn_agent'],
   ['pm', 'ask_user'], ['pm', 'project_config'],
+  // Slide themes (STH-61): the roles that author decks pick a real theme
+  // name instead of guessing.
+  ['pm', 'list_slide_themes'], ['writer', 'list_slide_themes'],
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],

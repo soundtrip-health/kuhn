@@ -85,6 +85,18 @@ vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
   getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
 }));
+// STH-61: theme discovery — the SQL substance lives in db/slide-themes.test.js.
+vi.mock('../db/slide-themes.js', () => ({
+  MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
+  listCatalogThemes: vi.fn(() => [
+    { name: 'kuhn', title: 'Kuhn', description: 'clean academic', available: 1 },
+    { name: 'gone', title: 'Gone', description: null, available: 0 },
+  ]),
+  listOrgThemes: vi.fn(() => [
+    { name: 'acme', title: 'Acme', status: 'active' },
+    { name: 'old', title: 'Old', status: 'disabled' },
+  ]),
+}));
 // Same reason as file-activity.js: the real module imports db.js. The SQL
 // substance is covered in db/org-agent-prompts.test.js.
 vi.mock('../db/org-agent-prompts.js', () => ({ getOrgAgentPrompt: vi.fn(() => null) }));
@@ -96,6 +108,11 @@ vi.mock('../db/org-scripts.js', () => ({
   listOrgScripts: vi.fn(() => []),
 }));
 vi.mock('../db/script-runs.js', () => ({ recordScriptRun: vi.fn() }));
+vi.mock('../db/org-secrets.js', () => ({
+  getSecretValueForProject: vi.fn(() => null),
+  listSecretNamesForProject: vi.fn(() => []),
+  secretEnvName: (name) => `KUHN_SECRET_${name.toUpperCase().replace(/-/g, '_')}`,
+}));
 vi.mock('../sandbox.js', () => {
   class SandboxError extends Error {
     constructor(code, message) {
@@ -232,6 +249,7 @@ describe('runAgentTask', () => {
         jobId: 42,
         sessionId: 'sess-1',
         usage: { inputTokens: 100, outputTokens: 50 },
+        context: { tokens: 10, window: 200000 },
         budget: { used: 15, limit: 250000 },
         continuation: expect.objectContaining({ version: 1 }),
       },
@@ -252,7 +270,7 @@ describe('runAgentTask', () => {
     // Job lifecycle: running with conversation -> session recorded -> done with usage
     expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7 });
     expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'sess-1' });
-    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', inputTokens: 100, outputTokens: 50 }));
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', inputTokens: 100, outputTokens: 50, contextTokens: 10 }));
     // The job terminal stamps the effective runtime identity and the
     // canonical continuation (STH-47): a follow-up or retry can never
     // silently switch provider mechanics.
@@ -775,6 +793,20 @@ describe('suggestion mode (story 008-001)', () => {
     const bin = await read.handler({ path: 'figures/plot.png' });
     expect(bin.isError).toBe(true);
     expect(bin.content[0].text).toMatch(/binary file/);
+  });
+
+  it('list_slide_themes reports built-ins, available catalog, and active org themes (STH-61)', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, tools: ['list_slide_themes'] });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 7, input: 'go' });
+    const tools = createSdkMcpServer.mock.calls.at(-1)[0].tools;
+    const list = tools.find((t) => t.name === 'list_slide_themes');
+    const text = (await list.handler({})).content[0].text;
+    expect(text).toContain('- default (marp built-in)');
+    expect(text).toContain('- kuhn — Kuhn: clean academic');
+    expect(text).toContain('- acme — Acme (organization theme)');
+    expect(text).not.toContain('gone'); // unavailable catalog rows hidden
+    expect(text).not.toContain('- old'); // disabled org themes hidden
   });
 
   it('write_file and edit_file refuse a derived bibliography path (issue #42)', async () => {
@@ -1755,7 +1787,7 @@ describe('run_script tools (issue #68b)', () => {
 
     expect(runScriptSandboxed).toHaveBeenCalledWith(9, {
       language: 'r', entrypoint: 'fit.R', scriptContent: 'library(mgcv)',
-      args: ['--input', 'data.csv'],
+      args: ['--input', 'data.csv'], secretsEnv: null,
     });
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('exit code 0');
@@ -1771,6 +1803,56 @@ describe('run_script tools (issue #68b)', () => {
     }));
     getOrgScript.mockReturnValue(null);
     getScriptVersion.mockReturnValue(null);
+  });
+
+  it('injects requested org secrets into the sandbox env; values stay out of the result (secrets store)', async () => {
+    const { getSecretValueForProject } = await import('../db/org-secrets.js');
+    getSecretValueForProject.mockReturnValue('postgresql://kuhn_analyst:hunter2@db:5432/nsduh');
+    runScriptSandboxed.mockResolvedValue({
+      exitCode: 0, stdout: '42 rows', stderr: '', truncated: false, durationMs: 100,
+      outputs: [], skippedOutputs: 0,
+    });
+
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/query.R', args: [], secrets: ['nsduh-db'] });
+
+    expect(getSecretValueForProject).toHaveBeenCalledWith(9, 'nsduh-db');
+    expect(runScriptSandboxed).toHaveBeenCalledWith(9, expect.objectContaining({
+      secretsEnv: { KUHN_SECRET_NSDUH_DB: 'postgresql://kuhn_analyst:hunter2@db:5432/nsduh' },
+    }));
+    expect(result.isError).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+    getSecretValueForProject.mockReturnValue(null);
+    runScriptSandboxed.mockReset();
+  });
+
+  it('refuses an unknown secret with available names only — never values', async () => {
+    const { listSecretNamesForProject } = await import('../db/org-secrets.js');
+    listSecretNamesForProject.mockReturnValue([{ name: 'other-db', description: 'x' }]);
+
+    const { run } = await scriptTools();
+    const result = await run.handler({ path: 'analyst/query.R', args: [], secrets: ['nsduh-db'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No org secret "nsduh-db"');
+    expect(result.content[0].text).toContain('other-db');
+    expect(runScriptSandboxed).not.toHaveBeenCalled();
+    listSecretNamesForProject.mockReturnValue([]);
+  });
+
+  it('list_secrets renders names and env vars, never values', async () => {
+    const { listSecretNamesForProject } = await import('../db/org-secrets.js');
+    listSecretNamesForProject.mockReturnValue([
+      { name: 'nsduh-db', description: 'NSDUH warehouse (read-only)' },
+    ]);
+    getAgentWithTools.mockResolvedValue(ANALYST);
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    await collect({ role: 'analyst', projectId: 9, input: 'go' });
+    const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+    const list = tools.find((t) => t.name === 'list_secrets');
+    const result = await list.handler({});
+    expect(result.content[0].text).toContain('nsduh-db → env KUHN_SECRET_NSDUH_DB — NSDUH warehouse (read-only)');
+    listSecretNamesForProject.mockReturnValue([]);
   });
 
   it('returns nonzero exits as isError with the stderr tail and records status error', async () => {

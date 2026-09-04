@@ -74,10 +74,30 @@ vi.mock('../../db/org-scripts.js', () => ({
   listOrgScripts: vi.fn(() => []),
 }));
 vi.mock('../../db/script-runs.js', () => ({ recordScriptRun: vi.fn(async () => ({ id: 1 })) }));
+// Secrets store: names are listable, values resolve server-side only.
+vi.mock('../../db/org-secrets.js', () => ({
+  getSecretValueForProject: vi.fn(() => null),
+  listSecretNamesForProject: vi.fn(() => []),
+  secretEnvName: (name) => `KUHN_SECRET_${name.toUpperCase().replace(/-/g, '_')}`,
+}));
+// STH-61: theme discovery — the SQL substance lives in db/slide-themes.test.js.
+vi.mock('../../db/slide-themes.js', () => ({
+  MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
+  listCatalogThemes: vi.fn(() => [
+    { name: 'kuhn', title: 'Kuhn', description: 'clean academic', available: 1 },
+    { name: 'gone', title: 'Gone', description: null, available: 0 },
+  ]),
+  listOrgThemes: vi.fn(() => [
+    { name: 'acme', title: 'Acme', status: 'active' },
+    { name: 'old', title: 'Old', status: 'disabled' },
+  ]),
+}));
 vi.mock('../../sandbox.js', () => ({
   SandboxError: class SandboxError extends Error {},
   RUNNABLE_LANGUAGES: ['python'],
-  runScriptSandboxed: vi.fn(async () => ({ status: 'ok', stdout: 'out', stderr: '' })),
+  runScriptSandboxed: vi.fn(async () => ({
+    exitCode: 0, stdout: 'out', stderr: '', truncated: false, durationMs: 10, outputs: [], skippedOutputs: 0,
+  })),
 }));
 vi.mock('../../project-events.js', () => ({ publishProjectEvent: vi.fn() }));
 vi.mock('../project-config.js', () => ({ applyProjectConfig: vi.fn(async () => ({})) }));
@@ -89,6 +109,10 @@ import { readProjectFile, writeProjectFile } from '../../storage.js';
 import { extractProjectPdfText } from '../../ingest.js';
 import { isProposable, proposeEdit } from '../../pending-edits.js';
 import { createThread } from '../../db/comments.js';
+import { getProject } from '../../db/projects.js';
+import { getSecretValueForProject, listSecretNamesForProject } from '../../db/org-secrets.js';
+import { runScriptSandboxed } from '../../sandbox.js';
+import { pubmedSearch } from '../search.js';
 import { deliverReply } from '../questions.js';
 
 const ALL_GRANTS = [
@@ -96,7 +120,7 @@ const ALL_GRANTS = [
   'add_citation', 'add_reference', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'web_search',
+  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'web_search',
 ];
 
 // Stable domain order as the provider sees it (factory order + web_search).
@@ -105,9 +129,10 @@ const EXPECTED_ORDER = [
   'add_citation', 'add_reference', 'update_reference', 'remove_reference',
   'add_comment', 'list_comments', 'reply_comment', 'resolve_comment',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'list_scripts', 'run_script',
+  'list_scripts', 'list_secrets', 'run_script',
   'ask_user', 'dispatch_agent',
   'save_project_config',
+  'list_slide_themes',
   'web_search',
 ];
 
@@ -157,7 +182,7 @@ describe('enumeration by role and mode (STH-1)', () => {
     expect(names).toEqual([
       'update_reference', 'remove_reference',
       'list_comments', 'reply_comment', 'resolve_comment',
-      'list_scripts', 'run_script',
+      'list_scripts', 'list_secrets', 'run_script',
     ]);
   });
 
@@ -363,5 +388,66 @@ describe('server-derived identity (STH-1)', () => {
       agentSlug: 'ra',
       jobId: 42,
     }));
+  });
+});
+
+describe('org-derived catalogs and secrets (STH-61 / secrets store)', () => {
+  it('list_slide_themes reports built-ins, available catalog, and active org themes (STH-61)', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
+    const ctx = makeCtx({ agent: agent(['list_slide_themes']) });
+    const result = await run(findTool(ctx, 'list_slide_themes'), {});
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('- default (marp built-in)');
+    expect(text).toContain('- kuhn — Kuhn: clean academic');
+    expect(text).toContain('- acme — Acme (organization theme)');
+    expect(text).not.toContain('gone'); // unavailable catalog rows hidden
+    expect(text).not.toContain('- old'); // disabled org themes hidden
+  });
+
+  it('list_secrets renders names and env vars, never values', async () => {
+    listSecretNamesForProject.mockReturnValueOnce([
+      { name: 'nsduh-db', description: 'NSDUH warehouse (read-only)' },
+    ]);
+    const ctx = makeCtx({ agent: agent(['run_script']) });
+    const result = await run(findTool(ctx, 'list_secrets'), {});
+    expect(result.content[0].text).toContain('nsduh-db → env KUHN_SECRET_NSDUH_DB — NSDUH warehouse (read-only)');
+  });
+
+  it('run_script injects requested org secrets into the sandbox env; values stay out of the result', async () => {
+    getSecretValueForProject.mockReturnValueOnce('postgresql://kuhn_analyst:hunter2@db:5432/nsduh');
+    const ctx = makeCtx({ agent: agent(['run_script']) });
+    const result = await run(findTool(ctx, 'run_script'), { path: 'analyst/query.py', args: [], secrets: ['nsduh-db'] });
+    expect(getSecretValueForProject).toHaveBeenCalledWith(1, 'nsduh-db');
+    expect(runScriptSandboxed).toHaveBeenCalledWith(1, expect.objectContaining({
+      secretsEnv: { KUHN_SECRET_NSDUH_DB: 'postgresql://kuhn_analyst:hunter2@db:5432/nsduh' },
+    }));
+    expect(result.isError).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+
+  it('run_script without secrets passes secretsEnv null (the no-network default)', async () => {
+    const ctx = makeCtx({ agent: agent(['run_script']) });
+    await run(findTool(ctx, 'run_script'), { path: 'analyst/query.py', args: [] });
+    expect(runScriptSandboxed).toHaveBeenCalledWith(1, expect.objectContaining({ secretsEnv: null }));
+  });
+
+  it('run_script refuses an unknown secret with available names only — never values', async () => {
+    listSecretNamesForProject.mockReturnValueOnce([{ name: 'other-db', description: 'x' }]);
+    const ctx = makeCtx({ agent: agent(['run_script']) });
+    const result = await run(findTool(ctx, 'run_script'), { path: 'analyst/query.py', args: [], secrets: ['nsduh-db'] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No org secret "nsduh-db"');
+    expect(result.content[0].text).toContain('other-db');
+    expect(runScriptSandboxed).not.toHaveBeenCalled();
+  });
+
+  it('pubmed_search attaches the org ncbi-api-key server-side', async () => {
+    getSecretValueForProject.mockReturnValueOnce('ncbi-key-123');
+    const ctx = makeCtx({ agent: agent(['pubmed_search']) });
+    const result = await run(findTool(ctx, 'pubmed_search'), { query: 'sglt2', max_results: 5 });
+    expect(getSecretValueForProject).toHaveBeenCalledWith(1, 'ncbi-api-key');
+    expect(pubmedSearch).toHaveBeenCalledWith('sglt2', 5, { apiKey: 'ncbi-key-123' });
+    expect(JSON.stringify(result)).not.toContain('ncbi-key-123');
   });
 });

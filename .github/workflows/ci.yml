@@ -1,0 +1,91 @@
+# Deterministic CI gates (STH-28). Runs on pull requests and pushes to main.
+#
+# Everything here is offline and reproducible: no model credentials, no
+# live-provider calls, no model quota. Both jobs must pass for a PR to be
+# merge-ready; repository owners should make `backend` and `webapp` required
+# status checks via branch protection.
+#
+# Intentionally NOT run here:
+# - webapp/scripts/*.mjs check scripts (smoke, editor-check, parity-check,
+#   smoke:chat, write-check, ...) — they need a running backend + webapp dev
+#   server and a Playwright browser, and mutate the shared test project.
+# - agent-backend `npm run smoke` / `smoke:pi-runtime` — live provider calls
+#   that spend real quota; they need a separate protected/manual lane.
+# - render/export Docker paths — sandbox.js shells out to the sandboxed
+#   Typst/Pandoc images; render.test.js covers the routes with it mocked.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          # agent-backend declares "node": ">=22.19.0".
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent-backend/package-lock.json
+
+      - name: Install
+        working-directory: agent-backend
+        run: npm ci
+
+      - name: Test suite
+        working-directory: agent-backend
+        # Isolated, disposable data dir: tests must never touch a shared
+        # checkout path (the default is repo-root ./data).
+        env:
+          KUHN_DATA_DIR: ${{ runner.temp }}/kuhn-data
+        run: npm test
+
+      - name: Provider runtime contract
+        working-directory: agent-backend
+        env:
+          KUHN_DATA_DIR: ${{ runner.temp }}/kuhn-data
+        run: npm run test:runtime-contract
+
+  webapp:
+    name: webapp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install
+        working-directory: webapp
+        run: npm ci
+
+      - name: Test suite
+        working-directory: webapp
+        run: npm test
+
+      - name: Build
+        working-directory: webapp
+        run: npm run build

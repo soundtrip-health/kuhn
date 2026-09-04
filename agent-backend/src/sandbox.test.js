@@ -41,7 +41,7 @@ describe('buildDockerArgs', () => {
     expect(args.indexOf('typst:test')).toBeLessThan(args.indexOf('compile'));
   });
 
-  it('keeps --network none unconditional with the script-run extensions (issue #68b)', () => {
+  it('keeps --network none by default with the script-run extensions (issue #68b)', () => {
     const args = buildDockerArgs({
       image: 'kuhn/r-analysis:test',
       cmd: ['Rscript', '/script/fit.R', '--input', 'data.csv'],
@@ -111,5 +111,20 @@ describe('runSandboxed', () => {
   it('throws a clean error when docker is missing', async () => {
     const spawn = fakeSpawn((child) => child.emit('error', new Error('spawn docker ENOENT')));
     await expect(runSandboxed(baseOpts, spawn)).rejects.toBeInstanceOf(SandboxError);
+  });
+});
+
+describe('sandbox network modes (org-secrets)', () => {
+  it('joins a server-configured network only when asked; default stays none', () => {
+    const base = { image: 'img', cmd: ['true'], projectDir: '/p/1' };
+    expect(buildDockerArgs({ ...base, network: 'kuhn-data' }).join(' ')).toContain('--network kuhn-data');
+    expect(buildDockerArgs(base).join(' ')).toContain('--network none');
+  });
+
+  it('rejects malformed network names (server-composed, but belt-and-braces)', () => {
+    const base = { image: 'img', cmd: ['true'], projectDir: '/p/1' };
+    for (const bad of ['kuhn data', 'net;rm -rf /', '--privileged', '']) {
+      expect(() => buildDockerArgs({ ...base, network: bad })).toThrow(SandboxError);
+    }
   });
 });

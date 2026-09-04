@@ -1,6 +1,8 @@
 // Story 018: sandboxed execution for anything that runs document-derived
 // code. Typst/Pandoc rendering goes through here today; future analyst
-// Python execution must use the same wrapper. Invariants: no network,
+// Python execution must use the same wrapper. Invariants: no internet
+// (render/export: --network none; secrets-enabled script runs: an operator-
+// configured INTERNAL docker network reaching org data services only),
 // project mounted read-only, separate write-only output dir, CPU/memory/
 // time limits, size-capped output. The backend treats everything that comes
 // out of the sandbox as untrusted.
@@ -21,15 +23,23 @@ export class SandboxError extends Error {
 }
 
 // Every value here is composed server-side (ADR 002 §6: no caller-selected
-// images, mounts, or argv reach docker); `--network none` is unconditional.
+// images, mounts, or argv reach docker). `--network none` is the default and
+// the only mode for render/export; secrets-enabled script runs pass the
+// operator-configured internal network name (config.sandbox.secretsNetwork) —
+// never a caller-supplied value.
+const NETWORK_NAME_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+
 export function buildDockerArgs({
   image, cmd, projectDir, outDir,
-  extraMounts = [], env = {},
+  extraMounts = [], env = {}, network = 'none',
   cpus = config.sandbox.cpus, memory = config.sandbox.memory,
 }) {
+  if (network !== 'none' && !NETWORK_NAME_PATTERN.test(network)) {
+    throw new SandboxError('failed', `Invalid sandbox network name: ${network}`);
+  }
   return [
     'run', '--rm',
-    '--network', 'none',
+    '--network', network,
     '--cpus', cpus,
     '--memory', memory,
     '--pids-limit', '256',
@@ -56,12 +66,12 @@ export function buildDockerArgs({
 export function runSandboxed(opts, spawnImpl = spawn) {
   const {
     image, cmd, projectDir, outDir = null,
-    extraMounts, env, cpus, memory,
+    extraMounts, env, network, cpus, memory,
     timeoutMs = config.sandbox.timeoutMs,
     maxOutputBytes = config.sandbox.maxOutputBytes,
   } = opts;
 
-  const args = buildDockerArgs({ image, cmd, projectDir, outDir, extraMounts, env, cpus, memory });
+  const args = buildDockerArgs({ image, cmd, projectDir, outDir, extraMounts, env, network, cpus, memory });
 
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawnImpl('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -205,13 +215,17 @@ const MARP_FORMATS = {
  * registered with --theme-set; the deck's `theme:` front matter picks it by
  * the CSS's `@theme` name.
  */
-export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null } = {}, spawnImpl) {
+export async function renderMarp(projectId, sourcePath, format, { themeName = null, themeCss = null, editablePptx = false } = {}, spawnImpl) {
   const spec = MARP_FORMATS[format];
   if (!spec) {
     throw new SandboxError('failed', `No marp output format: ${format}`);
   }
   const extraMounts = [];
   const extraArgs = [];
+  // STH-61: editable pptx (real text boxes, not slide images) — needs
+  // LibreOffice in the image (docker/marp); the caller falls back to the
+  // default pptx when the conversion fails on a stock marp-cli image.
+  if (editablePptx && format === 'pptx') extraArgs.push('--pptx-editable');
   let themeDir = null;
   if (themeCss != null) {
     // Same placement rationale as .render-tmp (macOS bind-mount shared paths).
@@ -290,6 +304,7 @@ async function collectOutputs(outDir) {
  */
 export async function runScriptSandboxed(projectId, {
   language, entrypoint, args = [], scriptContent = null, scriptRelPath = null,
+  secretsEnv = null,
 }, spawnImpl) {
   const interpreter = INTERPRETERS[language];
   if (!interpreter) {
@@ -330,13 +345,19 @@ export async function runScriptSandboxed(projectId, {
 
     const limits = config.sandbox.script;
     const started = Date.now();
+    // Secrets runs (org-secrets feature) join the operator-configured INTERNAL
+    // docker network so scripts can reach org data services (a Postgres
+    // container) by name; internal networks have no route out, so the
+    // no-internet invariant holds. Everything else stays --network none.
     const result = await runSandboxed({
       image: interpreter.image(),
       cmd: [...interpreter.argv(entryPath), ...args],
       projectDir: root,
       outDir,
       extraMounts,
-      env: { OUT_DIR: '/out' },
+      env: { OUT_DIR: '/out', ...(secretsEnv ?? {}) },
+      network: secretsEnv && Object.keys(secretsEnv).length > 0
+        ? config.sandbox.secretsNetwork : 'none',
       cpus: limits.cpus,
       memory: limits.memory,
       timeoutMs: limits.timeoutMs,

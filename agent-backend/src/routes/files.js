@@ -7,13 +7,13 @@
 
 import { Router } from 'express';
 import express from 'express';
-import { extname } from 'node:path';
 
 import { config } from '../config.js';
 import { unseenPaths } from '../db/file-activity.js';
 import { findPendingEditConflicts } from '../db/move-paths.js';
 import { commitNow, scheduleCommit } from '../history.js';
 import { publishProjectEvent } from '../project-events.js';
+import { sendRawFile } from '../raw-content.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import { requireProjectRole } from './guards.js';
 import {
@@ -36,21 +36,8 @@ const STATUS_BY_CODE = {
   conflict: 409,
 };
 
-const CONTENT_TYPES = {
-  '.md': 'text/markdown; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
-  '.bib': 'text/plain; charset=utf-8',
-  '.typ': 'text/plain; charset=utf-8',
-  '.tex': 'text/plain; charset=utf-8',
-  '.csv': 'text/csv; charset=utf-8',
-  '.json': 'application/json',
-  '.html': 'text/html; charset=utf-8',
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-};
+// (STH-16: raw-file serving policy — routes/files.js serves through
+// ../raw-content.js; no per-route MIME maps)
 
 function handle(minRole, fn) {
   return async (req, res) => {
@@ -94,13 +81,14 @@ router.get('/api/projects/:projectId/files', handle('viewer', async (projectId, 
   res.json({ tree });
 }));
 
-/** GET /api/projects/:projectId/file?path=... — raw file content */
+/** GET /api/projects/:projectId/file?path=... — raw file content.
+ *  STH-16: served through the raw-content policy — unsafe/unknown types
+ *  (HTML, SVG, binary) are downloads, never active inline documents. */
 router.get('/api/projects/:projectId/file', handle('viewer', async (projectId, req, res) => {
   const path = requirePath(req, res);
   if (path == null) return;
   const buf = await readProjectFile(projectId, path);
-  res.set('Content-Type', CONTENT_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream');
-  res.send(buf);
+  sendRawFile(res, path, buf);
 }));
 
 /**

@@ -99,6 +99,17 @@ Every route resolves the requesting user first and checks org membership plus
 role (see the role matrix in §6); non-members get 404s (existence is not
 leaked), an insufficient role or a suspended org gets a 403.
 
+On the read side, the raw-bytes routes (`GET /api/projects/:id/file`,
+`GET /api/projects/:id/history/file`, `GET /api/orgs/:orgId/library/:docId/content`,
+`GET /api/review/file`) serve user files through the raw-content policy
+(`raw-content.js`, STH-16): an explicit safe-inline allowlist (text, JSON,
+raster images, PDF); everything else — HTML/SVG, unknown types, binary — is
+served as `application/octet-stream` + `Content-Disposition: attachment`,
+with `X-Content-Type-Options: nosniff` on every raw response. Stored or
+client-supplied MIME (e.g. the org library's `doc.mime`) never decides
+serving. Active content is never inlined on the credentialed app origin —
+see the threat model §5.3 (T-12/T-13) and invariant 11.
+
 ## 3. Processing
 
 - **Org-library ingestion** (`ingest.js`): uploaded documents are converted to
@@ -110,7 +121,9 @@ leaked), an insufficient role or a suspended org gets a 403.
 - **Render & export** (`render.js`, `sandbox.js`): markdown → Typst → PDF
   preview, Pandoc `.docx`/`.tex` export, and Marp slide decks (STH-57: a
   `marp: true` front matter routes preview through Marp, and `.pptx`/`.html`
-  export converts any markdown) Slide themes (STH-58): a deck's `theme:`
+  export converts any markdown; pptx exports are editable — real text boxes
+  via `--pptx-editable` + LibreOffice in the kuhn/marp image, falling back to
+  slides-as-images on a stock marp-cli image, STH-61). Slide themes (STH-58): a deck's `theme:`
   front matter resolves through the org/catalog theme library — an active
   org-uploaded CSS shadows a Kuhn-seeded one of the same name — and the
   resolved CSS is materialized into a read-only `/themes` mount registered

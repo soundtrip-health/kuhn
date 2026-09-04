@@ -22,6 +22,7 @@
     "review-check": "node scripts/review-check.mjs",
     "move-check": "node scripts/move-check.mjs",
     "files-check": "node scripts/files-check.mjs",
+    "raw-content-check": "node scripts/raw-content-check.mjs",
     "tree-check": "node scripts/tree-check.mjs",
     "phantom-check": "node scripts/phantom-check.mjs"
   },

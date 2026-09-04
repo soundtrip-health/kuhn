@@ -129,9 +129,29 @@ const memberCommentsApi: CommentsTransport = {
   deleteComment,
 };
 
+// STH-61: shield leading YAML front matter from the rich editor. Milkdown
+// has no front-matter node — the round trip rewrote the `---` fences into a
+// thematic break and a setext underline, destroying `marp: true` and the
+// theme/paginate directives on the first save (which broke Marp preview).
+// The member transport strips the block before content reaches Crepe (so the
+// collab room only ever holds the body) and re-prepends it on every write.
+// Source mode bypasses the transport and edits the full bytes, so front
+// matter itself is edited there.
+const docFrontMatter = new Map<string, string>();
+const FRONT_MATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$))/;
+
+function stripFrontMatter(path: string, content: string | null): string | null {
+  if (content == null) return content;
+  const m = FRONT_MATTER_RE.exec(content);
+  if (m) docFrontMatter.set(path, m[1]);
+  else docFrontMatter.delete(path);
+  return m ? content.slice(m[1].length) : content;
+}
+
 const memberTransport: DocTransport = {
-  readFile: readTextFile,
-  writeFile: writeTextFile,
+  readFile: async (projectId, path) => stripFrontMatter(path, await readTextFile(projectId, path)),
+  writeFile: (projectId, path, content, opts) =>
+    writeTextFile(projectId, path, (docFrontMatter.get(path) ?? '') + content, opts),
   commentsApi: memberCommentsApi,
   wsUrl: BACKEND_WS_URL,
 };
@@ -242,7 +262,7 @@ export async function applyExternalChange(path: string): Promise<boolean> {
   if (!docHandle) return false;
   if (docHandle.isDirty()) return false;
 
-  const stored = await readTextFile(currentProjectId, path);
+  const stored = stripFrontMatter(path, await readTextFile(currentProjectId, path));
   if (stored == null || stored === docHandle.lastSaved()) return true; // nothing new to apply
   // Preset lastSaved so the markdownUpdated listener's save guard short-circuits
   // (we're mirroring storage, not making a new local edit).
@@ -485,7 +505,11 @@ async function openDocumentInner(
   }
   setModeToggle('rich');
 
-  const stored = await readTextFile(projectId, path);
+  // STH-61: strip through the shield — this pre-read hands `stored` straight
+  // to openDoc, so without stripping here the front matter would reach Crepe
+  // on every normal open and be mangled on the next save (the transport's
+  // readFile only covers the paths that DON'T pass `stored` explicitly).
+  const stored = stripFrontMatter(path, await readTextFile(projectId, path));
   if (seq !== openSeq) return; // switched away before we touched the singletons
 
   // Viewers open read-only (010-003): no seeding, no saves, no slash commands,
@@ -605,7 +629,7 @@ async function mountViewerStatic(projectId: number, path: string): Promise<void>
   if (seq !== openSeq || path !== currentPath) return;
   let stored: string | null;
   try {
-    stored = await readTextFile(projectId, path);
+    stored = stripFrontMatter(path, await readTextFile(projectId, path));
   } catch {
     return; // transient — reopening the document retries the whole path
   }
@@ -810,6 +834,13 @@ export async function retargetDocument(path: string): Promise<void> {
   const projectId = currentProjectId;
   await performRetarget({
     setCurrentPath: (p) => {
+      // The front-matter stash follows the move (STH-61): a racing autosave
+      // on the new path must still re-prepend the deck's front matter.
+      const fm = docFrontMatter.get(currentPath);
+      if (fm != null) {
+        docFrontMatter.set(p, fm);
+        docFrontMatter.delete(currentPath);
+      }
       currentPath = p;
       // The rich handle captures its save path internally — retarget it too,
       // so a racing autosave lands on the new path (rule 1).

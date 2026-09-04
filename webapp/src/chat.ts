@@ -278,9 +278,9 @@ function compactTokens(n: number): string {
 
 /** Per-agent context meter (STH-52), bottom of the chat window: how much
  * context the selected agent carries into its next reply, as a share of
- * its model's window. Fed live by 'context' events during a run, by done
- * usage, and on reload from recorded jobs (input_tokens = last-turn
- * context). Hidden until something is known. */
+ * its model's window. Fed live by 'context' events during a run, by the
+ * done event's context field, and on reload from recorded jobs
+ * (context_tokens = last-turn context). Hidden until something is known. */
 function updateContextIndicator(): void {
   const meter = document.getElementById('chat-context-meter');
   if (!meter) return;
@@ -449,9 +449,11 @@ async function restore(): Promise<void> {
       if (job.parent_job_id != null) continue;
       if (job.session_id && !sessions.has(job.role)) {
         sessions.set(job.role, job.session_id);
-        // input_tokens is the context that session carried into its last
-        // reply — seed the meter so it survives a reload (STH-52).
-        if (job.input_tokens > 0) contextTokens.set(job.role, job.input_tokens);
+        // context_tokens is the context that session carried into its last
+        // reply — seed the meter so it survives a reload (STH-52). Older job
+        // rows predate the column; leave the meter unseeded rather than fall
+        // back to cumulative input_tokens, which overstates context.
+        if (job.context_tokens > 0) contextTokens.set(job.role, job.context_tokens);
       }
     }
     updateContextIndicator();
@@ -644,10 +646,14 @@ function createEventHandler(): (event: AgentEvent) => void {
       }
       case 'done': {
         if (event.sessionId) sessions.set(event.agent, event.sessionId);
-        if (event.usage) {
-          addTokenUsage(event.usage);
-          // The done event fires for the addressed role's job (issue #43).
-          assessContext(conversationAgent ?? event.agent, event.usage.inputTokens);
+        if (event.usage) addTokenUsage(event.usage);
+        // The done event fires for the addressed role's job (issue #43).
+        // Assess on the LAST TURN's context (what the session actually
+        // carries forward), never usage.inputTokens — that one accumulates
+        // across turns (cache reads re-counted every turn) and overstates
+        // context wildly on tool-heavy runs.
+        if (event.context?.tokens) {
+          assessContext(conversationAgent ?? event.agent, event.context.tokens);
         }
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
         break;

@@ -21,6 +21,7 @@ import historyRouter from './routes/history.js';
 import knowledgeRouter from './routes/knowledge.js';
 import orgsRouter from './routes/orgs.js';
 import orgAdminRouter from './routes/org-admin.js';
+import orgSecretsRouter from './routes/org-secrets.js';
 import orgLibraryRouter from './routes/org-library.js';
 import pendingEditsRouter from './routes/pending-edits.js';
 import projectsRouter from './routes/projects.js';
@@ -72,6 +73,9 @@ if (serveWebapp) {
     // overlay). Falls through to the SPA only when the build predates the
     // reviewer entry.
     if (serveReviewShell && (req.path === '/review' || req.path.startsWith('/review/'))) {
+      // STH-16 (T-15): the claim token lives in this URL path — never let it
+      // ride out as a referrer to a third party.
+      res.setHeader('Referrer-Policy', 'no-referrer');
       res.sendFile(reviewShell);
       return;
     }
@@ -91,6 +95,7 @@ app.use(historyRouter);
 app.use(knowledgeRouter); // Kuhn knowledge catalog + per-org selections (issue #65)
 app.use(orgsRouter);
 app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)
+app.use(orgSecretsRouter); // org secrets store: write-only credential handles
 app.use(orgLibraryRouter);
 app.use(pendingEditsRouter);
 app.use(projectsRouter);

@@ -69,7 +69,9 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
- *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, continuation } — continuation is the canonical record (STH-47) a follow-up task can resume
+ *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window }, continuation }
+ *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
+ *       continuation is the canonical record (STH-47) a follow-up task can resume
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
  */
 export async function* runAgentTask(task, internal = {}) {
@@ -336,6 +338,10 @@ async function runTask(task, internal, channel, state) {
   // Product-side usage in effective (budget/job) terms; the runtime's
   // canonical usage is disjoint-component and is converted per turn.
   const usage = { inputTokens: 0, outputTokens: 0 };
+  // Last turn's prompt size (input + cache read/write) — what the session
+  // actually carries forward. Distinct from usage.inputTokens, which sums
+  // across turns (cache reads re-counted each turn) and only measures cost.
+  let lastContextTokens = 0;
 
   // Effective runtime identity (STH-47): the provider/model that actually
   // ran the job, stamped at the job terminal so a continuation or retry can
@@ -386,6 +392,7 @@ async function runTask(task, internal, channel, state) {
         status: 'done',
         inputTokens: productUsage.inputTokens,
         outputTokens: productUsage.outputTokens,
+        contextTokens: lastContextTokens,
         ...jobIdentity(),
         // Persist the canonical record so a follow-up (and a rollback to
         // another runtime) can resume provider-neutrally (STH-47).
@@ -393,12 +400,14 @@ async function runTask(task, internal, channel, state) {
       });
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'done',
-        contextTokens: productUsage.inputTokens, outputTokens: productUsage.outputTokens,
+        contextTokens: lastContextTokens, inputTokens: productUsage.inputTokens,
+        outputTokens: productUsage.outputTokens,
         budgetUsed: Math.round(budget.used),
       });
       channel.push({
         type: 'done', agent: agent.slug, jobId: job.id, sessionId: state.sessionId,
         usage: productUsage,
+        context: { tokens: lastContextTokens, window: state.contextWindow ?? config.agent.contextWindow },
         budget: { used: Math.round(budget.used), limit: budget.limit },
         continuation: state.continuation ?? null,
       });
@@ -454,11 +463,13 @@ async function runTask(task, internal, channel, state) {
       error: reason,
       inputTokens: jobTokens.inputTokens,
       outputTokens: jobTokens.outputTokens,
+      contextTokens: lastContextTokens,
       ...jobIdentity(),
     });
     log.error('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
-      contextTokens: jobTokens.inputTokens, outputTokens: jobTokens.outputTokens,
+      contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
+      outputTokens: jobTokens.outputTokens,
       budgetUsed: Math.round(budget.used),
     });
     channel.push({
@@ -571,6 +582,7 @@ async function runTask(task, internal, channel, state) {
           budget.used += (effectiveIn + out) * costRatio;
           usage.inputTokens += effectiveIn;
           usage.outputTokens += out;
+          lastContextTokens = effectiveIn;
           turnLog.tokenCount = u.outputTokens ?? null;
           await closeTurn();
           // Per-agent context-window state (STH-51): what the model context
@@ -600,6 +612,7 @@ async function runTask(task, internal, channel, state) {
               error: 'token budget exceeded',
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
+              contextTokens: lastContextTokens,
             });
             channel.push({
               type: 'error',

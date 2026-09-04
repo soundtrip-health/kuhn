@@ -24,6 +24,33 @@ problem you're trying to solve is more useful than a detailed design.
   (`npm run build`) must pass — type errors fail it.
 - New behavior should come with colocated vitest tests (`*.test.js`).
 
+## CI
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every pull request and on pushes to
+`main`. It is fully deterministic: no model credentials, no live-provider calls, and no model
+quota is spent by ordinary CI.
+
+**Required checks.** Repository owners should make both of the following status checks required
+via branch protection on `main` — a PR cannot be merge-ready while either is failing:
+
+- `backend` — `npm ci`, `npm test`, and `npm run test:runtime-contract` (the provider-neutral
+  runtime contract suite, run against fake/scripted providers) in `agent-backend/`, with an
+  isolated `KUHN_DATA_DIR`.
+- `webapp` — `npm ci`, `npm test`, and `npm run build` in `webapp/` (type errors fail the build).
+
+**What CI intentionally does not run.**
+
+- The webapp check scripts (`npm run smoke`, `editor-check`, `parity-check`, `smoke:chat`,
+  `write-check`, …) drive a running backend + webapp dev server through a Playwright browser and
+  mutate the shared test project. Run them locally; see [TESTING.md](TESTING.md).
+- Render/export shells out to the sandboxed Typst/Pandoc Docker images via `sandbox.js`;
+  `render.test.js` covers the render routes with the sandbox mocked.
+- Live provider runs (`npm run smoke` and `npm run smoke:pi-runtime` in `agent-backend/`) spend
+  real quota and belong in a separate protected/manual lane with scoped secrets and a spend cap
+  — never on every PR. The Claude/live research path (`npm run smoke`) may require
+  `ANTHROPIC_API_KEY`; `npm run smoke:pi-runtime` is the non-Anthropic Pi/OpenRouter smoke and
+  uses `OPENROUTER_API_KEY` by default.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the

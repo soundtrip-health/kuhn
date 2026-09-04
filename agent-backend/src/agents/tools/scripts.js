@@ -1,7 +1,7 @@
 /**
- * Kuhn sandboxed-script tools (STH-1): list_scripts + run_script, the two
- * runtime tools under the one `run_script` DB slug (analyst-only in
- * seed-data). Extracted from the Claude SDK construction in runtime.js —
+ * Kuhn sandboxed-script tools (STH-1): list_scripts + list_secrets +
+ * run_script, the runtime tools under the one `run_script` DB slug
+ * (analyst-only in seed-data). Extracted from the Claude SDK construction in runtime.js —
  * provider-neutral.
  *
  * Issue #68b: the deterministic path's execution half. The org is derived
@@ -14,6 +14,7 @@ import { config } from '../../config.js';
 import { getProject } from '../../db/projects.js';
 import { getOrgScript, getScriptVersion, listOrgScripts } from '../../db/org-scripts.js';
 import { recordScriptRun } from '../../db/script-runs.js';
+import { getSecretValueForProject, listSecretNamesForProject, secretEnvName } from '../../db/org-secrets.js';
 import { SandboxError, RUNNABLE_LANGUAGES, runScriptSandboxed } from '../../sandbox.js';
 import { Semaphore } from '../../sandbox-semaphore.js';
 import { writeProjectFile } from '../../storage.js';
@@ -83,6 +84,32 @@ export function createScriptTools(ctx) {
     },
   });
 
+  // Secrets store: names only — values are resolved server-side at run time
+  // and never enter the model context.
+  tools.push({
+    name: 'list_secrets',
+    grants: ['run_script'],
+    readOnly: true,
+    effect: 'read',
+    description:
+      "List the names of the organization's stored secrets (credentials the PI/operators saved — e.g. a database DSN). "
+      + "Values are never shown; pass a name in run_script's `secrets` to have it injected into that run's environment.",
+    parameters: { type: 'object' },
+    execute: async () => {
+      try {
+        const secrets = listSecretNamesForProject(projectId);
+        if (secrets.length === 0) {
+          return toolOk('No org secrets are configured. Ask the user to add one (Org admin → Secrets) if this task needs a credential.');
+        }
+        const text = secrets.map((sec) =>
+          `- ${sec.name} → env ${secretEnvName(sec.name)}${sec.description ? ` — ${sec.description}` : ''}`).join('\n');
+        return toolOk(text);
+      } catch (err) {
+        return toolError(`list_secrets failed: ${err.message}`);
+      }
+    },
+  });
+
   tools.push({
     name: 'run_script',
     grants: ['run_script'],
@@ -90,8 +117,10 @@ export function createScriptTools(ctx) {
     effect: 'external',
     description:
       'Run a script in the sandbox: a shared org script by slug (see list_scripts), or a project file by path while iterating before promotion. '
-      + 'The sandbox has NO network and a read-only project mount; scripts read inputs via workspace-relative paths and write every output under $OUT_DIR. '
-      + 'Outputs are copied into analyst/output/run-<id>/ and listed in the result.',
+      + 'The sandbox has NO internet and a read-only project mount; scripts read inputs via workspace-relative paths and write every output under $OUT_DIR. '
+      + 'Outputs are copied into analyst/output/run-<id>/ and listed in the result. '
+      + 'To reach an org data service (e.g. the org database), pass `secrets`: each named org secret (see list_secrets) is injected as a KUHN_SECRET_<NAME> env var and the run joins the internal data network. '
+      + 'Never print secret values in script output.',
     parameters: {
       type: 'object',
       properties: {
@@ -108,9 +137,16 @@ export function createScriptTools(ctx) {
           default: [],
           description: 'Arguments passed to the script',
         },
+        secrets: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 8,
+          default: [],
+          description: 'Org secret names to inject as KUHN_SECRET_* env vars (see list_secrets)',
+        },
       },
     },
-    execute: async (_id, { script, path, args }) => {
+    execute: async (_id, { script, path, args, secrets = [] }) => {
       const errorResult = (text) => toolError(text);
       if ((script == null) === (path == null)) {
         return errorResult('Pass exactly one of `script` (org slug) or `path` (project file).');
@@ -150,6 +186,22 @@ export function createScriptTools(ctx) {
         return errorResult(`run_script failed: ${err.message}`);
       }
 
+      // Resolve requested secrets server-side. Values go ONLY into the
+      // container env (sandbox.js); the tool result and the model context
+      // never see them — an unknown name reports names, not values.
+      let secretsEnv = null;
+      if (secrets.length > 0) {
+        secretsEnv = {};
+        for (const name of secrets) {
+          const value = getSecretValueForProject(projectId, name);
+          if (value == null) {
+            const available = listSecretNamesForProject(projectId).map((sec) => sec.name);
+            return errorResult(`No org secret "${name}". Available: ${available.length > 0 ? available.join(', ') : '(none — ask the user to add one in Org admin → Secrets)'}`);
+          }
+          secretsEnv[secretEnvName(name)] = value;
+        }
+      }
+
       runSeq += 1;
       const outputDir = `analyst/output/run-${jobId}-${runSeq}`;
       const record = (fields) => recordScriptRun({
@@ -158,7 +210,7 @@ export function createScriptTools(ctx) {
 
       let result;
       try {
-        result = await getScriptSemaphore().run(() => runScriptSandboxed(projectId, run));
+        result = await getScriptSemaphore().run(() => runScriptSandboxed(projectId, { ...run, secretsEnv }));
       } catch (err) {
         if (err instanceof SandboxError) {
           const status = err.code === 'timeout' ? 'timeout' : 'failed';

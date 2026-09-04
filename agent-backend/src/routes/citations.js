@@ -46,14 +46,14 @@ function handle(minRole, fn) {
 }
 
 /** GET /api/projects/:projectId/citations/search?q=...&max=8 — PubMed candidates */
-router.get('/api/projects/:projectId/citations/search', handle('viewer', async (_projectId, req, res) => {
+router.get('/api/projects/:projectId/citations/search', handle('viewer', async (projectId, req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   if (!query) {
     res.status(400).json({ error: 'q query parameter is required' });
     return;
   }
   const max = Math.min(Math.max(parseInt(req.query.max) || 8, 1), 25);
-  const candidates = await searchCitations(query, max);
+  const candidates = await searchCitations(query, max, { projectId });
   res.json({ candidates });
 }));
 

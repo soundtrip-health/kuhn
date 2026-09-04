@@ -22,7 +22,8 @@ kuhn/
 ├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
 ├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
 ├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
-└── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
+├── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
+└── test-projects/   # end-to-end test-project fixtures (wizard answers + prompts + data prep) — see test-projects/README.md
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from
@@ -59,7 +60,7 @@ project files both live under an explicit data directory, `KUHN_DATA_DIR`
 `data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
 or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
-(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest marpteam/marp-cli:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network).
+(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network). The marp slide renderer is also built: `docker build -t kuhn/marp:latest docker/marp` (STH-61; adds LibreOffice for editable pptx — the pulled `marpteam/marp-cli` image works too, minus editable pptx).
 
 **The local data directory is disposable.** There is no production data in a
 dev checkout: every project under `data/` is a test project. Delete
@@ -90,7 +91,7 @@ Token-free check scripts (drive the app without spending model quota):
 - `index.js` — server entry (Express + ws); `config.js` — env/config
 - `routes/` — REST handlers; `session.js` — agent chat sessions
 - `agents/` — agent **runtime** (the `runAgentTask` boundary, Claude Agent SDK, tool dispatch, project seeding pipeline)
-- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export)
+- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export), `org-secrets.js` (encrypted org secrets store — values write-only, resolved server-side)
 - `storage.js` — project-scoped file API (**enforces the project root — all file access goes through here**)
 - `sandbox.js` — sandboxed subprocess execution; `render.js` — markdown → Typst → PDF, Pandoc export
 - `yjs-websocket.js` / `yjs-signaling.js` — real-time collab servers

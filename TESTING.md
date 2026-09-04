@@ -5,6 +5,31 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Org secrets & sandbox DB access (2026-09-01)
+
+**Setup:** backend + webapp dev servers. Full integration flow (Postgres +
+secret + analyst queries): [`test-projects/02-nsduh-psychedelics/`](test-projects/02-nsduh-psychedelics/).
+Unit/route tests: `cd agent-backend && npm test` (org-secrets, sandbox network
+modes).
+
+- [ ] Org menu → Org admin → **Secrets** tab: an editor creates a secret (name, value, description); the value is never shown again — list rows are metadata only
+- [ ] Re-saving the same name replaces the value ("rotate = re-enter"); delete removes it; viewers see the list but get no create/delete controls (and the API refuses them)
+- [ ] `auth_events` records `secret.saved`/`secret.deleted` with the name only; `org_secrets.ciphertext` is not plaintext
+- [ ] Analyst chat: `list_secrets` shows names + env vars, never values; `run_script` with an unknown secret name errors with the available names
+- [ ] `run_script` with `secrets: ["<name>"]` runs on the internal data network with `KUHN_SECRET_<NAME>` injected (reaches a Postgres container on `kuhn-data`; still no internet); without `secrets` the run keeps `--network none`
+- [ ] With an `ncbi-api-key` secret saved, PubMed searches/citations attach the key server-side (no behavior change visible in chat; verify via request logs if needed)
+
+---
+
+## End-to-end test projects (2026-09-01)
+
+Full-stack integration fixtures — wizard answers, seed docs/data, and ordered
+agent prompts that recreate two complete projects through the real UI (a
+Kuhn-manuscript project and an NSDUH data-analysis project). They burn real
+model quota; see [`test-projects/README.md`](test-projects/README.md).
+
+---
+
 ## Provider-neutral runtime foundation (PLA-222/223, 2026-08-14)
 
 The phase-one provider runtime is an isolated spike; production agent traffic still

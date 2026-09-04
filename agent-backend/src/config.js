@@ -1,10 +1,14 @@
 import 'dotenv/config';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Single data root: SQLite DB + uploaded project files both live under here,
 // kept out of the source tree. Defaults to the repo-root ./data (gitignored).
+// fileURLToPath (not .pathname) so this decodes correctly when the repo path
+// itself contains URL-special characters — e.g. macOS iCloud Drive checkouts
+// under "Mobile Documents" (a literal space) and "com~apple~CloudDocs" (~).
 const dataDir = process.env.KUHN_DATA_DIR
-  || new URL('../../data', import.meta.url).pathname;
+  || fileURLToPath(new URL('../../data', import.meta.url));
 
 function parseModelWeights(env) {
   const weights = { haiku: 1, sonnet: 3, opus: 5, default: 5 };
@@ -63,7 +67,7 @@ export const config = {
     // Served only when the directory contains an index.html; set
     // KUHN_WEBAPP_DIST to another build, or to '' to disable serving.
     dist: process.env.KUHN_WEBAPP_DIST
-      ?? new URL('../../webapp/dist', import.meta.url).pathname,
+      ?? fileURLToPath(new URL('../../webapp/dist', import.meta.url)),
   },
   auth: {
     // 'dev' (default): x-kuhn-user header / seeded dev user, no login needed —
@@ -163,6 +167,12 @@ export const config = {
     // enforcement as project workspaces.
     orgsRoot: process.env.ORGS_ROOT || join(dataDir, 'orgs'),
   },
+  secrets: {
+    // Encryption key for org secrets at rest (org_secrets): 32 bytes hex.
+    // Unset → derived from the session secret (dev fallback: fixed dev key
+    // with a startup warning). See db/org-secrets.js and threat model TB-7.
+    key: process.env.KUHN_SECRETS_KEY || '',
+  },
   history: {
     // Story 008-002: per-project git version history. Disabled only for
     // environments without a git binary (KUHN_HISTORY_ENABLED=false).
@@ -183,7 +193,7 @@ export const config = {
     // read-only at runtime. Deploys must ship guidance-docs/ alongside the
     // backend (or point this elsewhere).
     catalogRoot: process.env.KUHN_GUIDANCE_DOCS
-      || new URL('../../guidance-docs', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../guidance-docs', import.meta.url)),
   },
   scripts: {
     // Kuhn-curated shared-script catalog (issue #68): shared-scripts/
@@ -191,7 +201,7 @@ export const config = {
     // tree and read-only at runtime — same deployment contract as the
     // knowledge catalog above.
     catalogRoot: process.env.KUHN_SHARED_SCRIPTS
-      || new URL('../../shared-scripts', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../shared-scripts', import.meta.url)),
     // Scripts are code text: small, diffable, stored in the DB.
     maxScriptBytes: parseInt(process.env.SCRIPTS_MAX_BYTES || String(256 * 1024)),
   },
@@ -200,7 +210,7 @@ export const config = {
     // the CSS files it points at, shipped in the repo tree and read-only at
     // runtime; same deployment contract as the script catalog above.
     catalogRoot: process.env.KUHN_SLIDE_THEMES
-      || new URL('../../slide-themes', import.meta.url).pathname,
+      || fileURLToPath(new URL('../../slide-themes', import.meta.url)),
     // Theme CSS is text: small, diffable, stored in the DB for org uploads.
     maxThemeBytes: parseInt(process.env.SLIDE_THEME_MAX_BYTES || String(256 * 1024)),
   },
@@ -232,8 +242,12 @@ export const config = {
     pandocImage: process.env.SANDBOX_PANDOC_IMAGE || 'pandoc/core:latest',
     // PDF text extraction for org-library ingestion (story 006-002)
     popplerImage: process.env.SANDBOX_POPPLER_IMAGE || 'minidocks/poppler:latest',
-    // Slide-deck rendering (STH-57): official Marp CLI image (bundles Chromium).
-    marpImage: process.env.SANDBOX_MARP_IMAGE || 'marpteam/marp-cli:latest',
+    // Slide-deck rendering (STH-57): marp-cli + Chromium. Default is the
+    // Kuhn-BUILT image (docker/marp — the official image plus LibreOffice,
+    // which editable pptx export needs, STH-61): docker build -t
+    // kuhn/marp:latest docker/marp. The stock marpteam/marp-cli image also
+    // works — editable pptx then falls back to slides-as-images.
+    marpImage: process.env.SANDBOX_MARP_IMAGE || 'kuhn/marp:latest',
     timeoutMs: parseInt(process.env.SANDBOX_TIMEOUT_MS || '60000'),
     cpus: process.env.SANDBOX_CPUS || '1',
     memory: process.env.SANDBOX_MEMORY || '512m',
@@ -250,6 +264,13 @@ export const config = {
     // package installs, so "install a package" means extending that
     // Dockerfile and rebuilding.
     rscriptImage: process.env.SANDBOX_R_IMAGE || 'kuhn/r-analysis:latest',
+    // Secrets-enabled script runs (org-secrets feature): when a run_script
+    // call requests secrets, the container joins this docker network instead
+    // of --network none, so scripts can reach org data services (e.g. a
+    // Postgres container) by name. Create it INTERNAL — no route to the
+    // outside — to preserve the no-internet invariant:
+    //   docker network create --internal kuhn-data
+    secretsNetwork: process.env.SANDBOX_SECRETS_NETWORK || 'kuhn-data',
     // Script runs get their own limits — a GAMM fit outgrows the render
     // defaults above (60 s / 512 MB). All env-overridable.
     script: {

@@ -68,7 +68,10 @@ async function render(): Promise<void> {
   }
 }
 
-const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+// STH-16: SVG is active content — the backend serves it as a download
+// (application/octet-stream + attachment), so it never renders here and the
+// preview pane offers a download link instead.
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
 const TEXT_EXTS = ['txt', 'bib', 'csv', 'json', 'typ', 'tex', 'md', 'yaml', 'yml', 'log'];
 
 function extOf(path: string): string {
