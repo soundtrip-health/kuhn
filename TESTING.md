@@ -168,6 +168,11 @@ each full run costs real quota. Scripted version: `node webapp/scripts/seed-chec
       reload the page — the card (note + Resume) is still there; Resume continues the run (or, after a
       dead session, shows the "fresh session" line first); after Resume or a new instruction the card
       keeps the note but loses the button
+- [ ] Org budgets (issue #110): as an owner set a small per-user budget (Organization → Settings →
+      Token budgets), run a task — it pauses with "Your monthly token budget is used up" and the reset
+      time; a second task is refused ("not started") without a job; the Budgets tab shows the member's
+      usage against the limit; Reset usage there lets the run resume; an override of 0 makes that
+      member unlimited
 
 ## Agent Runtime, PM Interview & Webapp (Stories 002-011/012/013/018/021, 2026-06-11)
 

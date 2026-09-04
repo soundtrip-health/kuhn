@@ -31,6 +31,7 @@ import { PROVIDER_ERROR_CODES, normalizeProviderError, toolResultText } from './
 import { renderSessionHandoff } from './session-handoff.js';
 import { captureBudgetHandoff } from './handoff.js';
 import { BUDGET_EXCEEDED_ERROR } from './budget-pause.js';
+import { resolveBudgets } from '../db/org-budgets.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -78,7 +79,10 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
  *       continuation is the canonical record (STH-47) a follow-up task can resume
  *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029); 'budget_exceeded' on budget cutoff,
- *     with sessionId, budget: { used, limit } and handoff (the note written at the pause, or null) — resume via POST /api/agent/jobs/:jobId/resume (issue #110)
+ *     with sessionId, budget: { used, limit, scope }, handoff (the note written at the pause, or null), and for an org budget (scope 'user'|'project')
+ *     period + resetsAt — resume via POST /api/agent/jobs/:jobId/resume (issue #110)
+ *   { type: 'error', agent, message, reason: 'budget_exhausted', budget: { used, limit, scope }, period, resetsAt } — a user/project org budget is already
+ *     used up, so no job was started (issue #110); resets at resetsAt or when an org owner resets it
  */
 export async function* runAgentTask(task, internal = {}) {
   // Tee top-level runs into the per-project feed (story 005-001). Sub-agent
@@ -258,6 +262,49 @@ async function runTask(task, internal, channel, state) {
   const modelWeight = modelCostWeight(agent.model ?? config.agent.model);
   budget.baseWeight ??= modelWeight;
   const costRatio = modelWeight / budget.baseWeight;
+  // Spend-ledger weight (issue #110): this job's tokens relative to the top
+  // model tier, the unit org budgets are denominated in (Opus 1, Haiku 1/5).
+  const ledgerWeight = modelWeight / topModelWeight();
+
+  const project = await getProject(projectId);
+
+  // Org budgets (issue #110, parts 3–4): a user's / a project's spend across
+  // runs. The tightest remaining allowance caps this task's budget, so the
+  // cutoff below pauses the run at the org limit; an allowance already used
+  // up refuses the run before a job exists. Sub-agents share the root's
+  // budget object, so this is a top-level concern only.
+  if (depth === 0 && project?.org_id) {
+    const scoped = resolveBudgets({ orgId: project.org_id, userId, projectId: project.id });
+    budget.scope ??= 'task';
+    for (const bound of [scoped.user, scoped.project]) {
+      if (!bound) continue;
+      if (bound.remaining <= 0) {
+        log.warn('budget_exhausted', {
+          agent: agent.slug, projectId: Number(projectId), userId, scope: bound.scope,
+          used: bound.used, limit: bound.limit, period: scoped.period, resetsAt: bound.resetsAt,
+        });
+        channel.push({
+          type: 'error',
+          agent: agent.slug,
+          reason: 'budget_exhausted',
+          message: budgetExhaustedMessage(bound, scoped.period),
+          budget: { used: bound.used, limit: bound.limit, scope: bound.scope },
+          period: scoped.period,
+          resetsAt: bound.resetsAt,
+        });
+        return;
+      }
+      // The allowance is in ledger (top-tier) units; the task budget counts
+      // root-tier tokens. Convert so the cutoff fires at the org limit.
+      const remainingTaskTokens = bound.remaining / ledgerWeight;
+      if (remainingTaskTokens < budget.limit) {
+        Object.assign(budget, {
+          limit: remainingTaskTokens, scope: bound.scope, period: scoped.period,
+          resetsAt: bound.resetsAt, ledgerWeight,
+        });
+      }
+    }
+  }
 
   const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId });
   state.job = job;
@@ -285,7 +332,6 @@ async function runTask(task, internal, channel, state) {
   // to this agent's system prompt. Resolved once per task; sub-agent
   // dispatches recurse through runTask with the same projectId, so the
   // addition reaches them without any plumbing.
-  const project = await getProject(projectId);
   const orgAddition = project?.org_id
     ? getOrgAgentPrompt(project.org_id, agent.slug)?.addition ?? null
     : null;
@@ -356,6 +402,8 @@ async function runTask(task, internal, channel, state) {
     provider: runtime.identity?.provider ?? null,
     model: runtime.identity?.model ?? null,
   });
+  // The org-budget ledger figure for this job so far (issue #110).
+  const weightedTokens = (u = usage) => Math.round((u.inputTokens + u.outputTokens) * ledgerWeight);
 
   // Transient provider failures (rate limit / overload / 5xx / network) are
   // upstream and stateless: retry the turn with exponential backoff before
@@ -407,6 +455,7 @@ async function runTask(task, internal, channel, state) {
         status: 'done',
         inputTokens: productUsage.inputTokens,
         outputTokens: productUsage.outputTokens,
+        weightedTokens: weightedTokens(productUsage),
         contextTokens: lastContextTokens,
         ...jobIdentity(),
         // Persist the canonical record so a follow-up (and a rollback to
@@ -423,7 +472,7 @@ async function runTask(task, internal, channel, state) {
         type: 'done', agent: agent.slug, jobId: job.id, sessionId: state.sessionId,
         usage: productUsage,
         context: { tokens: lastContextTokens, window: state.contextWindow ?? config.agent.contextWindow },
-        budget: { used: Math.round(budget.used), limit: budget.limit },
+        budget: budgetSnapshot(budget),
         continuation: state.continuation ?? null,
       });
       return;
@@ -525,6 +574,7 @@ async function runTask(task, internal, channel, state) {
       error: reason,
       inputTokens: jobTokens.inputTokens,
       outputTokens: jobTokens.outputTokens,
+      weightedTokens: weightedTokens(jobTokens),
       contextTokens: lastContextTokens,
       ...jobIdentity(),
       // The partial record too (STH-47): a chat retry after a terminal
@@ -540,7 +590,7 @@ async function runTask(task, internal, channel, state) {
     channel.push({
       type: 'error', agent: agent.slug, jobId: job.id, message,
       ...(perr.retryable ? { reason: 'provider_overloaded', sessionId: state.sessionId } : {}),
-      budget: { used: Math.round(budget.used), limit: budget.limit },
+      budget: budgetSnapshot(budget),
     });
     return;
   }
@@ -650,6 +700,11 @@ async function runTask(task, internal, channel, state) {
           lastContextTokens = effectiveIn;
           turnLog.tokenCount = u.outputTokens ?? null;
           await closeTurn();
+          // Keep the spend ledger live per turn (issue #110): a concurrent
+          // run by the same user sees this one's spend, and a crash keeps it.
+          await updateJob(job.id, {
+            inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, weightedTokens: weightedTokens(),
+          });
           // Per-agent context-window state (STH-51): what the model context
           // carried into this turn (the turn's effective input tokens) —
           // the same figure the UI meter receives on the channel below.
@@ -664,12 +719,14 @@ async function runTask(task, internal, channel, state) {
             type: 'context', agent: agent.slug, jobId: job.id,
             context: { tokens: effectiveIn, window: state.contextWindow ?? config.agent.contextWindow },
           });
-          // A grace margin lets an in-flight task overshoot the budget so the
-          // current piece of work can finish instead of being cut off
-          // abruptly.
-          if (budget.used > budget.limit * config.agent.budgetGrace) {
+          // A grace margin lets an in-flight task overshoot the per-task
+          // budget so the current piece of work can finish instead of being
+          // cut off abruptly. An org budget (scope user/project) is a limit:
+          // no grace beyond the turn that crossed it.
+          const grace = (budget.scope ?? 'task') === 'task' ? config.agent.budgetGrace : 1;
+          if (budget.used > budget.limit * grace) {
             log.warn('budget_exceeded', {
-              jobId: job.id, agent: agent.slug, depth,
+              jobId: job.id, agent: agent.slug, depth, scope: budget.scope ?? 'task',
               budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
             });
             await updateJob(job.id, {
@@ -677,6 +734,7 @@ async function runTask(task, internal, channel, state) {
               error: BUDGET_EXCEEDED_ERROR,
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
+              weightedTokens: weightedTokens(),
               contextTokens: lastContextTokens,
             });
             state.cancelReason = 'budget';
@@ -706,8 +764,9 @@ async function runTask(task, internal, channel, state) {
               // over; the hand-off note is what the resume hands the agent.
               sessionId: state.sessionId,
               handoff,
-              message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task paused.`,
-              budget: { used: Math.round(budget.used), limit: budget.limit },
+              message: budgetExceededMessage(budget),
+              budget: budgetSnapshot(budget),
+              ...(budget.scope && budget.scope !== 'task' ? { period: budget.period, resetsAt: budget.resetsAt } : {}),
             });
           }
           break;
@@ -763,6 +822,39 @@ function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
+const PERIOD_ADJECTIVE = { day: 'daily', week: 'weekly', month: 'monthly' };
+
+/**
+ * The budget figures a client sees. A per-task budget reports root-tier
+ * tokens (story 020); a run capped by an org budget reports ledger units —
+ * the ones the owner configured — by converting with the root's weight.
+ */
+function budgetSnapshot(budget) {
+  const scope = budget.scope ?? 'task';
+  const w = scope === 'task' ? 1 : (budget.ledgerWeight ?? 1);
+  return { used: Math.round(budget.used * w), limit: Math.round(budget.limit * w), scope };
+}
+
+function budgetExceededMessage(budget) {
+  const scope = budget.scope ?? 'task';
+  if (scope === 'task') {
+    return `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task paused.`;
+  }
+  const owner = scope === 'user' ? 'Your' : 'This project\'s';
+  const { used, limit } = budgetSnapshot(budget);
+  return `${owner} ${PERIOD_ADJECTIVE[budget.period] ?? budget.period} token budget is used up (${used} of the remaining ${limit} tokens); task paused. It resets ${resetPhrase(budget.resetsAt)}, or an organization owner can reset it.`;
+}
+
+function budgetExhaustedMessage(bound, period) {
+  const owner = bound.scope === 'user' ? 'Your' : 'This project\'s';
+  return `${owner} ${PERIOD_ADJECTIVE[period] ?? period} token budget is used up (${bound.used} of ${bound.limit} tokens), so the task was not started. It resets ${resetPhrase(bound.resetsAt)}, or an organization owner can reset it.`;
+}
+
+function resetPhrase(iso) {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? 'at the start of the next period' : `at ${at.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+}
+
 /**
  * Capture and persist the budget-pause hand-off note (issue #110). Best
  * effort: a failed or slow capture (the model call is bounded by
@@ -800,6 +892,11 @@ function modelCostWeight(model) {
     if (key !== 'default' && id.includes(key)) return weight;
   }
   return weights.default;
+}
+
+// The top model tier's weight — the unit of the org-budget ledger (issue #110).
+function topModelWeight() {
+  return Math.max(...Object.values(config.agent.modelWeights), 1);
 }
 
 // Product accounting (story 020): budgets and job figures count cached input

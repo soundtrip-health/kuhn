@@ -9,6 +9,12 @@ export const ORG_SETTINGS_SCHEMA = {
   default_member_role: { values: ['viewer', 'editor'], default: 'editor' },
   library_seeding:     { boolean: true,                default: true },
   promotion_policy:    { values: ['approval-required', 'direct'], default: 'approval-required' },
+  // Token budgets (issue #110): cost-weighted tokens per user / per project
+  // per budget_period, 0 = unlimited. Per-member overrides and the manual
+  // reset live in org_budgets (db/org-budgets.js).
+  user_token_budget:    { integer: true, min: 0, default: 0 },
+  project_token_budget: { integer: true, min: 0, default: 0 },
+  budget_period:        { values: ['day', 'week', 'month'], default: 'month' },
 };
 
 /** Field-level validation failure — routes map to 400 { error, field }. */
@@ -45,6 +51,10 @@ export function validateSettingsPatch(patch) {
     if (spec.boolean) {
       if (typeof value !== 'boolean') {
         throw new SettingsValidationError(`${key} must be a boolean`, key);
+      }
+    } else if (spec.integer) {
+      if (!Number.isInteger(value) || value < spec.min) {
+        throw new SettingsValidationError(`${key} must be an integer ≥ ${spec.min}`, key);
       }
     } else if (!spec.values.includes(value)) {
       throw new SettingsValidationError(

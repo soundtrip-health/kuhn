@@ -194,6 +194,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- runs that ended any other way (or whose note could not be captured).
   -- Mirrored in init.js COLUMN_MIGRATIONS.
   handoff          TEXT,
+  -- Spend ledger (issue #110): this job's tokens weighted by model cost
+  -- relative to the top tier (runtime.js ledgerWeight), so org budgets sum a
+  -- spend-like figure across models. Updated per turn. Mirrored in init.js.
+  weighted_tokens  INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -202,6 +206,30 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project
   ON jobs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status
   ON jobs(status);
+-- Org budget ledger reads (issue #110): a user's / a project's spend since a
+-- point in time.
+CREATE INDEX IF NOT EXISTS idx_jobs_user_created
+  ON jobs(user_id, created_at);
+
+-- ============================================================
+-- Org token budgets (issue #110, parts 3–4): per-user / per-project overrides
+-- of the org-default limits (organizations.settings user_token_budget /
+-- project_token_budget, 0 = unlimited) and the manual reset marker. Usage is
+-- SUM(jobs.weighted_tokens) since the later of the period start and reset_at;
+-- db/org-budgets.js owns the semantics. One row per (org, scope, member).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_budgets (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id       INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  scope        TEXT NOT NULL CHECK (scope IN ('user', 'project')),
+  scope_id     INTEGER NOT NULL,          -- users.id or projects.id
+  limit_tokens INTEGER,                   -- NULL = inherit the org default; 0 = unlimited
+  reset_at     TEXT,                      -- usage counts from here when later than the period start
+  reset_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, scope, scope_id)
+);
 
 -- ============================================================
 -- Messages (append-only — no updated_at)

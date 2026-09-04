@@ -117,8 +117,14 @@ export interface AgentEvent {
   jobId?: number;
   sessionId?: string;
   usage?: { inputTokens: number; outputTokens: number };
-  // Per-task token budget snapshot (weighted tokens), carried on done/error.
-  budget?: { used: number; limit: number };
+  // Token budget snapshot (weighted tokens), carried on done/error. `scope`
+  // says which budget bounded the run: the per-task one, or the user's /
+  // project's org budget (issue #110).
+  budget?: { used: number; limit: number; scope?: 'task' | 'user' | 'project' };
+  // Org budget period and reset time, on budget_exceeded (org scope) and
+  // budget_exhausted errors (issue #110).
+  period?: 'day' | 'week' | 'month';
+  resetsAt?: string;
   // Live per-agent context-window state (STH-52), emitted each assistant turn.
   context?: { tokens: number; window: number };
   // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
@@ -308,6 +314,53 @@ export interface OrgSettings {
   default_member_role: 'viewer' | 'editor';
   library_seeding: boolean;
   promotion_policy: 'approval-required' | 'direct';
+  /** Token budgets (issue #110): cost-weighted tokens per period, 0 = unlimited. */
+  user_token_budget: number;
+  project_token_budget: number;
+  budget_period: 'day' | 'week' | 'month';
+}
+
+/** One row of the owner's budget report (issue #110). `limit` null = unlimited. */
+export interface BudgetUsage {
+  override: number | null;
+  limit: number | null;
+  used: number;
+  reset_at: string | null;
+}
+export interface OrgBudgetReport {
+  settings: Pick<OrgSettings, 'user_token_budget' | 'project_token_budget' | 'budget_period'>;
+  window: { start: string; end: string };
+  users: (BudgetUsage & { user_id: number; email: string; display_name: string | null; role: Role })[];
+  projects: (BudgetUsage & { project_id: number; name: string })[];
+}
+export type BudgetScope = 'user' | 'project';
+
+/** The org's token-budget report: defaults, window, per-member / per-project usage (owner-only). */
+export async function getOrgBudgets(orgId: number): Promise<OrgBudgetReport> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/budgets`));
+  return (await res.json()) as OrgBudgetReport;
+}
+
+/** Override one member's / project's limit (0 = unlimited; null = inherit the org default). */
+export async function setBudgetLimit(
+  orgId: number, scope: BudgetScope, id: number, limitTokens: number | null,
+): Promise<OrgBudgetReport> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/budgets/${scope}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit_tokens: limitTokens }),
+    }),
+  );
+  return ((await res.json()) as { report: OrgBudgetReport }).report;
+}
+
+/** Reset one member's / project's usage: it counts from now (issue #110 part 4). */
+export async function resetBudget(orgId: number, scope: BudgetScope, id: number): Promise<OrgBudgetReport> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/budgets/${scope}/${id}/reset`, { method: 'POST' }),
+  );
+  return ((await res.json()) as { report: OrgBudgetReport }).report;
 }
 
 export interface PromotionRequest {
