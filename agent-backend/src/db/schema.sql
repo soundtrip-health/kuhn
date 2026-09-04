@@ -176,6 +176,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   error            TEXT,
   input_tokens     INTEGER NOT NULL DEFAULT 0,
   output_tokens    INTEGER NOT NULL DEFAULT 0,
+  -- Last turn's prompt size (input + cache read/write) — the context the
+  -- session carries forward (STH-52 meter). input_tokens above is cumulative
+  -- task throughput; mirrored in init.js COLUMN_MIGRATIONS.
+  context_tokens   INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -724,3 +728,23 @@ CREATE TABLE IF NOT EXISTS script_runs (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_script_runs_project ON script_runs(project_id, id DESC);
+
+-- ============================================================
+-- Org secrets (secrets store): named credentials an org keeps for agent-side
+-- use — a database DSN the analyst's sandboxed scripts connect with, an API
+-- key a backend tool call attaches (e.g. NCBI E-utilities). Values are
+-- AES-256-GCM ciphertext (db/org-secrets.js owns the key derivation) and are
+-- WRITE-ONLY at the API: no route or tool ever returns a stored value;
+-- resolution happens server-side at the point of use.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS org_secrets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  name        TEXT NOT NULL,     -- handle agents reference; env-safe: [a-z][a-z0-9-]*
+  description TEXT,
+  ciphertext  TEXT NOT NULL,     -- base64 iv.tag.data (AES-256-GCM)
+  created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, name)
+);

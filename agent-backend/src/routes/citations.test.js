@@ -63,7 +63,7 @@ describe('citation routes (story 016)', () => {
     const res = await fetch(`${base}/api/projects/1/citations/search?q=glp1&max=100`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ candidates: [{ pmid: '1', title: 'T' }] });
-    expect(searchCitations).toHaveBeenCalledWith('glp1', 25);
+    expect(searchCitations).toHaveBeenCalledWith('glp1', 25, { projectId: 1 });
     expect((await fetch(`${base}/api/projects/1/citations/search?q=`)).status).toBe(400);
   });
 

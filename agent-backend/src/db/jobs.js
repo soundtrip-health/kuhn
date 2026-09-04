@@ -43,6 +43,7 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {string} [fields.error]
  * @param {number} [fields.inputTokens]
  * @param {number} [fields.outputTokens]
+ * @param {number} [fields.contextTokens] - last turn's prompt size (STH-52 meter)
  * @returns {Promise<object|undefined>} The updated job row
  */
 export async function updateJob(jobId, fields) {
@@ -53,6 +54,7 @@ export async function updateJob(jobId, fields) {
     error: 'error',
     inputTokens: 'input_tokens',
     outputTokens: 'output_tokens',
+    contextTokens: 'context_tokens',
   };
   const sets = [];
   const params = [];

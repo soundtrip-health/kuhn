@@ -143,6 +143,12 @@ export const config = {
     // enforcement as project workspaces.
     orgsRoot: process.env.ORGS_ROOT || join(dataDir, 'orgs'),
   },
+  secrets: {
+    // Encryption key for org secrets at rest (org_secrets): 32 bytes hex.
+    // Unset → derived from the session secret (dev fallback: fixed dev key
+    // with a startup warning). See db/org-secrets.js and threat model TB-7.
+    key: process.env.KUHN_SECRETS_KEY || '',
+  },
   history: {
     // Story 008-002: per-project git version history. Disabled only for
     // environments without a git binary (KUHN_HISTORY_ENABLED=false).
@@ -234,6 +240,13 @@ export const config = {
     // package installs, so "install a package" means extending that
     // Dockerfile and rebuilding.
     rscriptImage: process.env.SANDBOX_R_IMAGE || 'kuhn/r-analysis:latest',
+    // Secrets-enabled script runs (org-secrets feature): when a run_script
+    // call requests secrets, the container joins this docker network instead
+    // of --network none, so scripts can reach org data services (e.g. a
+    // Postgres container) by name. Create it INTERNAL — no route to the
+    // outside — to preserve the no-internet invariant:
+    //   docker network create --internal kuhn-data
+    secretsNetwork: process.env.SANDBOX_SECRETS_NETWORK || 'kuhn-data',
     // Script runs get their own limits — a GAMM fit outgrows the render
     // defaults above (60 s / 512 MB). All env-overridable.
     script: {

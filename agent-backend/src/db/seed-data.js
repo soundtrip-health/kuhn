@@ -101,8 +101,8 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { agent_slug: { type: 'string', description: 'Slug of the agent to spawn' }, task: { type: 'string', description: 'Task description for the sub-agent' }, context: { type: 'string', description: 'Additional context for the sub-agent' } }, required: ['agent_slug', 'task'] },
   },
   {
-    slug: 'run_script', name: 'Run Script', description: 'List and run shared org scripts (or a project script) in the no-network sandbox (issue #68)',
-    parameterSchema: { type: 'object', properties: { script: { type: 'string', description: 'Org script slug' }, path: { type: 'string', description: 'Project-relative script path' }, args: { type: 'array', items: { type: 'string' }, description: 'Script arguments' } } },
+    slug: 'run_script', name: 'Run Script', description: 'List and run shared org scripts (or a project script) in the no-internet sandbox (issue #68); org secrets can be injected for data-service access (secrets store)',
+    parameterSchema: { type: 'object', properties: { script: { type: 'string', description: 'Org script slug' }, path: { type: 'string', description: 'Project-relative script path' }, args: { type: 'array', items: { type: 'string' }, description: 'Script arguments' }, secrets: { type: 'array', items: { type: 'string' }, description: 'Org secret names to inject as env vars' } } },
   },
   {
     // STH-61: slide-theme discovery — agents kept guessing theme names.

@@ -22,7 +22,8 @@ kuhn/
 ├── docs/            # architecture.md, deployment.md, data-pipeline.md, design/
 ├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
 ├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
-└── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
+├── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
+└── test-projects/   # end-to-end test-project fixtures (wizard answers + prompts + data prep) — see test-projects/README.md
 ```
 
 Agent definitions (system prompts, models, tools) are **DB-seeded** from
@@ -90,7 +91,7 @@ Token-free check scripts (drive the app without spending model quota):
 - `index.js` — server entry (Express + ws); `config.js` — env/config
 - `routes/` — REST handlers; `session.js` — agent chat sessions
 - `agents/` — agent **runtime** (the `runAgentTask` boundary, Claude Agent SDK, tool dispatch, project seeding pipeline)
-- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export)
+- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export), `org-secrets.js` (encrypted org secrets store — values write-only, resolved server-side)
 - `storage.js` — project-scoped file API (**enforces the project root — all file access goes through here**)
 - `sandbox.js` — sandboxed subprocess execution; `render.js` — markdown → Typst → PDF, Pandoc export
 - `yjs-websocket.js` / `yjs-signaling.js` — real-time collab servers
