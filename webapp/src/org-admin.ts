@@ -2307,9 +2307,27 @@ function render(): void {
   panel.append(head, tabsBar(), body);
   // A re-render replaces the panel; keep the reader where they were in the
   // scrolled body (every tab action re-renders, and jumping to the top on
-  // "Add profile" or "Save" is disorienting).
+  // "Add profile" or "Save" is disorienting) — and keep the keyboard focus
+  // and caret in the control they were typing in (a background lookup
+  // re-rendering mid-word must not steal focus).
   const previous = root.querySelector<HTMLElement>('.admin-body');
   const scrollTop = previous?.scrollTop ?? 0;
+  const active = document.activeElement as HTMLElement | null;
+  const focusKey = active && root.contains(active)
+    ? (active.id ? `#${CSS.escape(active.id)}` : active.getAttribute('aria-label') ? `[aria-label="${CSS.escape(active.getAttribute('aria-label') ?? '')}"]` : null)
+    : null;
+  const caret = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+    ? { start: active.selectionStart, end: active.selectionEnd }
+    : null;
   root.replaceChildren(panel);
   if (scrollTop > 0) body.scrollTop = scrollTop;
+  if (focusKey) {
+    const again = panel.querySelector<HTMLElement>(focusKey);
+    if (again) {
+      again.focus({ preventScroll: true });
+      if (caret && (again instanceof HTMLInputElement || again instanceof HTMLTextAreaElement) && caret.start != null) {
+        try { again.setSelectionRange(caret.start, caret.end ?? caret.start); } catch { /* not a text control */ }
+      }
+    }
+  }
 }
