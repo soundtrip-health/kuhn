@@ -288,10 +288,51 @@ describe('canonical continuation (STH-7)', () => {
     const last = terminal.continuation.messages.at(-1);
     expect(last).toMatchObject({ role: 'tool_result', toolCallId: 't2', isError: true });
     expect(last.content[0].text).toMatch(/unresolved/);
+    // The same closure is on the event stream, ahead of the terminal, so the
+    // seam persists it and the call is paired (exactly-once lifecycle).
+    expect(events.at(-2)).toMatchObject({ type: 'tool_result', id: 't2', name: 'write_file', isError: true });
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
   });
 });
 
 describe('cancellation (STH-7)', () => {
+  it('closes a tool call the abort landed on with one synthetic error tool_result before the cancelled terminal', async () => {
+    // Mirrors the Pi adapter's abort regression: the product interrupts the
+    // turn after the model requested a tool and before its result arrived
+    // (budget cutoff / disconnect). The stream parks until interrupt().
+    let releaseFn;
+    const gate = new Promise((r) => { releaseFn = r; });
+    sdkState.stream = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's-y' };
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't9', name: `mcp__${CLAUDE_MCP_SERVER_NAME}__write_file`, input: { path: 'a.md', content: '1' } }],
+          usage: { input_tokens: 4, output_tokens: 2 },
+        },
+      };
+      await gate;
+    })();
+    sdkState.interrupt = vi.fn(() => releaseFn());
+
+    const rt = makeRuntime();
+    const ac = new AbortController();
+    const events = [];
+    for await (const e of rt.runTurn({ input: 'go', signal: ac.signal })) {
+      events.push(e);
+      if (e.type === 'tool_call') ac.abort();
+    }
+
+    expect(calls).toEqual([]); // the tool never executed
+    expect(events.map((e) => e.type)).toEqual(['provider', 'provider', 'tool_call', 'usage', 'tool_result', 'error']);
+    expect(events[4]).toMatchObject({ id: 't9', name: 'write_file', isError: true });
+    expect(events[4].content[0].text).toMatch(/unresolved/);
+    expect(events.at(-1).error).toMatchObject({ code: 'cancelled', retryable: false });
+    // The continuation carries the identical closure.
+    expect(events.at(-1).continuation.messages.at(-1)).toMatchObject({ role: 'tool_result', toolCallId: 't9', isError: true });
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
+  });
+
   it('interrupts the SDK query and ends with exactly one cancelled terminal', async () => {
     // The gate resolves when interrupt() fires — set up before the stream so
     // an interrupt landing before the stream reaches the gate still closes

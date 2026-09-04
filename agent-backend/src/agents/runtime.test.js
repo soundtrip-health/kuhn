@@ -278,9 +278,13 @@ describe('runAgentTask', () => {
     expect(terminal.provider).toBe('anthropic');
     expect(terminal.continuation).toEqual(events[2].continuation);
 
-    // Conversation logging: user input, assistant turn, tool result
+    // Conversation logging: user input, assistant turn, the t1 tool result,
+    // and the synthetic error result closing t2 (the fixture stream never
+    // resolved it) — the adapter emits that closure on the event stream so
+    // the seam persists it, exactly as the continuation records it.
     const roles = logMessage.mock.calls.map(([m]) => m.role);
-    expect(roles).toEqual(['user', 'assistant', 'tool']);
+    expect(roles).toEqual(['user', 'assistant', 'tool', 'tool']);
+    expect(logMessage.mock.calls.at(-1)[0]).toMatchObject({ role: 'tool', toolCallId: 't2', isError: true });
   });
 
   it('persists the complete multi-block tool result content (never content[0].text)', async () => {

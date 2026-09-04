@@ -111,9 +111,10 @@ export const cancelDisconnect = {
           // (the runtime closes it with one synthetic error tool_result
           // before the cancelled terminal) cannot be placed
           // deterministically behind the scripted model's stream, so it is
-          // pinned where the stream is controlled — the Pi adapter's abort
-          // regression (provider-runtime/pi-adapter.test.js) and the
-          // seam's persisted-audit regression (agents/runtime.test.js).
+          // pinned where the stream is controlled — the adapters' abort
+          // regressions (provider-runtime/pi-adapter.test.js and
+          // claude-runtime.test.js) and the seam's persisted-audit
+          // regression (agents/runtime.test.js).
           {
             text: 'Working on the outline…',
             deltas: ['Working on the outline…'],

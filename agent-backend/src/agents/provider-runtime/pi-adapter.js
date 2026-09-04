@@ -11,7 +11,7 @@ import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
 import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
 
 import { EventChannel } from '../events.js';
-import { addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
+import { UNRESOLVED_TOOL_RESULT_TEXT, addUsage, normalizeProviderError, normalizeUsage } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
 import { validateArgs } from '../tools/validate.js';
 
@@ -489,8 +489,7 @@ export class PiAgentRuntime {
  * finalizes every started call, including aborted ones), so this only ever
  * closes never-executed calls — the exactly-once lifecycle is preserved.
  */
-const UNRESOLVED_TOOL_RESULT_TEXT =
-  '(unresolved: the turn ended before this tool call produced a result)';
+// (UNRESOLVED_TOOL_RESULT_TEXT is shared with the Claude adapter via contract.js.)
 
 /**
  * Pi transcript → canonical Kuhn continuation. Thinking blocks, images and

@@ -63,9 +63,12 @@
  * usage — per message, `text -> tool_call(s) -> usage -> tool_result(s)`.
  * The product seam writes the assistant conversation row when the message's
  * usage arrives, so the row must already carry the message's tool calls.
- * A turn that ends before a requested call executed emits no `tool_result`
- * event for it; the canonical continuation closes the unresolved call with
- * an explicit error tool_result so the record stays canonical for resume.
+ * A turn that ends before a requested call executed (abort, provider
+ * failure, turn cutoff) closes it with exactly one synthetic error
+ * `tool_result` event (UNRESOLVED_TOOL_RESULT_TEXT) ahead of the terminal,
+ * and the canonical continuation carries the same closure so the record
+ * stays canonical for resume; validateRuntimeEventSequence rejects a
+ * dangling call. Both adapters close identically.
  *
  * Event vocabulary: `provider` (identity — provider/model/api, plus
  * `sessionId` once the provider has allocated a session, and optional
@@ -193,79 +196,105 @@ export function addUsage(left, right) {
   };
 }
 
- /**
-  * The normalized provider-failure vocabulary: codes normalizeProviderError()
-  * can return for an upstream failure, as opposed to a provider-reported
-  * turn termination (max_turns, …). The product layer (agents/runtime.js)
-  * uses this set to shape terminal errors — the story-029 friendly
-  * overload message and `reason: 'provider_overloaded'` tag apply only to
-  * codes in this set, rendered from the provider message.
-  */
- export const PROVIDER_ERROR_CODES = new Set([
-   'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server', 'network',
-   'timeout', 'context_overflow', 'safety', 'tool', 'cancelled', 'provider_error',
- ]);
+/**
+ * The normalized provider-failure vocabulary: codes normalizeProviderError()
+ * can return for an upstream failure, as opposed to a provider-reported
+ * turn termination (max_turns, …). The product layer (agents/runtime.js)
+ * uses this set to shape terminal errors — the story-029 friendly
+ * overload message and `reason: 'provider_overloaded'` tag apply only to
+ * codes in this set, rendered from the provider message.
+ */
+export const PROVIDER_ERROR_CODES = new Set([
+  'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server', 'network',
+  'timeout', 'context_overflow', 'safety', 'tool', 'cancelled', 'provider_error',
+]);
 
- /**
-  * Normalize provider-specific failures before product retry policy sees
-  * them. The retryable set preserves story 029's historical behavior
-  * (408/409/425/429/5xx/529 statuses, ETIMEDOUT/ECONNRESET/ECONNREFUSED/
-  * ENOTFOUND/EAI_AGAIN/socket wording, and "overloaded"/"rate limit"
-  * wording) — a retry here is safe because these failures are upstream and
-  * stateless.
-  */
- export function normalizeProviderError(error, { stopReason } = {}) {
-   const message = String(error?.message ?? error?.errorMessage ?? error ?? 'Provider error');
-   const status = finiteOrNull(error?.status ?? error?.statusCode ?? error?.response?.status);
-   const code = String(error?.code ?? '').toLowerCase();
-   const haystack = `${code} ${message}`.toLowerCase();
+/**
+ * Closure content for a tool call the turn ended before executing (abort,
+ * provider failure, turn cutoff). Every adapter emits it as the call's one
+ * synthetic error tool_result event and records it in the continuation.
+ */
+export const UNRESOLVED_TOOL_RESULT_TEXT =
+  '(unresolved: the turn ended before this tool call produced a result)';
 
-   // Cancellation is classified only on strong signals (explicit abort types
-   // and stop reasons), never on message wording: provider messages routinely
-   // contain "cancelled"/"aborted" while describing rate limits or dropped
-   // connections, and those must keep their retryable categories.
-   if (stopReason === 'aborted' || error?.name === 'AbortError' || code === 'abort_err') {
-     return runtimeError('cancelled', message, false, status);
-   }
-   if (status === 429 || /rate.?limit|too many requests/.test(haystack)) {
-     return runtimeError('rate_limit', message, true, status);
-   }
-   if (status === 529 || /overload|capacity/.test(haystack)) {
-     return runtimeError('overloaded', message, true, status);
-   }
-   // Content-safety refusals (a "content policy" 400, a safety block): not a
-   // provider outage and not retryable — the model declined the turn.
-   if (/content.?policy|safety|self.?block/.test(haystack)) {
-     return runtimeError('safety', message, false, status);
-   }
-   if (status === 401 || status === 403
-     || /unauthorized|forbidden|invalid api key|authentication|credential/.test(haystack)) {
-     return runtimeError('auth', message, false, status);
-   }
-   // Context-window exhaustion is classified BEFORE the generic 400
-   // invalid-request rule: providers report an over-long prompt as a 400
-   // ("maximum context length exceeded", "prompt is too long"), and that is
-   // context_overflow, not invalid_request — retrying it cannot succeed
-   // and the product must see a distinct, actionable classification.
-   if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context|prompt is too long/.test(haystack)) {
-     return runtimeError('context_overflow', message, false, status);
-   }
-   if (status === 400 || /invalid (request|parameter|input)|malformed|unrecognized/.test(haystack)) {
-     return runtimeError('invalid_request', message, false, status);
-   }
-   if (status === 408 || /\btimeout\b|timed out|etimedout/.test(haystack)) {
-     return runtimeError('timeout', message, true, status);
-   }
-   if (/econn|enotfound|network|socket|fetch failed|eai_again/.test(haystack)) {
-     return runtimeError('network', message, true, status);
-   }
-   // 409 Conflict / 425 Too Early: historically in Kuhn's retryable set
-   // (story 029) — treat them as upstream transients.
-   if (status === 409 || status === 425 || (status != null && status >= 500)) {
-     return runtimeError('server', message, true, status);
-   }
-   return runtimeError('provider_error', message, false, status);
- }
+/**
+ * Normalize provider-specific failures before product retry policy sees
+ * them. The retryable set preserves story 029's historical behavior
+ * (408/409/425/429/5xx/529 statuses, ETIMEDOUT/ECONNRESET/ECONNREFUSED/
+ * ENOTFOUND/EAI_AGAIN/socket wording, and "overloaded"/"rate limit"
+ * wording) — a retry here is safe because these failures are upstream and
+ * stateless.
+ */
+export function normalizeProviderError(error, { stopReason } = {}) {
+  const message = String(error?.message ?? error?.errorMessage ?? error ?? 'Provider error');
+  const status = finiteOrNull(error?.status ?? error?.statusCode ?? error?.response?.status);
+  const code = String(error?.code ?? '').toLowerCase();
+  const haystack = `${code} ${message}`.toLowerCase();
+
+  // Cancellation is classified only on strong signals (explicit abort types
+  // and stop reasons), never on message wording: provider messages routinely
+  // contain "cancelled"/"aborted" while describing rate limits or dropped
+  // connections, and those must keep their retryable categories.
+  if (stopReason === 'aborted' || error?.name === 'AbortError' || code === 'abort_err') {
+    return runtimeError('cancelled', message, false, status);
+  }
+  if (status === 429 || /rate.?limit|too many requests/.test(haystack)) {
+    return runtimeError('rate_limit', message, true, status);
+  }
+  if (status === 529 || /overload|capacity/.test(haystack)) {
+    return runtimeError('overloaded', message, true, status);
+  }
+  // Content-safety refusals (a "content policy" 400, a safety block): not a
+  // provider outage and not retryable — the model declined the turn.
+  if (/content.?policy|safety|self.?block/.test(haystack)) {
+    return runtimeError('safety', message, false, status);
+  }
+  if (status === 401 || status === 403
+    || /unauthorized|forbidden|invalid api key|authentication|credential/.test(haystack)) {
+    return runtimeError('auth', message, false, status);
+  }
+  // Context-window exhaustion is classified BEFORE the generic 400
+  // invalid-request rule: providers report an over-long prompt as a 400
+  // ("maximum context length exceeded", "prompt is too long"), and that is
+  // context_overflow, not invalid_request — retrying it cannot succeed
+  // and the product must see a distinct, actionable classification.
+  if (/context.{0,20}(length|window|overflow)|too many tokens|max(?:imum)? context|prompt is too long/.test(haystack)) {
+    return runtimeError('context_overflow', message, false, status);
+  }
+  if (status === 400 || /invalid (request|parameter|input)|malformed|unrecognized/.test(haystack)) {
+    return runtimeError('invalid_request', message, false, status);
+  }
+  if (status === 408 || /\btimeout\b|timed out|etimedout/.test(haystack)) {
+    return runtimeError('timeout', message, true, status);
+  }
+  if (/econn|enotfound|network|socket|fetch failed|eai_again/.test(haystack)) {
+    return runtimeError('network', message, true, status);
+  }
+  // 409 Conflict / 425 Too Early: historically in Kuhn's retryable set
+  // (story 029) — treat them as upstream transients.
+  if (status === 409 || status === 425 || (status != null && status >= 500)) {
+    return runtimeError('server', message, true, status);
+  }
+  // The Claude Agent SDK surfaces HTTP failures as plain text ("API Error:
+  // 503") with no status property — story 029's isTransientApiError matched
+  // bare codes in the text for exactly that reason. A bare code in the
+  // message routes like a structured status would. Last, so the wording
+  // rules above (overflow, safety, auth, invalid_request) still win.
+  const textStatus = status ?? bareStatusCode(haystack);
+  if (textStatus === 429) return runtimeError('rate_limit', message, true, textStatus);
+  if (textStatus === 529) return runtimeError('overloaded', message, true, textStatus);
+  if (textStatus === 408) return runtimeError('timeout', message, true, textStatus);
+  if (textStatus === 409 || textStatus === 425 || (textStatus != null && textStatus >= 500)) {
+    return runtimeError('server', message, true, textStatus);
+  }
+  return runtimeError('provider_error', message, false, status);
+}
+
+/** A bare HTTP status code in error text ("API Error: 503"), or null. */
+function bareStatusCode(haystack) {
+  const match = /\b(4\d\d|5\d\d)\b/.exec(haystack);
+  return match ? Number(match[1]) : null;
+}
 
 /**
  * Structural conformance check used by every experimental adapter. It returns

@@ -5,7 +5,7 @@
  * failure is declared by the scenario with the normalized contract code
  * (provider-runtime/contract.js), and each driver renders it as the
  * provider-native failure its app surface expects. The renderings are chosen
- * so the production isTransientApiError() classifies them the way the code
+ * so the production normalizeProviderError() classifies them the way the code
  * intends — the app's retry policy is the production implementation in both
  * cases.
  */
@@ -20,7 +20,7 @@ const ERROR_RENDERINGS = {
   cancelled: { message: 'This operation was aborted', status: null },
 };
 
-/** The error object the production isTransientApiError() will classify. */
+/** The error object the production normalizeProviderError() will classify. */
 export function renderedError(code) {
   const rendering = ERROR_RENDERINGS[code] ?? ERROR_RENDERINGS.provider_error;
   const err = new Error(rendering.message);

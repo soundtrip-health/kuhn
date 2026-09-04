@@ -465,6 +465,9 @@ async function runTask(task, internal, channel, state) {
       outputTokens: jobTokens.outputTokens,
       contextTokens: lastContextTokens,
       ...jobIdentity(),
+      // The partial record too (STH-47): a chat retry after a terminal
+      // failure resumes provider-neutrally instead of starting cold.
+      continuation: state.continuation ?? null,
     });
     log.error('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
@@ -525,7 +528,7 @@ async function runTask(task, internal, channel, state) {
               state.sessionId = event.sessionId;
               // Record the session so a retry resumes it and a terminal
               // transient error can hand it back to a chat retry (story 029).
-              updateJob(job.id, { sessionId: event.sessionId }).catch(() => {});
+              await updateJob(job.id, { sessionId: event.sessionId });
             }
             // Audit (STH-51): per-attempt session initialization, sourced
             // from the normalized identity event — never provider message

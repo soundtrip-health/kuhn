@@ -168,6 +168,19 @@ describe('provider-neutral runtime contract', () => {
     [{ status: 408, message: 'Request timed out' }, 'timeout', true],
     [{ message: 'maximum context length exceeded' }, 'context_overflow', false],
     [{ message: 'bad request' }, 'provider_error', false],
+    // The Agent SDK reports HTTP failures as text with no status property
+    // (STH-47 review): a bare code in the message must keep story 029's
+    // retry classification.
+    [new Error('API Error: 503'), 'server', true],
+    [new Error('API Error: 502 Bad Gateway'), 'server', true],
+    [new Error('API Error: 429'), 'rate_limit', true],
+    [new Error('API Error: 529'), 'overloaded', true],
+    [new Error('API Error: 408'), 'timeout', true],
+    [new Error('API Error: 400 maximum context length exceeded'), 'context_overflow', false],
+    [new Error('API Error: 400 invalid request'), 'invalid_request', false],
+    [new Error('API Error: 401 invalid api key'), 'auth', false],
+    // Not every 3-digit number is a status: token counts stay unclassified.
+    [new Error('prompt has 250000 tokens'), 'provider_error', false],
     // Abort wording in a provider message must not shadow the real category.
     [{ status: 429, message: 'request cancelled due to rate limit' }, 'rate_limit', true],
     [{ code: 'ECONNRESET', message: 'stream aborted unexpectedly' }, 'network', true],

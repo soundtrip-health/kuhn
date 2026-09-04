@@ -34,7 +34,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { addUsage, normalizeProviderError, normalizeUsage, toolResultText } from './contract.js';
+import { UNRESOLVED_TOOL_RESULT_TEXT, addUsage, normalizeProviderError, normalizeUsage, toolResultText } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
 import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME, toNeutralToolName } from './claude-tools.js';
 
@@ -142,24 +142,24 @@ export function createClaudeRuntime({
       }
     };
 
-    // A provider stream can end with a tool_use that never received its
-    // tool_result (a malformed/truncated stream). The canonical continuation
-    // must stay canonical, so such calls are closed with an explicit error
-    // marker instead of being dropped or left dangling. Real Claude streams
-    // resolve every call before the result message; this is defensive.
-    const UNRESOLVED_TOOL_RESULT_TEXT =
-      '(unresolved: the provider stream ended without a result for this tool call)';
+    // A turn can end with a tool_use that never received its tool_result:
+    // an interrupt (budget cutoff / disconnect) between the call and its
+    // execution, a provider failure, a turn cutoff, or a malformed stream.
+    // Exactly-once tool lifecycle (contract.js): each such call is closed
+    // with ONE synthetic error tool_result — emitted on the event stream
+    // ahead of the terminal (so the product seam persists the row and the
+    // validator sees a paired call) and recorded in the canonical
+    // continuation — the same closure the Pi adapter applies. Returns the
+    // closure events for the caller to yield.
     const resolveUnresolvedCalls = () => {
+      const closures = [];
       for (const [id, name] of pendingCalls) {
-        messages.push({
-          role: 'tool_result',
-          toolCallId: id,
-          toolName: name,
-          content: [{ type: 'text', text: UNRESOLVED_TOOL_RESULT_TEXT }],
-          isError: true,
-        });
+        const content = [{ type: 'text', text: UNRESOLVED_TOOL_RESULT_TEXT }];
+        messages.push({ role: 'tool_result', toolCallId: id, toolName: name, content, isError: true });
+        closures.push({ type: 'tool_result', id, name, content: structuredClone(content), isError: true });
       }
       pendingCalls.clear();
+      return closures;
     };
 
     // Never throws: a transcript the canonical builder refuses is carried as
@@ -262,7 +262,7 @@ export function createClaudeRuntime({
           }
           case 'result': {
             flushAssistant();
-            resolveUnresolvedCalls();
+            yield* resolveUnresolvedCalls();
             const resultUsage = message.usage;
             const finalUsage = (resultUsage && (resultUsage.input_tokens != null || resultUsage.output_tokens != null))
               ? toCanonicalUsage(resultUsage)
@@ -295,7 +295,7 @@ export function createClaudeRuntime({
     } catch (err) {
       if (!terminal) {
         flushAssistant();
-        resolveUnresolvedCalls();
+        yield* resolveUnresolvedCalls();
         yield {
           type: 'error',
           error: normalizeProviderError(err, { stopReason: signal?.aborted ? 'aborted' : undefined }),
@@ -309,7 +309,7 @@ export function createClaudeRuntime({
       if (activeQuery === sdk) activeQuery = null;
       if (!terminal) {
         flushAssistant();
-        resolveUnresolvedCalls();
+        yield* resolveUnresolvedCalls();
         // The SDK stream ended without a result message: an interrupt, or a
         // malformed stream. Both are terminal.
         yield {
