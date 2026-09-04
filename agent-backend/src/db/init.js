@@ -58,6 +58,8 @@ const COLUMN_MIGRATIONS = [
   // Issue #107/#112: model-routing diagnostics on the job row.
   { table: 'jobs', column: 'profile', ddl: 'TEXT' },
   { table: 'jobs', column: 'endpoint', ddl: 'TEXT' },
+  { table: 'jobs', column: 'difficulty', ddl: 'REAL' },
+  { table: 'jobs', column: 'route_source', ddl: 'TEXT' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK

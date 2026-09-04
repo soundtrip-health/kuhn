@@ -17,6 +17,9 @@ import { getProject } from './db/projects.js';
 import { MARP_BUILTIN_THEMES, resolveThemeCss } from './db/slide-themes.js';
 
 export const EXPORT_FORMATS = {
+  // The rendered PDF as an attachment download — the same bytes the preview
+  // paints, for browsers whose native viewer can't show them inline.
+  pdf: { outputName: 'export.pdf', contentType: 'application/pdf', pdf: true },
   docx: { outputName: 'export.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
   tex: { outputName: 'export.tex', contentType: 'application/x-tex; charset=utf-8' },
   // STH-57: Marp slide exports. Any markdown converts (Marp splits slides on
@@ -172,7 +175,9 @@ export async function exportDocument(projectId, sourcePath, format) {
   }
   const source = await readProjectFile(projectId, sourcePath); // throws not_found early
   let output;
-  if (spec.marp) {
+  if (spec.pdf) {
+    ({ pdf: output } = await renderPdf(projectId, sourcePath));
+  } else if (spec.marp) {
     const theme = await resolveMarpTheme(projectId, source);
     const marpOpts = { themeName: theme?.name, themeCss: theme?.css };
     if (format === 'pptx') {

@@ -31,7 +31,7 @@ import { icon } from './icons';
 import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
 import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
-import { addTokenUsage, notify, setAgentActivity, setBudget } from './status';
+import { addTokenUsage, notify, setAgentActivity, setAgentModel, setBudget, type ModelChip } from './status';
 import { isUnder, selectedDir } from './tree-state';
 import * as workspace from './workspace';
 
@@ -128,6 +128,10 @@ const CONTEXT_SUGGEST_TOKENS = 100_000;
 // events, which carry the backend's configured window size.
 let contextWindow = 200_000;
 const contextTokens = new Map<string, number>();
+/** Last model each agent was routed to (issue #107) — from 'model' events, seeded from job rows on reload. */
+const agentModels = new Map<string, ModelChip>();
+/** Every job the current (or last) run started, in order — the addressed agent first, then its dispatches. */
+let runModels: ModelChip[] = [];
 const contextSuggested = new Set<string>();
 
 export function initChat(
@@ -268,6 +272,7 @@ function applyChatFilter(): void {
     toggle.setAttribute('aria-pressed', String(showAllAgents));
   }
   updateContextIndicator();
+  updateModelIndicator();
   scrollLog(true);
 }
 
@@ -277,6 +282,19 @@ function compactTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
+}
+
+/** Status-bar model chip (issue #107). During a run it follows the newest
+ * job — a dispatched sub-agent's model and difficulty replace the addressed
+ * agent's, which is the point: seeing what the dispatcher chose. Idle, it
+ * shows the selected agent's last known routing; the run's full list stays
+ * in the tooltip. */
+function updateModelIndicator(): void {
+  const agent = selectedAgent();
+  const live = running && runModels.length > 0;
+  const current = live ? runModels[runModels.length - 1] : agentModels.get(agent) ?? null;
+  const history = runModels.length > 0 && (live || runModels[0].agent === agent) ? runModels : [];
+  setAgentModel(current, history);
 }
 
 /** Per-agent context meter (STH-52), bottom of the chat window: how much
@@ -458,8 +476,19 @@ async function restore(): Promise<void> {
         // back to cumulative input_tokens, which overstates context.
         if (job.context_tokens > 0) contextTokens.set(job.role, job.context_tokens);
       }
+      // Newest job per role also says where it ran and why (issue #107), so
+      // the chip survives a reload. Rows older than the columns show model
+      // and profile only.
+      if (!agentModels.has(job.role) && (job.model || job.profile)) {
+        agentModels.set(job.role, {
+          agent: job.role, label: agentLabel(job.role), model: job.model ?? null, profile: job.profile ?? null,
+          source: job.route_source ?? undefined,
+          difficulty: job.difficulty ?? undefined,
+        });
+      }
     }
     updateContextIndicator();
+    updateModelIndicator();
     restorePausedRuns(jobs);
     await reconnectPendingQuestion();
   } catch (err) {
@@ -666,6 +695,17 @@ function createEventHandler(): (event: AgentEvent) => void {
         }
         break;
       }
+      case 'model': {
+        // Which model this job (the addressed agent's, or a dispatched
+        // sub-agent's) was routed to, and at what difficulty (issue #107).
+        if (event.model) {
+          const chip: ModelChip = { agent: event.agent, label: agentLabel(event.agent), ...event.model };
+          runModels.push(chip);
+          if (!event.depth) agentModels.set(event.agent, chip);
+          updateModelIndicator();
+        }
+        break;
+      }
       case 'context': {
         // Live context-window state (STH-52). Sub-agent 'context' events
         // (forwarded by dispatch under the child's slug) describe their own
@@ -833,6 +873,7 @@ async function dispatchTask(role: string, text: string): Promise<void> {
   if (running) return;
   running = true;
   conversationAgent = role;
+  runModels = [];
   setAgentActivity(`${agentLabel(role)} is working…`);
   // The user steered the paused agent with their own instruction (issue
   // #110): that supersedes the pause — retire its Resume affordance.
@@ -873,6 +914,7 @@ export async function startSeeding(): Promise<void> {
   // the correct retry for a new-doc request, which is not a resumable chat turn.
   retryAction = () => startSeeding();
   running = true;
+  runModels = [];
   conversationAgent = 'pm'; // seeding is the PM-led interview conversation
   // The interview is starting — drop the empty-state greeting card so its
   // "Start project interview" CTA doesn't linger alongside the live pipeline.
@@ -1275,6 +1317,7 @@ async function continueAfterBudget(agent: string, jobId: number): Promise<void> 
   retireBudgetCards(agent, 'resumed', jobId);
   appendSystemLine(`Resuming ${agentLabel(agent)} from the hand-off note…`);
   running = true;
+  runModels = [];
   conversationAgent = agent;
   setAgentActivity(`${agentLabel(agent)} is working…`);
   retryAction = () => continueAfterBudget(agent, jobId);

@@ -1207,8 +1207,15 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 #preview-status.error { color: var(--warn); }
 #preview-status:empty { display: none; }
-#preview-frame { flex: 1; border: none; background: var(--ink); }
-#preview-frame[hidden] { display: none; }
+#preview-pages {
+  flex: 1; min-height: 0; overflow: auto; box-sizing: border-box;
+  padding: 12px; background: var(--ink);
+}
+#preview-pages[hidden] { display: none; }
+.preview-page {
+  display: block; margin: 0 auto 12px; max-width: 100%;
+  background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
 
 /* Non-PDF file previews share the pane (story 014) */
 #preview-alt { flex: 1; min-height: 0; overflow: auto; background: var(--chrome); }
@@ -1347,6 +1354,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 #status-agent:not(:empty) { color: var(--ink-2); }
 #status-notice { color: var(--advisor); }
 #status-budget:empty { display: none; }
+#status-model:empty { display: none; }
+#status-model { color: var(--ink-2); cursor: help; }
+#status-model[data-source='deployment'] { color: var(--ink-3); }
 #status-version { color: var(--ink-3); opacity: 0.65; letter-spacing: .02em; }
 #status-budget[data-state='warn'] { color: var(--advisor); }
 #status-budget[data-state='over'] { color: var(--warn); }

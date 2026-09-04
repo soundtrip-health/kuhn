@@ -109,10 +109,25 @@ describe('GET /export', () => {
     expect(await res.text()).toBe('docx-bytes');
   });
 
-  it('rejects unknown formats', async () => {
-    const res = await fetch(exportUrl({ path: 'draft/main.md', format: 'pdf' }));
-    expect(res.status).toBe(400);
+  it('rejects unknown formats — including inherited Object keys', async () => {
+    for (const format of ['odt', 'constructor', 'toString']) {
+      const res = await fetch(exportUrl({ path: 'draft/main.md', format }));
+      expect(res.status).toBe(400);
+    }
     expect(exportDocument).not.toHaveBeenCalled();
+  });
+
+  it('serves format=pdf as an attachment (the preview pane\'s Download button)', async () => {
+    exportDocument.mockResolvedValueOnce({
+      output: Buffer.from('%PDF-1.7'),
+      contentType: 'application/pdf',
+      filename: 'main.pdf',
+    });
+    const res = await fetch(exportUrl({ path: 'draft/main.md', format: 'pdf' }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/pdf');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="main.pdf"');
+    expect(exportDocument).toHaveBeenCalledWith(1, 'draft/main.md', 'pdf');
   });
 
   it('requires a path', async () => {

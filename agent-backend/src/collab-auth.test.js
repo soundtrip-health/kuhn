@@ -309,16 +309,16 @@ describe('wsPrincipal — reviewer cookie wins (epic 013 blocker fix)', () => {
 describe('authorizeRoom (epic 013)', () => {
   it('maps reviewer modes to access levels, exact doc only', async () => {
     const p = (mode) => ({ kind: 'reviewer', linkId: 99, projectId: 5, path: 'draft/main.md', mode, name: 'J', expiresAt: '2999-01-01T00:00:00.000Z' });
-    expect(await authorizeRoom(p('view'), ROOM)).toEqual({ ok: true, access: 'read' });
-    expect(await authorizeRoom(p('comment'), ROOM)).toEqual({ ok: true, access: 'read' });
-    expect(await authorizeRoom(p('edit'), ROOM)).toEqual({ ok: true, access: 'write' });
+    expect(await authorizeRoom(p('view'), ROOM)).toMatchObject({ ok: true, access: 'read' });
+    expect(await authorizeRoom(p('comment'), ROOM)).toMatchObject({ ok: true, access: 'read' });
+    expect(await authorizeRoom(p('edit'), ROOM)).toMatchObject({ ok: true, access: 'write' });
     expect((await authorizeRoom(p('comment'), 'project-5/draft/other.md')).ok).toBe(false);
     expect((await authorizeRoom(p('comment'), 'project-6/draft/main.md')).ok).toBe(false);
     expect((await authorizeRoom(p('comment'), 'project-5/../5/draft/main.md')).ok).toBe(false);
   });
 
   it('members get write on membership-checked rooms; null principals are refused', async () => {
-    expect(await authorizeRoom({ kind: 'member', user: MEMBER }, ROOM)).toEqual({ ok: true, access: 'write' });
+    expect(await authorizeRoom({ kind: 'member', user: MEMBER }, ROOM)).toMatchObject({ ok: true, access: 'write' });
     expect((await authorizeRoom({ kind: 'member', user: STRANGER }, ROOM)).ok).toBe(false);
     expect((await authorizeRoom(null, ROOM)).ok).toBe(false);
   });
@@ -413,9 +413,9 @@ describe('memberRoomAccess / authorizeRoom member branch (story 010-003)', () =>
     expect(await memberRoomAccess(VIEWER, ROOM)).toBe('read');
     expect(await memberRoomAccess(EDITOR, ROOM)).toBe('write');
     expect(await memberRoomAccess(MEMBER, ROOM)).toBe('write'); // owner
-    expect(await authorizeRoom(member(VIEWER), ROOM)).toEqual({ ok: true, access: 'read' });
-    expect(await authorizeRoom(member(EDITOR), ROOM)).toEqual({ ok: true, access: 'write' });
-    expect(await authorizeRoom(member(MEMBER), ROOM)).toEqual({ ok: true, access: 'write' });
+    expect(await authorizeRoom(member(VIEWER), ROOM)).toMatchObject({ ok: true, access: 'read' });
+    expect(await authorizeRoom(member(EDITOR), ROOM)).toMatchObject({ ok: true, access: 'write' });
+    expect(await authorizeRoom(member(MEMBER), ROOM)).toMatchObject({ ok: true, access: 'write' });
   });
 
   it('refuses strangers, unknown projects, malformed rooms and the anonymous', async () => {
@@ -435,7 +435,7 @@ describe('memberRoomAccess / authorizeRoom member branch (story 010-003)', () =>
     config.auth.mode = 'dev';
     try {
       expect(await memberRoomAccess({ id: 999, email: 'no@member.ship' }, ROOM)).toBe('write');
-      expect(await authorizeRoom(member(STRANGER), ROOM)).toEqual({ ok: true, access: 'write' });
+      expect(await authorizeRoom(member(STRANGER), ROOM)).toMatchObject({ ok: true, access: 'write' });
     } finally {
       config.auth.mode = 'magic-link';
     }

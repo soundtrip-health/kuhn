@@ -203,6 +203,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- beside provider/model above. Mirrored in init.js COLUMN_MIGRATIONS.
   profile          TEXT,
   endpoint         TEXT,
+  -- Why that profile: the 0..1 difficulty the dispatcher supplied (1 when
+  -- omitted) and whether an org route ('org') or the seeded deployment
+  -- default ('deployment') chose it — so routing decisions can be judged
+  -- across runs, not just live. NULL for pre-migration rows. Mirrored in
+  -- init.js COLUMN_MIGRATIONS.
+  difficulty       REAL,
+  route_source     TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

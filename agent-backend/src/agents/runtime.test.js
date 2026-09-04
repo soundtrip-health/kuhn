@@ -300,6 +300,11 @@ describe('runAgentTask', () => {
     // No file_change from the bare tool_use blocks: the handlers emit those
     // when a write actually happens (STH-44), and none ran here.
     expect(events).toEqual([
+      // The routed model, announced at job start for the status-bar chip (issue #107)
+      {
+        type: 'model', agent: 'ra', jobId: 42, depth: 0,
+        model: { profile: 'deployment-default', provider: 'anthropic', model: null, source: 'deployment', difficulty: 1 },
+      },
       { type: 'text', agent: 'ra', content: 'Drafting now.' },
       // Per-turn context-window state for the UI meter (STH-52)
       { type: 'context', agent: 'ra', jobId: 42, context: { tokens: 10, window: 200000 } },
@@ -317,7 +322,7 @@ describe('runAgentTask', () => {
     // Canonical continuation (STH-47): a provider-neutral record carrying
     // the stable Kuhn tool names — the MCP-qualified names never leave the
     // Claude adapter, so this record can be resumed by any adapter.
-    const continuation = events[2].continuation;
+    const continuation = events[3].continuation;
     expect(validateContinuation(continuation)).toEqual([]);
     expect(continuation.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool_result', 'tool_result']);
     expect(continuation.messages[1].content.filter((b) => b.type === 'tool_call')).toEqual([
@@ -336,7 +341,7 @@ describe('runAgentTask', () => {
     // silently switch provider mechanics.
     const terminal = updateJob.mock.calls.map((c) => c[1]).at(-1);
     expect(terminal.provider).toBe('anthropic');
-    expect(terminal.continuation).toEqual(events[2].continuation);
+    expect(terminal.continuation).toEqual(events[3].continuation);
 
     // Conversation logging: user input, assistant turn, the t1 tool result,
     // and the synthetic error result closing t2 (the fixture stream never
@@ -2291,7 +2296,10 @@ describe('model routing at dispatch (issue #107)', () => {
     getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku-4-5' });
     sdkState.messages = success();
     await collect({ role: 'ra', projectId: 1, input: 'go' });
-    expect(updateJob).toHaveBeenCalledWith(42, { provider: 'anthropic', model: 'claude-haiku-4-5', profile: 'deployment-claude-haiku-4-5', endpoint: 'https://api.anthropic.com' });
+    expect(updateJob).toHaveBeenCalledWith(42, {
+      provider: 'anthropic', model: 'claude-haiku-4-5', profile: 'deployment-claude-haiku-4-5', endpoint: 'https://api.anthropic.com',
+      difficulty: 1, routeSource: 'deployment',
+    });
     expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', profile: 'deployment-claude-haiku-4-5', endpoint: 'https://api.anthropic.com' }));
   });
 

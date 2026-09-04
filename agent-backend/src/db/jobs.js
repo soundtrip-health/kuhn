@@ -57,6 +57,8 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {number} [fields.weightedTokens] - cost-weighted tokens for the org budget ledger (issue #110)
  * @param {string|null} [fields.profile] - the model profile the route selected (issue #107)
  * @param {string|null} [fields.endpoint] - the provider endpoint the job egressed to (issue #112)
+ * @param {number|null} [fields.difficulty] - the 0..1 difficulty the route was resolved for (issue #107)
+ * @param {'org'|'deployment'|null} [fields.routeSource] - what picked the profile: an org route or the deployment default
  * @returns {Promise<object|undefined>} The updated job row
  */
 export async function updateJob(jobId, fields) {
@@ -75,6 +77,8 @@ export async function updateJob(jobId, fields) {
     weightedTokens: 'weighted_tokens',
     profile: 'profile',
     endpoint: 'endpoint',
+    difficulty: 'difficulty',
+    routeSource: 'route_source',
   };
   const sets = [];
   const params = [];

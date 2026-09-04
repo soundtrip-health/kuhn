@@ -34,6 +34,7 @@ import scriptsRouter from './routes/scripts.js';
 import slideThemesRouter from './routes/slide-themes.js';
 import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
+import { requestLog } from './request-log.js';
 import { handleSignalingConnection } from './yjs-signaling.js';
 import { handleYjsConnection } from './yjs-websocket.js';
 import { log } from './logger.js';
@@ -48,6 +49,9 @@ app.set('trust proxy', true);
 // dev server (story 007-002); the allowlist above stays the gate.
 app.use(cors({ origin: config.cors.origin, credentials: true }));
 app.use(express.json());
+// Access log for every /api response (request-log.js) — mounted first so the
+// auth, reviewer and static branches below are all covered.
+app.use(requestLog());
 app.use(healthRouter); // health needs no identity
 app.use(authRouter);   // login/logout happen before identity exists (007-002)
 // Epic 013: the guest (external reviewer) surface, BEFORE session() — a

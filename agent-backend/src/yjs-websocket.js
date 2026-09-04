@@ -15,6 +15,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 
 import { memberRoomAccess, reviewerLinkState } from './collab-auth.js';
+import { log } from './logger.js';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
@@ -582,6 +583,11 @@ export function handleYjsConnection(ws, req) {
 
   const entry = getOrCreateDoc(roomName);
   entry.conns.add(ws);
+  const joinedAt = Date.now();
+  const who = reviewer
+    ? { principal: 'reviewer', linkId: reviewer.linkId }
+    : { principal: ws.kuhnPrincipal ? 'member' : null, userId: ws.kuhnPrincipal?.user?.id ?? null };
+  log.info('ws_room_join', { room: roomName, access: ws.kuhnAccess, conns: entry.conns.size, ...who });
 
   if (reviewer) {
     let set = reviewerConns.get(reviewer.linkId);
@@ -649,14 +655,18 @@ export function handleYjsConnection(ws, req) {
       }
     }
     } catch (err) {
-      console.error(`yjs-websocket: malformed frame in room ${roomName}:`, err?.message ?? err);
+      log.warn('ws_malformed_frame', { room: roomName, ...who, message: err?.message ?? String(err) });
       ws.close(1002, 'Malformed message');
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reasonBuf) => {
     entry.conns.delete(ws);
     memberConns.delete(ws);
+    log.info('ws_room_leave', {
+      room: roomName, code, reason: reasonBuf?.toString?.() || undefined,
+      conns: entry.conns.size, seconds: Math.round((Date.now() - joinedAt) / 1000), ...who,
+    });
     if (reviewer) {
       const set = reviewerConns.get(reviewer.linkId);
       if (set) {
