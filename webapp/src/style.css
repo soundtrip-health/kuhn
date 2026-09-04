@@ -1287,6 +1287,19 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .chat-notice-budget .handoff-note ol { padding-left: 18px; }
 .chat-notice-budget .notice-muted { font: var(--ui-body); color: var(--ink-3); margin: 0 0 8px; }
 .chat-notice-budget .notice-time { font-weight: 400; color: var(--ink-3); margin-left: auto; }
+
+/* Issue #110: org Budgets tab — usage meters + override inputs. */
+.admin-budget-input { width: 130px; }
+.admin-budget-intro { margin-bottom: 12px; }
+.admin-budget-usage { min-width: 180px; }
+.admin-budget-meter {
+  height: 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; margin-bottom: 4px;
+}
+.admin-budget-meter span { display: block; height: 100%; background: var(--good); }
+.admin-budget-meter[data-state='warn'] span { background: var(--advisor); }
+.admin-budget-meter[data-state='over'] span { background: var(--warn); }
+.admin-budget-meter[data-state='none'] { opacity: .4; }
+.admin-budget-figure { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
 .chat-notice-context .notice-checkbox {
   display: flex; align-items: center; gap: 7px;
   font: var(--ui-body); color: var(--ink-2);

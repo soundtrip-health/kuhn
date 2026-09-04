@@ -703,10 +703,17 @@ function createEventHandler(): (event: AgentEvent) => void {
           // sub-agent's cutoff (forwarded under the child's slug) is a
           // line — the parent's own cutoff, with the hand-off note, follows.
           if (event.jobId != null && (!conversationAgent || event.agent === conversationAgent)) {
-            appendBudgetNotice({ agent: event.agent, jobId: event.jobId, handoff: event.handoff ?? null });
+            appendBudgetNotice({
+              agent: event.agent, jobId: event.jobId, handoff: event.handoff ?? null,
+              scope: event.budget?.scope ?? 'task', period: event.period, resetsAt: event.resetsAt,
+            });
           } else {
             appendSystemLine(`${agentLabel(event.agent)} reached the token budget.`, 'error');
           }
+        } else if (event.reason === 'budget_exhausted') {
+          // An org budget (the user's or the project's) is already used up,
+          // so no run started (issue #110): explain, no Resume to offer.
+          appendBudgetExhaustedNotice(event);
         } else if (event.reason === 'provider_overloaded') {
           // Transient upstream failure that outlasted the runtime's retries —
           // keep the session so a chat "Try again" resumes it, and offer a
@@ -1124,8 +1131,18 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
  * `budget_exceeded` error event and rebuilt from the paused job row after a
  * reload (restorePausedRuns), so the pause and its affordance survive.
  */
-function appendBudgetNotice({ agent, jobId, handoff, isoTime }: {
+const PERIOD_ADJECTIVE: Record<string, string> = { day: 'daily', week: 'weekly', month: 'monthly' };
+
+function resetWhen(iso: string | undefined): string {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : 'at the start of the next period';
+}
+
+function appendBudgetNotice({ agent, jobId, handoff, isoTime, scope = 'task', period, resetsAt }: {
   agent: string; jobId: number; handoff: string | null; isoTime?: string;
+  scope?: 'task' | 'user' | 'project'; period?: string; resetsAt?: string;
 }): void {
   const log = document.getElementById('chat-log')!;
   const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
@@ -1137,14 +1154,26 @@ function appendBudgetNotice({ agent, jobId, handoff, isoTime }: {
   const note = handoff
     ? `<div class="notice-subtitle">Hand-off note</div><div class="handoff-note">${renderMarkdown(handoff)}</div>`
     : '<p class="notice-muted">No hand-off note could be written for this pause.</p>';
+  // Whose budget: the per-task one (Resume gets a fresh one) or an org
+  // budget on the user / project (issue #110 parts 3–4: Resume works once
+  // it resets, or an owner resets it).
+  const orgScope = scope === 'user' || scope === 'project';
+  const title = orgScope
+    ? `${scope === 'user' ? 'Your' : 'This project\u2019s'} ${escapeHtml(PERIOD_ADJECTIVE[period ?? ''] ?? '')} token budget is used up — task paused`
+    : 'Token budget reached — task paused';
+  const resume = orgScope
+    ? `<p>The budget resets ${escapeHtml(resetWhen(resetsAt))}; an organization owner can raise or reset it sooner. ` +
+      `Resuming before then pauses again at once. When you resume, ${label} gets this note and continues the same ` +
+      `conversation — or, if the model provider has since dropped the session, picks up from Kuhn's own transcript of it.</p>`
+    : `<p>Resuming starts a new run with a fresh budget: ${label} gets this note and continues the same ` +
+      `conversation — or, if the model provider has since dropped the session, picks up from Kuhn's own ` +
+      `transcript of it. Or send your own instruction to steer the rest of the work.</p>`;
   card.innerHTML =
-    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Token budget reached — task paused${when}</div>` +
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} ${title}${when}</div>` +
     `<p>Nothing is lost. Any files ${label} already wrote are saved (check the Files panel), and ` +
     `this conversation is preserved.</p>` +
     note +
-    `<p>Resuming starts a new run with a fresh budget: ${label} gets this note and continues the same ` +
-    `conversation — or, if the model provider has since dropped the session, picks up from Kuhn's own ` +
-    `transcript of it. Or send your own instruction to steer the rest of the work.</p>`;
+    resume;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn btn-accent btn-sm notice-action';
@@ -1154,6 +1183,26 @@ function appendBudgetNotice({ agent, jobId, handoff, isoTime }: {
     void continueAfterBudget(agent, jobId);
   });
   card.append(btn);
+  log.append(card);
+  scrollLog();
+}
+
+/**
+ * An org budget was already used up when the task was sent (issue #110
+ * parts 3–4): nothing ran, so there is nothing to resume — say when it
+ * resets and who can reset it.
+ */
+function appendBudgetExhaustedNotice(event: AgentEvent): void {
+  const log = document.getElementById('chat-log')!;
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-budget';
+  tagConversation(card, event.agent);
+  const scope = event.budget?.scope === 'project' ? 'This project\u2019s' : 'Your';
+  const used = event.budget ? ` (${Math.round(event.budget.used).toLocaleString()} of ${event.budget.limit.toLocaleString()} tokens)` : '';
+  card.innerHTML =
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} ${scope} ${escapeHtml(PERIOD_ADJECTIVE[event.period ?? ''] ?? '')} token budget is used up</div>` +
+    `<p>The task was not started${escapeHtml(used)}. It resets ${escapeHtml(resetWhen(event.resetsAt))}; ` +
+    'an organization owner can raise the budget or reset the usage sooner (Organization → Budgets).</p>';
   log.append(card);
   scrollLog();
 }

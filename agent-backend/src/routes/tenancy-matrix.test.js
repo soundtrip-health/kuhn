@@ -122,7 +122,7 @@ beforeAll(async () => {
     './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
-    './org-secrets.js']) {
+    './org-secrets.js', './org-budgets.js']) {
     app.use((await import(mod)).default);
   }
   await new Promise((ok) => { server = app.listen(0, ok); });
@@ -256,6 +256,10 @@ const ROUTES = [
   { scope: 'org', minRole: 'owner', method: 'DELETE', path: `/api/orgs/${ORG_A}/invitations/999`, ok: { status: 404, error: 'invitation not found' } },
   { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/settings`, ok: { status: 200 } },
   { scope: 'org', minRole: 'owner', method: 'PATCH', path: `/api/orgs/${ORG_A}/settings`, req: () => ({ json: { promotion_policy: 'approval-required' } }), ok: { status: 200 } },
+  // Issue #110: org token budgets (owner). Unknown member/project → 404 after the guard.
+  { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/budgets`, ok: { status: 200 } },
+  { scope: 'org', minRole: 'owner', method: 'PUT', path: `/api/orgs/${ORG_A}/budgets/user/999`, req: () => ({ json: { limit_tokens: 1 } }), ok: { status: 404, error: 'user not found in this organization' } },
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/budgets/project/999/reset`, ok: { status: 404, error: 'project not found in this organization' } },
   { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/promotions`, ok: { status: 200 } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/promotions/999/approve`, req: () => ({ json: {} }), ok: { status: 404, error: 'promotion request not found' } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/promotions/999/reject`, req: () => ({ json: {} }), ok: { status: 404, error: 'promotion request not found' } },

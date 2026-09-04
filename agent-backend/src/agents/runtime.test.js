@@ -35,6 +35,18 @@ vi.mock('./provider-runtime/factory.js', async (importOriginal) => {
   };
 });
 
+// Org budgets (issue #110, parts 3–4): the ledger SQL is covered in
+// db/org-budgets.test.js; here the resolution is scripted per test.
+const orgBudgetState = { user: null, project: null };
+vi.mock('../db/org-budgets.js', () => ({
+  resolveBudgets: vi.fn(() => ({
+    period: 'month',
+    window: { start: '2026-09-01T00:00:00.000Z', end: '2026-10-01T00:00:00.000Z' },
+    user: orgBudgetState.user,
+    project: orgBudgetState.project,
+  })),
+}));
+
 // Budget-pause hand-off (issue #110): the model call lives in handoff.js and
 // is covered there; here it is scripted per test.
 const handoffState = { note: 'Was drafting §2; next: cite Smith 2024.', fail: false };
@@ -209,6 +221,7 @@ import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
 import { runAgentTask, reattach } from './runtime.js';
 import { captureBudgetHandoff } from './handoff.js';
+import { resolveBudgets } from '../db/org-budgets.js';
 
 const RA_AGENT = {
   slug: 'ra',
@@ -267,7 +280,7 @@ describe('runAgentTask', () => {
         sessionId: 'sess-1',
         usage: { inputTokens: 100, outputTokens: 50 },
         context: { tokens: 10, window: 200000 },
-        budget: { used: 15, limit: 250000 },
+        budget: { used: 15, limit: 250000, scope: 'task' },
         continuation: expect.objectContaining({ version: 1 }),
       },
     ]);
@@ -620,6 +633,19 @@ describe('runAgentTask', () => {
       expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error', error: 'token budget exceeded' }));
     });
 
+    it('reports which budget the pause hit and when it resets (org scope)', async () => {
+      orgBudgetState.user = { scope: 'user', limit: 1_000_000, used: 900_000, remaining: 100_000, resetsAt: '2026-10-01T00:00:00.000Z' };
+      sdkState.messages = overBudgetTurn();
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+      const error = events.find((e) => e.type === 'error');
+      expect(error).toMatchObject({
+        reason: 'budget_exceeded', period: 'month', resetsAt: '2026-10-01T00:00:00.000Z',
+        budget: { limit: 100_000, scope: 'user' },
+      });
+      expect(error.message).toMatch(/Your monthly token budget is used up/);
+      expect(error.message).toMatch(/resets at 2026-10-01 00:00 UTC/);
+    });
+
     it('does not write a note for a dispatched sub-agent\'s cutoff', async () => {
       sdkState.messages = overBudgetTurn();
 
@@ -631,6 +657,88 @@ describe('runAgentTask', () => {
       expect(events.find((e) => e.type === 'error')).toMatchObject({ reason: 'budget_exceeded', handoff: null });
       expect(events.find((e) => e.type === 'notice' && e.reason === 'budget_reached')).toBeUndefined();
       expect(captureBudgetHandoff).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('org budgets (issue #110, parts 3–4)', () => {
+    const success = (input, output) => [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: input, output_tokens: output } } },
+      { type: 'result', subtype: 'success', usage: { input_tokens: input, output_tokens: output } },
+    ];
+    beforeEach(() => {
+      orgBudgetState.user = null;
+      orgBudgetState.project = null;
+    });
+
+    it('caps the task budget at the tightest remaining allowance and pauses at it without grace', async () => {
+      orgBudgetState.user = { scope: 'user', limit: 1_000_000, used: 0, remaining: 1_000_000, resetsAt: '2026-10-01T00:00:00.000Z' };
+      orgBudgetState.project = { scope: 'project', limit: 50_000, used: 20_000, remaining: 30_000, resetsAt: '2026-10-01T00:00:00.000Z' };
+      // 30_400 weighted tokens: over the 30_000 project remainder but under
+      // 30_000 × 1.1 — the per-task grace must NOT apply to an org limit.
+      sdkState.messages = [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'turn' }], usage: { input_tokens: 30_000, output_tokens: 400 } } },
+        { type: 'result', subtype: 'success', usage: {} },
+      ];
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+      expect(resolveBudgets).toHaveBeenCalledWith({ orgId: 3, userId: 7, projectId: 1 });
+      const error = events.find((e) => e.type === 'error');
+      expect(error).toMatchObject({ reason: 'budget_exceeded', budget: { used: 30_400, limit: 30_000, scope: 'project' } });
+      expect(error.message).toMatch(/This project's monthly token budget is used up/);
+      expect(events.find((e) => e.type === 'done')).toBeUndefined();
+    });
+
+    it('converts an allowance into the root model\'s units before capping', async () => {
+      // Haiku root: weight 1 of a top tier of 5, so 1 000 ledger tokens are
+      // 5 000 root-tier tokens. A 3 000-token turn stays under the cap and
+      // the ledger records 600.
+      getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku' });
+      orgBudgetState.user = { scope: 'user', limit: 1_000, used: 0, remaining: 1_000, resetsAt: 'x' };
+      sdkState.messages = success(2_500, 500);
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+      const done = events.find((e) => e.type === 'done');
+      // Reported in the owner's (ledger) units: 600 of the 1 000 allowance.
+      expect(done).toMatchObject({ budget: { used: 600, limit: 1_000, scope: 'user' } });
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', weightedTokens: 600 }));
+    });
+
+    it('leaves the per-task budget (and its grace) alone when the allowances are larger', async () => {
+      orgBudgetState.user = { scope: 'user', limit: 9_000_000, used: 0, remaining: 9_000_000, resetsAt: 'x' };
+      sdkState.messages = success(10, 5);
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+      expect(events.find((e) => e.type === 'done')).toMatchObject({ budget: { limit: 250000, scope: 'task' } });
+    });
+
+    it('refuses to start when an allowance is used up: error event, no job', async () => {
+      orgBudgetState.user = { scope: 'user', limit: 1000, used: 1200, remaining: 0, resetsAt: '2026-10-01T00:00:00.000Z' };
+      sdkState.messages = success(10, 5);
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+      expect(events).toEqual([expect.objectContaining({
+        type: 'error', agent: 'ra', reason: 'budget_exhausted', period: 'month',
+        resetsAt: '2026-10-01T00:00:00.000Z', budget: { used: 1200, limit: 1000, scope: 'user' },
+      })]);
+      expect(events[0].message).toMatch(/Your monthly token budget is used up \(1200 of 1000 tokens\), so the task was not started/);
+      expect(createJob).not.toHaveBeenCalled();
+      expect(sdkQuery).not.toHaveBeenCalled();
+    });
+
+    it('does not consult org budgets for dispatched sub-agents', async () => {
+      sdkState.messages = success(10, 5);
+      await collect({ role: 'ra', projectId: 1, input: 'go' }, { depth: 1, parentJobId: 9, budget: { used: 0, limit: 1000, baseWeight: 5 } });
+      expect(resolveBudgets).not.toHaveBeenCalled();
+    });
+
+    it('writes the cost-weighted ledger figure on the job, per turn and at the terminal', async () => {
+      // RA_AGENT has no model → default weight 5 = top tier → ledger weight 1.
+      sdkState.messages = success(1000, 200);
+      await collect({ role: 'ra', projectId: 1, input: 'go' });
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ weightedTokens: 1200 }));
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', weightedTokens: 1200 }));
+
+      vi.clearAllMocks();
+      getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku' }); // weight 1 → 1/5
+      sdkState.messages = success(1000, 200);
+      await collect({ role: 'ra', projectId: 1, input: 'go' });
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', weightedTokens: 240 }));
     });
   });
 

@@ -336,6 +336,9 @@ describe('org settings (story 011-003)', () => {
         default_member_role: 'editor',
         library_seeding: true,
         promotion_policy: 'approval-required',
+        user_token_budget: 0,
+        project_token_budget: 0,
+        budget_period: 'month',
       },
     });
   });

@@ -20,6 +20,7 @@ import {
   getOrgScript,
   getOrgScripts,
   getOrgSlideThemes,
+  getOrgBudgets,
   getOrgSettings,
   getScriptPromotion,
   importCatalogScripts,
@@ -40,6 +41,8 @@ import {
   setOrgSlideThemeStatus,
   uploadOrgSlideTheme,
   updateMemberRole,
+  resetBudget,
+  setBudgetLimit,
   updateOrgSettings,
   type Invitation,
   type KnowledgePackage,
@@ -48,7 +51,9 @@ import {
   type OrgMember,
   type OrgScriptsPayload,
   type OrgSlideThemesPayload,
+  type OrgBudgetReport,
   type OrgSettings,
+  type BudgetScope,
   type PromotionRequest,
   type ScriptPromotion,
   type ScriptVersionInfo,
@@ -66,10 +71,10 @@ import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
+type Tab = 'members' | 'settings' | 'budgets' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
 const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
@@ -90,6 +95,10 @@ let settings: OrgSettings | null = null;
 let membersLoading = false;
 let promotionsLoading = false;
 let settingsLoading = false;
+// Budgets tab (issue #110): the owner's usage report + in-flight row edits.
+let budgets: OrgBudgetReport | null = null;
+let budgetsError: string | null = null;
+let budgetsLoading = false;
 
 /** Inline refusals (last-owner 409s, already-member invites, …). */
 let membersError: string | null = null;
@@ -205,6 +214,8 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   promotions = [];
   orgRow = null;
   settings = null;
+  budgets = null;
+  budgetsError = null;
   membersError = null;
   inviteError = null;
   promotionsError = null;
@@ -240,6 +251,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
     void reloadMembers();
     void reloadInvitations();
     void reloadSettings();
+    void reloadBudgets();
     void reloadPromotions(); // eager: the tab badge counts pending requests
   }
   void reloadKnowledge();
@@ -324,6 +336,23 @@ async function reloadInvitations(): Promise<void> {
     invitations = rows;
   } catch (err) {
     inviteError = (err as Error).message;
+  }
+  render();
+}
+
+async function reloadBudgets(): Promise<void> {
+  const orgId = adminOrgId;
+  budgetsLoading = budgets === null;
+  render();
+  try {
+    const res = await getOrgBudgets(orgId);
+    if (orgId !== adminOrgId) return;
+    budgets = res;
+    budgetsError = null;
+  } catch (err) {
+    budgetsError = (err as Error).message;
+  } finally {
+    budgetsLoading = false;
   }
   render();
 }
@@ -848,22 +877,51 @@ function settingsTab(): HTMLElement[] {
     policy,
   ));
 
-  // Reserved: spend ceilings (story 009-003).
-  const reserved = document.createElement('fieldset');
-  reserved.className = 'admin-reserved';
-  reserved.disabled = true;
-  const legend = document.createElement('legend');
-  legend.className = 'admin-section-title';
-  legend.textContent = 'Spend ceilings';
-  const note = document.createElement('div');
-  note.className = 'admin-setting-hint';
-  note.textContent = 'Coming with story 009-003 — per-org model spend limits.';
-  const ceiling = document.createElement('input');
-  ceiling.className = 'pb-input';
-  ceiling.placeholder = 'Monthly ceiling (USD)';
-  ceiling.disabled = true;
-  reserved.append(legend, note, ceiling);
-  parts.push(reserved);
+  // Token budgets (issue #110): org-wide defaults per user / per project,
+  // and the period they reset on. Per-member overrides and manual resets live
+  // on the Budgets tab. 0 = unlimited.
+  parts.push(sectionTitle('Token budgets'));
+  for (const [field, label, hint] of [
+    ['user_token_budget', 'Per-user budget', 'Cost-weighted tokens each member may spend per period across this organization\u2019s projects (an Opus token counts 1, cheaper models less). 0 = unlimited.'],
+    ['project_token_budget', 'Per-project budget', 'Cost-weighted tokens all members together may spend in one project per period. 0 = unlimited.'],
+  ] as const) {
+    const input = document.createElement('input');
+    input.className = 'pb-input admin-budget-input';
+    input.type = 'number';
+    input.min = '0';
+    input.step = '1';
+    input.inputMode = 'numeric';
+    input.value = String(settings[field]);
+    const commit = (): void => {
+      const value = Number.parseInt(input.value, 10);
+      if (!Number.isInteger(value) || value < 0 || value === settings?.[field]) return;
+      void saveSetting(field, { [field]: value }).then((ok) => {
+        if (ok) { toast(`${label} saved`); void reloadBudgets(); }
+      });
+    };
+    input.addEventListener('change', commit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+    parts.push(settingRow(label, hint, field, input));
+  }
+  const period = document.createElement('select');
+  period.className = 'pb-select';
+  for (const [value, text] of [['day', 'Daily (UTC)'], ['week', 'Weekly (Monday, UTC)'], ['month', 'Monthly (UTC)']] as const) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = text;
+    opt.selected = settings.budget_period === value;
+    period.append(opt);
+  }
+  period.addEventListener('change', () => {
+    void saveSetting('budget_period', { budget_period: period.value as OrgSettings['budget_period'] })
+      .then((ok) => { if (ok) void reloadBudgets(); });
+  });
+  parts.push(settingRow(
+    'Budget period',
+    'When budgets reset. An owner can also reset one member or project early on the Budgets tab.',
+    'budget_period',
+    period,
+  ));
 
   return parts;
 }
@@ -2008,9 +2066,164 @@ function secretsTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Budgets tab (issue #110) -------------------------------------------------
+
+function compactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(Math.round(n));
+}
+
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+async function applyBudgetChange(work: () => Promise<OrgBudgetReport>, done: string): Promise<void> {
+  try {
+    budgets = await work();
+    budgetsError = null;
+    toast(done);
+  } catch (err) {
+    budgetsError = (err as Error).message;
+  }
+  render();
+}
+
+/** One usage row: who/what, used vs effective limit (with a meter), override input, reset. */
+function budgetRow(
+  scope: BudgetScope,
+  id: number,
+  title: string,
+  subtitle: string | null,
+  usage: { override: number | null; limit: number | null; used: number; reset_at: string | null },
+): HTMLTableRowElement {
+  const tr = document.createElement('tr');
+  const who = document.createElement('td');
+  const name = document.createElement('div');
+  name.className = 'admin-member-name';
+  name.textContent = title;
+  who.append(name);
+  if (subtitle) {
+    const sub = document.createElement('div');
+    sub.className = 'admin-member-email';
+    sub.textContent = subtitle;
+    who.append(sub);
+  }
+
+  const used = document.createElement('td');
+  used.className = 'admin-budget-usage';
+  const pct = usage.limit ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : null;
+  const meter = document.createElement('div');
+  meter.className = 'admin-budget-meter';
+  meter.dataset.state = pct == null ? 'none' : pct >= 100 ? 'over' : pct >= 85 ? 'warn' : 'ok';
+  const fill = document.createElement('span');
+  fill.style.width = `${pct ?? 0}%`;
+  meter.append(fill);
+  const figure = document.createElement('div');
+  figure.className = 'admin-budget-figure';
+  figure.textContent = usage.limit
+    ? `${compactTokens(usage.used)} / ${compactTokens(usage.limit)} · ${pct}%`
+    : `${compactTokens(usage.used)} · unlimited`;
+  figure.title = `${usage.used.toLocaleString()} weighted tokens used${usage.limit ? ` of ${usage.limit.toLocaleString()}` : ''}`
+    + (usage.reset_at ? `; counted since the reset on ${fmtWhen(usage.reset_at)}` : '');
+  used.append(meter, figure);
+  if (usage.reset_at) {
+    const since = document.createElement('div');
+    since.className = 'admin-member-email';
+    since.textContent = `reset ${fmtWhen(usage.reset_at)}`;
+    used.append(since);
+  }
+
+  const override = document.createElement('td');
+  const input = document.createElement('input');
+  input.className = 'pb-input admin-budget-input';
+  input.type = 'number';
+  input.min = '0';
+  input.step = '1';
+  input.inputMode = 'numeric';
+  input.placeholder = 'org default';
+  input.setAttribute('aria-label', `${title} budget override`);
+  input.value = usage.override == null ? '' : String(usage.override);
+  const commit = (): void => {
+    const raw = input.value.trim();
+    const value = raw === '' ? null : Number.parseInt(raw, 10);
+    if (value !== null && (!Number.isInteger(value) || value < 0)) return;
+    if (value === usage.override) return;
+    input.disabled = true;
+    void applyBudgetChange(
+      () => setBudgetLimit(adminOrgId, scope, id, value),
+      value === null ? `${title}: back to the org default` : value === 0 ? `${title}: unlimited` : `${title}: limit ${compactTokens(value)}`,
+    );
+  };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+  override.append(input);
+
+  const actions = document.createElement('td');
+  actions.className = 'admin-row-actions';
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'btn btn-quiet btn-sm';
+  reset.textContent = 'Reset usage';
+  reset.title = 'Count usage from now — lets a paused run resume before the period ends';
+  reset.disabled = usage.used === 0;
+  reset.addEventListener('click', () => {
+    reset.disabled = true;
+    void applyBudgetChange(() => resetBudget(adminOrgId, scope, id), `${title}: usage reset`);
+  });
+  actions.append(reset);
+
+  tr.append(who, used, override, actions);
+  return tr;
+}
+
+function budgetTable(head: string, rows: HTMLTableRowElement[]): HTMLElement {
+  const table = document.createElement('table');
+  table.className = 'admin-table admin-budget-table';
+  table.innerHTML =
+    `<thead><tr><th scope="col">${head}</th><th scope="col">Used this period</th>`
+    + '<th scope="col">Override</th><th></th></tr></thead>';
+  const body = document.createElement('tbody');
+  body.append(...rows);
+  table.append(body);
+  return table;
+}
+
+function budgetsTab(): HTMLElement[] {
+  if (budgetsLoading || !budgets) {
+    return [budgetsError ? inlineError(budgetsError) : emptyRow('Loading budgets…')];
+  }
+  const parts: HTMLElement[] = [];
+  const { settings: s, window } = budgets;
+  const periodName = { day: 'day', week: 'week', month: 'month' }[s.budget_period];
+  const intro = document.createElement('div');
+  intro.className = 'admin-setting-hint admin-budget-intro';
+  intro.textContent =
+    `Current ${periodName}: ${fmtWhen(window.start)} – ${fmtWhen(window.end)}. `
+    + `Defaults: ${s.user_token_budget ? `${compactTokens(s.user_token_budget)} per member` : 'members unlimited'}, `
+    + `${s.project_token_budget ? `${compactTokens(s.project_token_budget)} per project` : 'projects unlimited'} `
+    + '(change them on the Settings tab). Figures are cost-weighted tokens: an Opus token counts 1, cheaper models less. '
+    + 'An override replaces the default for that row (0 = unlimited; blank = default). '
+    + 'Reset usage counts a row from now, so a run paused on its budget can resume before the period ends.';
+  parts.push(intro);
+  if (budgetsError) parts.push(inlineError(budgetsError));
+
+  parts.push(sectionTitle('Members'));
+  parts.push(budgetTable('Member', budgets.users.map((u) => budgetRow(
+    'user', u.user_id, u.display_name ?? u.email, u.display_name ? u.email : u.role, u,
+  ))));
+  parts.push(sectionTitle('Projects'));
+  parts.push(budgets.projects.length
+    ? budgetTable('Project', budgets.projects.map((p) => budgetRow('project', p.project_id, p.name, null, p)))
+    : emptyRow('No projects yet.'));
+  return parts;
+}
+
 const TAB_LABEL: Record<Tab, string> = {
   members: 'Members',
   settings: 'Settings',
+  budgets: 'Budgets',
   promotions: 'Promotions',
   knowledge: 'Knowledge',
   scripts: 'Scripts',
@@ -2092,6 +2305,7 @@ function render(): void {
   const parts =
     activeTab === 'members' ? membersTab()
     : activeTab === 'settings' ? settingsTab()
+    : activeTab === 'budgets' ? budgetsTab()
     : activeTab === 'promotions' ? promotionsTab()
     : activeTab === 'agents' ? agentsTab()
     : activeTab === 'scripts' ? scriptsTab()

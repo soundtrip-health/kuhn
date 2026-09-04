@@ -163,7 +163,12 @@ code.
   (issue #110): before the terminal event the runtime distills a hand-off note from the
   conversation (`agents/handoff.js`), stores it on the job, and the chat shows a durable pause
   card — rebuilt from the job row after a reload — whose Resume calls
-  `POST /api/agent/jobs/:id/resume` (`agents/budget-pause.js` owns the vocabulary)
+  `POST /api/agent/jobs/:id/resume` (`agents/budget-pause.js` owns the vocabulary). Org owners
+  can additionally cap spend per member and per project per UTC day/week/month (org settings
+  `user_token_budget` / `project_token_budget` / `budget_period`, per-row overrides and manual
+  resets in `org_budgets`, `db/org-budgets.js`): the tightest remaining allowance caps each
+  top-level run's budget, an exhausted allowance refuses the run (`budget_exhausted`), and usage
+  is the sum of `jobs.weighted_tokens` — tokens weighted by model cost relative to the top tier
 
 **Historical consequences, now under revision:**
 

@@ -32,6 +32,9 @@ describe('getOrgSettings', () => {
       default_member_role: 'editor',
       library_seeding: true,
       promotion_policy: 'approval-required',
+      user_token_budget: 0,
+      project_token_budget: 0,
+      budget_period: 'month',
     });
   });
 
@@ -59,6 +62,9 @@ describe('updateOrgSettings', () => {
       default_member_role: 'viewer',
       library_seeding: false,
       promotion_policy: 'approval-required',
+      user_token_budget: 0,
+      project_token_budget: 0,
+      budget_period: 'month',
     });
     // Persisted: a fresh read agrees.
     expect(settings.getOrgSettings(ORG)).toEqual(merged);
@@ -67,6 +73,20 @@ describe('updateOrgSettings', () => {
       querySync(`SELECT settings FROM organizations WHERE id = ${ORG}`).rows[0].settings,
     );
     expect(stored).toEqual({ default_member_role: 'viewer', library_seeding: false });
+  });
+
+  it('validates the token-budget knobs as non-negative integers / a period (issue #110)', () => {
+    expect(settings.updateOrgSettings(ORG, { user_token_budget: 2_000_000, budget_period: 'week' }))
+      .toMatchObject({ user_token_budget: 2_000_000, project_token_budget: 0, budget_period: 'week' });
+    for (const bad of [{ user_token_budget: -1 }, { project_token_budget: 1.5 }, { user_token_budget: '5' }, { budget_period: 'year' }]) {
+      const field = Object.keys(bad)[0];
+      let caught = null;
+      try { settings.updateOrgSettings(ORG, bad); } catch (err) { caught = err; }
+      expect(caught).toBeInstanceOf(settings.SettingsValidationError);
+      expect(caught.field).toBe(field);
+    }
+    // Nothing half-applied.
+    expect(settings.getOrgSettings(ORG)).toMatchObject({ user_token_budget: 2_000_000, budget_period: 'week' });
   });
 
   it('rejects unknown keys with the offending field', () => {
