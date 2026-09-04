@@ -46,8 +46,12 @@ Anthropic/OpenAI/OpenRouter id ← the owner's explicit overrides; only the over
 (`capability_overrides`), so a catalog update flows through unless a value was pinned (e.g. a
 smaller context window). `GET …/model-profiles/catalog?provider=&model_id=` returns what the
 catalog knows plus a suggested cost weight (the list input price, the same scale as the default
-`AGENT_MODEL_WEIGHTS`). An uncatalogued id runs on the declared values (#112 "custom model
-metadata"); overrides apply to catalogued models in the adapters too.
+`AGENT_MODEL_WEIGHTS`); for an id the pinned catalog lacks (a model newer than the pi-ai
+release) it falls back to OpenRouter's public, keyless model list, which mirrors OpenAI and
+Anthropic ids (`source: 'openrouter-live'`, cached an hour). Values from the live list are
+saved with the profile as overrides, since read-time resolution only consults the pinned
+catalog. An uncatalogued id runs on the declared values (#112 "custom model metadata");
+overrides apply to catalogued models in the adapters too.
 
 **Cost weight** — in the deployment's `AGENT_MODEL_WEIGHTS` units (Haiku 1, Sonnet 3, Opus 5):
 feeds the per-task budget and the org spend ledger (`jobs.weighted_tokens`) in place of the

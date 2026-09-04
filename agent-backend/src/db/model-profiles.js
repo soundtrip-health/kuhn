@@ -95,6 +95,77 @@ export function catalogCapabilities(provider, modelId) {
   };
 }
 
+// Live fallback: OpenRouter publishes a keyless model list with context
+// length, output cap, modalities, reasoning/tool support, and pricing, and
+// mirrors OpenAI and Anthropic ids under `openai/…` / `anthropic/…`. Used
+// only for ids the pinned catalog lacks (a model newer than the pi-ai
+// release), cached in memory for an hour. No credential is sent.
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const LIVE_TTL_MS = 60 * 60 * 1000;
+let liveCache = { at: 0, byId: null, pending: null };
+
+async function openRouterModelList() {
+  if (liveCache.byId && Date.now() - liveCache.at < LIVE_TTL_MS) return liveCache.byId;
+  if (liveCache.pending) return liveCache.pending;
+  liveCache.pending = (async () => {
+    try {
+      const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { data } = await res.json();
+      const byId = new Map();
+      for (const m of Array.isArray(data) ? data : []) if (m?.id) byId.set(m.id, m);
+      liveCache = { at: Date.now(), byId, pending: null };
+      return byId;
+    } catch {
+      liveCache.pending = null;
+      return null;
+    }
+  })();
+  return liveCache.pending;
+}
+
+/** Test hook: forget the cached live list. */
+export function resetLiveCatalogCache() {
+  liveCache = { at: 0, byId: null, pending: null };
+}
+
+function fromOpenRouterEntry(entry) {
+  const params = Array.isArray(entry.supported_parameters) ? entry.supported_parameters : [];
+  const modalities = Array.isArray(entry.architecture?.input_modalities) ? entry.architecture.input_modalities : ['text'];
+  const promptPrice = Number.parseFloat(entry.pricing?.prompt);
+  const perMillion = Number.isFinite(promptPrice) && promptPrice > 0 ? Math.max(0.1, Math.round(promptPrice * 1e6 * 100) / 100) : null;
+  return {
+    known: true,
+    source: 'openrouter-live',
+    name: entry.name ?? entry.id,
+    capabilities: {
+      reasoning: params.includes('reasoning') || params.includes('include_reasoning'),
+      input: modalities.filter((m) => m === 'text' || m === 'image').length ? modalities.filter((m) => m === 'text' || m === 'image') : ['text'],
+      contextWindow: Number.isInteger(entry.context_length) ? entry.context_length : DEFAULT_CAPABILITIES.contextWindow,
+      maxTokens: Number.isInteger(entry.top_provider?.max_completion_tokens) ? entry.top_provider.max_completion_tokens : DEFAULT_CAPABILITIES.maxTokens,
+      tools: params.includes('tools'),
+    },
+    suggested_cost_weight: perMillion,
+  };
+}
+
+/**
+ * The pinned catalog first (source 'catalog'); for a fixed-endpoint provider
+ * whose id it lacks, OpenRouter's live list (source 'openrouter-live'); else
+ * { known: false }. Async; the sync catalogCapabilities() is what profiles
+ * resolve against at read time.
+ */
+export async function lookupCapabilities(provider, modelId) {
+  const pinned = catalogCapabilities(provider, modelId);
+  if (pinned.known) return { ...pinned, source: 'catalog' };
+  if (!modelId || !CATALOGS[provider]) return { ...pinned, source: null };
+  const list = await openRouterModelList();
+  if (!list) return { ...pinned, source: null };
+  const id = provider === 'openrouter' ? modelId : `${provider}/${modelId}`;
+  const entry = list.get(id);
+  return entry ? fromOpenRouterEntry(entry) : { ...pinned, source: null };
+}
+
 /** Effective capabilities: Kuhn defaults ← catalog ← explicit overrides. */
 export function effectiveCapabilities(provider, modelId, overrides) {
   const catalog = catalogCapabilities(provider, modelId).capabilities ?? {};
