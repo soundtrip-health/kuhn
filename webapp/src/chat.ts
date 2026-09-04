@@ -11,8 +11,6 @@
 // open. On load the panel restores the recent transcript (story 020), and the
 // Seed button runs the seeding pipeline (015), narrated by the seeding panel.
 
-import { marked } from 'marked';
-
 import {
   captureHandoff,
   getConversations,
@@ -28,13 +26,12 @@ import {
 import { agentIdentity } from './agents';
 import type { FileChange } from './files';
 import { icon } from './icons';
+import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
 import { QuestionCard } from './question-card';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity, setBudget } from './status';
 import { isUnder, selectedDir } from './tree-state';
 import * as workspace from './workspace';
-
-marked.setOptions({ gfm: true, breaks: false });
 
 const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor role';
@@ -307,7 +304,7 @@ function assessContext(agent: string, inputTokens: number): void {
   updateContextIndicator();
   if (inputTokens < CONTEXT_SUGGEST_TOKENS || contextSuggested.has(agent)) return;
   contextSuggested.add(agent); // once per agent; a fresh start re-arms it
-  const label = agentLabel(agent);
+  const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
   const log = document.getElementById('chat-log')!;
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-context';
@@ -414,7 +411,7 @@ async function captureAndShowHandoff(agent: string): Promise<void> {
   card.className = 'chat-notice chat-notice-handoff';
   tagConversation(card, agent);
   card.innerHTML =
-    `<div class="notice-title">${icon('arrow-right', { size: 14, stroke: 2 })} Hand-off note — goes out with your next message to ${agentLabel(agent)}</div>`;
+    `<div class="notice-title">${icon('arrow-right', { size: 14, stroke: 2 })} Hand-off note — goes out with your next message to ${escapeHtml(agentLabel(agent))}</div>`;
   const body = document.createElement('div');
   body.className = 'handoff-note';
   body.textContent = note;
@@ -988,7 +985,7 @@ function renderAgentBody(body: HTMLElement, slug: string, markdown: string): voi
     renderReportCard(body, markdown);
     return;
   }
-  body.innerHTML = marked.parse(markdown, { async: false });
+  body.innerHTML = renderMarkdown(markdown);
 }
 
 function renderReportCard(body: HTMLElement, markdown: string): void {
@@ -1010,7 +1007,7 @@ function renderReportCard(body: HTMLElement, markdown: string): void {
     const item = document.createElement('div');
     item.className = 'report-item';
     item.innerHTML = `<span class="bullet">•</span><span></span>`;
-    (item.querySelector('span:last-child') as HTMLElement).innerHTML = marked.parseInline(b, { async: false });
+    (item.querySelector('span:last-child') as HTMLElement).innerHTML = renderInlineMarkdown(b);
     list.append(item);
   }
   card.append(head, list);
@@ -1080,7 +1077,7 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
  */
 function appendBudgetNotice(agent: string): void {
   const log = document.getElementById('chat-log')!;
-  const label = agentLabel(agent);
+  const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-budget';
   tagConversation(card, agent);

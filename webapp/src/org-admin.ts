@@ -9,7 +9,6 @@
 // singleton bound to the ACTIVE project and cannot render files from the
 // arbitrary projects a promotion request points at.
 
-import { marked } from 'marked';
 import {
   ApiError,
   approvePromotion,
@@ -62,6 +61,7 @@ import {
 import { trapFocus } from './a11y';
 import { agentIdentity } from './agents';
 import { icon } from './icons';
+import { renderMarkdown } from './markdown';
 import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { toast } from './toast';
 import * as workspace from './workspace';
@@ -928,7 +928,7 @@ function previewEl(request: PromotionRequest): HTMLElement {
     case 'markdown': {
       const rendered = document.createElement('div');
       rendered.className = 'admin-preview-md';
-      rendered.innerHTML = marked.parse(state.content ?? '', { async: false });
+      rendered.innerHTML = renderMarkdown(state.content ?? '');
       box.append(rendered);
       break;
     }

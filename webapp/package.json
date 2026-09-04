@@ -27,6 +27,7 @@
     "phantom-check": "node scripts/phantom-check.mjs"
   },
   "devDependencies": {
+    "jsdom": "^30.0.1",
     "playwright": "^1.60.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.12",
@@ -42,6 +43,7 @@
     "@milkdown/crepe": "^7.21.2",
     "@milkdown/kit": "^7.21.2",
     "@milkdown/plugin-collab": "^7.21.2",
+    "dompurify": "^3.4.14",
     "katex": "^0.17.0",
     "lib0": "^0.2.117",
     "marked": "^18.0.5",

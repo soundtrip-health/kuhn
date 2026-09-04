@@ -30,6 +30,15 @@ npm run dev        # http://localhost:5174 (pinned; backend CORS allows it)
   images (see ../agent-backend/README.md).
 - On first run with an empty database the app creates a "Demo Manuscript"
   project through the API.
+- **Markdown → DOM** (issue #108) — every place user- or agent-authored
+  Markdown is rendered into the app (chat replies, reviewer report cards, the
+  org-admin promotion preview) goes through `src/markdown.ts`, which runs
+  `marked` output through DOMPurify with a restrictive allowlist. The supported
+  HTML subset is documented at the top of that module: standard block/inline
+  formatting, tables, images, `sub`/`sup`, disabled task-list checkboxes;
+  `http(s):`/`mailto:`/relative URLs only; no scripts, frames, forms, SVG,
+  MathML, `style`/`id` attributes or event handlers. Links open in a new tab
+  with `rel="noopener noreferrer"`. Do not call `marked` directly elsewhere.
 
 Browser smoke tests (need backend + webapp running; `smoke:chat` spends a few
 agent tokens):
