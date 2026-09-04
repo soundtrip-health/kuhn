@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../db.js', () => ({ query: vi.fn() }));
 
 import { query } from '../db.js';
-import { createConversation, logMessage, listProjectConversations, getRecentAgentMessages } from './conversation.js';
+import { createConversation, logMessage, listProjectConversations, getRecentAgentMessages, getSessionTranscript } from './conversation.js';
 
 beforeEach(() => {
   query.mockReset();
@@ -123,5 +123,41 @@ describe('getRecentAgentMessages (STH-55)', () => {
       { role: 'user', content: 'fix refs', created_at: 't1' },
       { role: 'assistant', content: 'Want me to resume?', created_at: 't2' },
     ]);
+  });
+});
+
+describe('getSessionTranscript (issue #109)', () => {
+  it('returns the messages of every top-level job on the session, oldest first, with the latest job', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [{ id: 9, status: 'error', error: 'token budget exceeded', created_at: 't' }] })
+      .mockResolvedValueOnce({ rows: [
+        { role: 'user', content: 'go', tool_calls: null, tool_call_id: null, is_error: null },
+        { role: 'assistant', content: 'ok', tool_calls: '[{"id":"t1","name":"read_file","input":{"path":"a.md"}}]', tool_call_id: null, is_error: null },
+        { role: 'tool', content: 'body', tool_calls: null, tool_call_id: 't1', is_error: 0 },
+      ] });
+
+    const result = await getSessionTranscript('sess-dead', { limit: 50 });
+
+    const [jobSql, jobParams] = query.mock.calls[0];
+    expect(jobSql).toMatch(/FROM jobs/);
+    expect(jobSql).toMatch(/session_id = \$1/);
+    expect(jobSql).toMatch(/parent_job_id IS NULL/);
+    expect(jobParams).toEqual(['sess-dead']);
+    const [msgSql, msgParams] = query.mock.calls[1];
+    expect(msgSql).toMatch(/FROM messages m/);
+    expect(msgSql).toMatch(/j\.session_id = \$1/);
+    expect(msgSql).toMatch(/ORDER BY m\.id DESC\s+LIMIT \$2/);
+    expect(msgSql).toMatch(/ORDER BY id ASC/);
+    expect(msgParams).toEqual(['sess-dead', 50]);
+
+    expect(result.job).toMatchObject({ id: 9, error: 'token budget exceeded' });
+    expect(result.messages).toHaveLength(3);
+    // tool_calls JSON is parsed like every other message read
+    expect(result.messages[1].tool_calls).toEqual([{ id: 't1', name: 'read_file', input: { path: 'a.md' } }]);
+  });
+
+  it('reports no job and no messages for an unknown session', async () => {
+    query.mockResolvedValue({ rows: [] });
+    expect(await getSessionTranscript('nope')).toEqual({ messages: [], job: null });
   });
 });

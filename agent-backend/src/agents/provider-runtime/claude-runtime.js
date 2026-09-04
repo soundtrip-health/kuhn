@@ -34,7 +34,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { UNRESOLVED_TOOL_RESULT_TEXT, addUsage, normalizeProviderError, normalizeUsage, toolResultText } from './contract.js';
+import { SESSION_NOT_FOUND_PATTERN, UNRESOLVED_TOOL_RESULT_TEXT, addUsage, normalizeProviderError, normalizeUsage, toolResultText } from './contract.js';
 import { assertContinuation, createContinuation } from './continuation.js';
 import { buildClaudeToolSet, CLAUDE_MCP_SERVER_NAME, toNeutralToolName } from './claude-tools.js';
 
@@ -52,6 +52,24 @@ const RESULT_SUBTYPE_CODES = {
   error_max_turns: 'max_turns',
   error_during_execution: 'during_execution',
 };
+
+/**
+ * Normalized error for a non-success SDK result message. Turn terminations
+ * (max_turns, during_execution, …) keep their subtype code. One in-flight
+ * failure hides behind `error_during_execution`: a `resume` the CLI cannot
+ * honor ("No conversation found with session ID: …", issue #109) — the
+ * result's `errors` text identifies it, and it gets the provider-failure
+ * code the runtime's fresh-session fallback keys on.
+ */
+function resultError(message) {
+  const errors = Array.isArray(message.errors) ? message.errors.map((e) => String(e)) : [];
+  const sessionError = errors.find((text) => SESSION_NOT_FOUND_PATTERN.test(text));
+  if (sessionError) {
+    return { code: 'session_not_found', message: sessionError, retryable: false, status: null };
+  }
+  const code = RESULT_SUBTYPE_CODES[message.subtype] ?? message.subtype.replace(/^error_/, '');
+  return { code, message: code.replaceAll('_', ' '), retryable: false, status: null };
+}
 
 /**
  * @param {object} args
@@ -102,8 +120,11 @@ export function createClaudeRuntime({
    *   systemPrompt?: string, continuation?: {version: number, messages: Array<object>}|null,
    *   retry?: boolean }} turn
    */
-  async function* runTurn({ input, signal, resume = null, systemPrompt, continuation = null, retry = false } = {}) {
-    const sessionId = resume ?? initialSessionId ?? null;
+  async function* runTurn({ input, signal, resume, systemPrompt, continuation = null, retry = false } = {}) {
+    // `resume` omitted → the constructor's session; an explicit null → a
+    // FRESH session (issue #109: the runtime's dead-session fallback clears
+    // the session it was constructed with, and that must not creep back).
+    const sessionId = resume === undefined ? (initialSessionId ?? null) : resume;
     // Identity first, before any provider work (contract pre-abort rule).
     yield identityEvent(sessionId);
     if (signal?.aborted) {
@@ -275,10 +296,9 @@ export function createClaudeRuntime({
                 continuation: safeContinuation(),
               };
             } else {
-              const code = RESULT_SUBTYPE_CODES[message.subtype] ?? message.subtype.replace(/^error_/, '');
               yield {
                 type: 'error',
-                error: { code, message: code.replaceAll('_', ' '), retryable: false, status: null },
+                error: resultError(message),
                 usage: finalUsage,
                 continuation: safeContinuation(),
               };

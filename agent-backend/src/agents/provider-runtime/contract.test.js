@@ -185,6 +185,9 @@ describe('provider-neutral runtime contract', () => {
     [{ status: 429, message: 'request cancelled due to rate limit' }, 'rate_limit', true],
     [{ code: 'ECONNRESET', message: 'stream aborted unexpectedly' }, 'network', true],
     [new DOMException('The operation was aborted', 'AbortError'), 'cancelled', false],
+    // A resume the provider cannot honor (issue #109): its own code, never
+    // retried as-is (the runtime falls back to a fresh session).
+    [new Error('Claude Code returned an error result: No conversation found with session ID: abc'), 'session_not_found', false],
   ])('normalizes provider failure %o as %s', (error, code, retryable) => {
     expect(normalizeProviderError(error)).toMatchObject({ code, retryable });
   });

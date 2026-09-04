@@ -158,6 +158,16 @@ export const config = {
       baseDelayMs: parseInt(process.env.AGENT_RETRY_BASE_MS || '1500'),
       maxDelayMs: parseInt(process.env.AGENT_RETRY_MAX_MS || '30000'),
     },
+    // Fresh-session fallback (issue #109): when the provider no longer holds
+    // a session a follow-up asks to resume, the runtime starts a fresh one
+    // carrying Kuhn's own transcript of the dead session as a hand-off. The
+    // caps bound that hand-off: it is by definition the tail of a run that
+    // was large enough to exhaust its budget.
+    sessionHandoff: {
+      maxMessages: parseInt(process.env.AGENT_SESSION_HANDOFF_MAX_MESSAGES || '400'),
+      maxChars: parseInt(process.env.AGENT_SESSION_HANDOFF_MAX_CHARS || '60000'),
+      maxCharsPerMessage: parseInt(process.env.AGENT_SESSION_HANDOFF_MAX_CHARS_PER_MESSAGE || '2000'),
+    },
   },
   storage: {
     // Per-file size cap for reads, writes, and uploads

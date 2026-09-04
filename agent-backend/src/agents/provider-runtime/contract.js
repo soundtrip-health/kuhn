@@ -23,8 +23,11 @@
  *   - Normalized PROVIDER FAILURES (the PROVIDER_ERROR_CODES vocabulary):
  *     'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server',
  *     'network', 'timeout', 'context_overflow', 'safety', 'tool',
- *     'cancelled', 'provider_error' — an upstream failure surfaced while
- *     the turn was in flight; `retryable` marks the transient ones.
+ *     'cancelled', 'session_not_found', 'provider_error' — an upstream
+ *     failure surfaced while the turn was in flight; `retryable` marks the
+ *     transient ones. 'session_not_found' (issue #109): the provider no
+ *     longer holds the session the turn asked to resume — never retryable
+ *     as-is; the product falls back to a fresh session.
  *   - TURN TERMINATIONS: the provider finished the turn and reported why
  *     (e.g. 'max_turns', 'during_execution' from Claude result subtypes) —
  *     never retryable, outside the PROVIDER_ERROR_CODES set.
@@ -206,8 +209,17 @@ export function addUsage(left, right) {
  */
 export const PROVIDER_ERROR_CODES = new Set([
   'auth', 'invalid_request', 'rate_limit', 'overloaded', 'server', 'network',
-  'timeout', 'context_overflow', 'safety', 'tool', 'cancelled', 'provider_error',
+  'timeout', 'context_overflow', 'safety', 'tool', 'cancelled', 'session_not_found',
+  'provider_error',
 ]);
+
+/**
+ * Wording the Claude Agent SDK uses when asked to resume a session it no
+ * longer holds ("No conversation found with session ID: …"). The dead
+ * session is a provider-side fact Kuhn cannot verify up front, so the
+ * failure is classified here and the runtime falls back (issue #109).
+ */
+export const SESSION_NOT_FOUND_PATTERN = /no conversation found/i;
 
 /**
  * Closure content for a tool call the turn ended before executing (abort,
@@ -237,6 +249,12 @@ export function normalizeProviderError(error, { stopReason } = {}) {
   // connections, and those must keep their retryable categories.
   if (stopReason === 'aborted' || error?.name === 'AbortError' || code === 'abort_err') {
     return runtimeError('cancelled', message, false, status);
+  }
+  // A resume the provider cannot honor (issue #109): not transient — the
+  // same session id fails every time — and not a generic provider error
+  // either, since the product has a specific recovery for it.
+  if (SESSION_NOT_FOUND_PATTERN.test(message)) {
+    return runtimeError('session_not_found', message, false, status);
   }
   if (status === 429 || /rate.?limit|too many requests/.test(haystack)) {
     return runtimeError('rate_limit', message, true, status);
