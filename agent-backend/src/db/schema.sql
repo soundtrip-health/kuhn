@@ -189,6 +189,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- session carries forward (STH-52 meter). input_tokens above is cumulative
   -- task throughput; mirrored in init.js COLUMN_MIGRATIONS.
   context_tokens   INTEGER NOT NULL DEFAULT 0,
+  -- Hand-off note written when the token budget paused this run (issue
+  -- #110): what was in progress, what remains, decisions taken. NULL for
+  -- runs that ended any other way (or whose note could not be captured).
+  -- Mirrored in init.js COLUMN_MIGRATIONS.
+  handoff          TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

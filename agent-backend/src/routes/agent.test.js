@@ -14,10 +14,22 @@ vi.mock('../db/orgs.js', () => ({
 vi.mock('../agents/handoff.js', () => ({
   captureHandoff: vi.fn(async () => ({ handoff: 'note' })),
 }));
+// Issue #110: the resume route's dispatch is asserted by its arguments; the
+// run itself is the runtime's business (agents/runtime.test.js).
+vi.mock('../agents/runtime.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    runAgentTask: vi.fn(async function* () {
+      yield { type: 'done', agent: 'writer', jobId: 91, sessionId: 'fresh-session' };
+    }),
+  };
+});
 
 import { query } from '../db.js';
 import { checkOrgAccess } from '../db/orgs.js';
 import { captureHandoff } from '../agents/handoff.js';
+import { runAgentTask } from '../agents/runtime.js';
 import { waitForReply, deliverReply } from '../agents/questions.js';
 import { EventChannel } from '../agents/events.js';
 import { registerRun, unregisterRun } from '../agents/runs.js';
@@ -286,5 +298,71 @@ describe('POST /api/agent/handoff (STH-55)', () => {
     const res = await post({ projectId: 5, role: 'pm' });
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatch(/model down/);
+  });
+});
+
+describe('POST /api/agent/jobs/:id/resume (issue #110)', () => {
+  const resume = (id, body = {}) => fetch(`${base}/api/agent/jobs/${id}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const paused = {
+    role: 'writer', status: 'error', error: 'token budget exceeded', parent_job_id: null,
+    session_id: 'sess-1', continuation: null, handoff: 'In progress: §2. Next: §3.',
+    context: JSON.stringify({ activeDocument: 'draft/old.md' }),
+  };
+
+  beforeEach(() => runAgentTask.mockClear());
+
+  it('404s an unknown job', async () => {
+    expect((await resume(999)).status).toBe(404);
+  });
+
+  it('409s a job that is not a paused top-level run', async () => {
+    await withJob(80, { ...paused, status: 'done', error: null }, async () => {
+      const res = await resume(80);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'job is not paused on a token budget' });
+    });
+    await withJob(81, { ...paused, error: 'during execution' }, async () => {
+      expect((await resume(81)).status).toBe(409);
+    });
+    await withJob(82, { ...paused, parent_job_id: 3 }, async () => {
+      expect((await resume(82)).status).toBe(409);
+    });
+    expect(runAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('guards on the job\'s project (editor): viewer 403, non-member 404', async () => {
+    await withJob(83, paused, async () => {
+      checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'role', role: 'viewer' });
+      expect((await resume(83)).status).toBe(403);
+      checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'not-member' });
+      expect((await resume(83)).status).toBe(404);
+    });
+    expect(runAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a fresh task that resumes the paused session with the hand-off note', async () => {
+    await withJob(84, paused, async () => {
+      const res = await resume(84, { context: { activeDocument: 'draft/new.md' } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/text\/event-stream/);
+      const body = await res.text();
+      expect(body).toContain('"type":"done"');
+      expect(body).toContain('"sessionId":"fresh-session"');
+    });
+    expect(runAgentTask).toHaveBeenCalledTimes(1);
+    const task = runAgentTask.mock.calls[0][0];
+    expect(task).toMatchObject({
+      role: 'writer', projectId: 5, sessionId: 'sess-1', continuation: null,
+      userId: 1, detachable: true,
+      // The resume-time editor context, not the paused job's stale one.
+      context: { activeDocument: 'draft/new.md' },
+    });
+    expect(task.input).toMatch(/^\[Resuming after a token-budget pause\]/);
+    expect(task.input).toContain('In progress: §2. Next: §3.');
+    expect(task.signal).toBeInstanceOf(AbortSignal);
   });
 });

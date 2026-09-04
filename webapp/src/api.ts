@@ -124,6 +124,9 @@ export interface AgentEvent {
   // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
   // 'provider_overloaded' on a transient-error notice/terminal error (story 029).
   reason?: string;
+  // Hand-off note written at a budget pause (issue #110), on the
+  // 'budget_exceeded' error; null when none could be captured.
+  handoff?: string | null;
   // Transient-error retry progress (story 029): emitted on a 'notice' while the
   // runtime backs off before retrying.
   attempt?: number;
@@ -171,6 +174,10 @@ export interface Job {
   input_tokens: number;
   /** Last turn's prompt size — the context the session carries forward (STH-52). 0 = unknown (pre-migration rows). */
   context_tokens: number;
+  /** Why the run ended when status is 'error'; 'token budget exceeded' marks a budget pause (issue #110). */
+  error: string | null;
+  /** Hand-off note written at a budget pause (issue #110); null otherwise. */
+  handoff: string | null;
   created_at: string;
 }
 
@@ -1973,6 +1980,29 @@ export async function runAgentTask(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
+      signal,
+    }),
+  );
+  await readEventStream(res, onEvent);
+}
+
+/**
+ * Resume a run the token budget paused (issue #110): the server dispatches a
+ * fresh task on the same role that continues the paused session with a fresh
+ * budget, prompted by the hand-off note written at the pause. `context` is
+ * the editor context now (the paused job's is stale). Streams like runAgentTask.
+ */
+export async function resumeJob(
+  jobId: number,
+  context: AgentTaskParams['context'],
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context }),
       signal,
     }),
   );

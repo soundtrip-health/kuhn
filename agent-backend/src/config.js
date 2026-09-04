@@ -238,6 +238,9 @@ export const config = {
     model: process.env.HANDOFF_MODEL || 'claude-opus-5',
     maxMessages: parseInt(process.env.HANDOFF_MAX_MESSAGES || '12'),
     maxCharsPerMessage: parseInt(process.env.HANDOFF_MAX_CHARS_PER_MESSAGE || '4000'),
+    // Issue #110: the budget-pause note is written while the user waits for
+    // the pause card; a capture slower than this is dropped (no note).
+    timeoutMs: parseInt(process.env.HANDOFF_TIMEOUT_MS || '45000'),
   },
   fileActivity: {
     // Per-project cap on retained file_events rows (story 005-002); oldest

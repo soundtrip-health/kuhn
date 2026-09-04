@@ -50,6 +50,9 @@ const COLUMN_MIGRATIONS = [
   // cumulative throughput and overstates context). Default 0 = unknown for
   // pre-migration rows; the webapp leaves the meter unseeded for those.
   { table: 'jobs', column: 'context_tokens', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  // Issue #110: hand-off note captured at a budget pause. Nullable — runs
+  // that ended any other way, and pre-migration rows, stay NULL.
+  { table: 'jobs', column: 'handoff', ddl: 'TEXT' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK

@@ -29,6 +29,8 @@ import { createToolContext, listTools } from './tools/index.js';
 import { createAgentRuntime } from './provider-runtime/factory.js';
 import { PROVIDER_ERROR_CODES, normalizeProviderError, toolResultText } from './provider-runtime/contract.js';
 import { renderSessionHandoff } from './session-handoff.js';
+import { captureBudgetHandoff } from './handoff.js';
+import { BUDGET_EXCEEDED_ERROR } from './budget-pause.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -70,11 +72,13 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
  *   { type: 'notice', agent, jobId, reason: 'session_reconstructed', message } — the provider no longer held the session this task asked to resume; the run continues in a fresh session carrying Kuhn's transcript of the old one as a hand-off (issue #109). The 'done' event carries the new sessionId.
+ *   { type: 'notice', agent, jobId, reason: 'budget_reached', message } — the token budget stopped this top-level run; a hand-off note is being written before the terminal 'error' (issue #110)
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window }, continuation }
  *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
  *       continuation is the canonical record (STH-47) a follow-up task can resume
- *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029), 'budget_exceeded' on budget cutoff
+ *   { type: 'error', agent, jobId, message, reason? } — reason 'provider_overloaded' on a terminal transient failure (story 029); 'budget_exceeded' on budget cutoff,
+ *     with sessionId, budget: { used, limit } and handoff (the note written at the pause, or null) — resume via POST /api/agent/jobs/:jobId/resume (issue #110)
  */
 export async function* runAgentTask(task, internal = {}) {
   // Tee top-level runs into the per-project feed (story 005-001). Sub-agent
@@ -665,29 +669,46 @@ async function runTask(task, internal, channel, state) {
           // abruptly.
           if (budget.used > budget.limit * config.agent.budgetGrace) {
             log.warn('budget_exceeded', {
-              jobId: job.id, agent: agent.slug,
+              jobId: job.id, agent: agent.slug, depth,
               budgetUsed: Math.round(budget.used), budgetLimit: budget.limit,
             });
             await updateJob(job.id, {
               status: 'error',
-              error: 'token budget exceeded',
+              error: BUDGET_EXCEEDED_ERROR,
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
               contextTokens: lastContextTokens,
             });
+            state.cancelReason = 'budget';
+            state.controller.abort();
+            // Hand-off before the pause (issue #110). The interrupted agent
+            // cannot write its own note — its turn was just aborted — so one
+            // is distilled from Kuhn's record of the conversation (the turn
+            // above is already logged) and stored on the job for the resume.
+            // Top-level runs only: a sub-agent's cutoff surfaces through the
+            // parent's own cutoff on its next turn, and the note is about the
+            // user's task, not the dispatched piece of it.
+            let handoff = null;
+            if (depth === 0) {
+              channel.push({
+                type: 'notice', agent: agent.slug, jobId: job.id, reason: 'budget_reached',
+                message: 'Token budget reached — pausing and writing a hand-off note…',
+              });
+              handoff = await writeBudgetHandoff(job, agent, projectId);
+            }
             channel.push({
               type: 'error',
               agent: agent.slug,
               jobId: job.id,
               reason: 'budget_exceeded',
-              // The provider session is recorded so the client can resume
-              // this exact conversation (with a fresh budget) instead of
-              // starting over.
+              // The provider session is recorded so a resume continues this
+              // exact conversation (with a fresh budget) instead of starting
+              // over; the hand-off note is what the resume hands the agent.
               sessionId: state.sessionId,
-              message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task stopped.`,
+              handoff,
+              message: `Token budget exceeded (${Math.round(budget.used)} > ${budget.limit} ${budget.baseWeight}×-weighted tokens). Task paused.`,
               budget: { used: Math.round(budget.used), limit: budget.limit },
             });
-            state.controller.abort();
           }
           break;
         }
@@ -740,6 +761,34 @@ function backoffDelay(attempt, { baseDelayMs, maxDelayMs }) {
 
 function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+/**
+ * Capture and persist the budget-pause hand-off note (issue #110). Best
+ * effort: a failed or slow capture (the model call is bounded by
+ * config.handoff.timeoutMs) degrades to no note — the pause itself must
+ * never fail because the note did.
+ * @returns {Promise<string|null>} the note, or null
+ */
+async function writeBudgetHandoff(job, agent, projectId) {
+  const timeoutMs = config.handoff.timeoutMs;
+  let timer = null;
+  try {
+    const { handoff } = await Promise.race([
+      captureBudgetHandoff(projectId, agent.slug),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`hand-off capture timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+    if (handoff) await updateJob(job.id, { handoff });
+    log.info('budget_handoff', { jobId: job.id, agent: agent.slug, captured: Boolean(handoff), chars: handoff?.length ?? 0 });
+    return handoff ?? null;
+  } catch (err) {
+    log.warn('budget_handoff_failed', { jobId: job.id, agent: agent.slug, err });
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Approximate model price ratio for budget weighting (story 020), matched by

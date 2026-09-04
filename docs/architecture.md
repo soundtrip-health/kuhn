@@ -159,7 +159,11 @@ code.
   task state, progress streaming to the UI, resumability after crash, and per-run token budgets.
   A follow-up whose provider session is gone (typically after a budget stop) never fails on the
   dead id: the runtime continues in a fresh session seeded from Kuhn's own transcript of the old
-  one (`agents/session-handoff.js`, issue #109)
+  one (`agents/session-handoff.js`, issue #109). A budget stop is a *pause*, not a failure
+  (issue #110): before the terminal event the runtime distills a hand-off note from the
+  conversation (`agents/handoff.js`), stores it on the job, and the chat shows a durable pause
+  card — rebuilt from the job row after a reload — whose Resume calls
+  `POST /api/agent/jobs/:id/resume` (`agents/budget-pause.js` owns the vocabulary)
 
 **Historical consequences, now under revision:**
 

@@ -53,6 +53,14 @@ vi.mock('../provider-runtime/pi-adapter.js', async () => {
   };
 });
 
+// The budget-pause hand-off note (issue #110) is one Messages API call over
+// the conversation tail (agents/handoff.js, covered by its own tests); the
+// shared-budget scenario must not reach the network for it.
+vi.mock('../handoff.js', () => ({
+  captureBudgetHandoff: async () => ({ handoff: 'conformance hand-off note' }),
+  captureHandoff: async () => ({ handoff: null }),
+}));
+
 // Pin the app config: in-memory DB, unique temp project roots, zero retry
 // delays, 3-attempt retry budget, dispatch depth 2.
 vi.mock('../../config.js', async () => {
