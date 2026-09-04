@@ -1311,7 +1311,8 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .admin-field-error { font: var(--ui-small); color: var(--warn); }
 .admin-field-inline { display: flex; align-items: center; gap: 8px; font: var(--ui-body); color: var(--ink); }
 .admin-field-inline input[type='checkbox'] { width: auto; }
-.admin-field .pb-input, .admin-field .pb-select { width: 100%; box-sizing: border-box; }
+.admin-field .pb-input, .admin-field .pb-select { width: 100%; box-sizing: border-box; flex: none; }
+.admin-field .admin-field-help { margin-top: auto; }
 .admin-field input[type='checkbox'] { width: auto; align-self: flex-start; }
 .admin-test-result { font: var(--ui-small); color: var(--ink-2); margin-top: 4px; text-align: right; overflow-wrap: anywhere; }
 .admin-test-result[data-state='ok'] { color: var(--good); }
