@@ -86,8 +86,14 @@ check(scrolledBefore > 0 && scrolledAfter > 0, `body does not jump to the top on
 
 // Submitting an incomplete form shows real messages and keeps what was typed.
 await page.selectOption('#org-admin [aria-label="Provider"]', 'openrouter');
-await page.fill('#org-admin [aria-label="Model id"]', 'openai/gpt-oss-20b');
-await page.waitForTimeout(600); // catalog lookup
+// Type the model id slowly enough for the catalog lookup to fire mid-word:
+// the re-render it triggers must leave focus and the caret in the box.
+await page.click('#org-admin [aria-label="Model id"]');
+for (const ch of 'openai/gpt-oss-20b') await page.keyboard.type(ch, { delay: 120 });
+await page.waitForTimeout(600); // last catalog lookup
+const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+check(focused === 'Model id', `typing keeps focus in the model id box (${focused})`);
+check((await page.inputValue('#org-admin [aria-label="Model id"]')) === 'openai/gpt-oss-20b', 'every typed character landed');
 const derivedSlug = await page.inputValue('#org-admin [aria-label="Profile slug"]');
 check(derivedSlug === 'openai-gpt-oss-20b', `slug is derived from the model id (${derivedSlug})`);
 const catalogHelp = await page.textContent('#org-admin .admin-profile-form');
