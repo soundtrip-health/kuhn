@@ -157,3 +157,39 @@ export async function getRecentAgentMessages(projectId, agentSlug, { limit = 12 
   );
   return rows.map(({ role, content, created_at }) => ({ role, content, created_at }));
 }
+
+/**
+ * Kuhn's own transcript of a provider session (issue #109): every message of
+ * every top-level job that ran on `sessionId`, in insertion order, plus the
+ * latest of those jobs (its status/error says why the session ended, e.g.
+ * 'token budget exceeded'). The runtime renders this into the hand-off a
+ * fresh session receives when the provider can no longer resume the old
+ * one. Tool rows are included — they carry what the agent already did.
+ * @param {string} sessionId - Opaque provider session id stamped on jobs
+ * @param {object} [opts]
+ * @param {number} [opts.limit=400] - Max messages, taken from the END
+ * @returns {Promise<{ messages: object[], job: {id, status, error, created_at}|null }>}
+ *   messages: [{ role, content, tool_calls, tool_call_id, is_error, created_at }]
+ */
+export async function getSessionTranscript(sessionId, { limit = 400 } = {}) {
+  const { rows: jobs } = await query(
+    `SELECT id, status, error, created_at FROM jobs
+     WHERE session_id = $1 AND parent_job_id IS NULL
+     ORDER BY id DESC LIMIT 1`,
+    [sessionId],
+  );
+  const { rows } = await query(
+    `SELECT role, content, tool_calls, tool_call_id, is_error, created_at FROM (
+       SELECT m.id, m.role, m.content, m.tool_calls, m.tool_call_id, m.is_error, m.created_at
+       FROM messages m
+       WHERE m.conversation_id IN (
+         SELECT j.conversation_id FROM jobs j
+         WHERE j.session_id = $1 AND j.parent_job_id IS NULL AND j.conversation_id IS NOT NULL
+       )
+       ORDER BY m.id DESC
+       LIMIT $2
+     ) ORDER BY id ASC`,
+    [sessionId, limit],
+  );
+  return { messages: rows.map(parseMessage), job: jobs[0] ?? null };
+}

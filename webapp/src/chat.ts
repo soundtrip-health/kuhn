@@ -625,6 +625,12 @@ function createEventHandler(): (event: AgentEvent) => void {
             + ` (${event.attempt}/${event.maxAttempts})…`,
           );
           notify('Model provider is busy — retrying automatically…');
+        } else if (event.reason === 'session_reconstructed') {
+          // The provider dropped the session we asked to resume (issue #109
+          // — typically after a budget stop); the runtime continues in a
+          // fresh one seeded from Kuhn's transcript. The `done` event
+          // carries the new session id, which replaces the dead one.
+          appendSystemLine(event.message ?? 'Previous session unavailable — continuing in a fresh session.');
         }
         break;
       }

@@ -411,6 +411,53 @@ describe('normalized provider failures (STH-7)', () => {
   });
 });
 
+describe('dead-session resume (issue #109)', () => {
+  it('an explicit null resume starts fresh even when the runtime was built with a session', async () => {
+    const rt = createClaudeRuntime({
+      model: 'claude-test-1', projectDir: '/tmp/p', tools: [kuhnTool()], maxTurns: 7, initialSessionId: 'dead',
+    });
+    await drain(rt, { input: 'hi', resume: null });
+    expect(sdkQuery.mock.calls[0][0].options.resume).toBeUndefined();
+    await drain(rt, { input: 'hi' });
+    expect(sdkQuery.mock.calls[1][0].options.resume).toBe('dead');
+  });
+
+  it('maps an error_during_execution result whose errors say the session is gone to session_not_found', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'dead-1' };
+      yield {
+        type: 'result', subtype: 'error_during_execution', is_error: true,
+        errors: ['No conversation found with session ID: dead-1'],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      };
+    })();
+    const events = await drain(makeRuntime(), { input: 'hi', resume: 'dead-1' });
+    const terminal = events.at(-1);
+    expect(terminal.type).toBe('error');
+    expect(terminal.error).toMatchObject({ code: 'session_not_found', retryable: false });
+    expect(terminal.error.message).toContain('No conversation found with session ID: dead-1');
+    expect(validateRuntimeEventSequence(events)).toEqual([]);
+  });
+
+  it('classifies the same failure when the SDK throws it instead', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'dead-1' };
+      throw new Error('Claude Code returned an error result: No conversation found with session ID: dead-1');
+    })();
+    const events = await drain(makeRuntime(), { input: 'hi', resume: 'dead-1' });
+    expect(events.at(-1).error).toMatchObject({ code: 'session_not_found', retryable: false });
+  });
+
+  it('leaves other during-execution results as the plain turn termination', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's-1' };
+      yield { type: 'result', subtype: 'error_during_execution', errors: ['something else'], usage: {} };
+    })();
+    const events = await drain(makeRuntime(), { input: 'hi' });
+    expect(events.at(-1).error).toMatchObject({ code: 'during_execution', message: 'during execution', retryable: false });
+  });
+});
+
 describe('exactly one terminal (STH-7)', () => {
   const scenarios = [
     ['success', () => (async function* () {

@@ -52,6 +52,8 @@ vi.mock('../config.js', () => ({
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
       // Zero delays so the backoff retry path (story 029) runs instantly in tests.
       retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
+      // Fresh-session hand-off caps (issue #109).
+      sessionHandoff: { maxMessages: 400, maxChars: 60000, maxCharsPerMessage: 2000 },
     },
     // read_file's PDF preamble names the extraction page cap (STH-54).
     ingest: { maxPdfPages: 200 },
@@ -76,6 +78,7 @@ vi.mock('../db/agents.js', () => ({ getAgentWithTools: vi.fn() }));
 vi.mock('../db/conversation.js', () => ({
   createConversation: vi.fn(async () => ({ id: 7 })),
   logMessage: vi.fn(async () => ({})),
+  getSessionTranscript: vi.fn(async () => ({ messages: [], job: null })),
 }));
 vi.mock('../db/jobs.js', () => ({
   createJob: vi.fn(async () => ({ id: 42 })),
@@ -186,7 +189,7 @@ import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-scripts.js';
 import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
-import { createConversation, logMessage } from '../db/conversation.js';
+import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
@@ -1179,6 +1182,108 @@ describe('transient API error retry (story 029)', () => {
     const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
     const error = events.find((e) => e.type === 'error');
     expect(error).toMatchObject({ reason: 'provider_overloaded', sessionId: 'sess-resume' });
+  });
+});
+
+describe('resume after a dead session (issue #109)', () => {
+  const deadResult = (id) => ({
+    type: 'result', subtype: 'error_during_execution', is_error: true,
+    errors: [`No conversation found with session ID: ${id}`], usage: { input_tokens: 0, output_tokens: 0 },
+  });
+
+  it('continues in a fresh session seeded from the transcript when the provider no longer holds the resumed one', async () => {
+    getSessionTranscript.mockResolvedValueOnce({
+      job: { id: 41, status: 'error', error: 'token budget exceeded' },
+      messages: [
+        { role: 'user', content: 'Draft the intro' },
+        { role: 'assistant', content: 'Drafted section 1.', tool_calls: [{ id: 't1', name: 'write_file', input: { path: 'draft/main.md' } }] },
+        { role: 'tool', content: 'Saved draft/main.md', tool_call_id: 't1', is_error: 0 },
+      ],
+    });
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      if (calls === 1) {
+        yield { type: 'system', subtype: 'init', session_id: 'dead' };
+        yield deadResult('dead');
+        return;
+      }
+      yield { type: 'system', subtype: 'init', session_id: 'fresh' };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Continuing from section 2.' }], usage: { input_tokens: 10, output_tokens: 5 } } };
+      yield { type: 'result', subtype: 'success', session_id: 'fresh', usage: { input_tokens: 10, output_tokens: 5 } };
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'keep going', sessionId: 'dead' });
+
+    expect(calls).toBe(2);
+    expect(getSessionTranscript).toHaveBeenCalledWith('dead', expect.objectContaining({ limit: expect.any(Number) }));
+    // First attempt resumed the dead id; the fallback never hands it back.
+    const [first, second] = sdkQuery.mock.calls.map((c) => c[0]);
+    expect(first.options.resume).toBe('dead');
+    expect(first.prompt).toBe('keep going');
+    expect(second.options.resume).toBeUndefined();
+    expect(second.prompt).toContain('<session_handoff>');
+    expect(second.prompt).toContain('It stopped with: token budget exceeded.');
+    expect(second.prompt).toContain('[USER]\nDraft the intro');
+    expect(second.prompt).toContain('[write_file result]\nSaved draft/main.md');
+    expect(second.prompt.endsWith('keep going')).toBe(true);
+    // The client is told, no error surfaces, and done carries the NEW session.
+    expect(events.find((e) => e.type === 'notice')).toMatchObject({ reason: 'session_reconstructed', jobId: 42 });
+    expect(events.find((e) => e.type === 'error')).toBeUndefined();
+    expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 'fresh' });
+    expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'fresh' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done' }));
+  });
+
+  it('still falls back (with a bare note) when the transcript lookup fails', async () => {
+    getSessionTranscript.mockRejectedValueOnce(new Error('db down'));
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      if (calls === 1) { yield deadResult('dead'); return; }
+      yield { type: 'system', subtype: 'init', session_id: 'fresh' };
+      yield { type: 'result', subtype: 'success', session_id: 'fresh', usage: { input_tokens: 1, output_tokens: 1 } };
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go', sessionId: 'dead' });
+
+    expect(calls).toBe(2);
+    expect(sdkQuery.mock.calls[1][0].prompt).toContain('Kuhn has no record of that session either');
+    expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 'fresh' });
+  });
+
+  it('takes the fallback once: a second dead-session failure is terminal', async () => {
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      yield deadResult(calls === 1 ? 'dead' : 'none');
+    })();
+
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go', sessionId: 'dead' });
+
+    expect(calls).toBe(2);
+    const error = events.find((e) => e.type === 'error');
+    expect(error.message).toContain('No conversation found');
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error' }));
+  });
+
+  it('does not fall back on a task that never asked to resume', async () => {
+    sdkState.messages = [deadResult('x')];
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(sdkQuery).toHaveBeenCalledTimes(1);
+    expect(getSessionTranscript).not.toHaveBeenCalled();
+    expect(events.find((e) => e.type === 'error')).toBeDefined();
+  });
+
+  it('persists the partial record when the budget cutoff stops the run', async () => {
+    sdkState.messages = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'huge turn' }], usage: { input_tokens: 400000, output_tokens: 1000 } } },
+      { type: 'result', subtype: 'success', usage: {} },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    const call = updateJob.mock.calls.find(([, fields]) => fields.continuation);
+    expect(call).toBeDefined();
+    expect(call[1].continuation.messages[0]).toMatchObject({ role: 'user' });
   });
 });
 

@@ -15,7 +15,7 @@
 
 import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
-import { createConversation, logMessage } from '../db/conversation.js';
+import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
@@ -28,6 +28,7 @@ import { registerRun, unregisterRun } from './runs.js';
 import { createToolContext, listTools } from './tools/index.js';
 import { createAgentRuntime } from './provider-runtime/factory.js';
 import { PROVIDER_ERROR_CODES, normalizeProviderError, toolResultText } from './provider-runtime/contract.js';
+import { renderSessionHandoff } from './session-handoff.js';
 
 const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
 
@@ -68,6 +69,7 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   { type: 'question', agent, jobId, content } — ask_user is waiting; reply via POST /api/agent/jobs/:jobId/reply
  *   { type: 'question_expired', agent, jobId } — the pending question went unanswered at task teardown (no timeout); the agent proceeds with defaults (story 020)
  *   { type: 'notice', agent, jobId, reason: 'provider_overloaded', attempt, maxAttempts, nextRetryMs, message } — backing off on a transient provider error before retrying (story 029)
+ *   { type: 'notice', agent, jobId, reason: 'session_reconstructed', message } — the provider no longer held the session this task asked to resume; the run continues in a fresh session carrying Kuhn's transcript of the old one as a hand-off (issue #109). The 'done' event carries the new sessionId.
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window }, continuation }
  *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
@@ -359,9 +361,18 @@ async function runTask(task, internal, channel, state) {
   // (A turn that half-streamed before the failure re-streams on resume — a
   // rare cosmetic doubling; the common case is a failure before any output.)
   const retry = config.agent.retry;
-  for (let attempt = 0; ; attempt++) {
+  // The prompt the attempts send. The fresh-session fallback below (issue
+  // #109) swaps in the hand-off-wrapped prompt for the rest of the task.
+  let turnInput = prompt;
+  // Transient-failure retries so far (story 029) — NOT the attempt count:
+  // the session fallback restarts the request and resets it.
+  let retries = 0;
+  // The fallback is taken at most once per task: a fresh session has no
+  // session to lose, so a second session_not_found is a real failure.
+  let sessionRecovered = false;
+  for (;;) {
     const outcome = await runTurnLoop(runtime, {
-      input: prompt,
+      input: turnInput,
       systemPrompt,
       signal: state.controller.signal,
       resume: state.sessionId,
@@ -369,7 +380,7 @@ async function runTask(task, internal, channel, state) {
       // The product's explicit retry flag (STH-47): attempts after the
       // first retry the same logical request over the failed attempt's
       // canonical record — the adapters must not re-append its input.
-      retry: attempt > 0,
+      retry: retries > 0,
     }, { agent, job, conversation, channel, budget, costRatio, usage, userId, state });
 
     if (outcome.kind === 'done') {
@@ -415,18 +426,65 @@ async function runTask(task, internal, channel, state) {
     }
 
     const perr = outcome.error;
+
+    // The provider no longer holds the session this attempt asked to resume
+    // (issue #109) — typically one the budget cutoff interrupted (the
+    // client hands the same id back with the user's next message). Never
+    // hand a dead id to the provider again: continue in a FRESH session
+    // that receives Kuhn's own transcript of the dead one as a hand-off.
+    // The failed attempt's record is discarded — it is just this input.
+    if (perr.code === 'session_not_found' && state.sessionId && !sessionRecovered && !state.controller.signal.aborted) {
+      const deadSession = state.sessionId;
+      sessionRecovered = true;
+      const caps = config.agent.sessionHandoff;
+      let transcript = null;
+      try {
+        transcript = await getSessionTranscript(deadSession, { limit: caps.maxMessages });
+      } catch (err) {
+        // A transcript lookup failure degrades the hand-off to a bare
+        // note; it must not turn a recoverable resume into a failed job.
+        log.warn('session_transcript_failed', { jobId: job.id, agent: agent.slug, deadSession, err });
+      }
+      turnInput = renderSessionHandoff({ transcript, input: prompt, ...caps });
+      state.sessionId = null;
+      state.continuation = null;
+      retries = 0;
+      log.warn('session_fallback', {
+        jobId: job.id, agent: agent.slug, depth, deadSession,
+        transcriptMessages: transcript?.messages?.length ?? 0,
+        priorJobId: transcript?.job?.id ?? null, priorError: transcript?.job?.error ?? null,
+        err: perr,
+      });
+      channel.push({
+        type: 'notice',
+        agent: agent.slug,
+        jobId: job.id,
+        reason: 'session_reconstructed',
+        message: transcript?.messages?.length
+          ? 'The previous session could not be resumed; continuing in a fresh session from Kuhn\'s transcript of it.'
+          : 'The previous session could not be resumed and no transcript was found; continuing in a fresh session.',
+      });
+      continue;
+    }
+
     if (outcome.continuation) state.continuation = outcome.continuation;
 
     if (perr.code === 'cancelled') {
       // The budget cutoff already pushed its own error event; the disconnect
-      // teardown marked the job cancelled. The run is over.
+      // teardown marked the job cancelled. The run is over — but the
+      // partial record is kept (issue #109), like every other terminal:
+      // it is what a provider-neutral follow-up resumes from.
+      if (state.continuation) {
+        await updateJob(job.id, { continuation: state.continuation }).catch(() => {});
+      }
       return;
     }
 
-    if (perr.retryable && attempt < retry.maxAttempts) {
-      const delay = backoffDelay(attempt + 1, retry);
+    if (perr.retryable && retries < retry.maxAttempts) {
+      retries += 1;
+      const delay = backoffDelay(retries, retry);
       log.warn('provider_retry', {
-        jobId: job.id, agent: agent.slug, attempt: attempt + 1,
+        jobId: job.id, agent: agent.slug, attempt: retries,
         maxAttempts: retry.maxAttempts, nextRetryMs: delay, err: perr,
       });
       channel.push({
@@ -434,10 +492,10 @@ async function runTask(task, internal, channel, state) {
         agent: agent.slug,
         jobId: job.id,
         reason: 'provider_overloaded',
-        attempt: attempt + 1,
+        attempt: retries,
         maxAttempts: retry.maxAttempts,
         nextRetryMs: delay,
-        message: `Model provider is busy (attempt ${attempt + 1}/${retry.maxAttempts}); retrying in ${Math.round(delay / 1000)}s…`,
+        message: `Model provider is busy (attempt ${retries}/${retry.maxAttempts}); retrying in ${Math.round(delay / 1000)}s…`,
       });
       await sleep(delay);
       continue; // next attempt resumes state.sessionId

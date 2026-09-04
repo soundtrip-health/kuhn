@@ -156,7 +156,10 @@ code.
 **Added:**
 
 - **Durable job model** — long-running agent work (seeding, full review) is a persisted job with
-  task state, progress streaming to the UI, resumability after crash, and per-run token budgets
+  task state, progress streaming to the UI, resumability after crash, and per-run token budgets.
+  A follow-up whose provider session is gone (typically after a budget stop) never fails on the
+  dead id: the runtime continues in a fresh session seeded from Kuhn's own transcript of the old
+  one (`agents/session-handoff.js`, issue #109)
 
 **Historical consequences, now under revision:**
 
