@@ -184,6 +184,44 @@ describe('org profiles', () => {
     expect(profiles.catalogCapabilities('openai-compatible', 'anything')).toMatchObject({ known: false });
   });
 
+  it('falls back to OpenRouter\'s live list for ids the pinned catalog lacks, without a credential', async () => {
+    const realFetch = globalThis.fetch;
+    const seen = [];
+    globalThis.fetch = async (url, init) => {
+      seen.push({ url: String(url), headers: init?.headers ?? null });
+      return new Response(JSON.stringify({ data: [{
+        id: 'openai/gpt-6-astra', name: 'OpenAI: GPT-6 Astra', context_length: 1050000,
+        top_provider: { max_completion_tokens: 128000 }, architecture: { input_modalities: ['file', 'image', 'text'] },
+        supported_parameters: ['reasoning', 'tools'], pricing: { prompt: '0.00001', completion: '0.00003' },
+      }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    try {
+      profiles.resetLiveCatalogCache();
+      const live = await profiles.lookupCapabilities('openai', 'gpt-6-astra');
+      expect(live).toMatchObject({
+        known: true, source: 'openrouter-live', name: 'OpenAI: GPT-6 Astra', suggested_cost_weight: 10,
+        capabilities: { contextWindow: 1050000, maxTokens: 128000, reasoning: true, tools: true, input: ['image', 'text'] },
+      });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].url).toBe('https://openrouter.ai/api/v1/models');
+      expect(seen[0].headers).toBeNull();
+      // Cached: a second lookup (any id) does not refetch; unknown stays unknown.
+      expect(await profiles.lookupCapabilities('openrouter', 'acme/nope')).toMatchObject({ known: false, source: null });
+      expect(seen).toHaveLength(1);
+      // The pinned catalog still wins for ids it knows, with no network.
+      expect(await profiles.lookupCapabilities('openai', 'gpt-5-mini')).toMatchObject({ known: true, source: 'catalog' });
+      // No live lookup for self-hosted endpoints.
+      expect(await profiles.lookupCapabilities('openai-compatible', 'gpt-6-astra')).toMatchObject({ known: false, source: null });
+      // A failing list degrades to unknown, never throws.
+      profiles.resetLiveCatalogCache();
+      globalThis.fetch = async () => { throw new Error('offline'); };
+      expect(await profiles.lookupCapabilities('openai', 'gpt-6-astra')).toMatchObject({ known: false, source: null });
+    } finally {
+      globalThis.fetch = realFetch;
+      profiles.resetLiveCatalogCache();
+    }
+  });
+
   it('requires a base URL for openai-compatible and allows a keyless local endpoint', () => {
     expect(() => profiles.createProfile(ORG, valid({ provider: 'openai-compatible', credential_secret: null })))
       .toThrow(/base_url is required/);
