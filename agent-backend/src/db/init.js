@@ -55,6 +55,9 @@ const COLUMN_MIGRATIONS = [
   { table: 'jobs', column: 'handoff', ddl: 'TEXT' },
   // Issue #110: spend ledger for org budgets. Pre-migration rows count 0.
   { table: 'jobs', column: 'weighted_tokens', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  // Issue #107/#112: model-routing diagnostics on the job row.
+  { table: 'jobs', column: 'profile', ddl: 'TEXT' },
+  { table: 'jobs', column: 'endpoint', ddl: 'TEXT' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK

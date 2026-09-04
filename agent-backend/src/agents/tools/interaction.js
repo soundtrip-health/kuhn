@@ -96,15 +96,19 @@ export function createInteractionTools(ctx) {
         agent_slug: { type: 'string', description: 'Agent to dispatch: pm, writer, ra, advisor, reviewer, analyst' },
         task: { type: 'string', description: 'Task description for the sub-agent' },
         context: { type: 'string', description: 'Additional context for the sub-agent' },
+        difficulty: {
+          type: 'number', minimum: 0, maximum: 1,
+          description: 'How demanding the sub-task is, 0 to 1: 0 for a routine lookup or reformatting, 0.5 for ordinary drafting or review, 1 for work that needs the strongest model (deep reasoning, delicate judgement). The organization routes each agent to a cheaper or stronger model by this value; omit when unsure (treated as 1).',
+        },
       },
       required: ['agent_slug', 'task'],
     },
-    execute: async (_id, { agent_slug, task, context }) => {
+    execute: async (_id, { agent_slug, task, context, difficulty }) => {
       const input = context ? `${task}\n\nContext: ${context}` : task;
       let finalText = '';
       let errorMessage = null;
       const child = ctx.dispatch(
-        { role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext) },
+        { role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext), difficulty },
         { depth: depth + 1, parentJobId: jobId, budget },
       );
       for await (const event of child) {

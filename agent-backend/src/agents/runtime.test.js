@@ -35,6 +35,35 @@ vi.mock('./provider-runtime/factory.js', async (importOriginal) => {
   };
 });
 
+// Model routing (issue #107): the route store is covered in
+// db/model-profiles.test.js and the selection rule in model-routing.test.js;
+// here every task resolves to the deployment default for its agent's model
+// (pre-#107 behavior) unless a test scripts a route.
+const routeState = { profile: null, credential: null };
+vi.mock('./model-routing.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  const weights = { haiku: 1, sonnet: 3, opus: 5, default: 5 };
+  const weightFor = (model) => {
+    const id = (model ?? '').toLowerCase();
+    for (const [key, weight] of Object.entries(weights)) if (key !== 'default' && id.includes(key)) return weight;
+    return weights.default;
+  };
+  return {
+    ...actual,
+    resolveRoute: vi.fn(({ agent, difficulty }) => ({
+      profile: routeState.profile ?? {
+        slug: `deployment-${agent.model ?? 'default'}`, provider: 'anthropic', model_id: agent.model ?? null,
+        endpoint: 'https://api.anthropic.com', capabilities: { tools: true, input: ['text'] },
+        credential: { kind: 'deployment', secret: null }, cost_weight: weightFor(agent.model), enabled: true, managed: true,
+      },
+      source: routeState.profile ? 'org' : 'deployment',
+      difficulty: actual.normalizeDifficulty(difficulty),
+      routes: [],
+    })),
+    resolveCredential: vi.fn(() => routeState.credential ?? {}),
+  };
+});
+
 // Org budgets (issue #110, parts 3–4): the ledger SQL is covered in
 // db/org-budgets.test.js; here the resolution is scripted per test.
 const orgBudgetState = { user: null, project: null };
@@ -216,6 +245,7 @@ import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
+import { resolveRoute } from './model-routing.js';
 import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
@@ -2243,5 +2273,72 @@ describe('open-document context (STH-43)', () => {
     expect(child).toContain('currently has research/reviews/lit.md open in the editor');
     expect(child).toContain('create new files in draft/specs/');
     expect(child).not.toContain('<selection>');
+  });
+});
+
+describe('model routing at dispatch (issue #107)', () => {
+  const success = () => [
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, output_tokens: 5 } } },
+    { type: 'result', subtype: 'success', usage: { input_tokens: 10, output_tokens: 5 } },
+  ];
+
+  beforeEach(() => {
+    routeState.profile = null;
+    routeState.credential = null;
+  });
+
+  it('stamps the routed profile and endpoint on the job at start and at the terminal', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, model: 'claude-haiku-4-5' });
+    sdkState.messages = success();
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(updateJob).toHaveBeenCalledWith(42, { provider: 'anthropic', model: 'claude-haiku-4-5', profile: 'deployment-claude-haiku-4-5', endpoint: 'https://api.anthropic.com' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', profile: 'deployment-claude-haiku-4-5', endpoint: 'https://api.anthropic.com' }));
+  });
+
+  it('refuses a profile that cannot run an agent before any job exists', async () => {
+    routeState.profile = { slug: 'broken', provider: 'openai', model_id: 'x', endpoint: 'https://api.openai.com/v1', capabilities: { tools: false }, credential: { kind: 'none' }, cost_weight: 1, enabled: true };
+    sdkState.messages = success();
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go', userId: 7 });
+    expect(events).toEqual([expect.objectContaining({ type: 'error', agent: 'ra', reason: 'route_invalid', profile: 'broken' })]);
+    expect(events[0].message).toMatch(/declares no tool support/);
+    expect(createJob).not.toHaveBeenCalled();
+    expect(sdkQuery).not.toHaveBeenCalled();
+  });
+
+  it('hands an org credential to the adapter only (SDK env), never to the job or events', async () => {
+    routeState.profile = { slug: 'byok', provider: 'anthropic', model_id: 'claude-sonnet-4-6', endpoint: 'https://api.anthropic.com', capabilities: { tools: true, input: ['text'] }, credential: { kind: 'secret', secret: 'anthropic-key' }, cost_weight: 3, enabled: true };
+    routeState.credential = { apiKey: 'sk-org-byok' };
+    sdkState.messages = success();
+    const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+    expect(sdkQuery.mock.calls[0][0].options.env.ANTHROPIC_API_KEY).toBe('sk-org-byok');
+    expect(JSON.stringify(events)).not.toContain('sk-org-byok');
+    expect(JSON.stringify(updateJob.mock.calls)).not.toContain('sk-org-byok');
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', profile: 'byok', model: 'claude-sonnet-4-6' }));
+  });
+
+  it('meters the budget by the profile cost weight', async () => {
+    routeState.profile = { slug: 'cheap', provider: 'anthropic', model_id: 'claude-opus-4-8', endpoint: 'https://api.anthropic.com', capabilities: { tools: true }, credential: { kind: 'deployment' }, cost_weight: 1, enabled: true };
+    sdkState.messages = success();
+    const budget = { used: 0, limit: 10_000, baseWeight: 5 };
+    await collect({ role: 'ra', projectId: 1, input: 'go' }, { budget, depth: 1, parentJobId: 9 });
+    // 15 tokens at weight 1 against a base of 5 → 3 budget units (not 15 as the opus id would imply).
+    expect(budget.used).toBe(3);
+  });
+
+  it('threads the task difficulty to the router — top level and through dispatch_agent', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'pm', tools: ['spawn_agent'] });
+    sdkState.messages = success();
+    await collect({ role: 'pm', projectId: 1, input: 'go', difficulty: 0.6 });
+    expect(resolveRoute.mock.calls.at(-1)[0]).toMatchObject({ orgId: 3, difficulty: 0.6, agent: expect.objectContaining({ slug: 'pm' }) });
+
+    const dispatch = createSdkMcpServer.mock.calls[0][0].tools.find((t) => t.name === 'dispatch_agent');
+    getAgentWithTools.mockResolvedValue(RA_AGENT);
+    sdkState.messages = success();
+    await dispatch.handler({ agent_slug: 'ra', task: 'find papers', difficulty: 0.2 });
+    expect(resolveRoute.mock.calls.at(-1)[0]).toMatchObject({ difficulty: 0.2, agent: expect.objectContaining({ slug: 'ra' }) });
+
+    sdkState.messages = success();
+    await dispatch.handler({ agent_slug: 'ra', task: 'hard one' });
+    expect(resolveRoute.mock.calls.at(-1)[0].difficulty).toBeUndefined();
   });
 });

@@ -506,3 +506,29 @@ describe('Claude tool adapter projection (STH-1)', () => {
     expect(set.allowedTools).toEqual(['WebSearch', 'WebFetch']);
   });
 });
+
+describe('org-scoped Anthropic credential (issue #111)', () => {
+  it('layers the key onto the SDK subprocess env for this runtime only, and nowhere else', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    })();
+    const runtime = createClaudeRuntime({ model: 'claude-sonnet-4-6', projectDir: '/p', tools: [], apiKey: 'sk-org-anthropic' });
+    const events = [];
+    for await (const e of runtime.runTurn({ input: 'hi' })) events.push(e);
+    const { options } = sdkQuery.mock.calls.at(-1)[0];
+    expect(options.env.ANTHROPIC_API_KEY).toBe('sk-org-anthropic');
+    expect(options.env.PATH).toBe(process.env.PATH);
+    expect(process.env.ANTHROPIC_API_KEY).not.toBe('sk-org-anthropic');
+    expect(JSON.stringify(runtime.identity)).not.toContain('sk-org-anthropic');
+    expect(JSON.stringify(events)).not.toContain('sk-org-anthropic');
+  });
+
+  it('inherits the process env untouched when no org key is given', async () => {
+    sdkState.stream = () => (async function* () {
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    })();
+    const runtime = createClaudeRuntime({ model: 'claude-sonnet-4-6', projectDir: '/p', tools: [] });
+    for await (const _e of runtime.runTurn({ input: 'hi' })) { /* drain */ }
+    expect(sdkQuery.mock.calls.at(-1)[0].options.env).toBeUndefined();
+  });
+});

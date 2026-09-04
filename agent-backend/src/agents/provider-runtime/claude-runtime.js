@@ -80,11 +80,18 @@ function resultError(message) {
  * @param {number} [args.maxTurns] - Kuhn's per-run turn cap
  * @param {string|null} [args.initialSessionId] - session to resume when the
  *   task was started with one
+ * @param {string|null} [args.apiKey] - an org-scoped Anthropic credential
+ *   (issue #111) resolved server-side; when set it replaces the
+ *   deployment's ANTHROPIC_API_KEY for this runtime's SDK subprocess only.
+ *   Held in this closure alone — never on the identity, events, or record.
  * @returns {object} AgentRuntime: { provider, model, cancel(), runTurn(turn) }
  */
 export function createClaudeRuntime({
-  model, projectDir, tools = [], maxTurns, initialSessionId = null,
+  model, projectDir, tools = [], maxTurns, initialSessionId = null, apiKey = null,
 } = {}) {
+  // The SDK subprocess inherits process.env by default; an org credential
+  // is layered on top for this runtime only (no global env mutation).
+  const sdkEnv = apiKey ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : null;
   const { mcpServer, builtinTools, allowedTools, claudeToNeutral } = buildClaudeToolSet(tools);
   let activeQuery = null;
 
@@ -204,6 +211,7 @@ export function createClaudeRuntime({
         tools: builtinTools,
         allowedTools,
         permissionMode: 'bypassPermissions',
+        ...(sdkEnv ? { env: sdkEnv } : {}),
         includePartialMessages: true, // token-level text_delta events (story 013)
         settingSources: [], // never load host CLAUDE.md / settings into agent context
         ...(mcpServer ? { mcpServers: { [CLAUDE_MCP_SERVER_NAME]: mcpServer } } : {}),

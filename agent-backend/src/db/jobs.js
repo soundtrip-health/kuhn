@@ -55,6 +55,8 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {number} [fields.contextTokens] - last turn's prompt size (STH-52 meter)
  * @param {string|null} [fields.handoff] - hand-off note written at a budget pause (issue #110)
  * @param {number} [fields.weightedTokens] - cost-weighted tokens for the org budget ledger (issue #110)
+ * @param {string|null} [fields.profile] - the model profile the route selected (issue #107)
+ * @param {string|null} [fields.endpoint] - the provider endpoint the job egressed to (issue #112)
  * @returns {Promise<object|undefined>} The updated job row
  */
 export async function updateJob(jobId, fields) {
@@ -71,6 +73,8 @@ export async function updateJob(jobId, fields) {
     contextTokens: 'context_tokens',
     handoff: 'handoff',
     weightedTokens: 'weighted_tokens',
+    profile: 'profile',
+    endpoint: 'endpoint',
   };
   const sets = [];
   const params = [];

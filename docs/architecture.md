@@ -169,6 +169,20 @@ code.
   resets in `org_budgets`, `db/org-budgets.js`): the tightest remaining allowance caps each
   top-level run's budget, an exhausted allowance refuses the run (`budget_exhausted`), and usage
   is the sum of `jobs.weighted_tokens` — tokens weighted by model cost relative to the top tier
+- **Model profiles and per-role routing** (issues #107/#111/#112) — an agent's model is
+  resolved at dispatch time by `agents/model-routing.js` from the org's ranked route list
+  (`agent_model_routes`: profile × difficulty ceiling) over *model profiles*
+  (`db/model-profiles.js`): deployment-managed profiles derived from config (the operator's
+  Anthropic key behind the seeded `agents.model` ids, the `KUHN_PI_*` preview) plus org-owned
+  rows naming a provider (`anthropic` / `openai` / `openrouter` / `openai-compatible`), model id,
+  endpoint, declared capabilities, cost weight, and a credential *reference* (an org secret
+  name — the value is resolved server-side into the adapter constructor and nowhere else). A
+  task's difficulty (0..1; `dispatch_agent`'s `difficulty`, or the REST body) picks the
+  cheapest profile trusted with it; no route means today's deployment default. A profile that
+  cannot run an agent is refused before a job exists (`route_invalid`). Jobs record
+  `profile` and `endpoint` beside `provider`/`model`. Owners manage all of it under
+  Settings → Models (`routes/model-profiles.js`, with a synthetic connectivity probe in
+  `agents/model-probe.js`). Spec: `docs/specs/107-model-profiles-and-routing.md`.
 
 **Historical consequences, now under revision:**
 

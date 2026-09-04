@@ -685,6 +685,81 @@ export function createFauxPiRuntime({
 }
 
 /**
+ * Api-key auth for a credential Kuhn already resolved server-side (an org
+ * secret, issue #111). The value lives only in this closure: it is never
+ * placed on the model entry, the provider descriptor's public fields, the
+ * continuation, or any event. No env var is consulted or mutated.
+ */
+export function staticApiKeyAuth(name, apiKey) {
+  return {
+    name,
+    resolve: async ({ signal }) => {
+      signal?.throwIfAborted?.();
+      return { auth: { apiKey }, source: 'org secret' };
+    },
+  };
+}
+
+/**
+ * Placeholder credential for a keyless local endpoint (issue #112: an
+ * Ollama / vLLM server with no auth). pi-ai refuses to send a request with
+ * no key, and such servers ignore the bearer, so this resolves to a fixed
+ * non-secret token. Only the profile path asks for it explicitly.
+ */
+export const KEYLESS_PLACEHOLDER = 'none';
+export function keylessAuth(name) {
+  return {
+    name,
+    resolve: async ({ signal }) => {
+      signal?.throwIfAborted?.();
+      return { auth: { apiKey: KEYLESS_PLACEHOLDER }, source: 'no credential (local endpoint)' };
+    },
+  };
+}
+
+/**
+ * A catalog entry with the owner's explicit capability overrides applied
+ * (issue #111): a pinned context window or output cap replaces the
+ * published value for this runtime only; the catalog object is untouched.
+ */
+function withOverrides(models, modelId, overrides) {
+  if (!overrides || typeof overrides !== 'object') return models;
+  const keys = ['reasoning', 'input', 'contextWindow', 'maxTokens'].filter((k) => overrides[k] !== undefined);
+  if (keys.length === 0) return models;
+  return models.map((m) => (m.id === modelId ? { ...m, ...Object.fromEntries(keys.map((k) => [k, overrides[k]])) } : m));
+}
+
+/** The auth for a provider path: a resolved key wins, then a keyless
+ * placeholder when explicitly requested, else the named env var. */
+function providerAuth(name, { apiKey, apiKeyEnv, keyless = false }) {
+  if (apiKey) return staticApiKeyAuth(name, apiKey);
+  if (keyless) return keylessAuth(name);
+  return envApiKeyAuth(name, [apiKeyEnv]);
+}
+
+/**
+ * A model entry for an id the provider catalog does not list (issue #112:
+ * declared metadata for endpoints that cannot be auto-discovered). Cost is
+ * zero here — Kuhn's own budget weighting (the profile's cost_weight) is
+ * what meters spend, never pi-ai's price table.
+ */
+function declaredModel({ id, provider, api, baseUrl, name = id, reasoning = false, input = ['text'], contextWindow = 128_000, maxTokens = 16_384, compat = {} }) {
+  return {
+    id,
+    name,
+    api,
+    provider,
+    baseUrl,
+    reasoning,
+    input: [...input],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow,
+    maxTokens,
+    compat,
+  };
+}
+
+/**
  * Configurable OpenAI-compatible endpoint path (vLLM/Ollama/LiteLLM/etc.).
  * Credentials are resolved from a named environment variable; they never
  * enter model metadata or continuation state.
@@ -694,6 +769,8 @@ export function createOpenAICompatiblePiRuntime({
   modelId,
   providerId = 'openai-compatible',
   apiKeyEnv = 'OPENAI_COMPATIBLE_API_KEY',
+  apiKey = null,
+  keyless = false,
   name = modelId,
   reasoning = false,
   input = ['text'],
@@ -725,7 +802,7 @@ export function createOpenAICompatiblePiRuntime({
     id: providerId,
     name: providerId,
     baseUrl: endpoint,
-    auth: { apiKey: envApiKeyAuth(`${providerId} API key`, [apiKeyEnv]) },
+    auth: { apiKey: providerAuth(`${providerId} API key`, { apiKey, apiKeyEnv, keyless }) },
     models: [model],
     api: openAICompletionsApi(),
   });
@@ -750,17 +827,27 @@ export function createOpenAICompatiblePiRuntime({
 export function createOpenAIPiRuntime({
   modelId = 'gpt-5-mini',
   apiKeyEnv = 'OPENAI_API_KEY',
+  apiKey = null,
+  capabilities = null,
+  capabilityOverrides = null,
   tools = [],
   systemPrompt = '',
   continuation,
   maxTurns,
 } = {}) {
+  const baseUrl = 'https://api.openai.com/v1';
+  const catalog = Object.values(OPENAI_MODELS);
+  // A model id the pinned catalog does not know runs on its declared
+  // metadata (issue #112) — the catalog is a convenience, not an allowlist.
+  const declared = catalog.some((m) => m.id === modelId) || !capabilities
+    ? null
+    : declaredModel({ id: modelId, provider: 'openai', api: 'openai-responses', baseUrl, ...capabilities });
   const provider = createProvider({
     id: 'openai',
     name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    auth: { apiKey: envApiKeyAuth('OpenAI API key', [apiKeyEnv]) },
-    models: Object.values(OPENAI_MODELS),
+    baseUrl,
+    auth: { apiKey: providerAuth('OpenAI API key', { apiKey, apiKeyEnv }) },
+    models: withOverrides(declared ? [...catalog, declared] : catalog, modelId, capabilityOverrides),
     api: openAIResponsesApi(),
   });
   const collection = createModels();
@@ -787,17 +874,25 @@ export function createOpenAIPiRuntime({
 export function createOpenRouterPiRuntime({
   modelId = 'openai/gpt-oss-20b',
   apiKeyEnv = 'OPENROUTER_API_KEY',
+  apiKey = null,
+  capabilities = null,
+  capabilityOverrides = null,
   tools = [],
   systemPrompt = '',
   continuation,
   maxTurns,
 } = {}) {
+  const baseUrl = 'https://openrouter.ai/api/v1';
+  const catalog = Object.values(OPENROUTER_MODELS);
+  const declared = catalog.some((m) => m.id === modelId) || !capabilities
+    ? null
+    : declaredModel({ id: modelId, provider: 'openrouter', api: 'openai-completions', baseUrl, ...capabilities });
   const provider = createProvider({
     id: 'openrouter',
     name: 'OpenRouter',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    auth: { apiKey: envApiKeyAuth('OpenRouter API key', [apiKeyEnv]) },
-    models: Object.values(OPENROUTER_MODELS),
+    baseUrl,
+    auth: { apiKey: providerAuth('OpenRouter API key', { apiKey, apiKeyEnv }) },
+    models: withOverrides(declared ? [...catalog, declared] : catalog, modelId, capabilityOverrides),
     api: openAICompletionsApi(),
   });
   const collection = createModels();
