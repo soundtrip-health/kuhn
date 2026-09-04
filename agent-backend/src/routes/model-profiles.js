@@ -9,7 +9,9 @@ import { Router } from 'express';
 import { listAgentsWithTools } from '../db/agents.js';
 import { recordAuthEvent } from '../db/auth-events.js';
 import {
+  PROVIDERS,
   ProfileValidationError,
+  catalogCapabilities,
   createProfile,
   deleteProfile,
   deploymentDefaultProfile,
@@ -70,6 +72,23 @@ router.get('/api/orgs/:orgId/model-profiles', async (req, res) => {
   const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
   if (!ctx) return;
   res.json({ profiles: listProfiles(ctx.orgId) });
+});
+
+/**
+ * GET /api/orgs/:orgId/model-profiles/catalog?provider=&model_id= — what the
+ * built-in provider catalog knows about a model (owner): capabilities, a
+ * display name, and a suggested cost weight; { known: false } otherwise.
+ */
+router.get('/api/orgs/:orgId/model-profiles/catalog', async (req, res) => {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
+  if (!ctx) return;
+  const provider = String(req.query.provider ?? '');
+  const modelId = String(req.query.model_id ?? '').trim();
+  if (!PROVIDERS.includes(provider)) {
+    res.status(400).json({ error: `provider must be one of: ${PROVIDERS.join(', ')}`, field: 'provider' });
+    return;
+  }
+  res.json(catalogCapabilities(provider, modelId));
 });
 
 /** POST /api/orgs/:orgId/model-profiles — create an org profile (owner). 201 { profile }. */

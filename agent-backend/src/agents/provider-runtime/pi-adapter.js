@@ -717,6 +717,18 @@ export function keylessAuth(name) {
   };
 }
 
+/**
+ * A catalog entry with the owner's explicit capability overrides applied
+ * (issue #111): a pinned context window or output cap replaces the
+ * published value for this runtime only; the catalog object is untouched.
+ */
+function withOverrides(models, modelId, overrides) {
+  if (!overrides || typeof overrides !== 'object') return models;
+  const keys = ['reasoning', 'input', 'contextWindow', 'maxTokens'].filter((k) => overrides[k] !== undefined);
+  if (keys.length === 0) return models;
+  return models.map((m) => (m.id === modelId ? { ...m, ...Object.fromEntries(keys.map((k) => [k, overrides[k]])) } : m));
+}
+
 /** The auth for a provider path: a resolved key wins, then a keyless
  * placeholder when explicitly requested, else the named env var. */
 function providerAuth(name, { apiKey, apiKeyEnv, keyless = false }) {
@@ -817,6 +829,7 @@ export function createOpenAIPiRuntime({
   apiKeyEnv = 'OPENAI_API_KEY',
   apiKey = null,
   capabilities = null,
+  capabilityOverrides = null,
   tools = [],
   systemPrompt = '',
   continuation,
@@ -834,7 +847,7 @@ export function createOpenAIPiRuntime({
     name: 'OpenAI',
     baseUrl,
     auth: { apiKey: providerAuth('OpenAI API key', { apiKey, apiKeyEnv }) },
-    models: declared ? [...catalog, declared] : catalog,
+    models: withOverrides(declared ? [...catalog, declared] : catalog, modelId, capabilityOverrides),
     api: openAIResponsesApi(),
   });
   const collection = createModels();
@@ -863,6 +876,7 @@ export function createOpenRouterPiRuntime({
   apiKeyEnv = 'OPENROUTER_API_KEY',
   apiKey = null,
   capabilities = null,
+  capabilityOverrides = null,
   tools = [],
   systemPrompt = '',
   continuation,
@@ -878,7 +892,7 @@ export function createOpenRouterPiRuntime({
     name: 'OpenRouter',
     baseUrl,
     auth: { apiKey: providerAuth('OpenRouter API key', { apiKey, apiKeyEnv }) },
-    models: declared ? [...catalog, declared] : catalog,
+    models: withOverrides(declared ? [...catalog, declared] : catalog, modelId, capabilityOverrides),
     api: openAICompletionsApi(),
   });
   const collection = createModels();

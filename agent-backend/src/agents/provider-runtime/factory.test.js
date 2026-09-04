@@ -226,6 +226,11 @@ describe('createAgentRuntime with a model profile', () => {
     });
   });
 
+  it('forwards capability overrides for a catalogued model', () => {
+    const runtime = createAgentRuntime({ profile: profile({ provider: 'openai', model_id: 'gpt-5-mini', capability_overrides: { contextWindow: 120_000 } }), credential: { apiKey: 'k' }, projectDir: '/p' });
+    expect(runtime.identity.capabilities.contextWindow).toBe(120_000);
+  });
+
   it('keyless OpenAI-compatible profiles get the placeholder bearer; credentialed ones do not', async () => {
     const local = profile({ provider: 'openai-compatible', model_id: 'm', base_url: 'http://127.0.0.1:8000/v1', credential: { kind: 'none', secret: null } });
     const keyless = createAgentRuntime({ profile: local, credential: {}, projectDir: '/p' });
