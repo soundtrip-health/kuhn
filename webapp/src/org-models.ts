@@ -458,7 +458,7 @@ function validateDraft(d: ProfileDraft): Record<string, string> {
   } else if (!d.credential) {
     errors.credential = `${PROVIDER_LABEL[d.provider]} needs an API key: save one under Provider credentials first.`;
   }
-  if (!d.useCatalog) {
+  {
     const cw = Number.parseInt(d.contextWindow, 10);
     if (!Number.isInteger(cw) || cw < 1024) errors.contextWindow = 'A whole number of tokens, at least 1024.';
     const mt = Number.parseInt(d.maxTokens, 10);
@@ -511,8 +511,9 @@ function profileForm(ctx: Ctx, d: ProfileDraft): HTMLElement {
   credential.addEventListener('change', () => { d.credential = credential.value; delete d.errors.credential; ctx.rerender(); });
 
   const catalogKnown = Boolean(d.catalog?.known && d.catalogFor === `${d.provider}:${d.modelId.trim()}`);
+  const liveSource = catalogKnown && d.catalog?.source === 'openrouter-live';
   const capsHelp = catalogKnown
-    ? `Published values for ${d.catalog?.name ?? d.modelId}: ${Math.round(Number(d.contextWindow) / 1000)}k context, ${Number(d.maxTokens).toLocaleString()} max output${d.reasoning ? ', reasoning' : ''}. Untick to pin your own (for example a smaller context window to stay under a long-context surcharge).`
+    ? `Published values for ${d.catalog?.name ?? d.modelId}${liveSource ? ' (from OpenRouter’s model list; newer than the built-in catalog, so they are saved with the profile)' : ''}: ${Math.round(Number(d.contextWindow) / 1000)}k context, ${Number(d.maxTokens).toLocaleString()} max output${d.reasoning ? ', reasoning' : ''}. Untick to pin your own (for example a smaller context window to stay under a long-context surcharge).`
     : d.provider === 'openai-compatible'
       ? 'Self-hosted servers publish no limits Kuhn can read. Enter the model’s context window and output cap from your server’s documentation.'
       : d.modelId.trim()
@@ -613,7 +614,9 @@ function profileForm(ctx: Ctx, d: ProfileDraft): HTMLElement {
       model_id: d.modelId.trim(),
       base_url: d.provider === 'openai-compatible' ? d.baseUrl.trim() : null,
       credential_secret: d.credential || null,
-      capabilities: d.useCatalog ? {} : {
+      // Values from the pinned catalog are re-derived server-side, so nothing
+      // is stored; values from the live list (or typed) are saved as overrides.
+      capabilities: d.useCatalog && d.catalog?.source === 'catalog' ? {} : {
         contextWindow: Number.parseInt(d.contextWindow, 10),
         maxTokens: Number.parseInt(d.maxTokens, 10),
         reasoning: d.reasoning,

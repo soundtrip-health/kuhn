@@ -2160,6 +2160,8 @@ export interface ModelProfile {
 
 export interface ModelCatalogEntry {
   known: boolean;
+  /** 'catalog' = the pinned built-in list; 'openrouter-live' = OpenRouter's public model list. */
+  source: 'catalog' | 'openrouter-live' | null;
   name: string | null;
   capabilities: ModelCapabilities | null;
   suggested_cost_weight: number | null;
