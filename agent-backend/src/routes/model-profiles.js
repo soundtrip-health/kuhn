@@ -11,8 +11,8 @@ import { recordAuthEvent } from '../db/auth-events.js';
 import {
   PROVIDERS,
   ProfileValidationError,
-  catalogCapabilities,
   createProfile,
+  lookupCapabilities,
   deleteProfile,
   deploymentDefaultProfile,
   getProfile,
@@ -76,8 +76,10 @@ router.get('/api/orgs/:orgId/model-profiles', async (req, res) => {
 
 /**
  * GET /api/orgs/:orgId/model-profiles/catalog?provider=&model_id= — what the
- * built-in provider catalog knows about a model (owner): capabilities, a
- * display name, and a suggested cost weight; { known: false } otherwise.
+ * built-in provider catalog knows about a model (owner) — or, for an id the
+ * pinned catalog lacks, OpenRouter's live keyless model list (source
+ * 'openrouter-live'): capabilities, a display name, and a suggested cost
+ * weight; { known: false } otherwise.
  */
 router.get('/api/orgs/:orgId/model-profiles/catalog', async (req, res) => {
   const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
@@ -88,7 +90,7 @@ router.get('/api/orgs/:orgId/model-profiles/catalog', async (req, res) => {
     res.status(400).json({ error: `provider must be one of: ${PROVIDERS.join(', ')}`, field: 'provider' });
     return;
   }
-  res.json(catalogCapabilities(provider, modelId));
+  res.json(await lookupCapabilities(provider, modelId));
 });
 
 /** POST /api/orgs/:orgId/model-profiles — create an org profile (owner). 201 { profile }. */
