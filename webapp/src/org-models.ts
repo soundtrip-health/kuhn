@@ -4,8 +4,13 @@
 // Owner-only. Credentials are org secrets (write-only); profiles reference
 // them by name and never receive a value back. Routing changes that widen
 // where the org's content is sent (a new provider host) are confirmed first.
+//
+// The profile form keeps its own draft (module state), so a re-render — or
+// a server-side rejection of one field — never wipes what the owner typed;
+// syntax is checked client-side before anything is sent.
 
 import {
+  type ModelCatalogEntry,
   type ModelProbeResult,
   type ModelProfile,
   type ModelProfileInput,
@@ -18,6 +23,7 @@ import {
   listModelProfiles,
   listModelRoutes,
   listOrgSecrets,
+  lookupModelCatalog,
   putModelRoutes,
   putOrgSecret,
   testModelProfile,
@@ -38,12 +44,25 @@ const PROVIDER_LABEL: Record<ModelProvider, string> = {
   'openai-compatible': 'OpenAI-compatible endpoint',
 };
 const PROVIDERS = Object.keys(PROVIDER_LABEL) as ModelProvider[];
+const PROVIDER_HOST: Record<ModelProvider, string | null> = {
+  anthropic: 'api.anthropic.com',
+  openai: 'api.openai.com',
+  openrouter: 'openrouter.ai',
+  'openai-compatible': null,
+};
 const SUGGESTED_SECRET: Record<ModelProvider, string> = {
   anthropic: 'anthropic-api-key',
   openai: 'openai-api-key',
   openrouter: 'openrouter-api-key',
   'openai-compatible': 'model-endpoint-key',
 };
+const MODEL_ID_EXAMPLE: Record<ModelProvider, string> = {
+  anthropic: 'claude-sonnet-4-6',
+  openai: 'gpt-5-mini',
+  openrouter: 'openai/gpt-oss-20b',
+  'openai-compatible': 'the name your server reports under /v1/models',
+};
+const SLUG_PATTERN = /^[a-z][a-z0-9.-]{0,63}$/;
 
 // ---- State --------------------------------------------------------------------
 
@@ -52,13 +71,35 @@ let agents: ModelRouteAgent[] | null = null;
 let secrets: OrgSecret[] = [];
 let error: string | null = null;
 let busy = false;
-/** 'new', a profile slug, or null when no profile form is open. */
-let editing: string | null = null;
-let formError: string | null = null;
 const testResults = new Map<string, ModelProbeResult | 'running'>();
 /** Unsaved route edits per agent slug. */
 const routeDrafts = new Map<string, ModelRoute[]>();
-let routeErrors = new Map<string, string>();
+
+/** The open profile form, or null. Survives re-renders and server rejections. */
+interface ProfileDraft {
+  editingSlug: string | null;           // null = new profile
+  slug: string;
+  slugTouched: boolean;
+  name: string;
+  provider: ModelProvider;
+  modelId: string;
+  baseUrl: string;
+  credential: string;                   // secret name or ''
+  useCatalog: boolean;                  // true = provider's published values, no overrides
+  contextWindow: string;
+  maxTokens: string;
+  reasoning: boolean;
+  tools: boolean;
+  costWeight: string;                   // '' = use the catalog suggestion
+  dataPolicy: string;
+  enabled: boolean;
+  errors: Record<string, string>;
+  formError: string | null;
+  catalog: ModelCatalogEntry | null;    // lookup for the current provider + model id
+  catalogFor: string;                   // `${provider}:${modelId}` the lookup belongs to
+}
+let draft: ProfileDraft | null = null;
+let catalogTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function resetModelsTab(): void {
   profiles = null;
@@ -66,11 +107,9 @@ export function resetModelsTab(): void {
   secrets = [];
   error = null;
   busy = false;
-  editing = null;
-  formError = null;
+  draft = null;
   testResults.clear();
   routeDrafts.clear();
-  routeErrors = new Map();
 }
 
 export async function reloadModels({ orgId, rerender }: Ctx): Promise<void> {
@@ -102,10 +141,15 @@ function profileLabel(p: ModelProfile): string {
   return `${p.name} (${PROVIDER_LABEL[p.provider]} · ${p.model_id ?? 'default'})`;
 }
 
+/** A slug derived from a model id: lowercase, unsupported characters → dashes. */
+function slugFromModelId(modelId: string): string {
+  return modelId.toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^[^a-z]+/, '').replace(/-+$/, '').slice(0, 64);
+}
+
 function button(text: string, onClick: () => void, { primary = false, disabled = false, label }: { primary?: boolean; disabled?: boolean; label?: string } = {}): HTMLButtonElement {
   const b = document.createElement('button');
   b.type = 'button';
-  b.className = primary ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  b.className = primary ? 'btn btn-accent btn-sm' : 'btn btn-ghost btn-sm';
   b.textContent = text;
   b.disabled = disabled;
   if (label) b.setAttribute('aria-label', label);
@@ -113,14 +157,12 @@ function button(text: string, onClick: () => void, { primary = false, disabled =
   return b;
 }
 
-function input(opts: { value?: string; placeholder?: string; type?: string; label: string; required?: boolean; pattern?: string; width?: string }): HTMLInputElement {
+function input(opts: { value?: string; placeholder?: string; type?: string; label: string; width?: string }): HTMLInputElement {
   const el = document.createElement('input');
   el.className = 'pb-input';
   el.type = opts.type ?? 'text';
   if (opts.value != null) el.value = opts.value;
   if (opts.placeholder) el.placeholder = opts.placeholder;
-  if (opts.required) el.required = true;
-  if (opts.pattern) el.pattern = opts.pattern;
   if (opts.width) el.style.width = opts.width;
   el.setAttribute('aria-label', opts.label);
   return el;
@@ -140,13 +182,39 @@ function select<T extends string>(options: Array<[T, string]>, value: T, label: 
   return el;
 }
 
-function labelled(text: string, control: HTMLElement): HTMLElement {
+/** A labelled control with help text and an optional validation message. */
+function field(label: string, control: HTMLElement, help: string, errorText?: string): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'admin-field';
+  if (errorText) wrap.classList.add('is-invalid');
   const span = document.createElement('span');
   span.className = 'admin-field-label';
-  span.textContent = text;
-  wrap.append(span, control);
+  span.textContent = label;
+  const helpEl = document.createElement('span');
+  helpEl.className = 'admin-field-help';
+  helpEl.textContent = help;
+  wrap.append(span, control, helpEl);
+  if (errorText) {
+    const err = document.createElement('span');
+    err.className = 'admin-field-error';
+    err.setAttribute('role', 'alert');
+    err.textContent = errorText;
+    wrap.append(err);
+  }
+  return wrap;
+}
+
+function checkbox(checked: boolean, label: string, onChange: (v: boolean) => void): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = 'admin-field-inline';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = checked;
+  box.setAttribute('aria-label', label);
+  box.addEventListener('change', () => onChange(box.checked));
+  const text = document.createElement('span');
+  text.textContent = label;
+  wrap.append(box, text);
   return wrap;
 }
 
@@ -196,18 +264,30 @@ function credentialsSection(ctx: Ctx): HTMLElement[] {
   const form = document.createElement('form');
   form.className = 'admin-form-row';
   const provider = select<ModelProvider>(PROVIDERS.map((p) => [p, PROVIDER_LABEL[p]]), 'openai', 'Credential provider');
-  const name = input({ value: SUGGESTED_SECRET.openai, label: 'Secret name', required: true, pattern: '[a-z][a-z0-9-]{0,63}', width: '180px' });
+  const name = input({ value: SUGGESTED_SECRET.openai, label: 'Secret name', width: '180px' });
+  name.title = 'The name profiles use to refer to this key: lowercase letters, digits, dashes.';
   provider.addEventListener('change', () => { name.value = SUGGESTED_SECRET[provider.value as ModelProvider]; });
-  const value = input({ type: 'password', placeholder: 'API key (stored write-only)', label: 'API key', required: true, width: '260px' });
+  const value = input({ type: 'password', placeholder: 'API key (stored write-only)', label: 'API key', width: '260px' });
   const save = document.createElement('button');
   save.type = 'submit';
-  save.className = 'btn btn-ghost btn-sm';
+  save.className = 'btn btn-accent btn-sm';
   save.textContent = 'Save credential';
   save.disabled = busy;
-  form.append(provider, name, value, save);
+  const err = inlineError(null);
+  form.append(provider, name, value, save, err);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const n = name.value.trim();
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(n)) {
+      err.textContent = 'Secret name: lowercase letters, digits, and dashes, starting with a letter.';
+      err.hidden = false;
+      return;
+    }
+    if (!value.value) {
+      err.textContent = 'Paste the API key first.';
+      err.hidden = false;
+      return;
+    }
     if (secrets.some((s) => s.name === n) && !confirm(`Replace the value of "${n}"?`)) return;
     void run(ctx, async () => { await putOrgSecret(ctx.orgId, n, value.value, `${PROVIDER_LABEL[provider.value as ModelProvider]} API key`); }, `Saved ${n}`);
   });
@@ -229,10 +309,10 @@ function profilesSection(ctx: Ctx): HTMLElement[] {
   parts.push(table);
   parts.push(hint('Weight is the budget cost relative to the deployment’s tiers (Haiku 1, Sonnet 3, Opus 5). '
     + 'Deployment profiles come from the server configuration and cannot be edited here.'));
-  if (editing === null) {
-    parts.push(button('Add profile', () => { editing = 'new'; formError = null; ctx.rerender(); }, { disabled: busy }));
+  if (draft === null) {
+    parts.push(button('Add profile', () => { draft = newDraft(null); ctx.rerender(); }, { disabled: busy }));
   } else {
-    parts.push(profileForm(ctx, editing === 'new' ? null : profileBySlug(editing) ?? null));
+    parts.push(profileForm(ctx, draft));
   }
   return parts;
 }
@@ -260,7 +340,8 @@ function profileRow(ctx: Ctx, p: ModelProfile): HTMLTableRowElement {
     td.textContent = `${PROVIDER_LABEL[p.provider]} · ${p.model_id ?? 'provider default'}`;
     const caps = document.createElement('div');
     caps.className = 'admin-member-email';
-    caps.textContent = `${Math.round(p.capabilities.contextWindow / 1000)}k context${p.capabilities.reasoning ? ' · reasoning' : ''}${p.capabilities.tools ? '' : ' · no tools'}`;
+    const pinned = Object.keys(p.capability_overrides ?? {}).length > 0;
+    caps.textContent = `${Math.round(p.capabilities.contextWindow / 1000)}k context${p.capabilities.reasoning ? ' · reasoning' : ''}${p.capabilities.tools ? '' : ' · no tools'}${pinned ? ' · pinned' : p.catalog_known ? '' : ' · declared'}`;
     td.append(caps);
   });
   cell((td) => { td.textContent = hostOf(p.endpoint) ?? '—'; });
@@ -280,7 +361,7 @@ function profileRow(ctx: Ctx, p: ModelProfile): HTMLTableRowElement {
         .finally(() => ctx.rerender());
     }, { disabled: busy || testResults.get(p.slug) === 'running', label: `Test connection for ${p.name}` }));
     if (!p.managed) {
-      td.append(button('Edit', () => { editing = p.slug; formError = null; ctx.rerender(); }, { disabled: busy, label: `Edit ${p.name}` }));
+      td.append(button('Edit', () => { draft = newDraft(p); ctx.rerender(); }, { disabled: busy, label: `Edit ${p.name}` }));
       td.append(button('Delete', () => {
         if (!confirm(`Delete profile "${p.name}"? Agents routed to it fall back to the remaining routes or the deployment default.`)) return;
         void run(ctx, async () => { await deleteModelProfile(ctx.orgId, p.slug); }, `Deleted ${p.name}`);
@@ -305,107 +386,257 @@ function profileRow(ctx: Ctx, p: ModelProfile): HTMLTableRowElement {
   return tr;
 }
 
-function profileForm(ctx: Ctx, current: ModelProfile | null): HTMLElement {
+function newDraft(current: ModelProfile | null): ProfileDraft {
+  const caps = current?.capabilities;
+  return {
+    editingSlug: current?.slug ?? null,
+    slug: current?.slug ?? '',
+    slugTouched: current !== null,
+    name: current?.name ?? '',
+    provider: current?.provider ?? 'openai',
+    modelId: current?.model_id ?? '',
+    baseUrl: current?.base_url ?? '',
+    credential: current?.credential.secret ?? '',
+    useCatalog: current ? Object.keys(current.capability_overrides ?? {}).length === 0 : true,
+    contextWindow: String(caps?.contextWindow ?? 128000),
+    maxTokens: String(caps?.maxTokens ?? 16384),
+    reasoning: caps?.reasoning ?? false,
+    tools: caps?.tools ?? true,
+    costWeight: current ? String(current.cost_weight) : '',
+    dataPolicy: current?.data_policy ?? '',
+    enabled: current?.enabled ?? true,
+    errors: {},
+    formError: null,
+    catalog: null,
+    catalogFor: '',
+  };
+}
+
+/** Look the current provider + model id up in the catalog (debounced); re-render on arrival. */
+function scheduleCatalogLookup(ctx: Ctx): void {
+  if (!draft) return;
+  const key = `${draft.provider}:${draft.modelId.trim()}`;
+  if (draft.catalogFor === key) return;
+  if (catalogTimer) clearTimeout(catalogTimer);
+  const d = draft;
+  catalogTimer = setTimeout(() => {
+    if (draft !== d || !d.modelId.trim()) return;
+    void lookupModelCatalog(ctx.orgId, d.provider, d.modelId.trim())
+      .then((entry) => {
+        if (draft !== d) return;
+        d.catalog = entry;
+        d.catalogFor = key;
+        if (entry.known && entry.capabilities && d.useCatalog) {
+          d.contextWindow = String(entry.capabilities.contextWindow);
+          d.maxTokens = String(entry.capabilities.maxTokens);
+          d.reasoning = entry.capabilities.reasoning;
+          d.tools = entry.capabilities.tools;
+        }
+        if (entry.known && !d.name.trim() && entry.name) d.name = entry.name;
+        ctx.rerender();
+      })
+      .catch(() => { /* the form works without the catalog */ });
+  }, 350);
+}
+
+/** Client-side syntax checks mirroring the server's rules; returns per-field messages. */
+function validateDraft(d: ProfileDraft): Record<string, string> {
+  const errors: Record<string, string> = {};
+  if (!SLUG_PATTERN.test(d.slug)) errors.slug = 'Lowercase letters, digits, dots, and dashes; must start with a letter (up to 64 characters).';
+  else if (d.slug.startsWith('deployment-')) errors.slug = 'Names starting with "deployment-" are reserved.';
+  else if (d.editingSlug === null && profileBySlug(d.slug)) errors.slug = 'A profile with this handle already exists.';
+  if (!d.name.trim()) errors.name = 'Give the profile a display name.';
+  else if (d.name.trim().length > 120) errors.name = 'At most 120 characters.';
+  if (!d.modelId.trim()) errors.modelId = 'Enter the provider’s model identifier.';
+  else if (/\s/.test(d.modelId.trim())) errors.modelId = 'Model ids contain no spaces.';
+  if (d.provider === 'openai-compatible') {
+    let url: URL | null = null;
+    try { url = new URL(d.baseUrl.trim()); } catch { /* handled below */ }
+    if (!url) errors.baseUrl = 'Enter the server’s base URL, e.g. https://llm.example.org/v1';
+    else if (!['http:', 'https:'].includes(url.protocol)) errors.baseUrl = 'Use http or https.';
+    else if (url.username || url.password || url.search || url.hash) errors.baseUrl = 'No credentials, query parameters, or fragments in the URL.';
+  } else if (!d.credential) {
+    errors.credential = `${PROVIDER_LABEL[d.provider]} needs an API key: save one under Provider credentials first.`;
+  }
+  if (!d.useCatalog) {
+    const cw = Number.parseInt(d.contextWindow, 10);
+    if (!Number.isInteger(cw) || cw < 1024) errors.contextWindow = 'A whole number of tokens, at least 1024.';
+    const mt = Number.parseInt(d.maxTokens, 10);
+    if (!Number.isInteger(mt) || mt < 1) errors.maxTokens = 'A positive whole number of tokens.';
+  }
+  if (d.costWeight.trim()) {
+    const w = Number.parseFloat(d.costWeight);
+    if (!Number.isFinite(w) || w <= 0 || w > 100) errors.costWeight = 'A number above 0 and at most 100, or blank to use the suggestion.';
+  }
+  if (d.dataPolicy.length > 2000) errors.dataPolicy = 'At most 2000 characters.';
+  return errors;
+}
+
+function profileForm(ctx: Ctx, d: ProfileDraft): HTMLElement {
+  scheduleCatalogLookup(ctx);
   const form = document.createElement('form');
   form.className = 'admin-profile-form';
-  const title = sectionTitle(current ? `Edit ${current.name}` : 'New profile');
-  form.append(title);
-  if (formError) form.append(inlineError(formError));
+  form.noValidate = true; // our own messages, not the browser's "Please fill out this field"
+  form.append(sectionTitle(d.editingSlug ? `Edit ${d.editingSlug}` : 'New profile'));
+  if (d.formError) form.append(inlineError(d.formError));
+  const bind = (el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, key: keyof ProfileDraft, after?: () => void) => {
+    el.addEventListener('input', () => {
+      (d as unknown as Record<string, unknown>)[key] = el.value;
+      if (d.errors[key]) { delete d.errors[key]; ctx.rerender(); }
+      after?.();
+    });
+  };
 
-  const slug = input({ value: current?.slug ?? '', placeholder: 'slug (e.g. gpt-mini)', label: 'Profile slug', required: true, pattern: '[a-z][a-z0-9-]{0,63}' });
-  slug.disabled = current !== null;
-  const name = input({ value: current?.name ?? '', placeholder: 'Display name', label: 'Profile name', required: true });
-  const provider = select<ModelProvider>(PROVIDERS.map((p) => [p, PROVIDER_LABEL[p]]), current?.provider ?? 'openai', 'Provider');
-  const modelId = input({ value: current?.model_id ?? '', placeholder: 'model id (e.g. gpt-5-mini, openai/gpt-oss-20b)', label: 'Model id', required: true });
-  const baseUrl = input({ value: current?.base_url ?? '', placeholder: 'https://host/v1', label: 'Base URL', type: 'url' });
-  const secretOptions: Array<[string, string]> = [['', 'none (keyless local endpoint)'], ...secrets.map((s) => [s.name, s.name] as [string, string])];
-  const credential = select<string>(secretOptions, current?.credential.secret ?? '', 'Credential secret');
-  const contextWindow = input({ value: String(current?.capabilities.contextWindow ?? 128000), label: 'Context window (tokens)', type: 'number', width: '120px' });
-  const maxTokens = input({ value: String(current?.capabilities.maxTokens ?? 16384), label: 'Max output tokens', type: 'number', width: '120px' });
-  const reasoning = document.createElement('input');
-  reasoning.type = 'checkbox';
-  reasoning.checked = current?.capabilities.reasoning ?? false;
-  reasoning.setAttribute('aria-label', 'Reasoning model');
-  const tools = document.createElement('input');
-  tools.type = 'checkbox';
-  tools.checked = current?.capabilities.tools ?? true;
-  tools.setAttribute('aria-label', 'Supports tool calls');
-  const enabled = document.createElement('input');
-  enabled.type = 'checkbox';
-  enabled.checked = current?.enabled ?? true;
-  enabled.setAttribute('aria-label', 'Enabled');
-  const weight = input({ value: String(current?.cost_weight ?? 5), label: 'Cost weight', type: 'number', width: '90px' });
-  weight.step = '0.1';
-  weight.min = '0.1';
+  const slug = input({ value: d.slug, placeholder: 'e.g. gpt-5-mini or lab-vllm', label: 'Profile slug' });
+  slug.disabled = d.editingSlug !== null;
+  bind(slug, 'slug', () => { d.slugTouched = true; });
+  const name = input({ value: d.name, placeholder: 'e.g. GPT-5 Mini (OpenAI)', label: 'Profile name' });
+  bind(name, 'name');
+  const provider = select<ModelProvider>(PROVIDERS.map((p) => [p, PROVIDER_LABEL[p]]), d.provider, 'Provider');
+  provider.addEventListener('change', () => {
+    d.provider = provider.value as ModelProvider;
+    delete d.errors.provider; delete d.errors.baseUrl; delete d.errors.credential;
+    d.catalog = null; d.catalogFor = '';
+    ctx.rerender();
+  });
+  const modelId = input({ value: d.modelId, placeholder: MODEL_ID_EXAMPLE[d.provider], label: 'Model id' });
+  bind(modelId, 'modelId', () => {
+    if (!d.slugTouched && d.editingSlug === null) { d.slug = slugFromModelId(d.modelId); slug.value = d.slug; }
+    scheduleCatalogLookup(ctx);
+  });
+  const baseUrl = input({ value: d.baseUrl, placeholder: 'https://host/v1', label: 'Base URL' });
+  bind(baseUrl, 'baseUrl');
+  const secretOptions: Array<[string, string]> = [['', d.provider === 'openai-compatible' ? 'none (server needs no key)' : 'choose a saved credential…'], ...secrets.map((s) => [s.name, s.name] as [string, string])];
+  const credential = select<string>(secretOptions, d.credential, 'Credential secret');
+  credential.addEventListener('change', () => { d.credential = credential.value; delete d.errors.credential; ctx.rerender(); });
+
+  const catalogKnown = Boolean(d.catalog?.known && d.catalogFor === `${d.provider}:${d.modelId.trim()}`);
+  const capsHelp = catalogKnown
+    ? `Published values for ${d.catalog?.name ?? d.modelId}: ${Math.round(Number(d.contextWindow) / 1000)}k context, ${Number(d.maxTokens).toLocaleString()} max output${d.reasoning ? ', reasoning' : ''}. Untick to pin your own (for example a smaller context window to stay under a long-context surcharge).`
+    : d.provider === 'openai-compatible'
+      ? 'Self-hosted servers publish no limits Kuhn can read. Enter the model’s context window and output cap from your server’s documentation.'
+      : d.modelId.trim()
+        ? 'This model id is not in the built-in catalog; enter its limits from the provider’s documentation.'
+        : 'Enter a model id to look up its published limits.';
+  const useCatalog = checkbox(d.useCatalog, catalogKnown ? 'Use the provider’s published values' : 'Use default values (128k context, 16k output, no reasoning)', (v) => {
+    d.useCatalog = v;
+    if (v && d.catalog?.capabilities) {
+      d.contextWindow = String(d.catalog.capabilities.contextWindow);
+      d.maxTokens = String(d.catalog.capabilities.maxTokens);
+      d.reasoning = d.catalog.capabilities.reasoning;
+      d.tools = d.catalog.capabilities.tools;
+    }
+    ctx.rerender();
+  });
+  const contextWindow = input({ value: d.contextWindow, label: 'Context window (tokens)', type: 'number' });
+  contextWindow.disabled = d.useCatalog;
+  bind(contextWindow, 'contextWindow');
+  const maxTokens = input({ value: d.maxTokens, label: 'Max output tokens', type: 'number' });
+  maxTokens.disabled = d.useCatalog;
+  bind(maxTokens, 'maxTokens');
+  const reasoning = checkbox(d.reasoning, 'Reasoning model (extended thinking)', (v) => { d.reasoning = v; });
+  const tools = checkbox(d.tools, 'Supports tool calls (required for every Kuhn agent)', (v) => { d.tools = v; });
+  for (const box of [reasoning, tools]) (box.querySelector('input') as HTMLInputElement).disabled = d.useCatalog;
+
+  const suggestedWeight = d.catalog?.suggested_cost_weight ?? null;
+  const weight = input({ value: d.costWeight, placeholder: suggestedWeight != null ? `suggested ${suggestedWeight}` : 'e.g. 1', label: 'Cost weight', type: 'number' });
+  weight.step = '0.05';
+  weight.min = '0.05';
+  bind(weight, 'costWeight');
   const policy = document.createElement('textarea');
   policy.className = 'pb-input';
   policy.rows = 2;
-  policy.placeholder = 'Data policy note for owners (does the provider log, train on, or retain submitted content?)';
-  policy.value = current?.data_policy ?? '';
+  policy.placeholder = 'e.g. "Zero-retention API tier; not used for training" — shown to owners, not enforced';
+  policy.value = d.dataPolicy;
   policy.setAttribute('aria-label', 'Data policy');
+  bind(policy, 'dataPolicy');
+  const enabled = checkbox(d.enabled, 'Enabled (routes may use this profile)', (v) => { d.enabled = v; });
 
-  const baseUrlField = labelled('Base URL', baseUrl);
-  const egress = document.createElement('div');
-  egress.className = 'admin-setting-hint';
-  const refreshEgress = () => {
-    const p = provider.value as ModelProvider;
-    baseUrlField.hidden = p !== 'openai-compatible';
-    const host = p === 'openai-compatible' ? (hostOf(baseUrl.value.trim()) ?? '(base URL)')
-      : p === 'anthropic' ? 'api.anthropic.com' : p === 'openai' ? 'api.openai.com' : 'openrouter.ai';
-    egress.textContent = `Content sent to ${host} using ${credential.value ? `secret ${credential.value}` : 'no credential'}. `
-      + (p === 'openai-compatible' ? 'Public hosts must use https; private hosts need KUHN_ALLOW_PRIVATE_MODEL_ENDPOINTS on the server.' : 'Web search is available to agents only on the Anthropic provider.');
-  };
-  provider.addEventListener('change', refreshEgress);
-  baseUrl.addEventListener('input', refreshEgress);
-  credential.addEventListener('change', refreshEgress);
-  refreshEgress();
+  const host = d.provider === 'openai-compatible' ? (hostOf(d.baseUrl.trim()) ?? '(the base URL)') : PROVIDER_HOST[d.provider];
+  const egress = hint(`Content sent to ${host} using ${d.credential ? `secret ${d.credential}` : 'no credential'}. `
+    + (d.provider === 'openai-compatible' ? 'Public hosts must use https; private hosts need KUHN_ALLOW_PRIVATE_MODEL_ENDPOINTS on the server.' : 'General web search is available to agents only on the Anthropic provider.'));
 
   const grid = document.createElement('div');
   grid.className = 'admin-profile-grid';
   grid.append(
-    labelled('Slug', slug), labelled('Name', name), labelled('Provider', provider), labelled('Model id', modelId),
-    baseUrlField, labelled('Credential', credential), labelled('Context window', contextWindow), labelled('Max output', maxTokens),
-    labelled('Cost weight', weight), labelled('Reasoning', reasoning), labelled('Tool calls', tools), labelled('Enabled', enabled),
+    field('Provider', provider, 'Who runs the model. OpenAI-compatible covers vLLM, Ollama, LiteLLM, or any server that speaks the OpenAI chat API.', d.errors.provider),
+    field('Model id', modelId, `The provider’s own identifier for the model, exactly as their API expects it, e.g. ${MODEL_ID_EXAMPLE[d.provider]}.`, d.errors.modelId),
+    field('Slug', slug, d.editingSlug ? 'The handle routes refer to; it cannot change.' : 'A short handle for this profile, used by routing. Lowercase letters, digits, dots, dashes. Filled in from the model id; edit it if you want something friendlier.', d.errors.slug),
+    field('Name', name, 'How the profile appears in lists and routing menus.', d.errors.name),
   );
-  form.append(grid, labelled('Data policy', policy), egress);
+  if (d.provider === 'openai-compatible') {
+    grid.append(field('Base URL', baseUrl, 'The server’s OpenAI-compatible root, usually ending in /v1. Leave the credential empty if the server needs no key.', d.errors.baseUrl));
+  }
+  grid.append(
+    field('Credential', credential, d.provider === 'openai-compatible' ? 'Optional: a saved secret sent as the bearer token.' : 'The saved API key to send. Save one under Provider credentials above if the list is empty.', d.errors.credential),
+    field('Cost weight', weight, 'Budget cost relative to the deployment’s tiers (Haiku 1, Sonnet 3, Opus 5). Blank uses the catalog’s list price when known.', d.errors.costWeight),
+  );
+  const capsBlock = document.createElement('div');
+  capsBlock.className = 'admin-field';
+  const capsTitle = document.createElement('span');
+  capsTitle.className = 'admin-field-label';
+  capsTitle.textContent = 'Model limits';
+  const capsHelpEl = document.createElement('span');
+  capsHelpEl.className = 'admin-field-help';
+  capsHelpEl.textContent = capsHelp;
+  capsBlock.append(capsTitle, useCatalog, capsHelpEl);
+  const capsGrid = document.createElement('div');
+  capsGrid.className = 'admin-profile-grid';
+  capsGrid.append(
+    field('Context window', contextWindow, 'Tokens the model can hold per request; the chat’s context meter uses it.', d.errors.contextWindow),
+    field('Max output', maxTokens, 'Tokens the model may generate per turn.', d.errors.maxTokens),
+    reasoning,
+    tools,
+  );
+  form.append(grid, capsBlock, capsGrid, field('Data policy', policy, 'A note for owners about how this provider handles submitted content (retention, training). Displayed, not enforced.', d.errors.dataPolicy), enabled, egress);
 
   const actions = document.createElement('div');
   actions.className = 'admin-actions';
-  const cancel = button('Cancel', () => { editing = null; formError = null; ctx.rerender(); }, { disabled: busy });
+  const cancel = button('Cancel', () => { draft = null; ctx.rerender(); }, { disabled: busy });
   const save = document.createElement('button');
   save.type = 'submit';
-  save.className = 'btn btn-primary btn-sm';
-  save.textContent = current ? 'Save changes' : 'Create profile';
+  save.className = 'btn btn-accent btn-sm';
+  save.textContent = d.editingSlug ? 'Save changes' : 'Create profile';
   save.disabled = busy;
   actions.append(cancel, save);
   form.append(actions);
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const p = provider.value as ModelProvider;
+    d.slug = d.slug.trim();
+    d.errors = validateDraft(d);
+    d.formError = Object.keys(d.errors).length ? 'Fix the highlighted fields.' : null;
+    if (d.formError) { ctx.rerender(); return; }
     const body: ModelProfileInput = {
-      name: name.value.trim(),
-      provider: p,
-      model_id: modelId.value.trim(),
-      base_url: p === 'openai-compatible' ? baseUrl.value.trim() : null,
-      credential_secret: credential.value || null,
-      capabilities: {
-        contextWindow: Number.parseInt(contextWindow.value, 10),
-        maxTokens: Number.parseInt(maxTokens.value, 10),
-        reasoning: reasoning.checked,
-        tools: tools.checked,
+      name: d.name.trim(),
+      provider: d.provider,
+      model_id: d.modelId.trim(),
+      base_url: d.provider === 'openai-compatible' ? d.baseUrl.trim() : null,
+      credential_secret: d.credential || null,
+      capabilities: d.useCatalog ? {} : {
+        contextWindow: Number.parseInt(d.contextWindow, 10),
+        maxTokens: Number.parseInt(d.maxTokens, 10),
+        reasoning: d.reasoning,
+        tools: d.tools,
       },
-      cost_weight: Number.parseFloat(weight.value),
-      data_policy: policy.value.trim() || null,
-      enabled: enabled.checked,
+      cost_weight: d.costWeight.trim() ? Number.parseFloat(d.costWeight) : null,
+      data_policy: d.dataPolicy.trim() || null,
+      enabled: d.enabled,
     };
-    if (!current) body.slug = slug.value.trim();
+    if (d.editingSlug === null) body.slug = d.slug;
     busy = true;
     ctx.rerender();
-    const work = current ? updateModelProfile(ctx.orgId, current.slug, body) : createModelProfile(ctx.orgId, body);
+    const work = d.editingSlug ? updateModelProfile(ctx.orgId, d.editingSlug, body) : createModelProfile(ctx.orgId, body);
     void work
-      .then((saved) => { editing = null; formError = null; toast(`Saved ${saved.name}`); })
-      .catch((err) => { formError = (err as Error).message; })
+      .then((saved) => { draft = null; toast(`Saved ${saved.name}`); })
+      .catch((err) => {
+        // Keep everything typed; attach the server's message to its field.
+        const fieldName = (err as { field?: string }).field;
+        const message = (err as Error).message;
+        const map: Record<string, string> = { model_id: 'modelId', base_url: 'baseUrl', credential_secret: 'credential', cost_weight: 'costWeight', data_policy: 'dataPolicy', capabilities: 'contextWindow' };
+        if (fieldName && (map[fieldName] || fieldName in d)) d.errors[map[fieldName] ?? fieldName] = message;
+        d.formError = fieldName ? 'The server rejected one field; see below.' : message;
+      })
       .finally(() => { busy = false; void reloadModels(ctx); });
   });
   return form;
@@ -443,21 +674,26 @@ function agentRoutes(ctx: Ctx, agent: ModelRouteAgent): HTMLElement {
   head.append(title, sub);
   box.append(head);
 
-  const draft = routeDrafts.get(agent.slug) ?? agent.routes.map((r) => ({ ...r }));
+  const routeDraft = routeDrafts.get(agent.slug) ?? agent.routes.map((r) => ({ ...r }));
   const dirty = routeDrafts.has(agent.slug);
   const selectable = (profiles ?? []).filter((p) => p.enabled);
   const rows = document.createElement('div');
   rows.className = 'admin-route-rows';
-  draft.forEach((route, i) => {
+  routeDraft.forEach((route, i) => {
     const row = document.createElement('div');
     row.className = 'admin-form-row';
     const which = select<string>(selectable.map((p) => [p.slug, profileLabel(p)]), route.profile_slug, `${agent.name} route ${i + 1} profile`);
-    which.addEventListener('change', () => { draft[i] = { ...draft[i], profile_slug: which.value }; routeDrafts.set(agent.slug, draft); ctx.rerender(); });
+    which.addEventListener('change', () => { routeDraft[i] = { ...routeDraft[i], profile_slug: which.value }; routeDrafts.set(agent.slug, routeDraft); ctx.rerender(); });
     const diff = input({ value: String(route.difficulty), label: `${agent.name} route ${i + 1} difficulty`, type: 'number', width: '80px' });
     diff.min = '0'; diff.max = '1'; diff.step = '0.05';
-    diff.addEventListener('change', () => { draft[i] = { ...draft[i], difficulty: Number.parseFloat(diff.value) }; routeDrafts.set(agent.slug, draft); });
-    const remove = button('Remove', () => { draft.splice(i, 1); routeDrafts.set(agent.slug, draft); ctx.rerender(); }, { disabled: busy, label: `Remove ${agent.name} route ${i + 1}` });
-    row.append(which, labelled('up to difficulty', diff), remove);
+    diff.addEventListener('change', () => { routeDraft[i] = { ...routeDraft[i], difficulty: Number.parseFloat(diff.value) }; routeDrafts.set(agent.slug, routeDraft); });
+    const remove = button('Remove', () => { routeDraft.splice(i, 1); routeDrafts.set(agent.slug, routeDraft); ctx.rerender(); }, { disabled: busy, label: `Remove ${agent.name} route ${i + 1}` });
+    const diffLabel = document.createElement('label');
+    diffLabel.className = 'admin-field-inline';
+    const diffText = document.createElement('span');
+    diffText.textContent = 'up to difficulty';
+    diffLabel.append(diffText, diff);
+    row.append(which, diffLabel, remove);
     rows.append(row);
   });
   box.append(rows);
@@ -467,22 +703,21 @@ function agentRoutes(ctx: Ctx, agent: ModelRouteAgent): HTMLElement {
   actions.append(button('Add row', () => {
     const first = selectable[0];
     if (!first) return;
-    draft.push({ profile_slug: first.slug, difficulty: 1 });
-    routeDrafts.set(agent.slug, draft);
+    routeDraft.push({ profile_slug: first.slug, difficulty: 1 });
+    routeDrafts.set(agent.slug, routeDraft);
     ctx.rerender();
   }, { disabled: busy || selectable.length === 0 }));
   if (dirty) {
     actions.append(button('Save', () => {
       const before = routeHosts(agent.routes, agent);
-      const after = routeHosts(draft, agent);
+      const after = routeHosts(routeDraft, agent);
       const added = after.filter((h) => !before.includes(h));
       if (added.length && !confirm(`Saving sends ${agent.name} content to a new destination: ${added.join(', ')}. Continue?`)) return;
       void run(ctx, async () => {
-        const res = await putModelRoutes(ctx.orgId, agent.slug, draft.sort((a, b) => a.difficulty - b.difficulty));
+        const res = await putModelRoutes(ctx.orgId, agent.slug, routeDraft.sort((a, b) => a.difficulty - b.difficulty));
         routeDrafts.delete(agent.slug);
-        routeErrors.delete(agent.slug);
         if (res.egress.added.length) toast(`${agent.name} now also sends content to ${res.egress.added.join(', ')}`);
-      }, `Saved routing for ${agent.name}`).catch(() => { /* surfaced via error */ });
+      }, `Saved routing for ${agent.name}`);
     }, { primary: true, disabled: busy }));
     actions.append(button('Discard', () => { routeDrafts.delete(agent.slug); ctx.rerender(); }, { disabled: busy }));
   } else if (agent.routes.length) {
@@ -492,8 +727,6 @@ function agentRoutes(ctx: Ctx, agent: ModelRouteAgent): HTMLElement {
     }, { disabled: busy }));
   }
   box.append(actions);
-  const routeError = routeErrors.get(agent.slug);
-  if (routeError) box.append(inlineError(routeError));
   for (const w of agent.warnings) {
     const warn = document.createElement('div');
     warn.className = 'admin-setting-hint admin-route-warning';
