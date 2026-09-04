@@ -202,26 +202,30 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly paths?: string[];
+  /** The offending field on a 400 { error, field } validation response. */
+  readonly field?: string;
 
-  constructor(status: number, message: string, code?: string, paths?: string[]) {
+  constructor(status: number, message: string, code?: string, paths?: string[], field?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.paths = paths;
+    this.field = field;
   }
 }
 
 async function expectOk(res: Response): Promise<Response> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
-      error?: string; code?: string; paths?: unknown;
+      error?: string; code?: string; paths?: unknown; field?: unknown;
     };
     throw new ApiError(
       res.status,
       body.error ?? `${res.status} ${res.statusText}`,
       body.code,
       Array.isArray(body.paths) ? (body.paths as string[]) : undefined,
+      typeof body.field === 'string' ? body.field : undefined,
     );
   }
   return res;
@@ -2116,4 +2120,160 @@ async function readEventStream(res: Response, onEvent: (event: AgentEvent) => vo
       }
     }
   }
+}
+
+// ---- Model profiles + per-role routing (issues #107/#111/#112) -----------------
+// Owner-only. Profiles carry credential NAMES (org secrets), never values.
+
+export type ModelProvider = 'anthropic' | 'openai' | 'openrouter' | 'openai-compatible';
+
+export interface ModelCapabilities {
+  reasoning: boolean;
+  input: Array<'text' | 'image'>;
+  contextWindow: number;
+  maxTokens: number;
+  tools: boolean;
+}
+
+export interface ModelProfile {
+  id: number | null;
+  slug: string;
+  name: string;
+  provider: ModelProvider;
+  model_id: string | null;
+  base_url: string | null;
+  endpoint: string | null;
+  credential: { kind: 'deployment' | 'secret' | 'none'; secret: string | null };
+  /** Effective values: catalog (when known) with the owner's overrides on top. */
+  capabilities: ModelCapabilities;
+  /** Only what the owner pinned explicitly. */
+  capability_overrides: Partial<ModelCapabilities>;
+  /** Whether the built-in provider catalog knows this model id. */
+  catalog_known: boolean;
+  cost_weight: number;
+  data_policy: string | null;
+  enabled: boolean;
+  /** true for deployment-managed profiles (read-only). */
+  managed: boolean;
+  updated_at?: string;
+}
+
+export interface ModelCatalogEntry {
+  known: boolean;
+  /** 'catalog' = the pinned built-in list; 'openrouter-live' = OpenRouter's public model list. */
+  source: 'catalog' | 'openrouter-live' | null;
+  name: string | null;
+  capabilities: ModelCapabilities | null;
+  suggested_cost_weight: number | null;
+}
+
+export interface ModelProfileInput {
+  slug?: string;
+  name?: string;
+  provider?: ModelProvider;
+  model_id?: string;
+  base_url?: string | null;
+  credential_secret?: string | null;
+  capabilities?: Partial<ModelCapabilities>;
+  cost_weight?: number | null;
+  data_policy?: string | null;
+  enabled?: boolean;
+}
+
+export interface ModelProbeResult {
+  ok: boolean;
+  provider: string | null;
+  model: string | null;
+  api: string | null;
+  endpoint: string | null;
+  latency_ms: number;
+  marker_seen: boolean;
+  usage: Record<string, number> | null;
+  contract_violations: string[];
+  warning?: string;
+  error?: { code: string; message: string };
+}
+
+export interface ModelRoute {
+  profile_slug: string;
+  difficulty: number;
+}
+
+export interface ModelRouteAgent {
+  slug: string;
+  name: string;
+  tools: string[];
+  default_profile: string;
+  routes: ModelRoute[];
+  warnings: Array<{ profile_slug: string; message: string }>;
+}
+
+export interface ModelRouteSaveResult {
+  routes: ModelRoute[];
+  warnings: Array<{ profile_slug: string; message: string }>;
+  egress: { before: string[]; after: string[]; added: string[] };
+}
+
+export async function listModelProfiles(orgId: number): Promise<ModelProfile[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles`));
+  return ((await res.json()) as { profiles: ModelProfile[] }).profiles;
+}
+
+/** What the built-in provider catalog knows about a model id. */
+export async function lookupModelCatalog(orgId: number, provider: ModelProvider, modelId: string): Promise<ModelCatalogEntry> {
+  const params = new URLSearchParams({ provider, model_id: modelId });
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles/catalog?${params}`));
+  return (await res.json()) as ModelCatalogEntry;
+}
+
+export async function createModelProfile(orgId: number, input: ModelProfileInput): Promise<ModelProfile> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  );
+  return ((await res.json()) as { profile: ModelProfile }).profile;
+}
+
+export async function updateModelProfile(orgId: number, slug: string, patch: ModelProfileInput): Promise<ModelProfile> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  );
+  return ((await res.json()) as { profile: ModelProfile }).profile;
+}
+
+export async function deleteModelProfile(orgId: number, slug: string): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  );
+}
+
+/** One synthetic turn through the profile; sends no project content. */
+export async function testModelProfile(orgId: number, slug: string): Promise<ModelProbeResult> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-profiles/${encodeURIComponent(slug)}/test`, { method: 'POST' }),
+  );
+  return ((await res.json()) as { result: ModelProbeResult }).result;
+}
+
+export async function listModelRoutes(orgId: number): Promise<ModelRouteAgent[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-routes`));
+  return ((await res.json()) as { agents: ModelRouteAgent[] }).agents;
+}
+
+export async function putModelRoutes(orgId: number, agentSlug: string, routes: ModelRoute[]): Promise<ModelRouteSaveResult> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/model-routes/${encodeURIComponent(agentSlug)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ routes }),
+    }),
+  );
+  return (await res.json()) as ModelRouteSaveResult;
 }

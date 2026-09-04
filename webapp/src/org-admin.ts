@@ -68,13 +68,15 @@ import { agentIdentity } from './agents';
 import { icon } from './icons';
 import { renderMarkdown } from './markdown';
 import { addOrgFeedListener, refreshLibraryHint } from './org-library';
+import { modelsTab, reloadModels, resetModelsTab } from './org-models';
+import { emptyRow, inlineError, sectionTitle } from './admin-ui';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'budgets' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
+type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
 const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
@@ -245,6 +247,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   secretsRows = null;
   secretsError = null;
   secretsBusy = false;
+  resetModelsTab();
 
   render();
   if (owner) {
@@ -252,6 +255,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
     void reloadInvitations();
     void reloadSettings();
     void reloadBudgets();
+    void reloadModels(modelsCtx());
     void reloadPromotions(); // eager: the tab badge counts pending requests
   }
   void reloadKnowledge();
@@ -500,29 +504,8 @@ function roleSelect(current: Role, options: Role[] = ROLE_OPTIONS): HTMLSelectEl
   return select;
 }
 
-function inlineError(message: string | null): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'admin-inline-error';
-  el.setAttribute('role', 'alert');
-  if (message) el.textContent = message;
-  else el.hidden = true;
-  return el;
-}
 
-function sectionTitle(text: string): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'admin-section-title';
-  el.textContent = text;
-  return el;
-}
 
-function emptyRow(text: string): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'admin-empty';
-  el.setAttribute('role', 'status');
-  el.textContent = text;
-  return el;
-}
 
 // ---- Members tab ---------------------------------------------------------------
 
@@ -2224,6 +2207,7 @@ const TAB_LABEL: Record<Tab, string> = {
   members: 'Members',
   settings: 'Settings',
   budgets: 'Budgets',
+  models: 'Models',
   promotions: 'Promotions',
   knowledge: 'Knowledge',
   scripts: 'Scripts',
@@ -2231,6 +2215,11 @@ const TAB_LABEL: Record<Tab, string> = {
   themes: 'Themes',
   agents: 'Agents',
 };
+
+/** The Models tab's view of the admin overlay (issue #111). */
+function modelsCtx(): { orgId: number; rerender: () => void } {
+  return { orgId: adminOrgId, rerender: render };
+}
 
 function tabsBar(): HTMLElement {
   const tabs = document.createElement('div');
@@ -2306,6 +2295,7 @@ function render(): void {
     activeTab === 'members' ? membersTab()
     : activeTab === 'settings' ? settingsTab()
     : activeTab === 'budgets' ? budgetsTab()
+    : activeTab === 'models' ? modelsTab(modelsCtx())
     : activeTab === 'promotions' ? promotionsTab()
     : activeTab === 'agents' ? agentsTab()
     : activeTab === 'scripts' ? scriptsTab()
@@ -2315,5 +2305,29 @@ function render(): void {
   body.append(...parts);
 
   panel.append(head, tabsBar(), body);
+  // A re-render replaces the panel; keep the reader where they were in the
+  // scrolled body (every tab action re-renders, and jumping to the top on
+  // "Add profile" or "Save" is disorienting) — and keep the keyboard focus
+  // and caret in the control they were typing in (a background lookup
+  // re-rendering mid-word must not steal focus).
+  const previous = root.querySelector<HTMLElement>('.admin-body');
+  const scrollTop = previous?.scrollTop ?? 0;
+  const active = document.activeElement as HTMLElement | null;
+  const focusKey = active && root.contains(active)
+    ? (active.id ? `#${CSS.escape(active.id)}` : active.getAttribute('aria-label') ? `[aria-label="${CSS.escape(active.getAttribute('aria-label') ?? '')}"]` : null)
+    : null;
+  const caret = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+    ? { start: active.selectionStart, end: active.selectionEnd }
+    : null;
   root.replaceChildren(panel);
+  if (scrollTop > 0) body.scrollTop = scrollTop;
+  if (focusKey) {
+    const again = panel.querySelector<HTMLElement>(focusKey);
+    if (again) {
+      again.focus({ preventScroll: true });
+      if (caret && (again instanceof HTMLInputElement || again instanceof HTMLTextAreaElement) && caret.start != null) {
+        try { again.setSelectionRange(caret.start, caret.end ?? caret.start); } catch { /* not a text control */ }
+      }
+    }
+  }
 }

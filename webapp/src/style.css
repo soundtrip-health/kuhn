@@ -1300,6 +1300,28 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .admin-budget-meter[data-state='over'] span { background: var(--warn); }
 .admin-budget-meter[data-state='none'] { opacity: .4; }
 .admin-budget-figure { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+/* Models tab (issue #111) */
+.admin-profile-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--r-md, 8px); }
+.admin-profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; }
+.admin-field { display: flex; flex-direction: column; gap: 3px; font: var(--ui-small); color: var(--ink-3); }
+.admin-field[hidden] { display: none; }
+.admin-field-label { font: var(--ui-small); color: var(--ink-3); }
+.admin-field-help { font: var(--ui-small); color: var(--ink-3); line-height: 1.35; }
+.admin-field.is-invalid .pb-input, .admin-field.is-invalid .pb-select { border-color: var(--warn); }
+.admin-field-error { font: var(--ui-small); color: var(--warn); }
+.admin-field-inline { display: flex; align-items: center; gap: 8px; font: var(--ui-body); color: var(--ink); }
+.admin-field-inline input[type='checkbox'] { width: auto; }
+.admin-field .pb-input, .admin-field .pb-select { width: 100%; box-sizing: border-box; flex: none; }
+.admin-field .admin-field-help { margin-top: auto; }
+.admin-field input[type='checkbox'] { width: auto; align-self: flex-start; }
+.admin-test-result { font: var(--ui-small); color: var(--ink-2); margin-top: 4px; text-align: right; overflow-wrap: anywhere; }
+.admin-test-result[data-state='ok'] { color: var(--good); }
+.admin-test-result[data-state='error'] { color: var(--warn); }
+.admin-table tr.is-disabled td { opacity: .55; }
+.admin-route { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line-2); }
+.admin-route-rows { display: flex; flex-direction: column; gap: 6px; }
+.admin-route-rows .admin-field { flex-direction: row; align-items: center; gap: 6px; }
+.admin-route-warning { color: var(--advisor, var(--warn)); }
 .chat-notice-context .notice-checkbox {
   display: flex; align-items: center; gap: 7px;
   font: var(--ui-body); color: var(--ink-2);
@@ -1748,7 +1770,7 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .admin-overlay[hidden] { display: none; }
 .admin-panel {
-  width: min(760px, 100%); max-height: 84vh;
+  width: min(882px, 100%); max-height: 84vh;
   background: var(--chrome); border: 1px solid var(--line); border-radius: var(--r-lg);
   box-shadow: var(--shadow-pop);
   display: flex; flex-direction: column; gap: 14px; padding: 22px;

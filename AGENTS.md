@@ -83,7 +83,7 @@ The port is pinned because the backend CORS allowlist hard-codes it. Build with
 `npm run build` (`tsc && vite build` — type errors fail the build).
 
 Token-free check scripts (drive the app without spending model quota):
-`npm run smoke`, `editor-check`, `parity-check`, `smoke:chat`, `write-check`.
+`npm run smoke`, `editor-check`, `parity-check`, `smoke:chat`, `write-check`, `models-check`.
 
 ## Where things live
 
