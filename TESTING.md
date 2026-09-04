@@ -163,6 +163,11 @@ each full run costs real quota. Scripted version: `node webapp/scripts/seed-chec
       input box back to normal
 - [ ] Weighted budget: in the backend logs / job rows, a Haiku RA task burns the shared budget at
       1/5 the rate of the Opus PM (`AGENT_MODEL_WEIGHTS`, default `haiku:1,sonnet:3,opus:5`)
+- [ ] Budget pause (issue #110, run with a tiny `AGENT_TOKEN_BUDGET`): the status line says the
+      agent is writing a hand-off note, then a pause card appears with the note and a Resume button;
+      reload the page — the card (note + Resume) is still there; Resume continues the run (or, after a
+      dead session, shows the "fresh session" line first); after Resume or a new instruction the card
+      keeps the note but loses the button
 
 ## Agent Runtime, PM Interview & Webapp (Stories 002-011/012/013/018/021, 2026-06-11)
 

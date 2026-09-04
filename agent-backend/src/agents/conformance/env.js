@@ -43,6 +43,9 @@ export function getConformanceConfig() {
       contextWindow: 200000,
       projectsRoot: join(dataDir, 'files'),
     },
+    // Budget-pause hand-off capture (issue #110); conformance.test.js stubs
+    // the model call itself.
+    handoff: { timeoutMs: 1000 },
     storage: {
       orgsRoot: join(dataDir, 'orgs'),
       maxFileBytes: 10 * 1024 * 1024,

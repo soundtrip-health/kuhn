@@ -53,6 +53,7 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {string|null} [fields.model] - Effective runtime model (STH-47)
  * @param {object|null} [fields.continuation] - Canonical continuation envelope (STH-47)
  * @param {number} [fields.contextTokens] - last turn's prompt size (STH-52 meter)
+ * @param {string|null} [fields.handoff] - hand-off note written at a budget pause (issue #110)
  * @returns {Promise<object|undefined>} The updated job row
  */
 export async function updateJob(jobId, fields) {
@@ -67,6 +68,7 @@ export async function updateJob(jobId, fields) {
     model: 'model',
     continuation: 'continuation',
     contextTokens: 'context_tokens',
+    handoff: 'handoff',
   };
   const sets = [];
   const params = [];

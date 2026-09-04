@@ -35,6 +35,16 @@ vi.mock('./provider-runtime/factory.js', async (importOriginal) => {
   };
 });
 
+// Budget-pause hand-off (issue #110): the model call lives in handoff.js and
+// is covered there; here it is scripted per test.
+const handoffState = { note: 'Was drafting §2; next: cite Smith 2024.', fail: false };
+vi.mock('./handoff.js', () => ({
+  captureBudgetHandoff: vi.fn(async () => {
+    if (handoffState.fail) throw new Error('capture boom');
+    return { handoff: handoffState.note };
+  }),
+}));
+
 // Pin the agent config so tests don't depend on .env / defaults drifting
 vi.mock('../config.js', () => ({
   config: {
@@ -55,6 +65,9 @@ vi.mock('../config.js', () => ({
       // Fresh-session hand-off caps (issue #109).
       sessionHandoff: { maxMessages: 400, maxChars: 60000, maxCharsPerMessage: 2000 },
     },
+    // Budget-pause hand-off capture timeout (issue #110); the capture itself
+    // is mocked below.
+    handoff: { timeoutMs: 1000 },
     // read_file's PDF preamble names the extraction page cap (STH-54).
     ingest: { maxPdfPages: 200 },
     // The real project-events hub runs in these tests (the channel tee
@@ -195,6 +208,7 @@ import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
 import { runAgentTask, reattach } from './runtime.js';
+import { captureBudgetHandoff } from './handoff.js';
 
 const RA_AGENT = {
   slug: 'ra',
@@ -203,9 +217,9 @@ const RA_AGENT = {
   tools: ['file_read', 'pubmed_search'],
 };
 
-async function collect(task) {
+async function collect(task, internal = undefined) {
   const events = [];
-  for await (const ev of runAgentTask(task)) events.push(ev);
+  for await (const ev of runAgentTask(task, internal)) events.push(ev);
   return events;
 }
 
@@ -543,26 +557,81 @@ describe('runAgentTask', () => {
     expect(sdkQuery.mock.calls[0][0].options.includePartialMessages).toBe(true);
   });
 
-  it('stops the task with an error event when the token budget is exceeded', async () => {
-    sdkState.messages = [
-      {
-        type: 'assistant',
-        message: {
-          content: [{ type: 'text', text: 'huge turn' }],
-          usage: { input_tokens: 400000, output_tokens: 1000 },
-        },
+  // A single turn large enough to trip the 250k test budget (× 1.1 grace).
+  const overBudgetTurn = () => [
+    {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'huge turn' }],
+        usage: { input_tokens: 400000, output_tokens: 1000 },
       },
-      // Should never be reached
-      { type: 'result', subtype: 'success', usage: {} },
-    ];
+    },
+    // Should never be reached
+    { type: 'result', subtype: 'success', usage: {} },
+  ];
+
+  it('stops the task with an error event when the token budget is exceeded', async () => {
+    sdkState.messages = overBudgetTurn();
 
     const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
 
     const error = events.find((e) => e.type === 'error');
     expect(error.message).toMatch(/token budget exceeded/i);
+    expect(error).toMatchObject({ reason: 'budget_exceeded', jobId: 42, budget: { limit: 250000 } });
     expect(events.find((e) => e.type === 'done')).toBeUndefined();
     expect(sdkState.interrupt).toHaveBeenCalled();
     expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error', error: 'token budget exceeded' }));
+  });
+
+  describe('budget pause hand-off (issue #110)', () => {
+    beforeEach(() => {
+      handoffState.note = 'Was drafting §2; next: cite Smith 2024.';
+      handoffState.fail = false;
+    });
+
+    it('writes a hand-off note before the terminal error and carries it on the event', async () => {
+      sdkState.messages = overBudgetTurn();
+
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+      const noticeAt = events.findIndex((e) => e.type === 'notice' && e.reason === 'budget_reached');
+      const errorAt = events.findIndex((e) => e.type === 'error');
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(errorAt);
+      expect(events[noticeAt]).toMatchObject({ jobId: 42, message: expect.stringMatching(/hand-off/i) });
+      expect(events[errorAt]).toMatchObject({ reason: 'budget_exceeded', handoff: 'Was drafting §2; next: cite Smith 2024.' });
+      // Distilled from the agent's own recorded conversation, after the
+      // cutoff turn was logged; persisted on the paused job for the resume.
+      expect(captureBudgetHandoff).toHaveBeenCalledWith(1, 'ra');
+      const logOrder = logMessage.mock.invocationCallOrder.at(-1);
+      expect(captureBudgetHandoff.mock.invocationCallOrder[0]).toBeGreaterThan(logOrder);
+      expect(updateJob).toHaveBeenCalledWith(42, { handoff: 'Was drafting §2; next: cite Smith 2024.' });
+    });
+
+    it('still pauses cleanly when the note cannot be captured', async () => {
+      handoffState.fail = true;
+      sdkState.messages = overBudgetTurn();
+
+      const events = await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+      const error = events.find((e) => e.type === 'error');
+      expect(error).toMatchObject({ reason: 'budget_exceeded', handoff: null });
+      expect(updateJob).not.toHaveBeenCalledWith(42, expect.objectContaining({ handoff: expect.anything() }));
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error', error: 'token budget exceeded' }));
+    });
+
+    it('does not write a note for a dispatched sub-agent\'s cutoff', async () => {
+      sdkState.messages = overBudgetTurn();
+
+      const events = await collect(
+        { role: 'ra', projectId: 1, input: 'find papers' },
+        { depth: 1, parentJobId: 9, budget: { used: 0, limit: 250000, baseWeight: 5 } },
+      );
+
+      expect(events.find((e) => e.type === 'error')).toMatchObject({ reason: 'budget_exceeded', handoff: null });
+      expect(events.find((e) => e.type === 'notice' && e.reason === 'budget_reached')).toBeUndefined();
+      expect(captureBudgetHandoff).not.toHaveBeenCalled();
+    });
   });
 
   it('maps non-success results to error events and job status', async () => {

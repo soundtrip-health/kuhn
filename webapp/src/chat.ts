@@ -18,10 +18,12 @@ import {
   listJobs,
   reconnectAgent,
   replyToAgent,
+  resumeJob,
   runAgentTask,
   seedProject,
   type AgentEvent,
   type AgentTaskParams,
+  type Job,
 } from './api';
 import { agentIdentity } from './agents';
 import type { FileChange } from './files';
@@ -41,6 +43,10 @@ const sessions = new Map<string, string>();
 // STH-55: hand-off notes captured at "start fresh", delivered with the next
 // message to that agent so the fresh session picks up where the old one left.
 const pendingHandoffs = new Map<string, string>();
+// jobs.error of a run the token budget paused (issue #110) — the durable
+// signal the pause card is rebuilt from after a reload. Mirrors
+// agent-backend/src/agents/budget-pause.js.
+const BUDGET_EXCEEDED_ERROR = 'token budget exceeded';
 
 let activeProjectId = 0;
 // Whether the active project has already been seeded/configured. Gates the
@@ -454,12 +460,34 @@ async function restore(): Promise<void> {
       }
     }
     updateContextIndicator();
+    restorePausedRuns(jobs);
     await reconnectPendingQuestion();
   } catch (err) {
     // A fresh project restores an *empty* transcript without erroring, so a
     // rejection here is a real failure — surface it non-blockingly instead of
     // swallowing it (story 005-004). Chat still works; history may be missing.
     notify(`Could not restore chat history: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Issue #110: a budget pause must survive a reload. The pause card is DOM-only
+ * when it streams in, but the paused job row is durable — rebuild the card
+ * (hand-off note + Resume) for every role whose MOST RECENT top-level job is
+ * a budget pause. A newer job on that role means the pause was already
+ * resumed or superseded by a fresh instruction, so no card.
+ */
+function restorePausedRuns(jobs: Job[]): void {
+  const latestByRole = new Map<string, Job>();
+  for (const job of jobs) { // newest first
+    if (job.parent_job_id != null) continue;
+    if (!latestByRole.has(job.role)) latestByRole.set(job.role, job);
+  }
+  const paused = [...latestByRole.values()]
+    .filter((job) => job.status === 'error' && job.error === BUDGET_EXCEEDED_ERROR)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  for (const job of paused) {
+    appendBudgetNotice({ agent: job.role, jobId: job.id, handoff: job.handoff, isoTime: job.created_at });
   }
 }
 
@@ -631,6 +659,10 @@ function createEventHandler(): (event: AgentEvent) => void {
           // fresh one seeded from Kuhn's transcript. The `done` event
           // carries the new session id, which replaces the dead one.
           appendSystemLine(event.message ?? 'Previous session unavailable — continuing in a fresh session.');
+        } else if (event.reason === 'budget_reached') {
+          // The budget stopped the run; the pause card follows once the
+          // hand-off note is written (issue #110) — name the wait.
+          setAgentActivity(`${agentLabel(event.agent)} reached its token budget — writing a hand-off note…`);
         }
         break;
       }
@@ -667,7 +699,14 @@ function createEventHandler(): (event: AgentEvent) => void {
         if (event.reason === 'budget_exceeded') {
           // Keep the session so a follow-up resumes this exact conversation.
           if (event.sessionId) sessions.set(event.agent, event.sessionId);
-          appendBudgetNotice(event.agent);
+          // The pause card belongs to the user's own run. A dispatched
+          // sub-agent's cutoff (forwarded under the child's slug) is a
+          // line — the parent's own cutoff, with the hand-off note, follows.
+          if (event.jobId != null && (!conversationAgent || event.agent === conversationAgent)) {
+            appendBudgetNotice({ agent: event.agent, jobId: event.jobId, handoff: event.handoff ?? null });
+          } else {
+            appendSystemLine(`${agentLabel(event.agent)} reached the token budget.`, 'error');
+          }
         } else if (event.reason === 'provider_overloaded') {
           // Transient upstream failure that outlasted the runtime's retries —
           // keep the session so a chat "Try again" resumes it, and offer a
@@ -788,6 +827,9 @@ async function dispatchTask(role: string, text: string): Promise<void> {
   running = true;
   conversationAgent = role;
   setAgentActivity(`${agentLabel(role)} is working…`);
+  // The user steered the paused agent with their own instruction (issue
+  // #110): that supersedes the pause — retire its Resume affordance.
+  retireBudgetCards(role, 'superseded by your instruction');
 
   const onEvent = createEventHandler();
   try {
@@ -1077,33 +1119,62 @@ function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): voi
 }
 
 /**
- * Budget-reached notice with a one-click clean resume. The task was paused at
- * the budget limit; files already written are on disk and the SDK session is
- * preserved, so resuming continues the same conversation with a fresh budget.
+ * Budget-pause card (issue #110): the hand-off note the pause wrote, what
+ * resuming does, and a one-click Resume. Rendered live from the
+ * `budget_exceeded` error event and rebuilt from the paused job row after a
+ * reload (restorePausedRuns), so the pause and its affordance survive.
  */
-function appendBudgetNotice(agent: string): void {
+function appendBudgetNotice({ agent, jobId, handoff, isoTime }: {
+  agent: string; jobId: number; handoff: string | null; isoTime?: string;
+}): void {
   const log = document.getElementById('chat-log')!;
   const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-budget';
+  card.dataset.jobId = String(jobId);
   tagConversation(card, agent);
+  const when = isoTime ? ` <span class="notice-time mono">${clockOf(isoTime)}</span>` : '';
+  const note = handoff
+    ? `<div class="notice-subtitle">Hand-off note</div><div class="handoff-note">${renderMarkdown(handoff)}</div>`
+    : '<p class="notice-muted">No hand-off note could be written for this pause.</p>';
   card.innerHTML =
-    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Token budget reached — task paused</div>` +
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Token budget reached — task paused${when}</div>` +
     `<p>Nothing is lost. Any files ${label} already wrote are saved (check the Files panel), and ` +
     `this conversation is preserved.</p>` +
-    `<p>Resume and ${label} will recap what's done and what's still left, then keep going with a ` +
-    `fresh budget. Or send your own instruction to steer the rest of the work.</p>`;
+    note +
+    `<p>Resuming starts a new run with a fresh budget: ${label} gets this note and continues the same ` +
+    `conversation — or, if the model provider has since dropped the session, picks up from Kuhn's own ` +
+    `transcript of it. Or send your own instruction to steer the rest of the work.</p>`;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn btn-accent btn-sm notice-action';
   btn.innerHTML = `Resume ${label} ${icon('arrow-right', { size: 13, stroke: 2 })}`;
   btn.addEventListener('click', () => {
     btn.disabled = true;
-    void continueAfterBudget(agent);
+    void continueAfterBudget(agent, jobId);
   });
   card.append(btn);
   log.append(card);
   scrollLog();
+}
+
+/**
+ * Retire the Resume affordance on an agent's pause cards (issue #110): the
+ * pause was resumed, or a fresh instruction superseded it. The card itself
+ * stays — the hand-off note is still the record of where the run stopped.
+ */
+function retireBudgetCards(agent: string, outcome: string, jobId?: number): void {
+  const selector = jobId != null
+    ? `#chat-log .chat-notice-budget[data-job-id="${jobId}"]`
+    : `#chat-log .chat-notice-budget[data-agent="${CSS.escape(agent)}"]`;
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+    const btn = card.querySelector('.notice-action');
+    if (!btn) continue;
+    const done = document.createElement('div');
+    done.className = 'notice-muted';
+    done.textContent = `Paused run ${outcome}.`;
+    btn.replaceWith(done);
+  }
 }
 
 /**
@@ -1145,29 +1216,26 @@ async function retryLast(): Promise<void> {
   await retryAction();
 }
 
-/** Resume a budget-paused agent: same SDK session, fresh budget. */
-async function continueAfterBudget(agent: string): Promise<void> {
+/**
+ * Resume a budget-paused run (issue #110). The server builds the prompt from
+ * the hand-off note stored on the paused job and resumes its session with a
+ * fresh budget; a dead session falls back to Kuhn's transcript (issue #109).
+ */
+async function continueAfterBudget(agent: string, jobId: number): Promise<void> {
   if (running) return;
-  const prompt =
-    'Continue the previous task from where you left off. First, briefly note what you '
-    + 'completed and what still remains, then keep going.';
-  appendUserMessage(prompt, agent);
+  retireBudgetCards(agent, 'resumed', jobId);
+  appendSystemLine(`Resuming ${agentLabel(agent)} from the hand-off note…`);
   running = true;
   conversationAgent = agent;
   setAgentActivity(`${agentLabel(agent)} is working…`);
+  retryAction = () => continueAfterBudget(agent, jobId);
+  const onEvent = createEventHandler();
   try {
-    await runAgentTask(
-      {
-        role: agent,
-        projectId: activeProjectId,
-        input: prompt,
-        sessionId: sessions.get(agent),
-        context: taskContext(),
-      },
-      createEventHandler(),
-    );
+    await resumeJob(jobId, taskContext(), onEvent);
   } catch (err) {
-    appendSystemLine((err as Error).message, 'error');
+    if (!(await resumeAfterStreamDrop(onEvent))) {
+      appendSystemLine((err as Error).message, 'error');
+    }
   } finally {
     finishRun();
   }

@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import { captureHandoff } from '../agents/handoff.js';
+import { isBudgetPaused, renderResumeInput } from '../agents/budget-pause.js';
 import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
 import { runAgentTask, reattach } from '../agents/runtime.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
@@ -147,6 +148,39 @@ router.post('/api/agent/jobs/:id/dispatch', async (req, res) => {
     context: job.context,
     sessionId: job.session_id ?? undefined,
     userId: req.user.id, // the re-dispatcher, not the original job's user
+  }));
+});
+
+/**
+ * POST /api/agent/jobs/:id/resume — body { context? } (issue #110).
+ * Resume a top-level run the token budget paused: a fresh task on the same
+ * role/project that resumes the paused run's provider session (and canonical
+ * record) with a fresh budget, prompted by the hand-off note the pause wrote.
+ * If the provider no longer holds the session, the runtime's fresh-session
+ * fallback (issue #109) carries Kuhn's transcript instead. `context` is the
+ * editor context at resume time (the paused job's is stale). Streams events
+ * like POST /api/agent/task. 409 when the job is not a paused top-level run.
+ */
+router.post('/api/agent/jobs/:id/resume', async (req, res) => {
+  const job = await requireJobRole(req, res, 'editor');
+  if (!job) return;
+  if (job.parent_job_id != null || !isBudgetPaused(job)) {
+    res.status(409).json({ error: 'job is not paused on a token budget' });
+    return;
+  }
+  const { context } = req.body ?? {};
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  await streamEvents(res, runAgentTask({
+    role: job.role,
+    projectId: job.project_id,
+    input: renderResumeInput(job),
+    context: context ?? null,
+    sessionId: job.session_id ?? undefined,
+    continuation: job.continuation ?? null,
+    userId: req.user.id,
+    detachable: true,
+    signal: ac.signal,
   }));
 });
 
