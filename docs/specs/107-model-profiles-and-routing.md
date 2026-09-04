@@ -1,6 +1,6 @@
 # Spec: Model profiles and per-role routing (issues #107, #111, #112)
 
-**Status:** implemented in stages — backend (this spec), admin UI (#111), multi-provider proof (#112)
+**Status:** implemented in stages — backend (PR #130), admin UI (#111, `webapp/src/org-models.ts`), multi-provider proof (#112)
 **Issues:** [#107 — optimal agent models](https://github.com/soundtrip-health/kuhn/issues/107),
 [#111 — admin UI for provider credentials, model profiles, and per-role routing](https://github.com/soundtrip-health/kuhn/issues/111),
 [#112 — OpenAI-compatible endpoints and a live multi-provider matrix](https://github.com/soundtrip-health/kuhn/issues/112)
@@ -147,9 +147,21 @@ surfaced, not enforced (threat model §4.3).
   `dispatch_agent`.
 - The conformance suite runs unchanged on both drivers through the deployment default.
 
-## 8. Follow-ups
+## 8. Admin UI (#111, `webapp/src/org-models.ts`)
 
-- **#111** — the Settings → Models tab (credentials, profiles, routing, test, egress warning).
+Owner-only **Models** tab in the org admin overlay: a provider-credential form that saves an
+org secret under a suggested name; the profile table (deployment rows read-only) with Test /
+Edit / Delete and an inline probe result; the profile form (slug immutable on edit, base URL
+shown only for the compatible provider, credential picked from the org's secrets, declared
+capabilities, cost weight, data-policy note) that states the destination host and credential
+as it is edited; and per-agent routing rows (profile + difficulty ceiling) with Save / Discard /
+Revert to default. Saving a route whose profiles add a destination host asks for confirmation
+naming the host, and the server's `egress.added` is toasted after the save. Warnings from the
+route API (web search unavailable off Anthropic) render under the agent. Browser check:
+`npm run models-check` (Playwright, token-free).
+
+## 9. Follow-ups
+
 - **#112** — the OpenAI-compatible proof against a real HTTP server and the credential-gated
   live matrix script.
 - Difficulty guidance in the PM/writer prompts, once routing is in use (prompt change, needs a
