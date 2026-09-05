@@ -3,9 +3,11 @@
  *
  * For a task on role R in org O with difficulty d (0..1), pick the profile
  * the org's ranked route list trusts with d: the cheapest entry whose
- * difficulty covers d, else the strongest entry. With no route configured
- * the role runs on the deployment default (db/model-profiles.js), which is
- * exactly the pre-#107 behavior.
+ * difficulty covers d, else the strongest entry. With no org route the
+ * platform default route applies when the operator declared one for the
+ * role (KUHN_PLATFORM_MODELS `routes`, issue #138); otherwise the role runs
+ * on the deployment default (db/model-profiles.js), which is exactly the
+ * pre-#107 behavior.
  *
  * Credentials are resolved here, server-side, at the moment the runtime is
  * built — the resolved value goes straight into the adapter constructor
@@ -18,6 +20,7 @@ import {
   deploymentDefaultProfile,
   getProfile,
   getRoutes,
+  platformDefaultRoutes,
 } from '../db/model-profiles.js';
 import { getOrgSecretValue } from '../db/org-secrets.js';
 
@@ -66,25 +69,32 @@ export function requirementFailure(profile) {
  * @param {number|null} args.orgId - the project's org (null → deployment default)
  * @param {{ slug: string, model?: string|null }} args.agent - the agent row
  * @param {number} [args.difficulty] - task difficulty (0..1), default 1
- * @returns {{ profile: object, source: 'org'|'deployment', difficulty: number,
+ * @returns {{ profile: object, source: 'org'|'platform'|'deployment', difficulty: number,
  *   routes: Array<{ profile_slug, difficulty }> }}
  */
 export function resolveRoute({ orgId, agent, difficulty }) {
   const d = normalizeDifficulty(difficulty);
-  const routes = orgId != null ? getRoutes(orgId, agent.slug) : [];
+  let routes = orgId != null ? getRoutes(orgId, agent.slug) : [];
+  let source = 'org';
+  if (routes.length === 0) {
+    // Operator-declared default for this role (issue #138); an org's own
+    // route list, when it has one, replaces it entirely.
+    routes = platformDefaultRoutes(agent.slug);
+    source = 'platform';
+  }
   const chosen = selectRoute(routes, d);
   if (chosen) {
     const profile = getProfile(orgId, chosen.profile_slug);
     // A route whose profile vanished (deployment config changed under it)
     // is a configuration error, not a reason to run elsewhere silently.
-    if (profile) return { profile, source: 'org', difficulty: d, routes };
+    if (profile) return { profile, source, difficulty: d, routes };
     return {
       profile: {
         slug: chosen.profile_slug, provider: null, model_id: null, enabled: false,
         capabilities: {}, credential: { kind: 'none', secret: null }, endpoint: null,
         cost_weight: config.agent?.modelWeights?.default ?? 5, managed: false, missing: true,
       },
-      source: 'org', difficulty: d, routes,
+      source, difficulty: d, routes,
     };
   }
   return { profile: deploymentDefaultProfile(agent), source: 'deployment', difficulty: d, routes };

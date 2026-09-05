@@ -28,6 +28,7 @@ import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.mo
 import { config } from '../config.js';
 import { querySync, transaction } from '../db.js';
 import { SECRET_NAME_PATTERN } from './org-secrets.js';
+import { loadPlatformModels } from './platform-models.js';
 
 export const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'google', 'openai-compatible'];
 
@@ -287,6 +288,11 @@ function parseOverrides(text) {
 }
 
 // ---- Deployment-managed profiles -----------------------------------------------
+//
+// Three sources, all read-only and derived from config: the operator's
+// Anthropic key behind the seeded agents.model ids, the KUHN_PI_* preview,
+// and the KUHN_PLATFORM_MODELS list (issue #138: local / contracted models an
+// operator pre-configures once for every org).
 
 /** Deployment profile slug for a model id ('claude-opus-4-8' → 'deployment-claude-opus-4-8'). */
 export function deploymentSlug(modelId) {
@@ -313,6 +319,70 @@ const PI_DEFAULT_API_KEY_ENV = {
 
 /** Slug of the deployment Pi preview profile (KUHN_AGENT_RUNTIME=pi). */
 export const PI_PREVIEW_SLUG = `${DEPLOYMENT_PREFIX}pi-preview`;
+
+/** Default credential variable per provider for a platform entry without `api_key_env`. */
+const PLATFORM_DEFAULT_API_KEY_ENV = { ...PI_DEFAULT_API_KEY_ENV, anthropic: 'ANTHROPIC_API_KEY' };
+
+/** The validated KUHN_PLATFORM_MODELS entries (issue #138); throws on a malformed list. */
+export function platformModelEntries() {
+  return loadPlatformModels({ providers: PROVIDERS });
+}
+
+/** Profile slug of a platform entry ('local-qwen' → 'deployment-local-qwen'). */
+export function platformSlug(entrySlug) {
+  return `${DEPLOYMENT_PREFIX}${entrySlug}`;
+}
+
+function platformProfile(entry) {
+  const catalog = catalogCapabilities(entry.provider, entry.model_id);
+  // A keyless openai-compatible entry is a local server that wants no bearer
+  // (the factory sends the placeholder); every other provider needs a key,
+  // from the named variable or the provider's default one.
+  const keyless = entry.provider === 'openai-compatible' && !entry.api_key_env;
+  return {
+    id: null,
+    slug: platformSlug(entry.slug),
+    name: entry.name,
+    provider: entry.provider,
+    model_id: entry.model_id,
+    base_url: entry.base_url,
+    endpoint: entry.provider === 'openai-compatible' ? entry.base_url : PROVIDER_ENDPOINTS[entry.provider],
+    credential: keyless
+      ? { kind: 'none', secret: null }
+      : { kind: 'deployment', secret: null, env: entry.api_key_env ?? PLATFORM_DEFAULT_API_KEY_ENV[entry.provider] },
+    capabilities: effectiveCapabilities(entry.provider, entry.model_id, entry.capabilities),
+    capability_overrides: entry.capabilities,
+    catalog_known: catalog.known,
+    cost_weight: entry.cost_weight ?? catalog.suggested_cost_weight ?? config.agent?.modelWeights?.default ?? 5,
+    data_policy: entry.data_policy,
+    enabled: true,
+    managed: true,
+    // Distinguishes an operator-declared model from the derived Anthropic
+    // tiers in the admin UI; routes below are its default-route ceilings.
+    platform: true,
+    default_routes: entry.routes,
+  };
+}
+
+/** The KUHN_PLATFORM_MODELS entries as deployment profiles, in declared order. */
+export function platformProfiles() {
+  return platformModelEntries().map(platformProfile);
+}
+
+/**
+ * The platform default route for an agent (issue #138): every platform entry
+ * whose `routes` names the agent (or "*"), as a ranked list sorted by
+ * difficulty ceiling. [] when none — the seeded Anthropic default applies.
+ * @returns {Array<{ profile_slug: string, difficulty: number }>}
+ */
+export function platformDefaultRoutes(agentSlug) {
+  const out = [];
+  for (const entry of platformModelEntries()) {
+    const ceiling = entry.routes[agentSlug] ?? entry.routes['*'];
+    if (typeof ceiling === 'number') out.push({ profile_slug: platformSlug(entry.slug), difficulty: ceiling });
+  }
+  return out.sort((a, b) => a.difficulty - b.difficulty || a.profile_slug.localeCompare(b.profile_slug));
+}
 
 function anthropicDeploymentProfile(modelId) {
   return {
@@ -367,8 +437,10 @@ function seededAgentModels() {
 
 /**
  * Every deployment-managed profile: one Anthropic profile per distinct seeded
- * agent model (plus the AGENT_MODEL fallback when set), and the Pi preview
- * when configured. Order is stable (agents order, then the preview).
+ * agent model (plus the AGENT_MODEL fallback when set), the Pi preview when
+ * configured, and the platform models (issue #138). Order is stable (agents
+ * order, the preview, then the platform list as declared). A platform slug
+ * that collides with a derived one is dropped — the derived profile wins.
  */
 export function deploymentProfiles() {
   const out = new Map();
@@ -380,6 +452,9 @@ export function deploymentProfiles() {
   }
   const pi = piPreviewProfile();
   if (pi) out.set(pi.slug, pi);
+  for (const profile of platformProfiles()) {
+    if (!out.has(profile.slug)) out.set(profile.slug, profile);
+  }
   return [...out.values()];
 }
 

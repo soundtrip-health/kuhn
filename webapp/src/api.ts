@@ -102,7 +102,7 @@ export interface AgentModelInfo {
   provider: string | null;
   model: string | null;
   /** 'org' = a configured per-role route chose it; 'deployment' = the seeded default. */
-  source?: 'org' | 'deployment';
+  source?: 'org' | 'platform' | 'deployment';
   /** The 0..1 difficulty the dispatcher supplied (1 when omitted); unknown on job rows. */
   difficulty?: number;
 }
@@ -205,7 +205,7 @@ export interface Job {
   profile?: string | null;
   /** The routing decision (issue #107): difficulty the route was resolved for, and what picked it. Null before the column existed. */
   difficulty?: number | null;
-  route_source?: 'org' | 'deployment' | null;
+  route_source?: 'org' | 'platform' | 'deployment' | null;
   created_at: string;
 }
 
@@ -2179,6 +2179,8 @@ export interface ModelProfile {
   enabled: boolean;
   /** true for deployment-managed profiles (read-only). */
   managed: boolean;
+  /** Declared by the operator in KUHN_PLATFORM_MODELS (issue #138); read-only like every deployment profile. */
+  platform?: boolean;
   updated_at?: string;
 }
 
@@ -2228,6 +2230,9 @@ export interface ModelRouteAgent {
   name: string;
   tools: string[];
   default_profile: string;
+  /** What the agent runs on with no org route: the platform default list
+   *  (KUHN_PLATFORM_MODELS `routes`, issue #138) or the single deployment profile. */
+  default_routes?: ModelRoute[];
   routes: ModelRoute[];
   warnings: Array<{ profile_slug: string; message: string }>;
 }
