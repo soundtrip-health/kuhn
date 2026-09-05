@@ -36,9 +36,11 @@ tenant-scoped profile, never of anything the model can choose.**
 | Org-owned | `model_profiles` rows | owner-chosen, `[a-z][a-z0-9.-]*` (dots allowed so a model id can double as one), the `deployment-` prefix reserved | `credential_secret`: an `org_secrets` name; NULL only for `openai-compatible` (keyless local server) |
 
 Providers: `anthropic` (Claude Agent SDK adapter, org key layered onto the SDK subprocess
-env), `openai` (Responses API via pi-ai), `openrouter` (completions via pi-ai), and
-`openai-compatible` (completions against `base_url`). Fixed-endpoint providers forbid a
-`base_url`; the compatible provider requires one.
+env), `openai` (Responses API via pi-ai), `openrouter` (completions via pi-ai), `google`
+(Gemini Developer API via pi-ai's Generative Language adapter — an API key, `GEMINI_API_KEY`
+by default; not Vertex/ADC; issue #133), and `openai-compatible` (completions against
+`base_url`). Fixed-endpoint providers forbid a `base_url`; the compatible provider requires
+one.
 
 **Capabilities** (`reasoning`, `input` (`text`/`image`), `contextWindow` (≥ 1024), `maxTokens`,
 `tools`). Effective values are Kuhn defaults ← the built-in pi-ai catalog for a known
@@ -95,8 +97,9 @@ harness and older tests use it). Per provider:
 
 - `anthropic` → `createClaudeRuntime({ model: profile.model_id, apiKey })`; the SDK subprocess
   gets `{ ...process.env, ANTHROPIC_API_KEY: apiKey }` for that runtime only.
-- `openai` / `openrouter` → the pi-ai provider built with `staticApiKeyAuth` when a value was
-  resolved (else the named env var); an uncatalogued model id is added as a declared model.
+- `openai` / `openrouter` / `google` → the pi-ai provider built with `staticApiKeyAuth` when a
+  value was resolved (else the named env var); an uncatalogued model id is added as a declared
+  model. The Google path uses pi-ai's Generative Language API adapter and the Gemini catalog.
 - `openai-compatible` → `createOpenAICompatiblePiRuntime({ baseUrl, …capabilities })`.
 
 Jobs are stamped with `profile` and `endpoint` beside `provider`/`model`, at start (so a
@@ -184,8 +187,8 @@ wire handling is the same; the OpenAI Responses API path is exercised only live.
 
 **Live, credential-gated.** `npm run smoke:provider-matrix` runs one bounded tool-using turn
 through the factory's profile path on every provider that has a credential in the environment
-(`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `KUHN_MATRIX_BASE_URL` + `KUHN_MATRIX_MODEL` for a
-self-hosted server, `ANTHROPIC_API_KEY`), checks the normalized contract, the tool call, and the
+(`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `KUHN_MATRIX_BASE_URL` +
+`KUHN_MATRIX_MODEL` for a self-hosted server, `ANTHROPIC_API_KEY`), checks the normalized contract, the tool call, and the
 final marker, and prints a JSON table; paths without credentials are reported as skipped, never
 faked.
 
