@@ -100,6 +100,9 @@ export const WEB_SEARCH_TOOL = {
  * @property {object|null} context - editor context slice for dispatch inheritance (STH-43)
  * @property {(task: object, internal?: object) => AsyncGenerator<object>} dispatch
  *   - the runAgentTask boundary, injected by the runtime caller
+ * @property {AbortSignal|null} signal - the owning run's abort signal (issue
+ *   #136): fires when the run is stopped (user, disconnect, budget), so a
+ *   dispatched sub-agent is torn down with its parent
  */
 
 /**
@@ -109,7 +112,7 @@ export const WEB_SEARCH_TOOL = {
  */
 export function createToolContext({
   agent, projectId, depth, budget, parentJob, channel,
-  userId = null, seeding = false, context = null, dispatch,
+  userId = null, seeding = false, context = null, dispatch, signal = null,
 }) {
   if (!agent || !Array.isArray(agent.tools)) throw new Error('createToolContext: agent row with tool grants is required');
   if (typeof dispatch !== 'function') {
@@ -126,6 +129,7 @@ export function createToolContext({
     seeding,
     context,
     dispatch,
+    signal,
   };
 }
 

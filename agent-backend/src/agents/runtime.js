@@ -53,6 +53,10 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {number} [task.difficulty] - How hard this task is, 0..1 (issue
  *   #107): the org's per-role model routing picks the cheapest profile
  *   trusted with it. Absent → 1 (the strongest configured profile).
+ * @param {string} [task.profile] - A profile slug the user pinned for the
+ *   agent they are addressing (issue #134). Must be on the agent's route
+ *   list (the owner's allowlist) or the task is refused as route_invalid.
+ *   Sub-agent dispatches never carry it — they route by difficulty.
  * @param {string} [task.sessionId] - Continue a prior provider session
  * @param {object} [task.continuation] - Canonical Kuhn continuation (STH-47)
  *   to resume from: the provider-neutral record of a prior run (a follow-up
@@ -82,6 +86,13 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *     route picked for this job (issue #107): source 'org' (a configured route) or 'deployment' (the seeded default);
  *     difficulty is the 0..1 value the dispatcher supplied (1 when omitted). Sub-agents emit their own, forwarded by dispatch.
  *   { type: 'context', agent, jobId, context: { tokens, window } } — per-turn context-window state (STH-52)
+ *   { type: 'job', agent, jobId, depth, parentJobId, status: 'done'|'error'|'cancelled' } — a dispatched sub-agent's job
+ *     ended (issue #137); emitted by dispatch_agent, since the child's own 'done' is not forwarded. The activity and
+ *     model indicators follow the innermost running job.
+ *   { type: 'cancelled', agent, jobId, depth, sessionId, continuation, budget, message } — the user stopped the run
+ *     (issue #136, POST /api/agent/jobs/:jobId/cancel). Terminal. Carries the provider session and the canonical
+ *     record so the next message resumes the conversation where it stopped. Dispatched sub-agents are stopped with
+ *     the parent (each marked cancelled; no event of their own beyond the 'job' marker).
  *   { type: 'done', agent, jobId, sessionId, usage: { inputTokens, outputTokens }, context: { tokens, window }, continuation }
  *     — usage is cumulative task throughput (budget/cost); context is the LAST turn's prompt size (the meter's number, STH-52);
  *       continuation is the canonical record (STH-47) a follow-up task can resume
@@ -104,7 +115,10 @@ export async function* runAgentTask(task, internal = {}) {
   );
   Object.assign(state, {
     runtime: null,
-    controller: null,
+    // The run's abort controller exists from the first moment (issue #136):
+    // a stop request can arrive before the provider runtime is built, and
+    // dispatched sub-agents take its signal as their consumer signal.
+    controller: new AbortController(),
     finished: false,
     job: null,
     runHandle: null,
@@ -117,7 +131,8 @@ export async function* runAgentTask(task, internal = {}) {
     // provider-neutral record the adapters resume instead of starting cold.
     continuation: task.continuation ?? null,
     // 'budget' when the budget cutoff aborts the in-flight turn; 'disconnect'
-    // when the consumer dropped; null while the run is healthy.
+    // when the consumer dropped; 'user' when the user pressed Stop (issue
+    // #136); null while the run is healthy.
     cancelReason: null,
     // Detachable runs (the chat task path) survive a disconnect while parked
     // on a question, so a reconnect can resume them (story 027). Sub-agent and
@@ -152,7 +167,9 @@ export async function* runAgentTask(task, internal = {}) {
   try {
     yield* consume(channel, task.signal);
   } finally {
-    await teardownOrDetach(state);
+    // A sub-agent's consumer is its dispatcher: when that ends early the
+    // parent run was stopped and the child goes with it (issue #136).
+    await teardownOrDetach(state, (internal.depth ?? 0) > 0 ? 'parent' : 'disconnect');
   }
 }
 
@@ -195,7 +212,7 @@ function raceNext(channel, signal) {
  * the job cancelled. A run that already finished just settles its pump.
  * (story 027)
  */
-async function teardownOrDetach(state) {
+async function teardownOrDetach(state, reason = 'disconnect') {
   if (state.finished) {
     await state.pump;
     return;
@@ -208,15 +225,37 @@ async function teardownOrDetach(state) {
     state.runHandle.consumerAttached = false;
     return; // leave the run alive and parked; do NOT interrupt or await the pump
   }
-  // Unblock ask_user first: the runtime loop may be parked inside its handler.
-  if (jobId != null) cancelQuestion(jobId);
-  if (!state.cancelReason) state.cancelReason = 'disconnect';
-  state.controller?.abort(); // the adapter interrupts the provider query
-  if (jobId != null) {
-    await updateJob(jobId, { status: 'cancelled' }).catch(() => {});
-  }
+  await cancelRun(state, { reason });
   await state.pump;
   unregisterRun(jobId);
+}
+
+/**
+ * Stop a live run (issue #136). Unblocks a parked ask_user first (the
+ * runtime loop may be inside its handler), aborts the in-flight turn through
+ * the adapter, and marks the job cancelled so the status is right even if
+ * the adapter never yields its terminal. Dispatched sub-agents consume the
+ * same abort signal, so the whole tree stops. `reason` is kept on the state
+ * for the terminal handling: a user stop emits a `cancelled` event carrying
+ * the session so the next message resumes where the agent left off; a
+ * disconnect has nobody listening; a sub-agent stopped with its parent
+ * ('parent') reports through the parent's `job` marker; a budget cutoff
+ * already has its own terminal. A reason already set (a budget cutoff in
+ * progress) wins.
+ * @param {object} state - the run state (RunHandle.state)
+ * @returns {Promise<boolean>} false when the run had already finished
+ */
+export async function cancelRun(state, { reason = 'user' } = {}) {
+  if (!state || state.finished) return false;
+  const jobId = state.job?.id;
+  if (jobId != null) cancelQuestion(jobId);
+  if (!state.cancelReason) state.cancelReason = reason;
+  state.controller?.abort(); // the adapter interrupts the provider query
+  if (jobId != null) {
+    log.info('job_cancel', { jobId, agent: state.job?.role ?? null, reason: state.cancelReason });
+    await updateJob(jobId, { status: 'cancelled' }).catch(() => {});
+  }
+  return true;
 }
 
 /**
@@ -252,7 +291,7 @@ const OVERLOADED_TERMINAL_MESSAGE =
   'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.';
 
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined, profile: requestedProfile = null } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
@@ -270,18 +309,20 @@ async function runTask(task, internal, channel, state) {
   // default (the seeded agents.model, exactly as before). A profile that
   // cannot run a Kuhn agent at all is refused HERE, before a job exists —
   // never after partial side effects (issue #112).
-  const route = resolveRoute({ orgId: project?.org_id ?? null, agent, difficulty });
+  const route = resolveRoute({ orgId: project?.org_id ?? null, agent, difficulty, profile: requestedProfile });
   const routeFailure = requirementFailure(route.profile);
   if (routeFailure) {
     log.warn('route_invalid', {
       agent: agent.slug, projectId: Number(projectId), userId, depth,
-      profile: route.profile?.slug ?? null, source: route.source, reason: routeFailure,
+      profile: route.profile?.slug ?? null, source: route.source, requested: requestedProfile, reason: routeFailure,
     });
     channel.push({
       type: 'error',
       agent: agent.slug,
       reason: 'route_invalid',
-      message: `This agent's model route cannot run: ${routeFailure}. An organization owner can fix it under Settings → Models.`,
+      message: route.profile?.notAllowed
+        ? `${routeFailure}. Pick another model for this conversation, or ask an organization owner to add it under Settings → Models.`
+        : `This agent's model route cannot run: ${routeFailure}. An organization owner can fix it under Settings → Models.`,
       profile: route.profile?.slug ?? null,
     });
     return;
@@ -380,6 +421,8 @@ async function runTask(task, internal, channel, state) {
     agent, projectId, depth, budget, parentJob: job, channel, userId, seeding,
     context: taskContext,
     dispatch: (t, i) => runAgentTask(t, i),
+    // Stopping this run stops what it dispatched (issue #136).
+    signal: state.controller.signal,
   });
   const neutralTools = listTools(toolContext);
 
@@ -446,7 +489,6 @@ async function runTask(task, internal, channel, state) {
       difficulty: route.difficulty,
     },
   });
-  state.controller = new AbortController();
 
   const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);
   const prompt = buildPrompt(input, taskContext);
@@ -461,6 +503,49 @@ async function runTask(task, internal, channel, state) {
 
   // The org-budget ledger figure for this job so far (issue #110).
   const weightedTokens = (u = usage) => Math.round((u.inputTokens + u.outputTokens) * ledgerWeight);
+
+  // Close out an aborted run (issue #136). Every abort keeps the partial
+  // record (issue #109) and the usage so far; a stop the USER asked for also
+  // gets a `cancelled` terminal carrying the provider session and the
+  // record, so the user's next message resumes the conversation where it
+  // stopped instead of starting cold. A disconnect has nobody listening and
+  // a budget cutoff already pushed its own terminal.
+  const finishCancelled = async (outcomeUsage) => {
+    const jobTokens = outcomeUsage
+      ? { inputTokens: effectiveInputTokens(outcomeUsage), outputTokens: outcomeUsage.outputTokens ?? usage.outputTokens }
+      : { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+    const fields = {
+      inputTokens: jobTokens.inputTokens,
+      outputTokens: jobTokens.outputTokens,
+      weightedTokens: weightedTokens(jobTokens),
+      contextTokens: lastContextTokens,
+      continuation: state.continuation ?? null,
+    };
+    if (state.cancelReason === 'user') {
+      // The stop request already marked the row; this stamps the identity
+      // and usage on it (status again, in case a retry landed 'running').
+      await updateJob(job.id, { status: 'cancelled', ...fields, ...jobIdentity() }).catch(() => {});
+      log.info('job_end', {
+        jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason: 'user',
+        contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
+        outputTokens: jobTokens.outputTokens, budgetUsed: Math.round(budget.used),
+      });
+      channel.push({
+        type: 'cancelled', agent: agent.slug, jobId: job.id, depth,
+        sessionId: state.sessionId,
+        continuation: state.continuation ?? null,
+        budget: budgetSnapshot(budget),
+        message: 'Stopped.',
+      });
+      return;
+    }
+    await updateJob(job.id, fields).catch(() => {});
+    log.info('job_end', {
+      jobId: job.id, agent: agent.slug, depth, status: state.cancelReason === 'budget' ? 'error' : 'cancelled',
+      reason: state.cancelReason ?? 'cancelled', contextTokens: lastContextTokens,
+      inputTokens: jobTokens.inputTokens, outputTokens: jobTokens.outputTokens, budgetUsed: Math.round(budget.used),
+    });
+  };
 
   // Transient provider failures (rate limit / overload / 5xx / network) are
   // upstream and stateless: retry the turn with exponential backoff before
@@ -495,12 +580,13 @@ async function runTask(task, internal, channel, state) {
     if (outcome.kind === 'done') {
       if (outcome.continuation) state.continuation = outcome.continuation;
       if (state.controller?.signal.aborted) {
-        // The product aborted this turn (budget cutoff or consumer
-        // disconnect) and the adapter's done terminal raced the abort
+        // The product aborted this turn (budget cutoff, consumer disconnect,
+        // or a user stop) and the adapter's done terminal raced the abort
         // (the final message completed before the abort landed). The
         // abort wins: the job already carries the abort status and the
         // client already got the abort event — a done terminal would
-        // overwrite both.
+        // overwrite both. A user stop still gets its own terminal.
+        await finishCancelled(outcome.usage ?? null);
         return;
       }
       const doneUsage = outcome.usage ?? {};
@@ -581,12 +667,11 @@ async function runTask(task, internal, channel, state) {
 
     if (perr.code === 'cancelled') {
       // The budget cutoff already pushed its own error event; the disconnect
-      // teardown marked the job cancelled. The run is over — but the
-      // partial record is kept (issue #109), like every other terminal:
-      // it is what a provider-neutral follow-up resumes from.
-      if (state.continuation) {
-        await updateJob(job.id, { continuation: state.continuation }).catch(() => {});
-      }
+      // teardown marked the job cancelled; a user stop (issue #136) gets the
+      // `cancelled` terminal below. The run is over — but the partial record
+      // is kept (issue #109), like every other terminal: it is what a
+      // provider-neutral follow-up resumes from.
+      await finishCancelled(outcome.usage ?? null);
       return;
     }
 

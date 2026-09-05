@@ -809,6 +809,17 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .agent-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--role); }
 .agent-pill svg { width: 11px; height: 11px; }
 #chat-role { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+/* Model pill (issue #134): same pill chrome, neutral ink; pinned = accent */
+.model-picker[hidden] { display: none; }
+.model-pill { color: var(--ink-3); }
+.model-pill.is-pinned { color: var(--accent); border-color: var(--accent-line); }
+.model-pill svg:first-child { width: 11px; height: 11px; }
+.model-menu { min-width: 260px; max-width: 360px; }
+.model-option { flex-direction: column; align-items: flex-start; gap: 1px; }
+.model-option:disabled { opacity: .5; cursor: default; }
+.model-option-name { font-weight: 500; }
+.model-option-meta { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.model-menu-note { font-size: 11px; color: var(--ink-3); padding: 6px 9px 3px; border-top: 1px solid var(--line-2); margin-top: 3px; }
 
 .agent-menu {
   position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
@@ -834,6 +845,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .send-btn:hover { filter: brightness(1.15); }
 .send-btn svg { width: 15px; height: 15px; }
+/* Stop mode while a run is in flight (issue #136) */
+.send-btn.is-stop { background: var(--warn); }
+.send-btn.is-stop:disabled { opacity: .6; cursor: progress; }
 
 /* ---- Seeding panel -------------------------------------------------- */
 #seeding-panel {
@@ -878,6 +892,11 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .qc-btn-primary { background: var(--advisor); color: var(--ink-inv); border-color: var(--advisor); }
 .qc-btn-ghost { background: var(--chrome); color: var(--ink); }
 .qc-foot { font-size: 11px; color: var(--ink-3); margin-top: 9px; }
+.qc-stop {
+  font: inherit; color: var(--ink-2); background: none; border: none; padding: 0;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.qc-stop:hover { color: var(--warn); }
 .qc-foot strong { font-weight: 500; color: var(--ink-2); }
 
 .question-card.is-answered { border: 1px solid var(--good-soft); background: var(--chrome); padding: 13px 14px; }
