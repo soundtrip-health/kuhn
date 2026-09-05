@@ -101,6 +101,35 @@ describe('resolveRoute', () => {
     expect(routing.resolveRoute({ orgId: ORG, agent: { slug: 'pm', model: 'claude-opus-4-8' } }).source).toBe('deployment');
   });
 
+  it('falls back to the platform default route when the org has none, and org routes replace it (issue #138)', async () => {
+    const { resetPlatformModelsCache } = await import('../db/platform-models.js');
+    resetPlatformModelsCache();
+    config.agentRuntime.platformModels = JSON.stringify([
+      { slug: 'local-qwen', provider: 'openai-compatible', model_id: 'Qwen3-27B', base_url: 'http://vllm.lan:8000/v1', cost_weight: 0.5, routes: { ra: 0.5 } },
+      { slug: 'site-gem', provider: 'google', model_id: 'gemini-2.5-pro', routes: { ra: 1 } },
+    ]);
+    try {
+      expect(routing.resolveRoute({ orgId: ORG, agent: RA, difficulty: 0.3 })).toMatchObject({
+        source: 'platform', profile: { slug: 'deployment-local-qwen', provider: 'openai-compatible', cost_weight: 0.5 },
+        routes: [{ profile_slug: 'deployment-local-qwen', difficulty: 0.5 }, { profile_slug: 'deployment-site-gem', difficulty: 1 }],
+      });
+      expect(routing.resolveRoute({ orgId: ORG, agent: RA }).profile.slug).toBe('deployment-site-gem');
+      // A role without a platform route keeps the seeded deployment default.
+      expect(routing.resolveRoute({ orgId: ORG, agent: { slug: 'pm', model: 'claude-opus-4-8' } })).toMatchObject({ source: 'deployment', profile: { slug: 'deployment-claude-opus-4-8' } });
+      // Platform defaults apply to projects outside any org too.
+      expect(routing.resolveRoute({ orgId: null, agent: RA, difficulty: 0.1 }).profile.slug).toBe('deployment-local-qwen');
+      // The org's own list wins outright.
+      profiles.setRoutes(ORG, 'ra', [{ profile_slug: 'cheap', difficulty: 1 }]);
+      expect(routing.resolveRoute({ orgId: ORG, agent: RA, difficulty: 0.1 })).toMatchObject({ source: 'org', profile: { slug: 'cheap' } });
+      // Credentials: keyless local server → nothing; the named key variable for the fixed-endpoint one.
+      expect(routing.resolveCredential(ORG, profiles.getProfile(ORG, 'deployment-local-qwen'))).toEqual({});
+      expect(routing.resolveCredential(ORG, profiles.getProfile(ORG, 'deployment-site-gem'))).toEqual({ apiKeyEnv: 'GEMINI_API_KEY' });
+    } finally {
+      config.agentRuntime.platformModels = '';
+      resetPlatformModelsCache();
+    }
+  });
+
   it('surfaces a route whose deployment profile vanished as an unusable profile, not a silent fallback', () => {
     config.agentRuntime.pi = { provider: 'openrouter', model: 'openai/gpt-oss-20b', baseUrl: '', apiKeyEnv: '' };
     profiles.setRoutes(ORG, 'ra', [{ profile_slug: profiles.PI_PREVIEW_SLUG, difficulty: 1 }]);

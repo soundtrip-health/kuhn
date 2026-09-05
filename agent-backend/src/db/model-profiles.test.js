@@ -82,6 +82,48 @@ describe('deployment profiles', () => {
     });
   });
 
+  it('adds KUHN_PLATFORM_MODELS entries as read-only profiles and default routes (issue #138)', async () => {
+    const { resetPlatformModelsCache } = await import('./platform-models.js');
+    resetPlatformModelsCache();
+    config.agentRuntime.platformModels = JSON.stringify([
+      { slug: 'local-qwen', name: 'Qwen on vLLM', provider: 'openai-compatible', model_id: 'Qwen3-27B', base_url: 'http://vllm.lan:8000/v1',
+        capabilities: { contextWindow: 32768 }, data_policy: 'on-prem', routes: { ra: 0.6, writer: 0.3 } },
+      { slug: 'gem-flash', provider: 'google', model_id: 'gemini-2.5-flash', api_key_env: 'SITE_GEMINI_KEY', routes: { '*': 0.2 } },
+      { slug: 'site-opus', provider: 'anthropic', model_id: 'claude-opus-4-8' },
+      // Collides with the derived Anthropic tier for the same id: the derived one wins.
+      { slug: 'claude-haiku-4-5', provider: 'openai', model_id: 'gpt-5-mini' },
+    ]);
+    try {
+      const list = profiles.deploymentProfiles();
+      const local = list.find((p) => p.slug === 'deployment-local-qwen');
+      expect(local).toMatchObject({
+        name: 'Qwen on vLLM', provider: 'openai-compatible', model_id: 'Qwen3-27B', endpoint: 'http://vllm.lan:8000/v1',
+        credential: { kind: 'none', secret: null }, managed: true, platform: true, enabled: true, data_policy: 'on-prem',
+        capabilities: { contextWindow: 32768, tools: true }, capability_overrides: { contextWindow: 32768 }, catalog_known: false, cost_weight: 5,
+      });
+      expect(list.find((p) => p.slug === 'deployment-gem-flash')).toMatchObject({
+        provider: 'google', credential: { kind: 'deployment', env: 'SITE_GEMINI_KEY' }, catalog_known: true, cost_weight: 0.3,
+        name: 'gemini-2.5-flash (platform)',
+      });
+      expect(list.find((p) => p.slug === 'deployment-site-opus').credential).toEqual({ kind: 'deployment', secret: null, env: 'ANTHROPIC_API_KEY' });
+      expect(list.find((p) => p.slug === 'deployment-claude-haiku-4-5').provider).toBe('anthropic');
+      // Reachable like any deployment profile; still read-only.
+      expect(profiles.getProfile(ORG, 'deployment-local-qwen')?.platform).toBe(true);
+      expect(profiles.updateProfile(ORG, 'deployment-local-qwen', { name: 'x' })).toBeNull();
+      expect(profiles.deleteProfile(ORG, 'deployment-local-qwen')).toBe(false);
+      // Default routes: per agent, "*" applies to every agent, sorted by ceiling.
+      expect(profiles.platformDefaultRoutes('ra')).toEqual([
+        { profile_slug: 'deployment-gem-flash', difficulty: 0.2 }, { profile_slug: 'deployment-local-qwen', difficulty: 0.6 },
+      ]);
+      expect(profiles.platformDefaultRoutes('pm')).toEqual([{ profile_slug: 'deployment-gem-flash', difficulty: 0.2 }]);
+      // An org can route to a platform profile like any deployment one.
+      expect(profiles.setRoutes(ORG, 'pm', [{ profile_slug: 'deployment-local-qwen', difficulty: 1 }])).toEqual([{ profile_slug: 'deployment-local-qwen', difficulty: 1 }]);
+    } finally {
+      config.agentRuntime.platformModels = '';
+      resetPlatformModelsCache();
+    }
+  });
+
   it('is read-only: update and delete refuse deployment slugs', () => {
     expect(profiles.updateProfile(ORG, 'deployment-claude-opus-4-8', { name: 'x' })).toBeNull();
     expect(profiles.deleteProfile(ORG, 'deployment-claude-opus-4-8')).toBe(false);

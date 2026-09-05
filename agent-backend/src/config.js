@@ -70,6 +70,12 @@ export const config = {
     // Upper bound on the synthetic connectivity test an owner runs from the
     // admin UI (POST .../model-profiles/:slug/test).
     testTimeoutMs: parseInt(process.env.KUHN_MODEL_TEST_TIMEOUT_MS || '30000'),
+    // Platform-level pre-configured models (issue #138): inline JSON or the
+    // path of a JSON file listing provider/model/endpoint entries every org
+    // sees as read-only deployment profiles (and, with `routes`, as the
+    // default route for the named agents). Parsed and validated at boot by
+    // db/platform-models.js; a malformed list fails startup.
+    platformModels: process.env.KUHN_PLATFORM_MODELS || '',
   },
   cors: {
     // Comma-separated allowlist; the webapp dev server is pinned to 5174
