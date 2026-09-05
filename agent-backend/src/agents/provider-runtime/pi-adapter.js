@@ -5,8 +5,10 @@ import {
   envApiKeyAuth,
   fauxProvider,
 } from '@earendil-works/pi-ai';
+import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generative-ai.lazy';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
+import { GOOGLE_MODELS } from '@earendil-works/pi-ai/providers/google.models';
 import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
 import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
 
@@ -899,6 +901,51 @@ export function createOpenRouterPiRuntime({
   collection.setProvider(provider);
   const model = collection.getModel('openrouter', modelId);
   if (!model) throw new Error(`Unknown OpenRouter model: ${modelId}`);
+  return {
+    runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation, maxTurns }),
+    models: collection,
+    model,
+    provider,
+  };
+}
+
+/**
+ * Google Gemini path (issue #133) through the Generative Language API. Built
+ * exactly like pi-ai's `googleProvider()` (same id, endpoint, model catalog,
+ * and API), except the credential resolves from the explicitly named
+ * environment variable (`apiKeyEnv`; default `GEMINI_API_KEY`) or a resolved
+ * org-secret value — the only sources consulted; no Google application
+ * default credentials, gcloud profile, or Vertex project is read. An
+ * uncatalogued Gemini id runs on its declared capabilities (issue #112).
+ */
+export function createGooglePiRuntime({
+  modelId = 'gemini-2.5-flash',
+  apiKeyEnv = 'GEMINI_API_KEY',
+  apiKey = null,
+  capabilities = null,
+  capabilityOverrides = null,
+  tools = [],
+  systemPrompt = '',
+  continuation,
+  maxTurns,
+} = {}) {
+  const baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+  const catalog = Object.values(GOOGLE_MODELS);
+  const declared = catalog.some((m) => m.id === modelId) || !capabilities
+    ? null
+    : declaredModel({ id: modelId, provider: 'google', api: 'google-generative-ai', baseUrl, ...capabilities });
+  const provider = createProvider({
+    id: 'google',
+    name: 'Google',
+    baseUrl,
+    auth: { apiKey: providerAuth('Gemini API key', { apiKey, apiKeyEnv }) },
+    models: withOverrides(declared ? [...catalog, declared] : catalog, modelId, capabilityOverrides),
+    api: googleGenerativeAIApi(),
+  });
+  const collection = createModels();
+  collection.setProvider(provider);
+  const model = collection.getModel('google', modelId);
+  if (!model) throw new Error(`Unknown Google model: ${modelId}`);
   return {
     runtime: new PiAgentRuntime({ models: collection, model, tools, systemPrompt, continuation, maxTurns }),
     models: collection,

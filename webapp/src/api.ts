@@ -2149,7 +2149,7 @@ async function readEventStream(res: Response, onEvent: (event: AgentEvent) => vo
 // ---- Model profiles + per-role routing (issues #107/#111/#112) -----------------
 // Owner-only. Profiles carry credential NAMES (org secrets), never values.
 
-export type ModelProvider = 'anthropic' | 'openai' | 'openrouter' | 'openai-compatible';
+export type ModelProvider = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'openai-compatible';
 
 export interface ModelCapabilities {
   reasoning: boolean;

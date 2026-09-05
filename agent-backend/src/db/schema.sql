@@ -817,7 +817,9 @@ CREATE TABLE IF NOT EXISTS model_profiles (
   org_id            INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   slug              TEXT NOT NULL,     -- [a-z][a-z0-9-]*, unique per org
   name              TEXT NOT NULL,
-  provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter', 'openai-compatible')),
+  -- Adding a provider widens this CHECK: mirror it in init.js
+  -- MODEL_PROFILES_NEW_DDL + applyModelProfilesProviderMigration (issue #133).
+  provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter', 'google', 'openai-compatible')),
   model_id          TEXT NOT NULL,
   base_url          TEXT,              -- openai-compatible only; validated (https, no creds/query)
   credential_secret TEXT,              -- org_secrets.name; NULL only for keyless local endpoints
