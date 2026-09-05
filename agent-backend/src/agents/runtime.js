@@ -53,6 +53,10 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  * @param {number} [task.difficulty] - How hard this task is, 0..1 (issue
  *   #107): the org's per-role model routing picks the cheapest profile
  *   trusted with it. Absent → 1 (the strongest configured profile).
+ * @param {string} [task.profile] - A profile slug the user pinned for the
+ *   agent they are addressing (issue #134). Must be on the agent's route
+ *   list (the owner's allowlist) or the task is refused as route_invalid.
+ *   Sub-agent dispatches never carry it — they route by difficulty.
  * @param {string} [task.sessionId] - Continue a prior provider session
  * @param {object} [task.continuation] - Canonical Kuhn continuation (STH-47)
  *   to resume from: the provider-neutral record of a prior run (a follow-up
@@ -287,7 +291,7 @@ const OVERLOADED_TERMINAL_MESSAGE =
   'The model provider is overloaded right now — a temporary upstream issue, not a problem with your project. Your work is saved; try again in a few seconds.';
 
 async function runTask(task, internal, channel, state) {
-  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined } = task;
+  const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined, profile: requestedProfile = null } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
@@ -305,18 +309,20 @@ async function runTask(task, internal, channel, state) {
   // default (the seeded agents.model, exactly as before). A profile that
   // cannot run a Kuhn agent at all is refused HERE, before a job exists —
   // never after partial side effects (issue #112).
-  const route = resolveRoute({ orgId: project?.org_id ?? null, agent, difficulty });
+  const route = resolveRoute({ orgId: project?.org_id ?? null, agent, difficulty, profile: requestedProfile });
   const routeFailure = requirementFailure(route.profile);
   if (routeFailure) {
     log.warn('route_invalid', {
       agent: agent.slug, projectId: Number(projectId), userId, depth,
-      profile: route.profile?.slug ?? null, source: route.source, reason: routeFailure,
+      profile: route.profile?.slug ?? null, source: route.source, requested: requestedProfile, reason: routeFailure,
     });
     channel.push({
       type: 'error',
       agent: agent.slug,
       reason: 'route_invalid',
-      message: `This agent's model route cannot run: ${routeFailure}. An organization owner can fix it under Settings → Models.`,
+      message: route.profile?.notAllowed
+        ? `${routeFailure}. Pick another model for this conversation, or ask an organization owner to add it under Settings → Models.`
+        : `This agent's model route cannot run: ${routeFailure}. An organization owner can fix it under Settings → Models.`,
       profile: route.profile?.slug ?? null,
     });
     return;

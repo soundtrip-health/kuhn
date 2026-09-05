@@ -202,7 +202,28 @@ the route API and UI warn per profile. Image input is declared per profile and n
 any agent today. Reasoning models get pi-ai's default effort when `capabilities.reasoning` is
 set.
 
-## 10. Follow-ups
+## 10. The addressed agent: user model choice (issue #134)
 
-- Difficulty guidance in the PM/writer prompts, once routing is in use (prompt change, needs a
-  quality pass).
+Difficulty routing suits dispatched sub-tasks; it is odd for the agent a user talks to
+directly — the PM would always run on the strongest profile (a top-level task has no
+difficulty, so `d = 1`), and having it re-pick a model per turn would defeat prompt caching. So
+the **user pins the model for the conversation**:
+
+- `GET /api/agent/model-options?projectId=&agent=` (viewer) returns the agent's *effective route
+  list* — the org's, the platform default (#138), or the deployment default as one entry — as
+  display rows (`routeOptions`, no credentials) plus `default_slug` (what `d = 1` takes).
+- `POST /api/agent/task` accepts `profile`; `resolveRoute({ profile })` honours it only when it
+  is on that list (the owner's allowlist), with route source `user`; anything else is refused as
+  `route_invalid` (`notAllowed`) before a job exists — never rerouted. Sub-agent dispatches never
+  carry a pin; they route by difficulty as before.
+- Webapp: a model pill beside the agent pill (`webapp/src/model-picker.ts`), shown only when the
+  agent has two or more routed models; the pick persists per project + agent (localStorage) and
+  travels with each task. A `route_invalid` on a pinned model clears the pin.
+- The PM prompt gained a "Cost discipline and delegation" section: no pass-through work, grade
+  every dispatch with `difficulty` (with a scale), use the Advisor for judgement calls, read
+  only what coordination needs — the strongest model's own token I/O stays small.
+
+## 11. Follow-ups
+
+- Difficulty guidance in the *writer* prompt (it also holds `spawn_agent`), once the PM's
+  guidance has had a quality pass in use.

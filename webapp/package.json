@@ -26,7 +26,8 @@
     "raw-content-check": "node scripts/raw-content-check.mjs",
     "tree-check": "node scripts/tree-check.mjs",
     "phantom-check": "node scripts/phantom-check.mjs",
-    "stop-check": "node scripts/stop-check.mjs"
+    "stop-check": "node scripts/stop-check.mjs",
+    "model-pick-check": "node scripts/model-pick-check.mjs"
   },
   "devDependencies": {
     "jsdom": "^30.0.1",

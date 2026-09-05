@@ -10,6 +10,8 @@ import { captureHandoff } from '../agents/handoff.js';
 import { isBudgetPaused, renderResumeInput } from '../agents/budget-pause.js';
 import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
 import { runAgentTask, reattach, cancelRun } from '../agents/runtime.js';
+import { routeOptions } from '../agents/model-routing.js';
+import { getAgentWithTools } from '../db/agents.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
 import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
 import { requireProjectRole } from './guards.js';
@@ -36,9 +38,12 @@ async function requireJobRole(req, res, minRole) {
 
 /**
  * POST /api/agent/task
- * Body: { role, projectId, input, context?, sessionId?, compose?, continuation?, difficulty? }
+ * Body: { role, projectId, input, context?, sessionId?, compose?, continuation?, difficulty?, profile? }
  * `difficulty` (0..1, issue #107) steers the org's per-role model routing;
- * absent means the strongest configured profile.
+ * absent means the strongest configured profile. `profile` (issue #134) pins
+ * one of the agent's routed profiles for this conversation — the user's
+ * choice of which model powers the agent they talk to; anything off the
+ * agent's route list is refused (route_invalid), never rerouted.
  * `compose: true` runs the task in compose mode — file-mutating tools are
  * withheld so the agent returns text only (the /write contract, story 017).
  * `continuation` (STH-47): the canonical Kuhn continuation envelope from a
@@ -47,9 +52,13 @@ async function requireJobRole(req, res, minRole) {
  * Streams AgentEvents to the browser as Server-Sent Events.
  */
 router.post('/api/agent/task', async (req, res) => {
-  const { role, projectId, input, context, sessionId, compose, continuation, difficulty } = req.body ?? {};
+  const { role, projectId, input, context, sessionId, compose, continuation, difficulty, profile } = req.body ?? {};
   if (!role || projectId == null || !input) {
     res.status(400).json({ error: 'role, projectId, and input are required' });
+    return;
+  }
+  if (profile != null && (typeof profile !== 'string' || !profile)) {
+    res.status(400).json({ error: 'profile must be a profile slug' });
     return;
   }
   if (continuation != null) {
@@ -68,7 +77,31 @@ router.post('/api/agent/task', async (req, res) => {
   // disconnect even while parked (no events arrive to unblock channel.next()).
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, difficulty, userId: req.user.id, detachable: true, signal: ac.signal }));
+  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, difficulty, profile: profile ?? null, userId: req.user.id, detachable: true, signal: ac.signal }));
+});
+
+/**
+ * GET /api/agent/model-options?projectId=&agent=
+ * The models a member may pick for the agent they address in this project
+ * (issue #134): the agent's effective route list — the org's, the platform
+ * default, or the deployment default — as display rows (no credentials),
+ * plus which one a hardest task takes when nothing is pinned. Viewer role:
+ * this reveals nothing an owner has not already allowlisted for the agent.
+ */
+router.get('/api/agent/model-options', async (req, res) => {
+  const { projectId, agent: slug } = req.query;
+  if (projectId == null || !slug) {
+    res.status(400).json({ error: 'projectId and agent query parameters are required' });
+    return;
+  }
+  const project = await requireProjectRole(req, res, projectId, 'viewer');
+  if (!project) return;
+  const agent = await getAgentWithTools(String(slug));
+  if (!agent) {
+    res.status(404).json({ error: 'agent not found' });
+    return;
+  }
+  res.json({ agent: agent.slug, ...routeOptions({ orgId: project.org_id ?? null, agent }) });
 });
 
 /**

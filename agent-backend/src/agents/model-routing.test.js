@@ -130,6 +130,37 @@ describe('resolveRoute', () => {
     }
   });
 
+  it('honours a user-pinned profile only when it is on the agent\'s route list (issue #134)', () => {
+    profiles.setRoutes(ORG, 'ra', [{ profile_slug: 'cheap', difficulty: 0.3 }, { profile_slug: 'deployment-claude-opus-4-8', difficulty: 1 }]);
+    // Pinned: the pick wins over the difficulty rule.
+    expect(routing.resolveRoute({ orgId: ORG, agent: RA, difficulty: 0.1, profile: 'deployment-claude-opus-4-8' })).toMatchObject({
+      source: 'user', profile: { slug: 'deployment-claude-opus-4-8' }, routes: [{ profile_slug: 'cheap', difficulty: 0.3 }, { profile_slug: 'deployment-claude-opus-4-8', difficulty: 1 }],
+    });
+    // An org profile that exists but is not routed to this agent is refused, not rerouted.
+    const off = routing.resolveRoute({ orgId: ORG, agent: RA, profile: 'mid' });
+    expect(off.profile).toMatchObject({ slug: 'mid', notAllowed: true, enabled: false });
+    expect(routing.requirementFailure(off.profile)).toMatch(/not one of the models configured for this agent/);
+    // With no route configured the deployment default is the only pick allowed.
+    const PM = { slug: 'pm', model: 'claude-opus-4-8' };
+    expect(routing.resolveRoute({ orgId: ORG, agent: PM, profile: 'deployment-claude-opus-4-8' })).toMatchObject({ source: 'user', profile: { slug: 'deployment-claude-opus-4-8' } });
+    expect(routing.requirementFailure(routing.resolveRoute({ orgId: ORG, agent: PM, profile: 'cheap' }).profile)).toMatch(/not one of the models/);
+    // Empty / non-string pins are ignored.
+    expect(routing.resolveRoute({ orgId: ORG, agent: RA, difficulty: 0.1, profile: '' }).profile.slug).toBe('cheap');
+    expect(routing.resolveRoute({ orgId: ORG, agent: RA, difficulty: 0.1, profile: 42 }).profile.slug).toBe('cheap');
+  });
+
+  it('lists the models a member may pick for an agent, with display fields only (issue #134)', () => {
+    expect(routing.routeOptions({ orgId: ORG, agent: RA })).toEqual({
+      source: 'deployment', default_slug: 'deployment-claude-haiku-4-5',
+      options: [{ profile_slug: 'deployment-claude-haiku-4-5', difficulty: 1, name: 'Anthropic claude-haiku-4-5 (deployment)', provider: 'anthropic', model_id: 'claude-haiku-4-5', cost_weight: 1, enabled: true, platform: false }],
+    });
+    profiles.setRoutes(ORG, 'ra', [{ profile_slug: 'local', difficulty: 0.4 }, { profile_slug: 'cheap', difficulty: 1 }]);
+    const picked = routing.routeOptions({ orgId: ORG, agent: RA });
+    expect(picked).toMatchObject({ source: 'org', default_slug: 'cheap' });
+    expect(picked.options.map((o) => [o.profile_slug, o.difficulty, o.model_id])).toEqual([['local', 0.4, 'qwen-science'], ['cheap', 1, 'openai/gpt-oss-20b']]);
+    expect(JSON.stringify(picked)).not.toMatch(/sk-or-secret|credential/);
+  });
+
   it('surfaces a route whose deployment profile vanished as an unusable profile, not a silent fallback', () => {
     config.agentRuntime.pi = { provider: 'openrouter', model: 'openai/gpt-oss-20b', baseUrl: '', apiKeyEnv: '' };
     profiles.setRoutes(ORG, 'ra', [{ profile_slug: profiles.PI_PREVIEW_SLUG, difficulty: 1 }]);

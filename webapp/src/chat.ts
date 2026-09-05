@@ -30,6 +30,7 @@ import { agentIdentity } from './agents';
 import type { FileChange } from './files';
 import { icon } from './icons';
 import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
+import { clearPinnedProfile, initModelPicker, pinnedProfile, refreshModelPicker, resetModelPicker } from './model-picker';
 import { QuestionCard } from './question-card';
 import { RunTracker } from './run-tracker';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
@@ -239,10 +240,17 @@ export function initChat(
   if (seedingPanel) seedingPanel.hidden = true;
   applyChatFilter(); // refresh the filter bar for the (possibly new) project
   applyComposerRole(); // the active org (and so the role) can differ per project
+  resetModelPicker(); // the org's routes (and so the pickable models) differ per project
   void restore();
 
-  if (listenersWired) return; // the form/input listeners bind once for the page
+  if (listenersWired) {
+    void refreshModelPicker();
+    return; // the form/input listeners bind once for the page
+  }
   listenersWired = true;
+  // Which model powers the addressed agent (issue #134): per project + agent.
+  initModelPicker({ projectId: () => activeProjectId, agent: () => selectedAgent() });
+  void refreshModelPicker();
 
   // Role changes under us (workspace re-fetches orgs on `kuhn:role-refresh`
   // 403s and on org switches) re-render the composer chrome.
@@ -262,7 +270,10 @@ export function initChat(
   });
   // The agent-selector pill mirrors picks into the hidden select and fires
   // change — re-filter the log for the newly addressed agent.
-  document.getElementById('chat-role')?.addEventListener('change', () => applyChatFilter());
+  document.getElementById('chat-role')?.addEventListener('change', () => {
+    applyChatFilter();
+    void refreshModelPicker();
+  });
 
   // Smart autoscroll (STH-50): park following when the user scrolls up;
   // re-engage when they return to the bottom. Our own programmatic scrolls
@@ -892,6 +903,13 @@ function createEventHandler(): (event: AgentEvent) => void {
           // one-click retry of the original action (story 029).
           if (event.sessionId) sessions.set(event.agent, event.sessionId);
           appendOverloadNotice();
+        } else if (event.reason === 'route_invalid') {
+          // The pinned model is no longer on this agent's route (issue #134)
+          // — drop the pin so the next message falls back to the route.
+          if (conversationAgent && event.profile && pinnedProfile(activeProjectId, conversationAgent) === event.profile) {
+            clearPinnedProfile(activeProjectId, conversationAgent);
+          }
+          appendSystemLine(event.message ?? 'agent error', 'error');
         } else {
           appendSystemLine(event.message ?? 'agent error', 'error');
         }
@@ -1024,6 +1042,8 @@ async function dispatchTask(role: string, text: string): Promise<void> {
         sessionId: sessions.get(role),
         continuation: continuations.get(role),
         context: taskContext(),
+        // The user's pick for this agent (issue #134); absent → the route decides.
+        profile: pinnedProfile(activeProjectId, role) ?? undefined,
       },
       onEvent,
       runAbort.signal,
@@ -1123,6 +1143,8 @@ function finishRun(): void {
   }
   refreshSendButton();
   updateModelIndicator();
+  // The owner may have changed the routes meanwhile (issue #134).
+  void refreshModelPicker({ fresh: true });
   setAgentActivity('');
   notify('');
 }

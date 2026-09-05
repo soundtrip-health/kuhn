@@ -87,6 +87,12 @@
                   <option value="analyst">Analyst</option>
                 </select>
               </div>
+              <!-- Which model powers the addressed agent (issue #134): shown only when the agent has several routed models -->
+              <div id="model-picker" class="agent-selector model-picker" hidden>
+                <button type="button" class="agent-pill model-pill" aria-haspopup="listbox" aria-expanded="false"
+                  title="Pick which model powers this agent"></button>
+                <div class="agent-menu model-menu" hidden role="listbox"></div>
+              </div>
               <!-- Per-agent context meter (STH-52): chat.ts fills/updates -->
               <span id="chat-context-meter" hidden>
                 <span id="chat-context-bar"><span id="chat-context-fill"></span></span>

@@ -2351,6 +2351,28 @@ describe('model routing at dispatch (issue #107)', () => {
   });
 });
 
+// --- Issue #134: the user's pinned profile reaches the router ------------------
+
+describe('user-pinned profile (issue #134)', () => {
+  it('threads task.profile to resolveRoute for the top-level job and refuses a disallowed pick before any job', async () => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    await collect({ role: 'pm', projectId: 1, input: 'hi', profile: 'deployment-claude-opus-4-8' });
+    expect(resolveRoute).toHaveBeenCalledWith(expect.objectContaining({ profile: 'deployment-claude-opus-4-8' }));
+
+    routeState.profile = { slug: 'nope', notAllowed: true, enabled: false, capabilities: {}, credential: { kind: 'none' }, cost_weight: 5 };
+    try {
+      createJob.mockClear();
+      const events = await collect({ role: 'pm', projectId: 1, input: 'hi', profile: 'nope' });
+      expect(events).toEqual([expect.objectContaining({ type: 'error', reason: 'route_invalid', profile: 'nope' })]);
+      expect(events[0].message).toMatch(/not one of the models configured for this agent.*Pick another model/);
+      expect(createJob).not.toHaveBeenCalled();
+    } finally {
+      routeState.profile = null;
+    }
+  });
+});
+
 // --- Issue #136: user-initiated stop -------------------------------------------
 
 describe('user stop (issue #136)', () => {
