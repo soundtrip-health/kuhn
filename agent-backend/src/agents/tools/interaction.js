@@ -107,19 +107,43 @@ export function createInteractionTools(ctx) {
       const input = context ? `${task}\n\nContext: ${context}` : task;
       let finalText = '';
       let errorMessage = null;
+      let childJobId = null;
+      let finished = false;
       const child = ctx.dispatch(
-        { role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext), difficulty },
+        {
+          role: agent_slug, projectId, input, userId, seeding, context: inheritedContext(taskContext), difficulty,
+          // The sub-agent lives and dies with its parent (issue #136): when
+          // the parent run is stopped — by the user, a disconnect, or the
+          // budget — this signal ends the child's consumer, and the child's
+          // own teardown interrupts its provider turn and marks it cancelled.
+          signal: ctx.signal ?? undefined,
+        },
         { depth: depth + 1, parentJobId: jobId, budget },
       );
       for await (const event of child) {
+        if (event.jobId != null && childJobId == null && event.agent === agent_slug) childJobId = event.jobId;
         if (event.type === 'text') finalText += (finalText ? '\n' : '') + event.content;
         if (event.type === 'error') errorMessage = event.message;
+        if (event.type === 'done') finished = true;
         // Forward child progress to the client; the parent emits the single
         // terminal 'done' for the whole task.
         if (event.type !== 'done') ctx.channel.push(event);
       }
+      // Child lifecycle marker (issue #137): the client's activity/model
+      // indicators follow the innermost running job, so they need to know
+      // when a dispatched job ends — its 'done' is deliberately not forwarded
+      // (it would read as the whole task finishing), and a stopped child
+      // emits no terminal of its own.
+      const stopped = !finished && errorMessage == null && ctx.signal?.aborted === true;
+      ctx.channel.push({
+        type: 'job', agent: agent_slug, jobId: childJobId, depth: depth + 1, parentJobId: jobId,
+        status: errorMessage != null ? 'error' : stopped ? 'cancelled' : 'done',
+      });
       if (errorMessage) {
         return toolError(`Sub-agent failed: ${errorMessage}`);
+      }
+      if (stopped) {
+        return toolError('Sub-agent was stopped before it finished');
       }
       return toolOk(finalText || '(sub-agent produced no output)');
     },
