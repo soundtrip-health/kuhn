@@ -582,8 +582,16 @@ function cardActions(ctx: Attached, t: CommentThread): HTMLElement {
   }
   if (ctx.identity.canDelete(t)) {
     actions.append(
-      smallButton('Delete', () =>
-        void mutate(() => ctx.transport.deleteComment(ctx.projectId, t.id), 'Comment deleted')),
+      smallButton('Delete', () => {
+        // The delete control sits next to Reply/Resolve and is easy to hit by
+        // accident (issue #115). Documented exception (story 005-004): native
+        // confirm(), as the file manager uses for deletes — keyboard- and
+        // screen-reader-accessible by construction.
+        const replies = t.replies.length;
+        const scope = replies > 0 ? ` and its ${replies} ${replies === 1 ? 'reply' : 'replies'}` : '';
+        if (!window.confirm(`Delete this comment${scope}? This cannot be undone.`)) return;
+        void mutate(() => ctx.transport.deleteComment(ctx.projectId, t.id), 'Comment deleted');
+      }),
     );
   }
 
