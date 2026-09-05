@@ -53,8 +53,14 @@ for (const agent of ['pm', 'ra']) {
   const res = await put(`${BACKEND}/api/orgs/${org.id}/model-routes/${agent}`, { routes: [{ profile_slug: MODEL, difficulty: 1 }] });
   check(res.status === 200, `${agent} routed to the fake (got ${res.status})`);
 }
-const jobs = async () => (await json(await fetch(`${BACKEND}/api/agent/jobs?projectId=${project.id}`))).jobs;
-const jobCountBefore = (await jobs()).length;
+const jobs = async () => (await json(await fetch(`${BACKEND}/api/agent/jobs?projectId=${project.id}&limit=50`))).jobs;
+// New jobs are those above the highest id seen so far (the list is newest-first and capped).
+let maxJobId = Math.max(0, ...(await jobs()).map((j) => j.id));
+const newJobs = async () => {
+  const rows = (await jobs()).filter((j) => j.id > maxJobId);
+  maxJobId = Math.max(maxJobId, ...rows.map((j) => j.id));
+  return rows;
+};
 
 // --- Browser ---
 const browser = await chromium.launch();
@@ -67,6 +73,8 @@ await page.waitForTimeout(800);
 // the PM directly, so dismiss it.
 await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
+// A model pin left by another check (issue #134) would route the PM elsewhere.
+await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('kuhn-model-pick')) localStorage.removeItem(k); });
 check(!(await page.$('#setup-wizard:visible')), 'setup wizard dismissed');
 // Record every status-bar change: the fake model answers within milliseconds,
 // so the RA's turn is too short to catch by polling — the log is the record.
@@ -90,18 +98,30 @@ const sendIsStop = () => page.$eval('#chat-form .send-btn', (b) => b.classList.c
 const waitStatus = (re, timeout = 20000) => page.waitForFunction(
   (src) => new RegExp(src).test(document.getElementById('status-agent')?.textContent ?? ''), re.source, { timeout },
 ).then(() => true, () => false);
+const bubbleCount = () => page.$$eval('.chat-agent', (els) => els.length);
 const sendMessage = async (text) => {
+  // The previous run's stream may still be closing for a few ms after its
+  // last visible line; the composer accepts a new message once it is idle.
+  await page.waitForFunction(() => !document.querySelector('#chat-form .send-btn.is-stop'), null, { timeout: 10000 });
   await page.selectOption('#chat-role', 'pm');
+  const before = await bubbleCount();
   await page.fill('#chat-input', text);
   await page.press('#chat-input', 'Enter');
+  return before;
 };
+// A NEW agent bubble (after `before`) containing `text` — the restored
+// transcript of earlier runs already contains every reply this check scripts.
+const waitReply = (before, text, label) => page.waitForFunction(
+  ([n, t]) => [...document.querySelectorAll('.chat-agent')].slice(n).some((el) => (el.textContent ?? '').includes(t)),
+  [before, text], { timeout: 15000 },
+).then(() => true, () => { fail(label); return false; });
 
 // Scenario A (#137): PM dispatches the RA, the RA answers, the PM keeps
 // working. The status bar must show the RA while it runs and return to the
 // PM afterwards — not stay on the PM throughout.
 fake.register(MODEL, [dispatchRa, say('Found three papers.'), { kind: 'pause' }]);
-await sendMessage('Have the RA find papers, then keep going.');
-await page.waitForSelector('.chat-agent .chat-body:has-text("Found three papers.")', { timeout: 15000 }).catch(() => fail('RA reply rendered'));
+let before = await sendMessage('Have the RA find papers, then keep going.');
+await waitReply(before, 'Found three papers.', 'RA reply rendered');
 check(await waitStatus(/^PM is working/), 'status bar returns to the PM after the RA finishes');
 let logged = await statusLog();
 check(logged.agent.some((t) => /^Research is working/.test(t)), `status bar showed the RA while the dispatched RA ran (${JSON.stringify(logged.agent)})`);
@@ -113,7 +133,7 @@ await page.click('#chat-form .send-btn.is-stop');
 await page.waitForSelector('.chat-system:has-text("stopped")', { timeout: 10000 }).catch(() => fail('stopped line appears after Stop'));
 check(!(await sendIsStop()), 'send button returns to Send after the stop');
 check(((await statusAgent()) ?? '') === '', 'status-bar activity clears after the stop');
-let rows = (await jobs()).slice(0, (await jobs()).length - jobCountBefore);
+let rows = await newJobs();
 check(rows.length === 2, `two jobs recorded for scenario A (got ${rows.length})`);
 check(rows.find((j) => j.role === 'pm')?.status === 'cancelled', `PM job is cancelled (${rows.find((j) => j.role === 'pm')?.status})`);
 check(rows.find((j) => j.role === 'ra')?.status === 'done', `RA job finished normally (${rows.find((j) => j.role === 'ra')?.status})`);
@@ -128,21 +148,24 @@ check(await waitStatus(/Research is working/), 'RA shows as working while its re
 check(/^Research · stop-check/.test((await statusModel()) ?? ''), `model chip shows the RA (${await statusModel()})`);
 await page.keyboard.press('Escape'); // the other Stop: Esc in the composer
 await page.waitForSelector('.chat-system:has-text("stopped") >> nth=1', { timeout: 10000 }).catch(() => fail('second stopped line appears (Esc)'));
-rows = (await jobs()).slice(0, 2);
-check(rows.every((j) => j.status === 'cancelled'), `PM and RA jobs both cancelled (${rows.map((j) => `${j.role}:${j.status}`).join(', ')})`);
+rows = await newJobs();
+check(rows.length === 2 && rows.every((j) => j.status === 'cancelled'), `PM and RA jobs both cancelled (${rows.map((j) => `${j.role}:${j.status}`).join(', ')})`);
 check(fake.requests.length === 5, `no request after the stop (got ${fake.requests.length})`);
 
 // Follow-up after a stop resumes the conversation: the record of the stopped
 // run travels with the next message (continuation), so the model sees the
 // earlier turns.
 fake.register(MODEL, [say('Continuing from where we stopped.')]);
-await sendMessage('Carry on.');
-await page.waitForSelector('.chat-agent .chat-body:has-text("Continuing from where we stopped.")', { timeout: 15000 }).catch(() => fail('follow-up reply rendered'));
+before = await sendMessage('Carry on.');
+await waitReply(before, 'Continuing from where we stopped.', 'follow-up reply rendered');
 const last = fake.requests.at(-1);
 const seen = JSON.stringify(last?.messages ?? []);
+if (process.env.DEBUG) {
+  for (const r of fake.requests) console.log('REQ', r.model, r.messages.length, JSON.stringify(r.messages.filter((m) => m.role === 'user').map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).slice(0, 60))));
+}
 check(seen.includes('Again, please.'), 'follow-up request carries the stopped run\'s transcript (continuation)');
 check(seen.includes('Carry on.'), 'follow-up request carries the new message');
-check(((await statusAgent()) ?? '') === '', 'activity clears after the follow-up completes');
+check(await waitStatus(/^$/, 10000), 'activity clears after the follow-up completes');
 
 await page.screenshot({ path: '/tmp/kuhn-stop-check.png' });
 await browser.close();
