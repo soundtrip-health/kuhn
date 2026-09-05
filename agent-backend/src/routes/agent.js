@@ -9,7 +9,7 @@ import { Router } from 'express';
 import { captureHandoff } from '../agents/handoff.js';
 import { isBudgetPaused, renderResumeInput } from '../agents/budget-pause.js';
 import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/questions.js';
-import { runAgentTask, reattach } from '../agents/runtime.js';
+import { runAgentTask, reattach, cancelRun } from '../agents/runtime.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
 import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
 import { requireProjectRole } from './guards.js';
@@ -205,6 +205,33 @@ router.post('/api/agent/jobs/:id/reply', async (req, res) => {
     return;
   }
   res.json({ ok: true });
+});
+
+/**
+ * POST /api/agent/jobs/:id/cancel — stop a live run (issue #136).
+ * The run's in-flight provider turn is interrupted, any parked ask_user is
+ * released, every sub-agent it dispatched is stopped with it, and the job
+ * (and each sub-job) is marked cancelled. The run's own SSE stream then
+ * carries a terminal `cancelled` event with the provider session, so the
+ * user's next message resumes the conversation where it stopped. Only runs
+ * started from the chat (detachable) are addressable — they are the ones
+ * registered — and by their top-level job id. 409 when the job is not live
+ * here (already finished, or a stored job from before a restart).
+ */
+router.post('/api/agent/jobs/:id/cancel', async (req, res) => {
+  const job = await requireJobRole(req, res, 'editor');
+  if (!job) return;
+  const run = getRun(job.id);
+  if (!run) {
+    res.status(409).json({ error: 'job is not running', status: job.status });
+    return;
+  }
+  const stopped = await cancelRun(run.state, { reason: 'user' });
+  if (!stopped) {
+    res.status(409).json({ error: 'job is not running', status: 'finished' });
+    return;
+  }
+  res.json({ ok: true, jobId: job.id, status: 'cancelled' });
 });
 
 /**

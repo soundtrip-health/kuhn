@@ -14,23 +14,28 @@ export class QuestionCard {
   private readonly agentLabel: string;
   private readonly questionText: string;
 
-  constructor(agentSlug: string, questionText: string) {
+  constructor(agentSlug: string, questionText: string, { onStop }: { onStop?: () => void } = {}) {
     this.questionText = questionText;
     this.agentLabel = agentIdentity(agentSlug).label || 'Agent';
     this.element = document.createElement('div');
     this.element.className = 'question-card is-pending';
-    this.renderPending();
+    this.renderPending(onStop);
   }
 
-  private renderPending(): void {
+  private renderPending(onStop?: () => void): void {
     this.element.innerHTML =
       `<div class="qc-inner">` +
         `<div class="qc-head">` +
           `<div class="qc-title"><span class="dot"></span>${escape(this.agentLabel)} needs a decision</div>` +
         `</div>` +
         `<div class="qc-question">${escape(this.questionText)}</div>` +
-        `<div class="qc-foot">Type your answer in the chat box below — take your time.</div>` +
+        `<div class="qc-foot">Type your answer in the chat box below — take your time.` +
+          // Stopping is the other way out of a question (issue #136): the
+          // composer is in answer mode, so the stop control lives here.
+          (onStop ? ` <button type="button" class="qc-stop">Or stop the agent</button>` : '') +
+        `</div>` +
       `</div>`;
+    this.element.querySelector('.qc-stop')?.addEventListener('click', () => onStop?.());
   }
 
   /** Flip to the calm confirmation state after the user answers. */

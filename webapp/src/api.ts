@@ -108,10 +108,12 @@ export interface AgentModelInfo {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'stage' | 'job' | 'review_link' | 'context' | 'model';
+  type: 'text_delta' | 'text' | 'file_change' | 'citation' | 'comment' | 'question' | 'question_expired' | 'notice' | 'done' | 'error' | 'cancelled' | 'stage' | 'job' | 'review_link' | 'context' | 'model';
   agent: string;
-  /** Dispatch depth: 0 for the addressed agent, 1+ for sub-agents (on 'model' events). */
+  /** Dispatch depth: 0 for the addressed agent, 1+ for sub-agents (on 'model', 'job' and 'cancelled' events). */
   depth?: number;
+  /** The dispatching job, on a sub-agent's 'job' marker (issue #137). */
+  parentJobId?: number;
   /** Routed model for this job (type 'model', issue #107). */
   model?: AgentModelInfo;
   /** Feed envelope timestamp — present on project-feed events (story 005-001). */
@@ -142,6 +144,9 @@ export interface AgentEvent {
   resetsAt?: string;
   // Live per-agent context-window state (STH-52), emitted each assistant turn.
   context?: { tokens: number; window: number };
+  // Canonical record of the run so far (STH-47), on done / cancelled / error
+  // terminals; handed back with the next message (AgentTaskParams).
+  continuation?: unknown;
   // Machine-readable cause, e.g. 'budget_exceeded' (drives the resume UI) or
   // 'provider_overloaded' on a transient-error notice/terminal error (story 029).
   reason?: string;
@@ -164,9 +169,10 @@ export interface AgentEvent {
   mode?: ReviewLinkMode;
   name?: string;
   // Seeding pipeline stage markers (story 015); 'started' is the project
-  // feed's job-start marker (story 005-001).
+  // feed's job-start marker (story 005-001); 'done' | 'error' | 'cancelled'
+  // on a 'job' event from dispatch_agent when a sub-agent's job ends (#137).
   stage?: string;
-  status?: 'start' | 'done' | 'error' | 'started';
+  status?: 'start' | 'done' | 'error' | 'started' | 'cancelled';
   detail?: string;
 }
 
@@ -1985,6 +1991,16 @@ export async function listJobs(projectId: number): Promise<Job[]> {
   return ((await res.json()) as { jobs: Job[] }).jobs;
 }
 
+/**
+ * Stop a live run by its top-level job id (issue #136). The run's own event
+ * stream then ends with a `cancelled` event carrying the provider session, so
+ * the next message resumes where the agent stopped. 409 when the job is not
+ * running here (finished, or from before a server restart).
+ */
+export async function cancelAgentJob(jobId: number): Promise<void> {
+  await expectOk(await apiFetch(`${BACKEND_URL}/api/agent/jobs/${jobId}/cancel`, { method: 'POST' }));
+}
+
 /** Answer a running job's pending ask_user question (story 012). */
 export async function replyToAgent(jobId: number, reply: string): Promise<void> {
   await expectOk(
@@ -2045,6 +2061,10 @@ export interface AgentTaskParams {
   };
   /** Compose mode (story 017): writer returns text only, no file writes. */
   compose?: boolean;
+  /** Canonical continuation from the agent's last run (STH-47): how runtimes
+   *  without provider-side sessions (non-Anthropic profiles) carry the
+   *  conversation forward — including after a Stop (issue #136). */
+  continuation?: unknown;
 }
 
 /**
