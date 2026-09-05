@@ -834,6 +834,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 .send-btn:hover { filter: brightness(1.15); }
 .send-btn svg { width: 15px; height: 15px; }
+/* Stop mode while a run is in flight (issue #136) */
+.send-btn.is-stop { background: var(--warn); }
+.send-btn.is-stop:disabled { opacity: .6; cursor: progress; }
 
 /* ---- Seeding panel -------------------------------------------------- */
 #seeding-panel {
@@ -878,6 +881,11 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .qc-btn-primary { background: var(--advisor); color: var(--ink-inv); border-color: var(--advisor); }
 .qc-btn-ghost { background: var(--chrome); color: var(--ink); }
 .qc-foot { font-size: 11px; color: var(--ink-3); margin-top: 9px; }
+.qc-stop {
+  font: inherit; color: var(--ink-2); background: none; border: none; padding: 0;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.qc-stop:hover { color: var(--warn); }
 .qc-foot strong { font-weight: 500; color: var(--ink-2); }
 
 .question-card.is-answered { border: 1px solid var(--good-soft); background: var(--chrome); padding: 13px 14px; }
