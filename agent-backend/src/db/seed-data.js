@@ -114,7 +114,11 @@ export const TOOLS = [
 // [agentSlug, toolSlug] pairs — the agent→tool matrix.
 export const ASSIGNMENTS = [
   ['pm', 'file_read'], ['writer', 'file_read'], ['ra', 'file_read'], ['advisor', 'file_read'], ['reviewer', 'file_read'], ['analyst', 'file_read'],
-  ['writer', 'file_write'], ['analyst', 'file_write'], ['ra', 'file_write'], ['advisor', 'file_write'],
+  // Issue #148: the reviewer writes its own reports to review/reports/ —
+  // without the grant it dumped report text into chat for the PM to relay.
+  // draft/** writes still land as pending suggestions, so the "do not
+  // rewrite" rule holds at the storage layer, not just in the prompt.
+  ['writer', 'file_write'], ['analyst', 'file_write'], ['ra', 'file_write'], ['advisor', 'file_write'], ['reviewer', 'file_write'],
   ['pm', 'file_list'], ['writer', 'file_list'], ['ra', 'file_list'], ['advisor', 'file_list'], ['reviewer', 'file_list'], ['analyst', 'file_list'],
   ['pm', 'file_move'],
   ['ra', 'pubmed_search'], ['ra', 'arxiv_search'],

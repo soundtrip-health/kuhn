@@ -29,17 +29,30 @@ let showTimer: number | null = null;
 let hideTimer: number | null = null;
 let expanded = false;
 
+/**
+ * The element the card anchors to: the `@key` span under the pointer, or the
+ * chip itself (single-key chips carry the key; on a multi-key group the chip's
+ * padding resolves to its first key). Issue #146 made chips hold groups.
+ */
+function hoveredKey(target: HTMLElement): HTMLElement | null {
+  const el = target.closest?.('.citation-key, .citation-chip');
+  if (!(el instanceof HTMLElement)) return null;
+  if (el.hasAttribute('data-citation-key')) return el;
+  const first = el.querySelector('.citation-key');
+  return first instanceof HTMLElement ? first : el;
+}
+
 export function installCitationCards(container: HTMLElement, handlers: CiteCardHandlers): void {
   container.addEventListener('mouseover', (event) => {
-    const chip = (event.target as HTMLElement).closest?.('.citation-chip');
-    if (!(chip instanceof HTMLElement)) return;
+    const chip = hoveredKey(event.target as HTMLElement);
+    if (!chip) return;
     cancelHide();
     if (chip === anchor && card && !card.hidden) return;
     scheduleShow(chip, handlers);
   });
   container.addEventListener('mouseout', (event) => {
-    const chip = (event.target as HTMLElement).closest?.('.citation-chip');
-    if (!(chip instanceof HTMLElement)) return;
+    const chip = hoveredKey(event.target as HTMLElement);
+    if (!chip) return;
     const to = event.relatedTarget as Node | null;
     if (card && to && card.contains(to)) return; // moving into the card
     cancelShow();

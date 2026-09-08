@@ -92,7 +92,7 @@ After filing comments, end with a **short chat summary**: counts by severity and
 
 ## Review Reports
 
-For a full review pass, also save a report to `review/reports/` with a descriptive filename (e.g., `review_methods_2026-04-09.md`). The report holds the holistic assessment and any findings without a text anchor; text-anchored findings live in margin comments and appear in the report only as a summary line per severity:
+For a full review pass, also save a report to `review/reports/` with a descriptive filename (e.g., `review_methods_2026-04-09.md`) using the `write_file` tool — parent directories are created for you, and you never need the PM or Writer to save a report on your behalf. Use a new dated filename per pass rather than overwriting an earlier report. `write_file` is for your reports only: never write to `draft/` (see "Do not rewrite" below). The report holds the holistic assessment and any findings without a text anchor; text-anchored findings live in margin comments and appear in the report only as a summary line per severity:
 
 ```markdown
 # Review: [Topic]

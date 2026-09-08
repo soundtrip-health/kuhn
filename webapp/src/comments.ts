@@ -35,6 +35,7 @@ import type { Extension } from '@codemirror/state';
 import type { Comment, CommentThread } from './api';
 import { agentIdentity } from './agents';
 import { icon } from './icons';
+import { anchorInDoc, collapseWs, docTextOf, pickOccurrence } from './comment-anchor';
 import { toast } from './toast';
 
 const key = new PluginKey<DecorationSet>('kuhn-comments');
@@ -205,7 +206,7 @@ function scheduleDocCheck(): void {
 }
 
 function reconcile(ctx: Attached): void {
-  const doc = docTextWithMap(ctx.view);
+  const doc = docTextOf(ctx.view.state.doc);
   anchoredIds = new Set();
   const decos: Decoration[] = [];
   const withQuote = threads.filter((t) => !t.resolvedAt && t.anchor?.quote);
@@ -279,116 +280,6 @@ function maybeSyncQuote(ctx: Attached, t: CommentThread, range: { from: number; 
   t.anchor.end = range.to;
   void ctx.transport.updateCommentAnchor(ctx.projectId, t.id, { quote: text, start: range.from, end: range.to })
     .catch(() => { /* cosmetic — the next reconcile retries */ });
-}
-
-// ---- Anchoring --------------------------------------------------------------
-// The doc's visible text as one string with a per-character map back to
-// ProseMirror positions; blocks join with single newlines.
-
-interface DocText {
-  text: string;
-  /** pos[i] = PM position of text[i]. */
-  pos: number[];
-}
-
-function docTextWithMap(view: EditorView): DocText {
-  let text = '';
-  const pos: number[] = [];
-  view.state.doc.descendants((node, p) => {
-    if (!node.isTextblock) return true;
-    node.descendants((child, cp) => {
-      if (child.isText && child.text) {
-        for (let i = 0; i < child.text.length; i++) {
-          text += child.text[i];
-          pos.push(p + 1 + cp + i);
-        }
-      }
-      return true;
-    });
-    text += '\n';
-    pos.push(p + node.nodeSize - 1);
-    return false;
-  });
-  return { text, pos };
-}
-
-/**
- * Find a quote in the doc text. Ladder: exact (blank-line runs collapsed) →
- * whitespace-normalized → markdown-syntax-stripped (agent quotes come from
- * the markdown source; the rendered doc has no `**` or `#`). The occurrence
- * nearest the stored start hint wins.
- */
-function anchorInDoc(doc: DocText, quote: string, hint: number | null): { from: number; to: number } | null {
-  const exact = quote.replace(/\n{2,}/g, '\n');
-  let idx = pickOccurrence(doc.text, exact, hint);
-  if (idx != null) return spanToPositions(doc, idx, exact.length);
-
-  const { norm, map } = normalizeWithMap(doc.text);
-  for (const candidate of [collapseWs(quote), collapseWs(stripMarkdown(quote))]) {
-    if (!candidate) continue;
-    idx = pickOccurrence(norm, candidate, hint);
-    if (idx != null) {
-      const start = map[idx];
-      const end = map[idx + candidate.length - 1] + 1;
-      return spanToPositions(doc, start, end - start);
-    }
-  }
-  return null;
-}
-
-function spanToPositions(doc: DocText, start: number, length: number): { from: number; to: number } {
-  return { from: doc.pos[start], to: doc.pos[start + length - 1] + 1 };
-}
-
-function pickOccurrence(haystack: string, needle: string, hint: number | null): number | null {
-  const occ: number[] = [];
-  let from = 0;
-  while (occ.length < 50) {
-    const i = haystack.indexOf(needle, from);
-    if (i === -1) break;
-    occ.push(i);
-    from = i + 1;
-  }
-  if (occ.length === 0) return null;
-  if (hint == null || occ.length === 1) return occ[0];
-  return occ.reduce((best, o) => (Math.abs(o - hint) < Math.abs(best - hint) ? o : best));
-}
-
-function collapseWs(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
-
-/** Strip markdown block/inline syntax so a source-quoted string can match the
- *  rendered text (same normalization family as suggestion-hunks). */
-function stripMarkdown(s: string): string {
-  return s
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^>\s*/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+[.)]\s+/gm, '')
-    .replace(/\*\*|__|[*_`~]/g, '');
-}
-
-/** Whitespace runs → single spaces, with map[i] = raw offset of norm[i]. */
-function normalizeWithMap(content: string): { norm: string; map: number[] } {
-  let norm = '';
-  const map: number[] = [];
-  let inSpace = false;
-  for (let i = 0; i < content.length; i++) {
-    if (/\s/.test(content[i])) {
-      inSpace = true;
-      continue;
-    }
-    if (inSpace && norm.length > 0) {
-      norm += ' ';
-      map.push(i - 1);
-    }
-    inSpace = false;
-    norm += content[i];
-    map.push(i);
-  }
-  return { norm, map };
 }
 
 /** Live (edit-mapped) range of a thread's decoration, if it is on screen. */
@@ -681,6 +572,9 @@ function focusThread(id: number, opts: { scrollEditor?: boolean; scrollPanel?: b
       ctx.view.dom
         .querySelector(`[data-mc="${id}"]`)
         ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } else {
+      // Issue #149: say so instead of a silent no-op on an orphaned thread.
+      toast('The quoted text is no longer in the document');
     }
   }
   if (opts.scrollPanel) {

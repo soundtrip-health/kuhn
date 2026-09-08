@@ -393,7 +393,7 @@ function updateDocMeta(markdown: string): void {
 
 /** Insert a citation chip atom at the current selection. */
 function insertCitation(view: EditorView, key: string): void {
-  const node = view.state.schema.nodes.citation.create({ key });
+  const node = view.state.schema.nodes.citation.create({ group: `@${key}` });
   view.dispatch(view.state.tr.replaceSelectionWith(node, false).scrollIntoView());
 }
 
