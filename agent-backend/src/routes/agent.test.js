@@ -26,10 +26,20 @@ vi.mock('../agents/runtime.js', async (importOriginal) => {
   };
 });
 
+// Issue #134: the model-options endpoint's list comes from the routing
+// module (covered in agents/model-routing.test.js); scripted here.
+vi.mock('../agents/model-routing.js', () => ({
+  routeOptions: vi.fn(() => ({ source: 'org', default_slug: 'strong', options: [{ profile_slug: 'cheap', difficulty: 0.3, name: 'Cheap', provider: 'openrouter', model_id: 'openai/gpt-oss-20b', cost_weight: 0.5, enabled: true, platform: false }, { profile_slug: 'strong', difficulty: 1, name: 'Strong', provider: 'anthropic', model_id: 'claude-opus-4-8', cost_weight: 5, enabled: true, platform: false }] })),
+}));
+vi.mock('../db/agents.js', () => ({
+  getAgentWithTools: vi.fn(async (slug) => (slug === 'pm' ? { slug: 'pm', name: 'PM', tools: [] } : null)),
+}));
+
 import { query } from '../db.js';
 import { checkOrgAccess } from '../db/orgs.js';
 import { captureHandoff } from '../agents/handoff.js';
 import { runAgentTask } from '../agents/runtime.js';
+import { routeOptions } from '../agents/model-routing.js';
 import { waitForReply, deliverReply } from '../agents/questions.js';
 import { EventChannel } from '../agents/events.js';
 import { registerRun, unregisterRun } from '../agents/runs.js';
@@ -410,5 +420,43 @@ describe('POST /api/agent/jobs/:id/cancel (issue #136)', () => {
         unregisterRun(82);
       }
     });
+  });
+});
+
+
+describe('GET /api/agent/model-options (issue #134)', () => {
+  it('requires projectId and agent, 404s an unknown agent, and guards on the project', async () => {
+    expect((await fetch(`${base}/api/agent/model-options?projectId=5`)).status).toBe(400);
+    expect((await fetch(`${base}/api/agent/model-options?projectId=5&agent=nobody`)).status).toBe(404);
+    checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'not-member' });
+    expect((await fetch(`${base}/api/agent/model-options?projectId=5&agent=pm`)).status).toBe(404);
+  });
+
+  it('returns the agent\'s pickable models for a viewer', async () => {
+    checkOrgAccess.mockResolvedValueOnce({ ok: true, role: 'viewer', org: { id: 10 } });
+    const res = await fetch(`${base}/api/agent/model-options?projectId=5&agent=pm`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ agent: 'pm', source: 'org', default_slug: 'strong' });
+    expect(body.options.map((o) => o.profile_slug)).toEqual(['cheap', 'strong']);
+    expect(routeOptions).toHaveBeenCalledWith({ orgId: 10, agent: { slug: 'pm', name: 'PM', tools: [] } });
+  });
+});
+
+describe('POST /api/agent/task profile pin (issue #134)', () => {
+  it('passes the pinned profile slug to the runtime and rejects a non-string', async () => {
+    const bad = await fetch(`${base}/api/agent/task`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'pm', projectId: 5, input: 'hi', profile: 7 }),
+    });
+    expect(bad.status).toBe(400);
+    runAgentTask.mockClear();
+    const res = await fetch(`${base}/api/agent/task`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'pm', projectId: 5, input: 'hi', profile: 'strong' }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ role: 'pm', profile: 'strong' }));
   });
 });

@@ -51,6 +51,7 @@ export function selectRoute(routes, difficulty) {
  */
 export function requirementFailure(profile) {
   if (!profile) return 'no model profile resolved';
+  if (profile.notAllowed) return `model '${profile.slug}' is not one of the models configured for this agent`;
   if (profile.enabled === false) return `model profile '${profile.slug}' is disabled`;
   const caps = profile.capabilities ?? {};
   if (caps.tools === false) return `model profile '${profile.slug}' declares no tool support; every Kuhn agent needs tools`;
@@ -64,15 +65,58 @@ export function requirementFailure(profile) {
 }
 
 /**
+ * The route list a role follows and where it came from: the org's own list,
+ * else the platform default (issue #138), else the deployment default as a
+ * single hardest-difficulty entry.
+ * @returns {{ routes: Array<{ profile_slug, difficulty }>, source: 'org'|'platform'|'deployment' }}
+ */
+export function effectiveRoutes({ orgId, agent }) {
+  const org = orgId != null ? getRoutes(orgId, agent.slug) : [];
+  if (org.length) return { routes: org, source: 'org' };
+  const platform = platformDefaultRoutes(agent.slug);
+  if (platform.length) return { routes: platform, source: 'platform' };
+  return { routes: [{ profile_slug: deploymentDefaultProfile(agent).slug, difficulty: 1 }], source: 'deployment' };
+}
+
+/**
+ * The models a user may pick for an agent they address directly (issue
+ * #134): exactly the agent's effective route list — the owner's allowlist —
+ * with display fields only (never a credential), plus which entry a hardest
+ * task takes when nothing is pinned.
+ * @returns {{ source: string, default_slug: string, options: Array<object> }}
+ */
+export function routeOptions({ orgId, agent }) {
+  const { routes, source } = effectiveRoutes({ orgId, agent });
+  const options = routes.map((r) => {
+    const p = getProfile(orgId, r.profile_slug);
+    return {
+      profile_slug: r.profile_slug,
+      difficulty: r.difficulty,
+      name: p?.name ?? r.profile_slug,
+      provider: p?.provider ?? null,
+      model_id: p?.model_id ?? null,
+      cost_weight: p?.cost_weight ?? null,
+      enabled: p?.enabled ?? false,
+      platform: p?.platform === true,
+    };
+  });
+  return { source, default_slug: selectRoute(routes, DEFAULT_DIFFICULTY)?.profile_slug ?? null, options };
+}
+
+/**
  * Resolve the profile a task runs on.
  * @param {object} args
  * @param {number|null} args.orgId - the project's org (null → deployment default)
  * @param {{ slug: string, model?: string|null }} args.agent - the agent row
  * @param {number} [args.difficulty] - task difficulty (0..1), default 1
- * @returns {{ profile: object, source: 'org'|'platform'|'deployment', difficulty: number,
+ * @param {string} [args.profile] - a profile slug the user pinned for this
+ *   conversation (issue #134). Honoured only when it is on the agent's
+ *   effective route list — the owner's allowlist — else the task is refused
+ *   (`requirementFailure`), never rerouted silently.
+ * @returns {{ profile: object, source: 'org'|'platform'|'deployment'|'user', difficulty: number,
  *   routes: Array<{ profile_slug, difficulty }> }}
  */
-export function resolveRoute({ orgId, agent, difficulty }) {
+export function resolveRoute({ orgId, agent, difficulty, profile: requested = null }) {
   const d = normalizeDifficulty(difficulty);
   let routes = orgId != null ? getRoutes(orgId, agent.slug) : [];
   let source = 'org';
@@ -81,6 +125,25 @@ export function resolveRoute({ orgId, agent, difficulty }) {
     // route list, when it has one, replaces it entirely.
     routes = platformDefaultRoutes(agent.slug);
     source = 'platform';
+  }
+  if (typeof requested === 'string' && requested) {
+    const allowed = routes.length ? routes : [{ profile_slug: deploymentDefaultProfile(agent).slug, difficulty: 1 }];
+    if (!allowed.some((r) => r.profile_slug === requested)) {
+      return {
+        profile: {
+          slug: requested, provider: null, model_id: null, enabled: false, notAllowed: true,
+          capabilities: {}, credential: { kind: 'none', secret: null }, endpoint: null,
+          cost_weight: config.agent?.modelWeights?.default ?? 5, managed: false,
+        },
+        source: 'user', difficulty: d, routes,
+      };
+    }
+    const pinned = getProfile(orgId, requested);
+    if (pinned) return { profile: pinned, source: 'user', difficulty: d, routes };
+    // Allowed by the list but gone from config (a deployment profile that
+    // vanished): the same loud failure as a stale route below.
+    source = 'user';
+    routes = [{ profile_slug: requested, difficulty: 1 }];
   }
   const chosen = selectRoute(routes, d);
   if (chosen) {

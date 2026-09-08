@@ -102,7 +102,7 @@ export interface AgentModelInfo {
   provider: string | null;
   model: string | null;
   /** 'org' = a configured per-role route chose it; 'deployment' = the seeded default. */
-  source?: 'org' | 'platform' | 'deployment';
+  source?: 'org' | 'platform' | 'deployment' | 'user';
   /** The 0..1 difficulty the dispatcher supplied (1 when omitted); unknown on job rows. */
   difficulty?: number;
 }
@@ -153,6 +153,8 @@ export interface AgentEvent {
   // Hand-off note written at a budget pause (issue #110), on the
   // 'budget_exceeded' error; null when none could be captured.
   handoff?: string | null;
+  // The profile slug a route_invalid error refers to (issues #112, #134).
+  profile?: string | null;
   // Transient-error retry progress (story 029): emitted on a 'notice' while the
   // runtime backs off before retrying.
   attempt?: number;
@@ -211,7 +213,7 @@ export interface Job {
   profile?: string | null;
   /** The routing decision (issue #107): difficulty the route was resolved for, and what picked it. Null before the column existed. */
   difficulty?: number | null;
-  route_source?: 'org' | 'platform' | 'deployment' | null;
+  route_source?: 'org' | 'platform' | 'deployment' | 'user' | null;
   created_at: string;
 }
 
@@ -2065,6 +2067,35 @@ export interface AgentTaskParams {
    *  without provider-side sessions (non-Anthropic profiles) carry the
    *  conversation forward — including after a Stop (issue #136). */
   continuation?: unknown;
+  /** Profile slug the user pinned for this agent (issue #134); must be on the
+   *  agent's route list or the server refuses the task (route_invalid). */
+  profile?: string;
+}
+
+/** One model a member may pick for an agent they address (issue #134). */
+export interface AgentModelOption {
+  profile_slug: string;
+  difficulty: number;
+  name: string;
+  provider: string | null;
+  model_id: string | null;
+  cost_weight: number | null;
+  enabled: boolean;
+  platform: boolean;
+}
+
+export interface AgentModelOptions {
+  agent: string;
+  source: 'org' | 'platform' | 'deployment';
+  /** The entry a hardest task takes when nothing is pinned. */
+  default_slug: string | null;
+  options: AgentModelOption[];
+}
+
+/** The agent's routed models — what the composer's model pill offers (issue #134). */
+export async function getAgentModelOptions(projectId: number, agent: string): Promise<AgentModelOptions> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/agent/model-options?projectId=${projectId}&agent=${encodeURIComponent(agent)}`));
+  return (await res.json()) as AgentModelOptions;
 }
 
 /**
