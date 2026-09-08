@@ -231,6 +231,20 @@ describe('createAgentRuntime with a model profile', () => {
     expect(runtime.identity.capabilities.contextWindow).toBe(120_000);
   });
 
+  it('builds the Google Gemini path from the catalog, and declares an uncatalogued Gemini id (issue #133)', () => {
+    const known = createAgentRuntime({ profile: profile({ provider: 'google', model_id: 'gemini-2.5-flash' }), credential: { apiKey: 'AIza-secret' }, projectDir: '/p' });
+    expect(known.identity).toMatchObject({
+      provider: 'google', model: 'gemini-2.5-flash', api: 'google-generative-ai',
+      endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+      capabilities: { reasoning: true, contextWindow: 1_048_576 },
+    });
+    expect(JSON.stringify(known.identity)).not.toContain('AIza-secret');
+    const declared = createAgentRuntime({ profile: profile({ provider: 'google', model_id: 'gemini-9-science' }), credential: { apiKeyEnv: 'GEMINI_API_KEY' }, projectDir: '/p' });
+    expect(declared.identity).toMatchObject({ provider: 'google', model: 'gemini-9-science', capabilities: { contextWindow: 64_000, maxTokens: 4096 } });
+    // A fixed-endpoint provider: the profile's base_url is never consulted.
+    expect(() => createAgentRuntime({ profile: profile({ provider: 'gemini' }), credential: {}, projectDir: '/p' })).toThrow(/unknown provider 'gemini'/);
+  });
+
   it('keyless OpenAI-compatible profiles get the placeholder bearer; credentialed ones do not', async () => {
     const local = profile({ provider: 'openai-compatible', model_id: 'm', base_url: 'http://127.0.0.1:8000/v1', credential: { kind: 'none', secret: null } });
     const keyless = createAgentRuntime({ profile: local, credential: {}, projectDir: '/p' });

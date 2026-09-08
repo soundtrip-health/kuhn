@@ -182,6 +182,11 @@ describe('org profiles', () => {
     expect(unknown).toMatchObject({ catalog_known: false, capabilities: profiles.DEFAULT_CAPABILITIES, cost_weight: 5 });
     expect(profiles.catalogCapabilities('anthropic', 'claude-haiku-4-5')).toMatchObject({ known: true, suggested_cost_weight: 1, capabilities: { reasoning: true } });
     expect(profiles.catalogCapabilities('openai-compatible', 'anything')).toMatchObject({ known: false });
+    // Google Gemini (issue #133): catalogued, priced, fixed endpoint.
+    expect(profiles.catalogCapabilities('google', 'gemini-2.5-flash')).toMatchObject({ known: true, suggested_cost_weight: 0.3, capabilities: { reasoning: true, input: ['text', 'image'], contextWindow: 1_048_576 } });
+    const gemini = profiles.createProfile(ORG, valid({ slug: 'gemini-flash', provider: 'google', model_id: 'gemini-2.5-flash', cost_weight: undefined }));
+    expect(gemini).toMatchObject({ provider: 'google', endpoint: 'https://generativelanguage.googleapis.com/v1beta', catalog_known: true, cost_weight: 0.3 });
+    expect(() => profiles.createProfile(ORG, valid({ slug: 'gemini-url', provider: 'google', model_id: 'gemini-2.5-flash', base_url: 'https://example.com/v1' }))).toThrow(/fixed endpoint/);
   });
 
   it('falls back to OpenRouter\'s live list for ids the pinned catalog lacks, without a credential', async () => {

@@ -6,6 +6,7 @@
 //
 //   OPENROUTER_API_KEY            → openrouter   (KUHN_MATRIX_OPENROUTER_MODEL, default openai/gpt-oss-20b)
 //   OPENAI_API_KEY                → openai       (KUHN_MATRIX_OPENAI_MODEL, default gpt-5-mini)
+//   GEMINI_API_KEY                → google       (KUHN_MATRIX_GOOGLE_MODEL, default gemini-2.5-flash)
 //   KUHN_MATRIX_BASE_URL          → openai-compatible (KUHN_MATRIX_MODEL required;
 //                                    KUHN_MATRIX_API_KEY_ENV names the key variable, or none for a keyless server)
 //   ANTHROPIC_API_KEY             → anthropic    (KUHN_MATRIX_ANTHROPIC_MODEL, default claude-haiku-4-5)
@@ -50,6 +51,11 @@ const PATHS = [
     provider: 'openai', ready: () => Boolean(env.OPENAI_API_KEY),
     profile: () => ({ slug: 'matrix-openai', provider: 'openai', model_id: env.KUHN_MATRIX_OPENAI_MODEL || 'gpt-5-mini', capabilities: {}, credential: { kind: 'deployment', env: 'OPENAI_API_KEY' }, endpoint: 'https://api.openai.com/v1' }),
     credential: () => ({ apiKeyEnv: 'OPENAI_API_KEY' }),
+  },
+  {
+    provider: 'google', ready: () => Boolean(env.GEMINI_API_KEY),
+    profile: () => ({ slug: 'matrix-google', provider: 'google', model_id: env.KUHN_MATRIX_GOOGLE_MODEL || 'gemini-2.5-flash', capabilities: {}, credential: { kind: 'deployment', env: 'GEMINI_API_KEY' }, endpoint: 'https://generativelanguage.googleapis.com/v1beta' }),
+    credential: () => ({ apiKeyEnv: 'GEMINI_API_KEY' }),
   },
   {
     provider: 'openai-compatible', ready: () => Boolean(env.KUHN_MATRIX_BASE_URL && env.KUHN_MATRIX_MODEL),

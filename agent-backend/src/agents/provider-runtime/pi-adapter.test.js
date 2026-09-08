@@ -18,6 +18,7 @@ import {
   createOpenAICompatiblePiRuntime,
   createOpenAIPiRuntime,
   createOpenRouterPiRuntime,
+  createGooglePiRuntime,
 } from './pi-adapter.js';
 import { ScriptedRuntime } from './scripted-runtime.js';
 
@@ -942,6 +943,7 @@ describe('Pi adapter org-credential and declared-model paths (issues #111/#112)'
   it.each([
     ['openrouter', 'openai/gpt-oss-20b', (o) => createOpenRouterPiRuntime(o), 'OPENROUTER_API_KEY'],
     ['openai', 'gpt-5-mini', (o) => createOpenAIPiRuntime(o), 'OPENAI_API_KEY'],
+    ['google', 'gemini-2.5-flash', (o) => createGooglePiRuntime(o), 'GEMINI_API_KEY'],
     ['openai-compatible', 'qwen-science', (o) => createOpenAICompatiblePiRuntime({ baseUrl: 'http://127.0.0.1:8000/v1', ...o }), 'OPENAI_COMPATIBLE_API_KEY'],
   ])('%s: a resolved apiKey value wins over every env var and never leaks', async (path, modelId, build, defaultEnv) => {
     const saved = process.env[defaultEnv];
@@ -984,6 +986,28 @@ describe('Pi adapter org-credential and declared-model paths (issues #111/#112)'
     expect(plain.runtime.identity.capabilities.contextWindow).not.toBe(8_000);
     const oa = createOpenAIPiRuntime({ modelId: 'gpt-5-mini', capabilityOverrides: { contextWindow: 100_000 } });
     expect(oa.runtime.identity.capabilities.contextWindow).toBe(100_000);
+  });
+
+  it('google: mirrors pi-ai\'s Gemini provider with the explicitly named credential only (issue #133)', async () => {
+    const saved = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const { model, provider, models } = createGooglePiRuntime({ modelId: 'gemini-2.5-flash' });
+      expect(model).toMatchObject({ id: 'gemini-2.5-flash', provider: 'google', api: 'google-generative-ai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', reasoning: true });
+      expect(provider.id).toBe('google');
+      // No key anywhere → no auth resolved (never borrows another credential).
+      expect(await models.getAuth(model)).toBeUndefined();
+      const named = createGooglePiRuntime({ modelId: 'gemini-2.5-flash', apiKeyEnv: 'MY_GEMINI_KEY' });
+      process.env.MY_GEMINI_KEY = 'AIza-named';
+      expect((await named.models.getAuth(named.model)).auth.apiKey).toBe('AIza-named');
+      delete process.env.MY_GEMINI_KEY;
+      const declared = createGooglePiRuntime({ modelId: 'gemini-9-science', capabilities: { reasoning: false, contextWindow: 32_000, maxTokens: 2048 } });
+      expect(declared.model).toMatchObject({ id: 'gemini-9-science', provider: 'google', api: 'google-generative-ai', contextWindow: 32_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+      expect(() => createGooglePiRuntime({ modelId: 'gemini-nope' })).toThrow(/Unknown Google model/);
+    } finally {
+      if (saved === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = saved;
+    }
   });
 
   it('openrouter: an uncatalogued model id runs on its declared capabilities', () => {

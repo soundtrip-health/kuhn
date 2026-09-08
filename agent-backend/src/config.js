@@ -48,7 +48,7 @@ export const config = {
     // (agents.model) are deliberately NOT reinterpreted as Pi model ids;
     // this model is the one the Pi preview actually runs.
     pi: {
-      // Provider path: 'openrouter' | 'openai' | 'openai-compatible'.
+      // Provider path: 'openrouter' | 'openai' | 'google' | 'openai-compatible'.
       provider: (process.env.KUHN_PI_PROVIDER || 'openrouter').trim().toLowerCase(),
       // The Pi model id to run (e.g. 'openai/gpt-oss-20b' on OpenRouter).
       model: process.env.KUHN_PI_MODEL || '',

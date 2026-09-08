@@ -20,6 +20,7 @@
 import { config } from '../../config.js';
 import { createClaudeRuntime } from './claude-runtime.js';
 import {
+  createGooglePiRuntime,
   createOpenAICompatiblePiRuntime,
   createOpenAIPiRuntime,
   createOpenRouterPiRuntime,
@@ -31,6 +32,7 @@ export const AGENT_RUNTIME_KINDS = ['claude', 'pi'];
 const PI_DEFAULT_API_KEY_ENV = {
   openrouter: 'OPENROUTER_API_KEY',
   openai: 'OPENAI_API_KEY',
+  google: 'GEMINI_API_KEY',
   'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
 };
 
@@ -74,7 +76,7 @@ export function createAgentRuntime(options = {}) {
 }
 
 /** Every provider a profile may name (mirrors db/model-profiles.js PROVIDERS). */
-export const PROFILE_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'openai-compatible'];
+export const PROFILE_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'google', 'openai-compatible'];
 
 /** The pi-adapter model metadata a profile's declared capabilities map to. */
 function declaredCapabilities(profile) {
@@ -121,6 +123,7 @@ function createProfileRuntime({
   };
   if (provider === 'openrouter') return createOpenRouterPiRuntime(common).runtime;
   if (provider === 'openai') return createOpenAIPiRuntime(common).runtime;
+  if (provider === 'google') return createGooglePiRuntime(common).runtime;
   if (!profile.base_url) {
     throw new Error(`model profile '${profile.slug}': an OpenAI-compatible base URL is required`);
   }
@@ -156,6 +159,7 @@ function createPiAgentRuntime({ tools = [], maxTurns, systemPrompt = '' } = {}) 
   const common = { modelId: pi.model, tools, systemPrompt, maxTurns, apiKeyEnv };
   if (provider === 'openrouter') return createOpenRouterPiRuntime(common).runtime;
   if (provider === 'openai') return createOpenAIPiRuntime(common).runtime;
+  if (provider === 'google') return createGooglePiRuntime(common).runtime;
   if (!pi.baseUrl) {
     throw new Error(
       "Pi preview: an OpenAI-compatible base URL is required for the 'openai-compatible' provider path (set KUHN_PI_BASE_URL)",

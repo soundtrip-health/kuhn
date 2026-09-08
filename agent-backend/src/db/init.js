@@ -203,6 +203,74 @@ export function applyMembershipsRoleMigration() {
   }
 }
 
+// Issue #133: model_profiles.provider gained 'google'. CHECK constraints
+// cannot be ALTERed, so an existing database needs the documented table
+// rebuild. Keep this DDL byte-compatible with model_profiles in schema.sql.
+const MODEL_PROFILES_NEW_DDL = `
+  CREATE TABLE model_profiles_new (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id            INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    slug              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter', 'google', 'openai-compatible')),
+    model_id          TEXT NOT NULL,
+    base_url          TEXT,
+    credential_secret TEXT,
+    capabilities      TEXT NOT NULL DEFAULT '{}',
+    cost_weight       REAL NOT NULL DEFAULT 5,
+    data_policy       TEXT,
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (org_id, slug)
+  )`;
+
+const MODEL_PROFILES_COLUMNS = [
+  'id', 'org_id', 'slug', 'name', 'provider', 'model_id', 'base_url', 'credential_secret',
+  'capabilities', 'cost_weight', 'data_policy', 'enabled', 'created_by', 'created_at', 'updated_at',
+];
+
+/** The provider list the current schema's CHECK must carry (issue #133). */
+export const MODEL_PROFILE_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'google', 'openai-compatible'];
+
+/**
+ * Rebuild model_profiles so its provider CHECK accepts every provider the
+ * store knows (issue #133 added 'google'). Same 12-step ALTER discipline as
+ * the rebuilds above: foreign_keys toggled OUTSIDE the transaction, since the
+ * table carries outbound FKs (org_id, created_by) that SQLite re-validates
+ * while copying. Idempotent: runs only when the live DDL lacks a provider.
+ */
+export function applyModelProfilesProviderMigration() {
+  const { rows } = querySync(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_profiles'",
+  );
+  const currentDdl = rows[0]?.sql;
+  if (!currentDdl || MODEL_PROFILE_PROVIDERS.every((p) => currentDdl.includes(`'${p}'`))) return;
+
+  const [{ foreign_keys: fkEnabled }] = db.pragma('foreign_keys');
+  db.pragma('foreign_keys = OFF');
+  try {
+    transaction(() => {
+      const present = new Set(
+        querySync("SELECT name FROM pragma_table_info('model_profiles')").rows.map((r) => r.name),
+      );
+      const cols = MODEL_PROFILES_COLUMNS.filter((c) => present.has(c)).join(', ');
+      querySync(MODEL_PROFILES_NEW_DDL);
+      querySync(`INSERT INTO model_profiles_new (${cols}) SELECT ${cols} FROM model_profiles`);
+      querySync('DROP TABLE model_profiles');
+      querySync('ALTER TABLE model_profiles_new RENAME TO model_profiles');
+    });
+    const violations = db.pragma('foreign_key_check');
+    if (violations.length) {
+      throw new Error(`model_profiles rebuild left ${violations.length} foreign key violation(s)`);
+    }
+    console.log(`[db] Migrated: model_profiles rebuilt for providers ${MODEL_PROFILE_PROVIDERS.join(', ')}.`);
+  } finally {
+    db.pragma(`foreign_keys = ${fkEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
 /**
  * Issue #65: partial unique index over migrated columns. schema.sql cannot
  * carry it — on an existing database exec(schemaSql) runs BEFORE
@@ -237,6 +305,7 @@ export async function initDb() {
   applyColumnMigrations();
   applyFileEventsKindMigration();
   applyMembershipsRoleMigration();
+  applyModelProfilesProviderMigration();
   applyKnowledgeIndexMigration();
   console.log('[db] Schema applied.');
 

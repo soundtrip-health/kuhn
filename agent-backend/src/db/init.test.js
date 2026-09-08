@@ -6,13 +6,14 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 
 let db; let exec; let querySync;
 let applyColumnMigrations; let applyFileEventsKindMigration; let applyMembershipsRoleMigration;
+let applyModelProfilesProviderMigration;
 
 const columns = (table) =>
   querySync(`SELECT name FROM pragma_table_info('${table}')`).rows.map((r) => r.name);
 
 beforeAll(async () => {
   ({ db, exec, querySync } = await import('../db.js'));
-  ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration } =
+  ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration } =
     await import('./init.js'));
   // Pre-007-001 shapes: the tables exist (so schema.sql's CREATE IF NOT EXISTS
   // skips them on a real upgrade) but lack the user_id column. `projects` is
@@ -46,7 +47,61 @@ beforeAll(async () => {
     INSERT INTO users (id, email) VALUES (1, 'owner@lab.org'), (2, 'member@lab.org');
     INSERT INTO organizations (id, name, slug) VALUES (1, 'Lab', 'lab');
     INSERT INTO memberships (user_id, org_id, role) VALUES (1, 1, 'owner'), (2, 1, 'member');
+    -- Issue #133: the pre-google model_profiles CHECK, with one org profile.
+    CREATE TABLE model_profiles (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id            INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      slug              TEXT NOT NULL,
+      name              TEXT NOT NULL,
+      provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter', 'openai-compatible')),
+      model_id          TEXT NOT NULL,
+      base_url          TEXT,
+      credential_secret TEXT,
+      capabilities      TEXT NOT NULL DEFAULT '{}',
+      cost_weight       REAL NOT NULL DEFAULT 5,
+      data_policy       TEXT,
+      enabled           INTEGER NOT NULL DEFAULT 1,
+      created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE (org_id, slug)
+    );
+    INSERT INTO model_profiles (org_id, slug, name, provider, model_id, credential_secret, capabilities, cost_weight, created_by)
+      VALUES (1, 'gpt-mini', 'GPT mini', 'openai', 'gpt-5-mini', 'openai-api-key', '{"contextWindow":100000}', 0.25, 1);
   `);
+});
+
+describe('applyModelProfilesProviderMigration (issue #133)', () => {
+  it("rebuilds a pre-google model_profiles so provider 'google' is accepted, preserving rows", () => {
+    expect(() => querySync(
+      "INSERT INTO model_profiles (org_id, slug, name, provider, model_id, credential_secret) VALUES (1, 'gem', 'Gemini', 'google', 'gemini-2.5-flash', 'gemini-api-key')",
+    )).toThrow(/CHECK constraint failed/);
+
+    applyModelProfilesProviderMigration();
+
+    expect(querySync('SELECT id, slug, provider, model_id, capabilities, cost_weight, created_by FROM model_profiles').rows).toEqual([
+      { id: 1, slug: 'gpt-mini', provider: 'openai', model_id: 'gpt-5-mini', capabilities: '{"contextWindow":100000}', cost_weight: 0.25, created_by: 1 },
+    ]);
+    querySync(
+      "INSERT INTO model_profiles (org_id, slug, name, provider, model_id, credential_secret) VALUES (1, 'gem', 'Gemini', 'google', 'gemini-2.5-flash', 'gemini-api-key')",
+    );
+    expect(querySync("SELECT slug FROM model_profiles WHERE provider = 'google'").rows).toEqual([{ slug: 'gem' }]);
+    // The org-scoped uniqueness survives the rebuild.
+    expect(() => querySync(
+      "INSERT INTO model_profiles (org_id, slug, name, provider, model_id) VALUES (1, 'gem', 'Dup', 'openai-compatible', 'x')",
+    )).toThrow(/UNIQUE/);
+    // Still refuses an unknown provider.
+    expect(() => querySync(
+      "INSERT INTO model_profiles (org_id, slug, name, provider, model_id) VALUES (1, 'zz', 'Z', 'vertex', 'x')",
+    )).toThrow(/CHECK constraint failed/);
+  });
+
+  it('is a no-op on a second run and restores foreign-key enforcement', () => {
+    const before = querySync('SELECT COUNT(*) AS n FROM model_profiles').rows[0].n;
+    expect(() => applyModelProfilesProviderMigration()).not.toThrow();
+    expect(querySync('SELECT COUNT(*) AS n FROM model_profiles').rows[0].n).toBe(before);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
 });
 
 describe('applyColumnMigrations (story 007-001)', () => {

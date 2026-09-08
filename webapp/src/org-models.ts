@@ -41,6 +41,7 @@ const PROVIDER_LABEL: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  google: 'Google Gemini',
   'openai-compatible': 'OpenAI-compatible endpoint',
 };
 const PROVIDERS = Object.keys(PROVIDER_LABEL) as ModelProvider[];
@@ -48,18 +49,21 @@ const PROVIDER_HOST: Record<ModelProvider, string | null> = {
   anthropic: 'api.anthropic.com',
   openai: 'api.openai.com',
   openrouter: 'openrouter.ai',
+  google: 'generativelanguage.googleapis.com',
   'openai-compatible': null,
 };
 const SUGGESTED_SECRET: Record<ModelProvider, string> = {
   anthropic: 'anthropic-api-key',
   openai: 'openai-api-key',
   openrouter: 'openrouter-api-key',
+  google: 'gemini-api-key',
   'openai-compatible': 'model-endpoint-key',
 };
 const MODEL_ID_EXAMPLE: Record<ModelProvider, string> = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5-mini',
   openrouter: 'openai/gpt-oss-20b',
+  google: 'gemini-2.5-flash',
   'openai-compatible': 'the name your server reports under /v1/models',
 };
 const SLUG_PATTERN = /^[a-z][a-z0-9.-]{0,63}$/;

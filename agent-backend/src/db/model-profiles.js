@@ -21,6 +21,7 @@
 // runtime resolves a route on the task hot path without another await.
 
 import { ANTHROPIC_MODELS } from '@earendil-works/pi-ai/providers/anthropic.models';
+import { GOOGLE_MODELS } from '@earendil-works/pi-ai/providers/google.models';
 import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
 import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
 
@@ -28,13 +29,15 @@ import { config } from '../config.js';
 import { querySync, transaction } from '../db.js';
 import { SECRET_NAME_PATTERN } from './org-secrets.js';
 
-export const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'openai-compatible'];
+export const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'google', 'openai-compatible'];
 
 /** Where each fixed-endpoint provider egresses to (shown to owners). */
 export const PROVIDER_ENDPOINTS = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
+  // Gemini Developer API (issue #133) — an API key, not Vertex/ADC.
+  google: 'https://generativelanguage.googleapis.com/v1beta',
 };
 
 // Lowercase letters, digits, dots, dashes — so a model id like "gpt-4.1"
@@ -67,6 +70,7 @@ const CATALOGS = {
   anthropic: ANTHROPIC_MODELS,
   openai: OPENAI_MODELS,
   openrouter: OPENROUTER_MODELS,
+  google: GOOGLE_MODELS,
 };
 
 /**
@@ -97,9 +101,9 @@ export function catalogCapabilities(provider, modelId) {
 
 // Live fallback: OpenRouter publishes a keyless model list with context
 // length, output cap, modalities, reasoning/tool support, and pricing, and
-// mirrors OpenAI and Anthropic ids under `openai/…` / `anthropic/…`. Used
-// only for ids the pinned catalog lacks (a model newer than the pi-ai
-// release), cached in memory for an hour. No credential is sent.
+// mirrors OpenAI, Anthropic and Google ids under `openai/…` / `anthropic/…` /
+// `google/…`. Used only for ids the pinned catalog lacks (a model newer than
+// the pi-ai release), cached in memory for an hour. No credential is sent.
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 const LIVE_TTL_MS = 60 * 60 * 1000;
 let liveCache = { at: 0, byId: null, pending: null };
@@ -303,6 +307,7 @@ export function deploymentCostWeight(modelId) {
 const PI_DEFAULT_API_KEY_ENV = {
   openrouter: 'OPENROUTER_API_KEY',
   openai: 'OPENAI_API_KEY',
+  google: 'GEMINI_API_KEY',
   'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
 };
 
