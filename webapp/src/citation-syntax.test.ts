@@ -4,7 +4,16 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { citationKeys, splitCitations, splitGroup } from './citation-syntax';
+import { citationKeys, restoreTodoMarkers, splitCitations, splitGroup } from './citation-syntax';
+
+describe('restoreTodoMarkers', () => {
+  it('un-escapes the bracket of a TODO marker and nothing else', () => {
+    expect(restoreTodoMarkers('a \\[TODO: verify] marker and \\[TODO] and \\[other]')).toBe(
+      'a [TODO: verify] marker and [TODO] and \\[other]',
+    );
+    expect(restoreTodoMarkers('\\[TODOS are not markers]')).toBe('\\[TODOS are not markers]');
+  });
+});
 
 describe('splitCitations', () => {
   it('leaves text without a citation untouched', () => {

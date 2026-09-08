@@ -24,6 +24,20 @@ export const CITATION_GROUP_RE = new RegExp(`\\[(${SEGMENT}(?:;${SEGMENT})*)\\]`
 /** Matches one `-?@key` inside a segment; capture 1 is the key. */
 export const CITATION_KEY_RE = new RegExp(`-?@(${KEY})`, 'g');
 
+/**
+ * `[TODO: ...]` markers are review scaffolding the agent prompts insert and
+ * the PI edits inline, so they stay plain text rather than becoming a chip —
+ * which means remark-stringify escapes their `[` on every save, same as it
+ * did to citation groups. Applied to the serializer's output for a text
+ * node: a bare `[TODO...]` is not a link (nothing follows the bracket and no
+ * reference definition names it), so the escape is never needed.
+ */
+const ESCAPED_TODO_RE = /\\\[(?=TODO\b)/g;
+
+export function restoreTodoMarkers(serialized: string): string {
+  return serialized.replace(ESCAPED_TODO_RE, '[');
+}
+
 /** The cite keys of a group's inner text, in order, without `@`. */
 export function citationKeys(group: string): string[] {
   return Array.from(group.matchAll(CITATION_KEY_RE), (m) => m[1]);

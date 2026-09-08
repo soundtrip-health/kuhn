@@ -15,12 +15,17 @@
 
 import { $nodeSchema, $remark } from '@milkdown/kit/utils';
 
-import { citationKeys, splitCitations, splitGroup } from './citation-syntax';
+import { citationKeys, restoreTodoMarkers, splitCitations, splitGroup } from './citation-syntax';
 
 interface MdNode {
   type: string;
   value?: string;
   children?: MdNode[];
+}
+
+/** The slice of mdast-util-to-markdown's State a text handler needs. */
+interface SerializeState {
+  safe: (value: string, info: unknown) => string;
 }
 
 function transformTree(node: MdNode): void {
@@ -40,7 +45,13 @@ export const remarkCitation = $remark('remark-citation', () =>
     const data = this.data() as Record<string, unknown[]>;
     const extensions = (data.toMarkdownExtensions ??= []);
     extensions.push({
-      handlers: { citation: (node: MdNode) => `[${node.value ?? ''}]` },
+      handlers: {
+        citation: (node: MdNode) => `[${node.value ?? ''}]`,
+        // The stock text handler plus un-escaping of `[TODO: ...]` markers,
+        // which stay editable plain text (see citation-syntax.ts).
+        text: (node: MdNode, _parent: unknown, state: SerializeState, info: unknown) =>
+          restoreTodoMarkers(state.safe(node.value ?? '', info)),
+      },
     });
     // Parse-side transform: groups arrive as plain text inside text nodes
     return (tree: MdNode) => transformTree(tree);
