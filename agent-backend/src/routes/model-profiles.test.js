@@ -185,9 +185,33 @@ describe('routes', () => {
     expect(res.status).toBe(200);
     const { agents } = await res.json();
     expect(agents).toEqual([
-      { slug: 'pm', name: 'PM', tools: [], default_profile: 'deployment-claude-opus-4-8', routes: [], warnings: [] },
-      { slug: 'ra', name: 'RA', tools: ['web_search'], default_profile: 'deployment-claude-haiku-4-5', routes: [], warnings: [] },
+      { slug: 'pm', name: 'PM', tools: [], default_profile: 'deployment-claude-opus-4-8', default_routes: [{ profile_slug: 'deployment-claude-opus-4-8', difficulty: 1 }], routes: [], warnings: [] },
+      { slug: 'ra', name: 'RA', tools: ['web_search'], default_profile: 'deployment-claude-haiku-4-5', default_routes: [{ profile_slug: 'deployment-claude-haiku-4-5', difficulty: 1 }], routes: [], warnings: [] },
     ]);
+  });
+
+  it('GET reports the platform default route when the operator declared one (issue #138)', async () => {
+    const { resetPlatformModelsCache } = await import('../db/platform-models.js');
+    resetPlatformModelsCache();
+    config.agentRuntime.platformModels = JSON.stringify([
+      { slug: 'local-qwen', provider: 'openai-compatible', model_id: 'Qwen3-27B', base_url: 'http://vllm.lan:8000/v1', routes: { ra: 0.5 } },
+    ]);
+    try {
+      let res = await api('GET', `/api/orgs/${ORG}/model-routes`, OWNER);
+      const ra = (await res.json()).agents.find((a) => a.slug === 'ra');
+      expect(ra).toMatchObject({ default_profile: 'deployment-local-qwen', default_routes: [{ profile_slug: 'deployment-local-qwen', difficulty: 0.5 }], routes: [] });
+      // The platform profile is listed read-only with every other deployment profile.
+      res = await api('GET', `/api/orgs/${ORG}/model-profiles`, OWNER);
+      const { profiles: listed } = await res.json();
+      expect(listed.find((p) => p.slug === 'deployment-local-qwen')).toMatchObject({ managed: true, platform: true, endpoint: 'http://vllm.lan:8000/v1' });
+      expect((await api('PATCH', `/api/orgs/${ORG}/model-profiles/deployment-local-qwen`, OWNER, { name: 'x' })).status).toBe(404);
+      // Routing an org to a public provider from a platform default that is local: the boundary change is reported.
+      res = await api('PUT', `/api/orgs/${ORG}/model-routes/ra`, OWNER, { routes: [{ profile_slug: 'gpt-mini', difficulty: 1 }] });
+      expect((await res.json()).egress).toEqual({ before: ['vllm.lan:8000'], after: ['api.openai.com'], added: ['api.openai.com'] });
+    } finally {
+      config.agentRuntime.platformModels = '';
+      resetPlatformModelsCache();
+    }
   });
 
   it('PUT replaces a role\'s list, reports the egress boundary change and web-search degradation', async () => {

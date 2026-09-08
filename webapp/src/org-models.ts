@@ -661,8 +661,12 @@ function routingSection(ctx: Ctx): HTMLElement[] {
   return parts;
 }
 
+function defaultRoutes(agent: ModelRouteAgent): ModelRoute[] {
+  return agent.default_routes?.length ? agent.default_routes : [{ profile_slug: agent.default_profile, difficulty: 1 }];
+}
+
 function routeHosts(routes: ModelRoute[], agent: ModelRouteAgent): string[] {
-  const list = routes.length ? routes.map((r) => profileBySlug(r.profile_slug)) : [profileBySlug(agent.default_profile)];
+  const list = (routes.length ? routes : defaultRoutes(agent)).map((r) => profileBySlug(r.profile_slug));
   return [...new Set(list.map((p) => hostOf(p?.endpoint ?? null)).filter((h): h is string => Boolean(h)))];
 }
 
@@ -674,10 +678,17 @@ function agentRoutes(ctx: Ctx, agent: ModelRouteAgent): HTMLElement {
   const title = document.createElement('div');
   title.className = 'admin-member-name';
   title.textContent = agent.name;
-  const def = profileBySlug(agent.default_profile);
+  const defaults = defaultRoutes(agent);
   const sub = document.createElement('div');
   sub.className = 'admin-member-email';
-  sub.textContent = `Default: ${def ? profileLabel(def) : agent.default_profile}`;
+  // A platform default (issue #138) is a ranked list the operator declared;
+  // the deployment default is one profile.
+  const platform = defaults.some((r) => profileBySlug(r.profile_slug)?.platform);
+  const describe = (r: ModelRoute) => {
+    const p = profileBySlug(r.profile_slug);
+    return `${p ? profileLabel(p) : r.profile_slug}${platform ? ` ≤ ${r.difficulty}` : ''}`;
+  };
+  sub.textContent = `${platform ? 'Platform default' : 'Default'}: ${defaults.map(describe).join(' · ')}`;
   head.append(title, sub);
   box.append(head);
 

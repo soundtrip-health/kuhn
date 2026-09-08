@@ -381,3 +381,39 @@ list of them by task difficulty; credentials are org secrets and never leave the
 To prove a provider path against a real endpoint before routing agents to it, run
 `npm run smoke:provider-matrix` in `agent-backend/` with the relevant credentials in the
 environment; the token-free wire-level proof runs with `npm test`.
+
+### Platform-level pre-configured models
+
+When the deployment itself has models available — a vLLM or Ollama server on the LAN, a
+site-licensed OpenAI/Gemini/Anthropic key — declare them once in `KUHN_PLATFORM_MODELS`
+(inline JSON, or the path of a JSON file) instead of configuring them in every org
+(issue #138). Each entry becomes a **read-only deployment profile** in every org's Models tab
+(slug `deployment-<slug>`): owners can route agents to it and run "Test connection" against
+it, but not edit or delete it. An entry with `routes` (agent slug → difficulty ceiling, `"*"`
+for every agent) is also the **platform default route** for those agents in orgs that have
+configured no route of their own — an org's own list replaces it entirely.
+
+```json
+[
+  {
+    "slug": "local-qwen",
+    "name": "Qwen3 27B (on-prem vLLM)",
+    "provider": "openai-compatible",
+    "model_id": "Qwen3-27B",
+    "base_url": "http://vllm.lan:8000/v1",
+    "capabilities": { "contextWindow": 32768, "maxTokens": 8192, "reasoning": false, "tools": true },
+    "cost_weight": 0.5,
+    "data_policy": "Runs on-prem; nothing leaves the network.",
+    "routes": { "ra": 0.5, "advisor": 0.5 }
+  },
+  { "slug": "site-gemini", "provider": "google", "model_id": "gemini-2.5-flash", "api_key_env": "SITE_GEMINI_KEY" }
+]
+```
+
+Credentials never appear in the list: `api_key_env` **names** the environment variable that
+holds the key (omit it for a keyless local server, or to use the provider's default variable —
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`). Private-network
+`base_url`s are accepted here regardless of `KUHN_ALLOW_PRIVATE_MODEL_ENDPOINTS` — the operator
+declared them. The list is validated at boot and a malformed entry stops the server naming the
+entry and field; changes need a restart. Startup logs a `platform_models` record with the slugs,
+providers, endpoints and default routes.

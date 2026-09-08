@@ -231,6 +231,21 @@ describe('createAgentRuntime with a model profile', () => {
     expect(runtime.identity.capabilities.contextWindow).toBe(120_000);
   });
 
+  it('anthropic profiles with a named key variable read it for the SDK env only (issue #138)', () => {
+    process.env.SITE_ANTHROPIC_KEY = 'sk-ant-site';
+    try {
+      const runtime = createAgentRuntime({ profile: profile({ provider: 'anthropic', model_id: 'claude-opus-4-8' }), credential: { apiKeyEnv: 'SITE_ANTHROPIC_KEY' }, projectDir: '/p' });
+      expect(runtime.identity).toMatchObject({ provider: 'anthropic', model: 'claude-opus-4-8' });
+      expect(JSON.stringify(runtime.identity)).not.toContain('sk-ant-site');
+      // The default variable is left to the SDK subprocess's inherited env.
+      expect(() => createAgentRuntime({ profile: profile({ provider: 'anthropic', model_id: 'claude-opus-4-8' }), credential: { apiKeyEnv: 'ANTHROPIC_API_KEY' }, projectDir: '/p' })).not.toThrow();
+      // A named variable that is not set is a configuration error, not a fallback.
+      expect(() => createAgentRuntime({ profile: profile({ provider: 'anthropic', model_id: 'claude-opus-4-8' }), credential: { apiKeyEnv: 'MISSING_ANTHROPIC_KEY' }, projectDir: '/p' })).toThrow(/MISSING_ANTHROPIC_KEY is not set/);
+    } finally {
+      delete process.env.SITE_ANTHROPIC_KEY;
+    }
+  });
+
   it('builds the Google Gemini path from the catalog, and declares an uncatalogued Gemini id (issue #133)', () => {
     const known = createAgentRuntime({ profile: profile({ provider: 'google', model_id: 'gemini-2.5-flash' }), credential: { apiKey: 'AIza-secret' }, projectDir: '/p' });
     expect(known.identity).toMatchObject({

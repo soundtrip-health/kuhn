@@ -32,7 +32,7 @@ tenant-scoped profile, never of anything the model can choose.**
 
 | Kind | Where | Slug | Credential |
 |---|---|---|---|
-| Deployment-managed | derived from config at read time (`deploymentProfiles()`): one Anthropic profile per distinct seeded `agents.model` (+ `AGENT_MODEL`), and the `KUHN_PI_*` preview when set | `deployment-<model-id>`, `deployment-pi-preview` | the deployment's env var (`ANTHROPIC_API_KEY`, `KUHN_PI_API_KEY_ENV`) |
+| Deployment-managed | derived from config at read time (`deploymentProfiles()`): one Anthropic profile per distinct seeded `agents.model` (+ `AGENT_MODEL`), the `KUHN_PI_*` preview when set, and every `KUHN_PLATFORM_MODELS` entry (issue #138, `db/platform-models.js`) | `deployment-<model-id>`, `deployment-pi-preview`, `deployment-<platform slug>` | the deployment's env var (`ANTHROPIC_API_KEY`, `KUHN_PI_API_KEY_ENV`, a platform entry's `api_key_env` or the provider default; none for a keyless local server) |
 | Org-owned | `model_profiles` rows | owner-chosen, `[a-z][a-z0-9.-]*` (dots allowed so a model id can double as one), the `deployment-` prefix reserved | `credential_secret`: an `org_secrets` name; NULL only for `openai-compatible` (keyless local server) |
 
 Providers: `anthropic` (Claude Agent SDK adapter, org key layered onto the SDK subprocess
@@ -61,8 +61,10 @@ model-id substring match. Deployment profiles derive theirs from the weights tab
 
 **Route** — per org and agent slug, a ranked list `[{ profile_slug, difficulty }]` where
 `difficulty` (0..1) is the highest task difficulty that profile is trusted with. Empty list =
-deployment default for that role, which is exactly the pre-#107 behavior (seeded
-`agents.model` on the operator's key; the Pi preview when `KUHN_AGENT_RUNTIME=pi`).
+the **platform default route** for that role when the operator declared one (`routes` on a
+`KUHN_PLATFORM_MODELS` entry, issue #138; route source `platform`), else the deployment default,
+which is exactly the pre-#107 behavior (seeded `agents.model` on the operator's key; the Pi
+preview when `KUHN_AGENT_RUNTIME=pi`).
 
 ## 3. Dispatch-time selection (`agents/model-routing.js`)
 

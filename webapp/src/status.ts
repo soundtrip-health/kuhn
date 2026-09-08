@@ -73,7 +73,7 @@ export interface ModelChip {
   label: string;
   model: string | null;
   profile: string | null;
-  source?: 'org' | 'deployment';
+  source?: 'org' | 'platform' | 'deployment';
   difficulty?: number;
 }
 
@@ -104,7 +104,7 @@ export function setAgentModel(current: ModelChip | null, history: ModelChip[] = 
     `${c.label}: ${c.model ?? 'unknown model'}`
     + (c.profile ? ` (profile ${c.profile})` : '')
     + (c.difficulty != null ? `, difficulty ${c.difficulty}` : '')
-    + (c.source === 'org' ? ', org route' : c.source === 'deployment' ? ', deployment default' : '');
+    + (c.source === 'org' ? ', org route' : c.source === 'platform' ? ', platform default' : c.source === 'deployment' ? ', deployment default' : '');
   const rows = history.length ? history : [current];
   node.title = `Models this run:\n${rows.map(line).join('\n')}`;
 }

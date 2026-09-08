@@ -106,8 +106,17 @@ function createProfileRuntime({
   }
   const apiKey = credential.apiKey ?? null;
   if (provider === 'anthropic') {
+    // A platform-declared Anthropic profile (issue #138) may name its own key
+    // variable; the SDK subprocess otherwise inherits ANTHROPIC_API_KEY. The
+    // value is read here and handed to the adapter only.
+    const namedKey = !apiKey && credential.apiKeyEnv && credential.apiKeyEnv !== 'ANTHROPIC_API_KEY'
+      ? (process.env[credential.apiKeyEnv] ?? null)
+      : null;
+    if (!apiKey && credential.apiKeyEnv && credential.apiKeyEnv !== 'ANTHROPIC_API_KEY' && !namedKey) {
+      throw new Error(`model profile '${profile.slug}': the credential variable ${credential.apiKeyEnv} is not set`);
+    }
     return createClaudeRuntime({
-      model: profile.model_id ?? undefined, projectDir, tools, maxTurns, initialSessionId, apiKey,
+      model: profile.model_id ?? undefined, projectDir, tools, maxTurns, initialSessionId, apiKey: apiKey ?? namedKey,
     });
   }
   if (!profile.model_id) {

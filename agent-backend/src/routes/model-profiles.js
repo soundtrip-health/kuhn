@@ -15,6 +15,7 @@ import {
   lookupCapabilities,
   deleteProfile,
   deploymentDefaultProfile,
+  platformDefaultRoutes,
   getProfile,
   listProfiles,
   listRoutes,
@@ -65,6 +66,16 @@ function routeWarnings(orgId, agent, routes) {
     }
   }
   return warnings;
+}
+
+/**
+ * The route list a role follows when the org has configured none: the
+ * platform default (issue #138) when the operator declared one, else the
+ * seeded deployment profile as a single hardest-difficulty entry.
+ */
+function defaultRoutesFor(agent) {
+  const platform = platformDefaultRoutes(agent.slug);
+  return platform.length ? platform : [{ profile_slug: deploymentDefaultProfile(agent).slug, difficulty: 1 }];
 }
 
 /** GET /api/orgs/:orgId/model-profiles — deployment-managed + org-owned (owner). */
@@ -176,13 +187,18 @@ router.get('/api/orgs/:orgId/model-routes', async (req, res) => {
   const routes = listRoutes(ctx.orgId);
   res.json({
     agents: agents.map((agent) => {
-      const fallback = deploymentDefaultProfile(agent);
       const list = routes[agent.slug] ?? [];
+      const defaults = defaultRoutesFor(agent);
       return {
         slug: agent.slug,
         name: agent.name,
         tools: agent.tools,
-        default_profile: fallback.slug,
+        // What a hardest task runs on with no org route: the strongest
+        // platform default (issue #138) or the seeded deployment model.
+        default_profile: defaults[defaults.length - 1].profile_slug,
+        // The full default list — several platform models by difficulty, or
+        // the single deployment profile — so the UI can show it.
+        default_routes: defaults,
         routes: list,
         warnings: routeWarnings(ctx.orgId, agent, list),
       };
@@ -207,7 +223,7 @@ router.put('/api/orgs/:orgId/model-routes/:agentSlug', async (req, res) => {
     return;
   }
   const hostsOf = (list) => [...new Set(
-    (list.length ? list.map((r) => getProfile(ctx.orgId, r.profile_slug)) : [deploymentDefaultProfile(agent)])
+    (list.length ? list : defaultRoutesFor(agent)).map((r) => getProfile(ctx.orgId, r.profile_slug))
       .map(egressHost).filter(Boolean),
   )];
   const before = hostsOf(listRoutes(ctx.orgId)[agentSlug] ?? []);
