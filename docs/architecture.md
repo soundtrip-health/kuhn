@@ -168,7 +168,15 @@ code.
   `user_token_budget` / `project_token_budget` / `budget_period`, per-row overrides and manual
   resets in `org_budgets`, `db/org-budgets.js`): the tightest remaining allowance caps each
   top-level run's budget, an exhausted allowance refuses the run (`budget_exhausted`), and usage
-  is the sum of `jobs.weighted_tokens` — tokens weighted by model cost relative to the top tier
+  is the sum of `jobs.weighted_tokens` — tokens weighted by model cost relative to the top tier.
+  A run can be **stopped** by the user (issue #136): `POST /api/agent/jobs/:id/cancel` on the
+  top-level job (`agents/runtime.js` `cancelRun`) interrupts the in-flight provider turn,
+  releases a parked `ask_user`, tears down every dispatched sub-agent through the parent's abort
+  signal (each job row marked `cancelled`), and the run's stream ends with a `cancelled` event
+  carrying the provider session and canonical continuation — so the next message continues from
+  where it stopped. The chat's send button doubles as Stop while a run is in flight (Esc too);
+  the status bar follows the innermost *running* job via `dispatch_agent`'s `job` markers
+  (issue #137, `webapp/src/run-tracker.ts`). Token-free check: `npm run stop-check` in `webapp/`
 - **Model profiles and per-role routing** (issues #107/#111/#112) — an agent's model is
   resolved at dispatch time by `agents/model-routing.js` from the org's ranked route list
   (`agent_model_routes`: profile × difficulty ceiling) over *model profiles*

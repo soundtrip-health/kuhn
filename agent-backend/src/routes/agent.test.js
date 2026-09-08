@@ -366,3 +366,49 @@ describe('POST /api/agent/jobs/:id/resume (issue #110)', () => {
     expect(task.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+
+describe('POST /api/agent/jobs/:id/cancel (issue #136)', () => {
+  it('404s for an unknown job', async () => {
+    const res = await fetch(`${base}/api/agent/jobs/999/cancel`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s when the job has no live run here (finished, or from before a restart)', async () => {
+    await withJob(80, { status: 'interrupted' }, async () => {
+      const res = await fetch(`${base}/api/agent/jobs/80/cancel`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'job is not running', status: 'interrupted' });
+    });
+  });
+
+  it('guards the stop on the job\'s project (editor role)', async () => {
+    await withJob(81, { status: 'running' }, async () => {
+      checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'role', role: 'viewer' });
+      const res = await fetch(`${base}/api/agent/jobs/81/cancel`, { method: 'POST' });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('aborts the live run, releases a parked question, and marks the job cancelled', async () => {
+    await withJob(82, { status: 'running' }, async () => {
+      const controller = new AbortController();
+      const state = { controller, job: { id: 82, role: 'pm' }, finished: false, cancelReason: null };
+      const run = { jobId: 82, projectId: 5, role: 'pm', channel: new EventChannel(), state, consumerAttached: true };
+      registerRun(run);
+      const parked = waitForReply(82, 60_000, { question: 'q', agent: 'pm' });
+      try {
+        const res = await fetch(`${base}/api/agent/jobs/82/cancel`, { method: 'POST' });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, jobId: 82, status: 'cancelled' });
+        expect(controller.signal.aborted).toBe(true);
+        expect(state.cancelReason).toBe('user');
+        expect(await parked).toBeNull(); // the ask_user wait was released without an answer
+        const marked = query.mock.calls.find(([sql, params]) => /UPDATE jobs SET status/.test(sql) && params?.[0] === 'cancelled');
+        expect(marked).toBeDefined();
+      } finally {
+        unregisterRun(82);
+      }
+    });
+  });
+});

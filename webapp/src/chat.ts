@@ -12,6 +12,7 @@
 // Seed button runs the seeding pipeline (015), narrated by the seeding panel.
 
 import {
+  cancelAgentJob,
   captureHandoff,
   getConversations,
   getPendingQuestions,
@@ -30,6 +31,7 @@ import type { FileChange } from './files';
 import { icon } from './icons';
 import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
 import { QuestionCard } from './question-card';
+import { RunTracker } from './run-tracker';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity, setAgentModel, setBudget, type ModelChip } from './status';
 import { isUnder, selectedDir } from './tree-state';
@@ -40,6 +42,11 @@ const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor r
 
 // SDK session per agent slug, so follow-up messages continue the conversation
 const sessions = new Map<string, string>();
+// Canonical continuation per agent slug (STH-47): the provider-neutral record
+// of the last run, handed back with the next message so agents routed to a
+// provider without server-side sessions carry the conversation forward too —
+// including after a Stop (issue #136). Cleared with the session.
+const continuations = new Map<string, unknown>();
 // STH-55: hand-off notes captured at "start fresh", delivered with the next
 // message to that agent so the fresh session picks up where the old one left.
 const pendingHandoffs = new Map<string, string>();
@@ -54,6 +61,15 @@ let activeProjectId = 0;
 let projectSeeded = false;
 let listenersWired = false;
 let running = false;
+// What the run has in flight (issues #136/#137): the innermost running job
+// drives the activity text and the model chip — a dispatched RA shows as the
+// RA, and the PM again once it returns — and the root job is what Stop
+// addresses.
+const tracker = new RunTracker();
+// Client-side abort of the run's event stream: the fallback Stop when no job
+// exists yet, and the only Stop for the seeding pipeline (no addressable job).
+let runAbort: AbortController | null = null;
+let stopping = false;
 // The last user-initiated action (a chat turn or the seeding pipeline), so the
 // "Try again" affordance on a transient-overload failure re-runs exactly it
 // without the user having to guess what to retype (story 029).
@@ -91,10 +107,74 @@ function applyComposerRole(): void {
     input.placeholder = composerEditable ? DEFAULT_PLACEHOLDER : VIEW_ONLY_PLACEHOLDER;
     input.title = composerEditable ? '' : VIEW_ONLY_PLACEHOLDER;
   }
+  refreshSendButton();
+}
+
+/**
+ * The send button doubles as Stop while a run is in flight and not waiting
+ * on an answer (issue #136); in answer mode it sends the reply, and the
+ * question card carries its own stop link.
+ */
+function refreshSendButton(): void {
   const send = document.querySelector<HTMLButtonElement>('#chat-form .send-btn');
-  if (send) {
-    send.disabled = !composerEditable;
-    send.title = composerEditable ? 'Send (Enter)' : VIEW_ONLY_PLACEHOLDER;
+  if (!send) return;
+  const stopMode = running && pendingQuestionJobId == null;
+  send.classList.toggle('is-stop', stopMode);
+  send.type = stopMode ? 'button' : 'submit';
+  send.disabled = stopMode ? stopping : !composerEditable;
+  send.innerHTML = icon(stopMode ? 'stop' : 'send', { size: 15, stroke: 2 });
+  const label = stopMode ? (stopping ? 'Stopping…' : 'Stop the agent (Esc)') : composerEditable ? 'Send (Enter)' : VIEW_ONLY_PLACEHOLDER;
+  send.title = label;
+  send.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send');
+}
+
+/**
+ * Stop the current run (issue #136). The server interrupts the agent and
+ * everything it dispatched; the run's stream then ends with a `cancelled`
+ * event carrying the provider session, so the next message continues from
+ * where it stopped. With no addressable job yet — or for the seeding
+ * pipeline, which has none — the stream itself is aborted instead.
+ */
+async function stopRun(): Promise<void> {
+  if (!running || stopping) return;
+  stopping = true;
+  refreshSendButton();
+  setAgentActivity('Stopping…');
+  const jobId = tracker.rootJobId;
+  if (jobId != null) {
+    try {
+      await cancelAgentJob(jobId);
+      return; // the stream delivers `cancelled` and ends on its own
+    } catch {
+      // Not live on the server (already finished, or a restart) — fall through.
+    }
+  }
+  runAbort?.abort();
+}
+
+function appendStopped(agent: string | null): void {
+  const who = agent ? agentLabel(agent) : 'The agent';
+  appendSystemLine(`${who} stopped. Say what to do next to continue from here, or start a fresh conversation.`);
+}
+
+/** Activity text for the innermost running job (issue #137); a pending question or a stop in progress keeps its own text. */
+function updateRunActivity(): void {
+  if (!running || stopping || pendingQuestionJobId != null) return;
+  const agent = tracker.current?.agent ?? conversationAgent;
+  if (agent) setAgentActivity(`${agentLabel(agent)} is working…`);
+}
+
+/**
+ * A run's stream failed. A stop the user asked for is not an error; a drop
+ * while parked on a question re-attaches (STH-48); anything else is shown.
+ */
+async function handleRunFailure(err: unknown, onEvent: (event: AgentEvent) => void, jobId: number | null = pendingQuestionJobId): Promise<void> {
+  if (stopping) {
+    appendStopped(conversationAgent);
+    return;
+  }
+  if (!(await resumeAfterStreamDrop(onEvent, jobId))) {
+    appendSystemLine((err as Error).message, 'error');
   }
 }
 
@@ -146,6 +226,7 @@ export function initChat(
   // Reset per-project conversation state so switching projects (story 006)
   // doesn't carry a previous project's transcript or agent sessions over.
   sessions.clear();
+  continuations.clear();
   contextTokens.clear();
   contextSuggested.clear();
   running = false;
@@ -205,10 +286,20 @@ export function initChat(
     e.preventDefault();
     void send();
   });
+  // Stop (issue #136): the send button while a run is in flight, or Esc in the box.
+  form.querySelector('.send-btn')?.addEventListener('click', (e) => {
+    if ((e.currentTarget as HTMLElement).classList.contains('is-stop')) {
+      e.preventDefault();
+      void stopRun();
+    }
+  });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
+    } else if (e.key === 'Escape' && running && pendingQuestionJobId == null) {
+      e.preventDefault();
+      void stopRun();
     }
   });
   // Auto-grow the single-line field as the user types
@@ -284,16 +375,17 @@ function compactTokens(n: number): string {
   return String(n);
 }
 
-/** Status-bar model chip (issue #107). During a run it follows the newest
- * job — a dispatched sub-agent's model and difficulty replace the addressed
- * agent's, which is the point: seeing what the dispatcher chose. Idle, it
- * shows the selected agent's last known routing; the run's full list stays
- * in the tooltip. */
+/** Status-bar model chip (issue #107). During a run it follows the innermost
+ * RUNNING job (issue #137) — a dispatched sub-agent's model and difficulty
+ * replace the addressed agent's while it works, and the dispatcher's return
+ * once it ends — which is the point: seeing what the dispatcher chose. Idle,
+ * it shows the selected agent's last known routing; the run's full list
+ * stays in the tooltip. */
 function updateModelIndicator(): void {
   const agent = selectedAgent();
-  const live = running && runModels.length > 0;
-  const current = live ? runModels[runModels.length - 1] : agentModels.get(agent) ?? null;
-  const history = runModels.length > 0 && (live || runModels[0].agent === agent) ? runModels : [];
+  const active = running ? tracker.current : null;
+  const current = active ? active.chip : agentModels.get(agent) ?? null;
+  const history = runModels.length > 0 && (running || runModels[0].agent === agent) ? runModels : [];
   setAgentModel(current, history);
 }
 
@@ -395,6 +487,7 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
     `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.\nKuhn will scan the recent chat for open action items and carry a short hand-off note forward.`,
   )) return false;
   sessions.delete(agent);
+  continuations.delete(agent);
   pendingHandoffs.delete(agent); // a stale note must not outlive two clears
   contextTokens.delete(agent);
   contextSuggested.delete(agent);
@@ -533,14 +626,15 @@ async function reconnectPendingQuestion(): Promise<void> {
   if (!p) return;
   running = true;
   conversationAgent = p.agent;
+  tracker.reset(p.jobId);
+  runAbort = new AbortController();
+  refreshSendButton();
   setAgentActivity(`${agentLabel(p.agent)} is waiting for your answer…`);
   const onEvent = createEventHandler();
   try {
-    await reconnectAgent(p.jobId, onEvent);
+    await reconnectAgent(p.jobId, onEvent, runAbort.signal);
   } catch (err) {
-    if (!(await resumeAfterStreamDrop(onEvent, p.jobId))) {
-      appendSystemLine((err as Error).message, 'error');
-    }
+    await handleRunFailure(err, onEvent, p.jobId);
   } finally {
     finishRun();
   }
@@ -642,11 +736,12 @@ function createEventHandler(): (event: AgentEvent) => void {
         // The agent is blocked waiting for an answer: render the question card
         // and switch the input box into answer mode.
         finalize();
-        activeQuestionCard = new QuestionCard(event.agent, event.content ?? '');
+        activeQuestionCard = new QuestionCard(event.agent, event.content ?? '', { onStop: () => void stopRun() });
         tagConversation(activeQuestionCard.element, event.agent);
         document.getElementById('chat-log')!.append(activeQuestionCard.element);
         pendingQuestionJobId = event.jobId ?? null;
         setAgentActivity(`${agentLabel(event.agent)} is waiting for your answer…`);
+        refreshSendButton(); // answer mode: the button sends the reply again
         const input = document.getElementById('chat-input') as HTMLTextAreaElement;
         input.placeholder = 'Type your answer…';
         input.focus();
@@ -659,7 +754,7 @@ function createEventHandler(): (event: AgentEvent) => void {
           activeQuestionCard = null;
           exitAnswerMode();
         }
-        setAgentActivity(`${agentLabel(event.agent)} is working…`);
+        updateRunActivity();
         break;
       }
       case 'stage': {
@@ -698,12 +793,37 @@ function createEventHandler(): (event: AgentEvent) => void {
       case 'model': {
         // Which model this job (the addressed agent's, or a dispatched
         // sub-agent's) was routed to, and at what difficulty (issue #107).
+        // It is also the first event a job emits: the job is now running.
         if (event.model) {
           const chip: ModelChip = { agent: event.agent, label: agentLabel(event.agent), ...event.model };
           runModels.push(chip);
           if (!event.depth) agentModels.set(event.agent, chip);
+          tracker.start({ jobId: event.jobId ?? null, agent: event.agent, depth: event.depth ?? 0, chip });
           updateModelIndicator();
+          updateRunActivity();
         }
+        break;
+      }
+      case 'job': {
+        // A dispatched sub-agent's job ended (issue #137) — its own 'done' is
+        // not forwarded. The indicators fall back to the dispatcher.
+        if (event.status && event.status !== 'started') {
+          tracker.end(event.jobId, { agent: event.agent, depth: event.depth ?? 1 });
+          updateModelIndicator();
+          updateRunActivity();
+        }
+        break;
+      }
+      case 'cancelled': {
+        // The user stopped the run (issue #136). Keep the session so the next
+        // message picks up exactly where the agent stopped.
+        finalize();
+        if (event.sessionId) sessions.set(event.agent, event.sessionId);
+        if (event.continuation && !event.depth) continuations.set(event.agent, event.continuation);
+        if (event.budget) setBudget(event.budget.used, event.budget.limit);
+        tracker.end(event.jobId);
+        if (!event.depth) appendStopped(event.agent);
+        updateModelIndicator();
         break;
       }
       case 'context': {
@@ -721,6 +841,7 @@ function createEventHandler(): (event: AgentEvent) => void {
       }
       case 'done': {
         if (event.sessionId) sessions.set(event.agent, event.sessionId);
+        if (event.continuation && !event.depth) continuations.set(event.agent, event.continuation);
         if (event.usage) addTokenUsage(event.usage);
         // The done event fires for the addressed role's job (issue #43).
         // Assess on the LAST TURN's context (what the session actually
@@ -731,11 +852,22 @@ function createEventHandler(): (event: AgentEvent) => void {
           assessContext(conversationAgent ?? event.agent, event.context.tokens);
         }
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
+        if (event.jobId != null) {
+          // A seeding stage's job (or the addressed agent's) ended.
+          tracker.end(event.jobId);
+          updateModelIndicator();
+          updateRunActivity();
+        }
         break;
       }
       case 'error': {
         finalize();
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
+        if (event.jobId != null) {
+          tracker.end(event.jobId);
+          updateModelIndicator();
+          updateRunActivity();
+        }
         if (event.reason === 'budget_exceeded') {
           // Keep the session so a follow-up resumes this exact conversation.
           if (event.sessionId) sessions.set(event.agent, event.sessionId);
@@ -874,6 +1006,9 @@ async function dispatchTask(role: string, text: string): Promise<void> {
   running = true;
   conversationAgent = role;
   runModels = [];
+  tracker.reset();
+  runAbort = new AbortController();
+  refreshSendButton();
   setAgentActivity(`${agentLabel(role)} is working…`);
   // The user steered the paused agent with their own instruction (issue
   // #110): that supersedes the pause — retire its Resume affordance.
@@ -887,17 +1022,17 @@ async function dispatchTask(role: string, text: string): Promise<void> {
         projectId: activeProjectId,
         input: text,
         sessionId: sessions.get(role),
+        continuation: continuations.get(role),
         context: taskContext(),
       },
       onEvent,
+      runAbort.signal,
     );
   } catch (err) {
     // STH-48: a dropped stream while the run is parked on an ask_user
     // question must not surface as an error — the run is still alive on the
     // server (story 027 keeps it parked), so re-attach to it instead.
-    if (!(await resumeAfterStreamDrop(onEvent))) {
-      appendSystemLine((err as Error).message, 'error');
-    }
+    await handleRunFailure(err, onEvent);
   } finally {
     finishRun();
   }
@@ -915,6 +1050,9 @@ export async function startSeeding(): Promise<void> {
   retryAction = () => startSeeding();
   running = true;
   runModels = [];
+  tracker.reset();
+  runAbort = new AbortController();
+  refreshSendButton();
   conversationAgent = 'pm'; // seeding is the PM-led interview conversation
   // The interview is starting — drop the empty-state greeting card so its
   // "Start project interview" CTA doesn't linger alongside the live pipeline.
@@ -923,9 +1061,12 @@ export async function startSeeding(): Promise<void> {
   setAgentActivity('seeding…');
 
   try {
-    await seedProject(activeProjectId, createEventHandler());
+    await seedProject(activeProjectId, createEventHandler(), runAbort.signal);
   } catch (err) {
-    appendSystemLine((err as Error).message, 'error');
+    // Stop during seeding aborts the stream (the pipeline has no addressable
+    // job); the server tears the stage down on disconnect.
+    if (stopping) appendStopped('pm');
+    else appendSystemLine((err as Error).message, 'error');
   } finally {
     completeSeeding();
     finishRun();
@@ -971,6 +1112,8 @@ async function resumeAfterStreamDrop(
 
 function finishRun(): void {
   running = false;
+  stopping = false;
+  runAbort = null;
   conversationAgent = null;
   // The task is over — an unanswered question can no longer be replied to
   if (pendingQuestionJobId != null) {
@@ -978,6 +1121,8 @@ function finishRun(): void {
     activeQuestionCard = null;
     exitAnswerMode();
   }
+  refreshSendButton();
+  updateModelIndicator();
   setAgentActivity('');
   notify('');
 }
@@ -1318,16 +1463,17 @@ async function continueAfterBudget(agent: string, jobId: number): Promise<void> 
   appendSystemLine(`Resuming ${agentLabel(agent)} from the hand-off note…`);
   running = true;
   runModels = [];
+  tracker.reset();
+  runAbort = new AbortController();
+  refreshSendButton();
   conversationAgent = agent;
   setAgentActivity(`${agentLabel(agent)} is working…`);
   retryAction = () => continueAfterBudget(agent, jobId);
   const onEvent = createEventHandler();
   try {
-    await resumeJob(jobId, taskContext(), onEvent);
+    await resumeJob(jobId, taskContext(), onEvent, runAbort.signal);
   } catch (err) {
-    if (!(await resumeAfterStreamDrop(onEvent))) {
-      appendSystemLine((err as Error).message, 'error');
-    }
+    await handleRunFailure(err, onEvent);
   } finally {
     finishRun();
   }

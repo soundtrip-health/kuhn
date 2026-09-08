@@ -249,7 +249,7 @@ import { resolveRoute } from './model-routing.js';
 import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
-import { runAgentTask, reattach } from './runtime.js';
+import { runAgentTask, reattach, cancelRun } from './runtime.js';
 import { captureBudgetHandoff } from './handoff.js';
 import { resolveBudgets } from '../db/org-budgets.js';
 
@@ -2348,5 +2348,124 @@ describe('model routing at dispatch (issue #107)', () => {
     sdkState.messages = success();
     await dispatch.handler({ agent_slug: 'ra', task: 'hard one' });
     expect(resolveRoute.mock.calls.at(-1)[0].difficulty).toBeUndefined();
+  });
+});
+
+// --- Issue #136: user-initiated stop -------------------------------------------
+
+describe('user stop (issue #136)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+  });
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  it('cancelRun interrupts a run parked on a question and emits a `cancelled` terminal with the session', async () => {
+    sdkState.generator = async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-1' };
+      const { tools } = createSdkMcpServer.mock.calls[0][0];
+      const askUser = tools.find((t) => t.name === 'ask_user');
+      const result = await askUser.handler({ question: 'Which journal?' });
+      // The turn was aborted while parked: the adapter drops whatever the
+      // SDK yields next and closes with its cancelled terminal.
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: result.content[0].text }], usage: { input_tokens: 1, output_tokens: 1 } } };
+      yield { type: 'result', subtype: 'success', session_id: 'sess-1', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+
+    const events = [];
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', detachable: true })) {
+      events.push(ev);
+      if (ev.type === 'question') {
+        const run = getRun(42);
+        expect(run).toBeDefined();
+        expect(await cancelRun(run.state, { reason: 'user' })).toBe(true);
+      }
+    }
+
+    expect(hasPendingQuestion(42)).toBe(false);
+    expect(sdkState.interrupt).toHaveBeenCalled();
+    const terminal = events.at(-1);
+    expect(terminal).toMatchObject({ type: 'cancelled', agent: 'pm', jobId: 42, depth: 0, sessionId: 'sess-1' });
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+    expect(events.find((e) => e.type === 'error')).toBeUndefined();
+    // The row is marked at the stop request and stamped again at the terminal.
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob.mock.calls.at(-1)[1]).toMatchObject({ status: 'cancelled', profile: expect.any(String) });
+    expect(getRun(42)).toBeUndefined();
+    // Stopping a run that already finished is a no-op.
+    expect(await cancelRun({ finished: true }, { reason: 'user' })).toBe(false);
+  });
+
+  it('stopping the parent stops the dispatched sub-agent and marks both jobs cancelled', async () => {
+    createJob.mockImplementationOnce(async () => ({ id: 42 })).mockImplementationOnce(async () => ({ id: 43 }));
+    getAgentWithTools.mockImplementation(async (slug) => (slug === 'ra' ? RA_AGENT : { ...PM_AGENT, tools: ['spawn_agent'] }));
+    let release = null;
+    const released = new Promise((r) => { release = r; });
+    sdkState.generator = async function* () {
+      if (createSdkMcpServer.mock.calls.length === 1) {
+        // Parent: dispatch the RA and relay whatever the tool returns.
+        const { tools } = createSdkMcpServer.mock.calls[0][0];
+        const dispatch = tools.find((t) => t.name === 'dispatch_agent');
+        const result = await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: result.content[0].text }], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      // Child: a long provider turn that only yields once the test lets it.
+      yield { type: 'system', subtype: 'init', session_id: 'child-sess' };
+      await released;
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'late child output' }], usage: { input_tokens: 1, output_tokens: 1 } } };
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+
+    const events = [];
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'delegate', detachable: true })) {
+      events.push(ev);
+      if (ev.type === 'model' && ev.agent === 'ra') {
+        // The child is mid-turn: stop the parent, then let the child's
+        // provider stream move so its adapter can observe the abort.
+        await cancelRun(getRun(42).state, { reason: 'user' });
+        await sleep(5);
+        release();
+      }
+    }
+
+    // The child's job marker reports the stop; the parent's terminal is `cancelled`.
+    const marker = events.find((e) => e.type === 'job' && e.agent === 'ra');
+    expect(marker).toMatchObject({ type: 'job', jobId: 43, depth: 1, parentJobId: 42, status: 'cancelled' });
+    expect(events.at(-1)).toMatchObject({ type: 'cancelled', agent: 'pm', jobId: 42 });
+    // Neither job finished; both rows are cancelled; nothing from the child's late turn leaked.
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+    expect(events.find((e) => e.type === 'text' && e.agent === 'ra')).toBeUndefined();
+    expect(updateJob).toHaveBeenCalledWith(43, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    getAgentWithTools.mockReset();
+  });
+
+  it('dispatch_agent emits a `job` marker when the sub-agent finishes normally (issue #137)', async () => {
+    createJob.mockImplementationOnce(async () => ({ id: 42 })).mockImplementationOnce(async () => ({ id: 43 }));
+    getAgentWithTools.mockImplementation(async (slug) => (slug === 'ra' ? RA_AGENT : { ...PM_AGENT, tools: ['spawn_agent'] }));
+    sdkState.generator = async function* () {
+      if (createSdkMcpServer.mock.calls.length === 1) {
+        const { tools } = createSdkMcpServer.mock.calls[0][0];
+        const dispatch = tools.find((t) => t.name === 'dispatch_agent');
+        const result = await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: `got: ${result.content[0].text}` }], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'three papers' }], usage: { input_tokens: 1, output_tokens: 1 } } };
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+
+    const events = await collect({ role: 'pm', projectId: 1, input: 'delegate' });
+    const types = events.map((e) => `${e.type}:${e.agent}${e.type === 'job' ? `:${e.status}` : ''}`);
+    // model(pm) … model(ra) … text(ra) … job(ra:done) … text(pm) … done(pm)
+    expect(types.indexOf('model:ra')).toBeGreaterThan(types.indexOf('model:pm'));
+    expect(types.indexOf('job:ra:done')).toBeGreaterThan(types.indexOf('text:ra'));
+    expect(types.indexOf('job:ra:done')).toBeLessThan(types.indexOf('text:pm'));
+    expect(events.find((e) => e.type === 'job')).toMatchObject({ jobId: 43, depth: 1, parentJobId: 42, status: 'done' });
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+    getAgentWithTools.mockReset();
   });
 });
