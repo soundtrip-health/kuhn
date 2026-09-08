@@ -630,6 +630,9 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   cursor: default; border: none;
 }
 .ProseMirror-selectednode.citation-chip { box-shadow: 0 0 0 2px var(--accent-line); }
+/* One hoverable `@key` inside a chip; a group chip holds several (issue #146). */
+.citation-key { white-space: pre; }
+.citation-key:hover { text-decoration: underline; text-decoration-color: var(--accent-line); }
 
 /* Citation hover card (STH-42) — cite-card.ts owns it. Fixed-positioned from
    the chip's rect; one element for the whole editor. */
