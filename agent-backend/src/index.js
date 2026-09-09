@@ -19,6 +19,7 @@ import citationsRouter from './routes/citations.js';
 import commentsRouter from './routes/comments.js';
 import filesRouter from './routes/files.js';
 import historyRouter from './routes/history.js';
+import interchangeRouter from './routes/interchange.js';
 import knowledgeRouter from './routes/knowledge.js';
 import orgsRouter from './routes/orgs.js';
 import orgAdminRouter from './routes/org-admin.js';
@@ -99,6 +100,7 @@ app.use(citationsRouter);
 app.use(commentsRouter);
 app.use(filesRouter);
 app.use(historyRouter);
+app.use(interchangeRouter); // interchange bundle import/export (issues #153/#154) — before projectsRouter so /api/projects/import is not read as an id
 app.use(knowledgeRouter); // Kuhn knowledge catalog + per-org selections (issue #65)
 app.use(orgsRouter);
 app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)

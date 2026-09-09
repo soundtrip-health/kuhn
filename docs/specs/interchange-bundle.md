@@ -1,6 +1,6 @@
 # Spec: Kuhn interchange — bundle format and API
 
-**Status:** draft for review with the sciwriter team (2026-09-09)
+**Status:** in implementation — PR 1 (#156, API tokens) and PR 2 (#153, import) open; export and docs to follow (2026-09-09)
 **Companion:** `2026-09-08-kuhn-interchange-design.md` (sciwriter-side design: converters, sidecar, redline). This document is the Kuhn-side contract that design codes against. Where the two disagree, this one wins and the 09-08 design should be updated.
 **Issues:** [#152 API tokens](https://github.com/soundtrip-health/kuhn/issues/152) · [#153 import](https://github.com/soundtrip-health/kuhn/issues/153) · [#154 export](https://github.com/soundtrip-health/kuhn/issues/154) · [#155 docs + smoke](https://github.com/soundtrip-health/kuhn/issues/155)
 

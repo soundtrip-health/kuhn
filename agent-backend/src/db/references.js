@@ -12,6 +12,11 @@ import { writeProjectFile } from '../storage.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+/** A cite key an import may supply (issue #153): letters/digits/_ then
+ *  letters/digits/_/:/./-. Conservative on purpose — Pandoc allows more, but
+ *  these are the keys every Kuhn consumer (regex-based) handles. */
+export const CITE_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9_:.\-]*$/;
+
 const normalizeDoi = (doi) => String(doi ?? '').trim().replace(/[.,;)\s]+$/, '').toLowerCase() || null;
 const cleanPmid = (pmid) => (pmid == null ? null : String(pmid).trim() || null);
 
@@ -101,27 +106,113 @@ export function insertReference(projectId, record) {
     }
 
     // Fresh insert with a project-unique cite key.
-    const taken = new Set(
-      querySync('SELECT cite_key FROM bib_references WHERE project_id = $1', [projectId])
-        .rows.map((r) => r.cite_key),
-    );
-    const key = makeCitekey(record, taken);
-    const { rows } = querySync(
-      `INSERT INTO bib_references
-         (project_id, cite_key, entry_type, title, authors_json, year, journal,
-          volume, issue, pages, publisher, doi, pmid, pmcid, url, abstract,
-          source_type, identity_status, weak_id_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-       RETURNING id`,
-      [
-        projectId, key, record.entryType ?? 'article', record.title,
-        JSON.stringify(record.authors ?? []), record.year ?? null, record.journal ?? null,
-        record.volume ?? null, record.issue ?? null, record.pages ?? null, record.publisher ?? null,
-        doi, pmid, record.pmcid ?? null, record.url ?? null, record.abstract ?? null,
-        record.sourceType ?? null, (doi || pmid) ? 'strong' : 'weak', weak,
-      ],
-    );
-    return { key, created: true, id: rows[0].id };
+    const key = makeCitekey(record, takenKeys(projectId));
+    return { key, created: true, id: insertRow(projectId, key, record, { doi, pmid, weak }) };
+  });
+}
+
+function takenKeys(projectId) {
+  return new Set(
+    querySync('SELECT cite_key FROM bib_references WHERE project_id = $1', [projectId])
+      .rows.map((r) => r.cite_key),
+  );
+}
+
+/** The one INSERT. Caller has normalized doi/pmid and computed the weak hash. */
+function insertRow(projectId, key, record, { doi, pmid, weak }) {
+  const { rows } = querySync(
+    `INSERT INTO bib_references
+       (project_id, cite_key, entry_type, title, authors_json, year, journal,
+        volume, issue, pages, publisher, doi, pmid, pmcid, url, abstract,
+        source_type, identity_status, weak_id_hash)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     RETURNING id`,
+    [
+      projectId, key, record.entryType ?? 'article', record.title,
+      JSON.stringify(record.authors ?? []), record.year ?? null, record.journal ?? null,
+      record.volume ?? null, record.issue ?? null, record.pages ?? null, record.publisher ?? null,
+      doi, pmid, record.pmcid ?? null, record.url ?? null, record.abstract ?? null,
+      record.sourceType ?? null, (doi || pmid) ? 'strong' : 'weak', weak,
+    ],
+  );
+  return rows[0].id;
+}
+
+/**
+ * Insert-or-refresh a reference under a caller-chosen cite key (issue #153,
+ * interchange spec §3). The three outcomes, in order:
+ *
+ *   matched  — the requested key already holds this reference (same DOI/PMID,
+ *              or same title+author+year when neither side has a strong id),
+ *              OR a strong/weak match exists under ANOTHER key. Mutable fields
+ *              are refreshed from `record`; `key` is the existing key.
+ *   renamed  — the requested key is held by a DIFFERENT reference: inserted
+ *              under the requested key plus a letter suffix.
+ *   created  — nothing matches: inserted under the requested key.
+ *
+ * `record` is the insertReference shape plus `citeKey`. The caller rewrites
+ * in-text citations whenever `key !== record.citeKey`.
+ * @returns {{status: 'created'|'matched'|'renamed', key: string, id: number}}
+ */
+export function upsertReferenceByKey(projectId, record) {
+  const citeKey = String(record.citeKey ?? '').trim();
+  if (!CITE_KEY_RE.test(citeKey)) throw new Error(`invalid cite key: ${JSON.stringify(record.citeKey)}`);
+  const doi = normalizeDoi(record.doi);
+  const pmid = cleanPmid(record.pmid);
+  const weak = weakIdHash(record);
+
+  return transaction(() => {
+    const byKey = querySync(
+      'SELECT * FROM bib_references WHERE project_id = $1 AND cite_key = $2 LIMIT 1',
+      [projectId, citeKey],
+    ).rows[0] ?? null;
+    const strong = (doi || pmid)
+      ? querySync(
+        `SELECT * FROM bib_references
+         WHERE project_id = $1 AND (($2 IS NOT NULL AND doi = $2) OR ($3 IS NOT NULL AND pmid = $3))
+         LIMIT 1`,
+        [projectId, doi, pmid],
+      ).rows[0] ?? null
+      : null;
+    const weakHit = (!doi && !pmid)
+      ? querySync(
+        'SELECT * FROM bib_references WHERE project_id = $1 AND weak_id_hash = $2 LIMIT 1',
+        [projectId, weak],
+      ).rows[0] ?? null
+      : null;
+
+    let target = null;
+    if (byKey) {
+      const same = strong ? strong.id === byKey.id : byKey.weak_id_hash === weak;
+      if (same) target = byKey;
+    }
+    if (!target && !byKey) target = strong ?? weakHit ?? null;
+    if (!target && byKey && strong && strong.id !== byKey.id) target = strong;
+
+    if (target) {
+      // Descriptive fields follow the bundle (its tool is the source of
+      // truth). Identity fields are only ever ADDED: a bundle that omits a
+      // DOI must not strip one the project already holds.
+      applyFieldChanges(target, {
+        title: record.title, authors: record.authors ?? [], year: record.year ?? null,
+        journal: record.journal ?? null, volume: record.volume ?? null, issue: record.issue ?? null,
+        pages: record.pages ?? null, publisher: record.publisher ?? null, url: record.url ?? null,
+        abstract: record.abstract ?? null, entryType: record.entryType ?? target.entry_type,
+        ...(doi ? { doi } : {}), ...(pmid ? { pmid } : {}), ...(record.pmcid ? { pmcid: record.pmcid } : {}),
+      });
+      return { status: 'matched', key: target.cite_key, id: target.id };
+    }
+
+    if (byKey) {
+      const taken = takenKeys(projectId);
+      let key = citeKey;
+      for (let i = 0; taken.has(key); i++) {
+        key = `${citeKey}${String.fromCharCode(97 + (i % 26)).repeat(Math.floor(i / 26) + 1)}`;
+      }
+      return { status: 'renamed', key, id: insertRow(projectId, key, record, { doi, pmid, weak }) };
+    }
+
+    return { status: 'created', key: citeKey, id: insertRow(projectId, citeKey, record, { doi, pmid, weak }) };
   });
 }
 
@@ -140,7 +231,45 @@ const UPDATABLE_COLUMNS = {
   title: 'title', year: 'year', journal: 'journal', volume: 'volume',
   issue: 'issue', pages: 'pages', publisher: 'publisher', url: 'url',
   abstract: 'abstract', entryType: 'entry_type', sourceType: 'source_type',
+  pmcid: 'pmcid',
 };
+
+/** The UPDATE behind updateReferenceFields, for callers already inside a
+ *  transaction. `row` is the current bib_references row. */
+function applyFieldChanges(row, changes) {
+  const sets = [];
+  const params = [];
+  const push = (column, value) => {
+    params.push(value);
+    sets.push(`${column} = $${params.length}`);
+  };
+  for (const [key, column] of Object.entries(UPDATABLE_COLUMNS)) {
+    if (changes[key] !== undefined) push(column, changes[key]);
+  }
+  if (changes.authors !== undefined) push('authors_json', JSON.stringify(changes.authors ?? []));
+  if (changes.doi !== undefined) push('doi', normalizeDoi(changes.doi));
+  if (changes.pmid !== undefined) push('pmid', cleanPmid(changes.pmid));
+  if (sets.length === 0) return parseRef(row);
+
+  // Recompute derived identity fields from the merged record.
+  const merged = {
+    title: changes.title ?? row.title,
+    authors: changes.authors ?? JSON.parse(row.authors_json || '[]'),
+    year: changes.year ?? row.year,
+  };
+  push('weak_id_hash', weakIdHash(merged));
+  const doi = changes.doi !== undefined ? normalizeDoi(changes.doi) : row.doi;
+  const pmid = changes.pmid !== undefined ? cleanPmid(changes.pmid) : row.pmid;
+  push('identity_status', (doi || pmid) ? 'strong' : 'weak');
+  push('updated_at', new Date().toISOString());
+
+  params.push(row.id);
+  const { rows } = querySync(
+    `UPDATE bib_references SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+    params,
+  );
+  return parseRef(rows[0]);
+}
 
 /**
  * Correct fields of a stored reference (issue #41: the deterministic
@@ -156,38 +285,7 @@ export function updateReferenceFields(projectId, citeKey, changes) {
       [projectId, citeKey],
     ).rows[0];
     if (!row) return null;
-
-    const sets = [];
-    const params = [];
-    const push = (column, value) => {
-      params.push(value);
-      sets.push(`${column} = $${params.length}`);
-    };
-    for (const [key, column] of Object.entries(UPDATABLE_COLUMNS)) {
-      if (changes[key] !== undefined) push(column, changes[key]);
-    }
-    if (changes.authors !== undefined) push('authors_json', JSON.stringify(changes.authors ?? []));
-    if (changes.doi !== undefined) push('doi', normalizeDoi(changes.doi));
-    if (changes.pmid !== undefined) push('pmid', cleanPmid(changes.pmid));
-    if (sets.length === 0) return parseRef(row);
-
-    // Recompute derived identity fields from the merged record.
-    const merged = {
-      title: changes.title ?? row.title,
-      authors: changes.authors ?? JSON.parse(row.authors_json || '[]'),
-      year: changes.year ?? row.year,
-    };
-    push('weak_id_hash', weakIdHash(merged));
-    const doi = changes.doi !== undefined ? normalizeDoi(changes.doi) : row.doi;
-    const pmid = changes.pmid !== undefined ? cleanPmid(changes.pmid) : row.pmid;
-    push('identity_status', (doi || pmid) ? 'strong' : 'weak');
-
-    params.push(row.id);
-    const { rows } = querySync(
-      `UPDATE bib_references SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params,
-    );
-    return parseRef(rows[0]);
+    return applyFieldChanges(row, changes);
   });
 }
 

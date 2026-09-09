@@ -362,6 +362,23 @@ export function closeReviewerConnections(linkId, { code = CLOSE_LINK_REVOKED, re
 }
 
 /**
+ * Live sockets in a room that belong to MEMBERS (not external reviewers) —
+ * the interchange importer's conflict check (issue #153): a member's editor
+ * holds Yjs state that would win over bytes written underneath it, so an
+ * import refuses (409) unless forced, in which case it evicts the room.
+ * @returns {number}
+ */
+export function memberConnectionCount(name) {
+  const entry = docs.get(name);
+  if (!entry) return 0;
+  let n = 0;
+  for (const ws of entry.conns) {
+    if (ws.kuhnPrincipal?.kind !== 'reviewer') n += 1;
+  }
+  return n;
+}
+
+/**
  * A real file change landed at this room's path (epic 013, brief decision 3).
  * If the room's ONLY connections are reviewers, close them with the
  * reconnectable CLOSE_DOC_REFRESH and drop the room, so reconnect re-seeds

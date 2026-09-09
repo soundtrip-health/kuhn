@@ -197,6 +197,14 @@ export const config = {
     // enforcement as project workspaces.
     orgsRoot: process.env.ORGS_ROOT || join(dataDir, 'orgs'),
   },
+  interchange: {
+    // Interchange bundle import (issue #153, docs/specs/interchange-bundle.md):
+    // cap on the UNCOMPRESSED size of one bundle, its entry count, and the
+    // per-doc opaque `meta` blob. Per-file size uses storage.maxFileBytes.
+    maxBundleBytes: parseInt(process.env.KUHN_IMPORT_MAX_BYTES || String(200 * 1024 * 1024)),
+    maxEntries: parseInt(process.env.KUHN_IMPORT_MAX_ENTRIES || '500'),
+    maxMetaBytes: 64 * 1024,
+  },
   secrets: {
     // Encryption key for org secrets at rest (org_secrets): 32 bytes hex.
     // Unset → derived from the session secret (dev fallback: fixed dev key
