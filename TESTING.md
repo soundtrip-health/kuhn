@@ -5,6 +5,26 @@ Updated as stories are completed — check the date on each section.
 
 ---
 
+## Interchange: push from sciwriter, review in Kuhn, pull feedback (2026-09-09)
+
+**Setup:** backend in dev auth mode (an isolated pair — the production `:3002`
+backend runs magic-link mode and refuses the check's dev header). Contract:
+[`docs/specs/interchange-bundle.md`](docs/specs/interchange-bundle.md); fixture
+bundle: [`test-projects/interchange/`](test-projects/interchange/). Unit/route
+tests: `cd agent-backend && npm test` (bundle parsing, citation rewrite, key-
+honoring reference upsert, comment re-anchoring, import/export routes incl. the
+export → import → export identity). Scripted end-to-end (no browser, no LLM
+tokens): `BACKEND_URL=http://localhost:31xx node webapp/scripts/interchange-check.mjs`
+(`npm run interchange-check` in `webapp/`).
+
+- [ ] Account menu → **API tokens**: create a token (name + expiry); it shows once with Copy; the list shows it with "never used"; `curl -H "Authorization: Bearer kuhn_…" /api/auth/me` answers with `via: "api-token"`; revoke → the same curl is 401
+- [ ] `POST /api/projects/import` with the fixture zip (`zip -r ../../tmp/bundle.zip manifest.json references.json files` inside the fixture dir) → 201, project appears in the browser with `draft/main.md`, `draft/figures/fig1.png`, `draft/references.bib`; history shows `Import from sciwriter @0123456789ab`
+- [ ] Open the doc, edit a sentence, add a margin comment → `GET /api/projects/:id/export` shows `modified_since_import: true` and the thread with `author.kind: "member"` and an anchor into the returned `content`
+- [ ] Re-push the same bundle while the doc is open in a tab → `409 doc_open`; with `force=1` the tab reports the document was replaced and reopening shows the pushed text; the comment is re-anchored (or flagged orphaned if its quote is gone)
+- [ ] `?format=zip` downloads a bundle that `POST /api/projects/import` accepts and that reproduces docs, figures and references in the new project
+
+---
+
 ## Org secrets & sandbox DB access (2026-09-01)
 
 **Setup:** backend + webapp dev servers. Full integration flow (Postgres +
