@@ -24,6 +24,9 @@ Current capabilities:
   every output (the Pandoc/R Markdown convention), and `template: nih-grant` (or
   `manuscript`) in a document's front matter renders it with that page layout — NIH's
   0.5 in margins and Arial 11 pt, so the preview's page count is the one that matters.
+  After each render the editor draws dashed **page-break lines** where the PDF's pages
+  actually turn (positions come from Typst, not an estimate) and the status bar shows the
+  page count; the lines dim when the document is edited until the next render.
 - **Multi-tenant by design** — organizations with role-based membership and invitation-only
   sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
   a shared curated guidance corpus.

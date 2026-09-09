@@ -22,6 +22,11 @@ vi.mock('./sandbox.js', async (importOriginal) => {
     ...actual,
     pandocConvert: vi.fn(async () => ({ output: Buffer.from('= typst'), stdout: '', stderr: '' })),
     renderTypstPdf: vi.fn(async () => ({ output: Buffer.from('%PDF-fake'), stdout: '', stderr: '' })),
+    typstQueryBlocks: vi.fn(async () => [
+      { i: 1, key: 'hello', page: 1, y: 72.04, h: 792 },
+      { i: 2, key: 'body', page: 2, y: 72, h: 792 },
+      { i: -1, key: '', page: 2, y: 300.5, h: 792 },
+    ]),
     renderMarp: vi.fn(async () => ({ output: Buffer.from('%PDF-marp'), stdout: '', stderr: '' })),
   };
 });
@@ -42,10 +47,10 @@ vi.mock('./db/typst-templates.js', async (importOriginal) => {
 });
 
 import { config } from './config.js';
-import { SandboxError, pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
+import { SandboxError, pandocConvert, renderMarp, renderTypstPdf, typstQueryBlocks } from './sandbox.js';
 import { resolveThemeCss } from './db/slide-themes.js';
 import { TemplateError, resolveTemplateSource } from './db/typst-templates.js';
-import { renderPdf, exportDocument, isMarpSource, marpThemeName, typstTemplateName } from './render.js';
+import { renderPdf, exportDocument, isMarpSource, marpThemeName, typstTemplateName, pageMapFromMarkers } from './render.js';
 
 let root;
 let savedProjectsRoot;
@@ -235,6 +240,48 @@ describe('marp slide themes (STH-58)', () => {
   it('built-in theme names skip the library entirely', async () => {
     await renderPdf(1, 'draft/deck.md'); // fixture uses theme: default
     expect(resolveThemeCss).not.toHaveBeenCalled();
+  });
+});
+
+describe('page map', () => {
+  it('pageMapFromMarkers shapes markers into blocks + end, and tolerates junk', () => {
+    expect(pageMapFromMarkers([
+      { i: 1, key: 'a', page: 1, y: 10.04, h: 792 }, { i: 2, key: 'b', page: 3, y: 20, h: 792 }, { i: -1, key: '', page: 3, y: 99, h: 792 },
+    ])).toEqual({ pages: 3, pageHeight: 792, blocks: [{ key: 'a', page: 1, y: 10 }, { key: 'b', page: 3, y: 20 }], end: { page: 3, y: 99 } });
+    expect(pageMapFromMarkers([])).toBe(null);
+    expect(pageMapFromMarkers([null, { i: 1, key: 'a', page: 1, y: 1, h: 792 }, 'x'])).toMatchObject({ pages: 1, end: { page: 1, y: 1 } });
+  });
+
+  it('renders with the blockmarks filter after citeproc, queries typst, and caches the map with the PDF', async () => {
+    await writeFile(join(root, '1', 'draft', 'main.md'), `# Hello [@key] ${Math.random()}\n`);
+    const first = await renderPdf(1, 'draft/main.md');
+    expect(first.pageMap).toEqual({
+      pages: 2, pageHeight: 792,
+      blocks: [{ key: 'hello', page: 1, y: 72 }, { key: 'body', page: 2, y: 72 }],
+      end: { page: 2, y: 300.5 },
+    });
+    const args = pandocConvert.mock.calls.at(-1)[3];
+    expect(args.indexOf('--lua-filter=/filters/blockmarks.lua')).toBeGreaterThan(args.indexOf('--citeproc'));
+    expect(typstQueryBlocks).toHaveBeenCalledWith(1, expect.stringMatching(/^draft\/\.preview-[0-9a-f]{12}\.typ$/));
+
+    const second = await renderPdf(1, 'draft/main.md');
+    expect(second.cached).toBe(true);
+    expect(second.pageMap).toEqual(first.pageMap);
+    expect(typstQueryBlocks).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed page query still returns the PDF, with pageMap null', async () => {
+    await writeFile(join(root, '2', 'nobib.md'), `# Plain ${Math.random()}\n`);
+    typstQueryBlocks.mockRejectedValueOnce(new SandboxError('failed', 'boom'));
+    const out = await renderPdf(2, 'nobib.md');
+    expect(out.pdf.toString()).toBe('%PDF-fake');
+    expect(out.pageMap).toBe(null);
+  });
+
+  it('marp decks carry no page map', async () => {
+    const out = await renderPdf(1, 'draft/deck.md');
+    expect(out.pageMap).toBe(null);
+    expect(typstQueryBlocks).not.toHaveBeenCalled();
   });
 });
 
