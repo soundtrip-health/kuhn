@@ -174,6 +174,8 @@ Same body. Optional field `force=1` (see *open documents* below). Response `200`
 
 Query: `path=` (repeatable; default: the docs of the last import, or every `.md` under `draft/` if the project was never imported), `format=json|zip` (default `json`).
 
+The URL is shared with Kuhn's document export (`format=pdf|docx|tex|pptx|html`, one `path`, the rendered file as an attachment): `format` selects which one answers. An unknown format is `400 invalid_format`.
+
 `format=json` returns everything inline, no binary assets — the feedback payload:
 
 ```json

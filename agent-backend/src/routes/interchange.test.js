@@ -57,6 +57,9 @@ beforeAll(async () => {
     next();
   });
   app.use(interchangeRouter);
+  // index.js mounts routes/render.js after this router on the same export URL;
+  // the stub stands in for it so the dispatch on `format` is exercised.
+  app.get('/api/projects/:projectId/export', (req, res) => res.json({ reached: 'render', format: req.query.format }));
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
 });
@@ -334,6 +337,23 @@ describe('GET /api/projects/:id/export', () => {
     expect(body.references.map((r) => r.cite_key)).toEqual(['Berman2000', 'Zarate2006']);
     expect(body.references[1]).toMatchObject({ authors: ['Zarate, C. A.', 'Singh, J. B.'], pmid: '16894061', entry_type: 'article' });
     expect(body.references[0]).not.toHaveProperty('id');
+  });
+
+  it('hands document formats on to the render route (same URL) and refuses unknown ones', async () => {
+    const id = (await create()).body.project.id;
+    // Regression: the interchange export used to swallow the webapp's pdf/docx
+    // downloads and serve the JSON payload under a .pdf name.
+    for (const format of ['pdf', 'docx', 'tex', 'pptx', 'html']) {
+      const { status, body } = await getExport(id, { query: `?path=draft/main.md&format=${format}` });
+      expect(status).toBe(200);
+      expect(body).toEqual({ reached: 'render', format });
+    }
+    const { status, body } = await getExport(id, { query: '?format=bogus' });
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid_format');
+    // Bare and json/zip still belong here.
+    expect((await getExport(id)).body.schema_version).toBe('1');
+    expect((await getExport(id, { query: '?format=json' })).body.schema_version).toBe('1');
   });
 
   it('reflects edits and comments made in Kuhn, with authors normalized and anchors re-resolved', async () => {

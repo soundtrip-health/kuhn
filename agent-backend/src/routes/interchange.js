@@ -2,6 +2,9 @@
 //   POST /api/projects/import      — create a project from a bundle (issue #153)
 //   POST /api/projects/:id/import  — update a project from a bundle (issue #153)
 //   GET  /api/projects/:id/export  — docs + comments + references (issue #154)
+// The export URL is shared with routes/render.js (document export: pdf|docx|
+// tex|pptx|html), mounted after this router. The format sets are disjoint, so
+// the export handler dispatches on `format` and hands document formats on.
 // Tenancy: export needs viewer; creation requires editor in
 // the target org (never trusted from the bundle blindly — the org is the
 // manifest's org_id ONLY if the caller holds editor there, else their primary
@@ -18,6 +21,7 @@ import { BundleError, parseBundle } from '../interchange/bundle.js';
 import { buildExport, buildExportZip } from '../interchange/export.js';
 import { ImportConflictError, importBundle } from '../interchange/import.js';
 import { log } from '../logger.js';
+import { EXPORT_FORMATS as DOCUMENT_FORMATS } from '../render.js';
 import { StorageError } from '../storage.js';
 import { requireOrgRole, requireProjectRole } from './guards.js';
 
@@ -86,9 +90,9 @@ async function runImport(project, bundle, req, res, status) {
 }
 
 /** Route bodies are async; Express 4 needs the rejection caught by hand. */
-const wrap = (fn) => async (req, res) => {
+const wrap = (fn) => async (req, res, next) => {
   try {
-    await fn(req, res);
+    await fn(req, res, next);
   } catch (err) {
     console.error('[interchange] Unexpected error:', err);
     if (!res.headersSent) res.status(500).json({ error: 'Internal error' });
@@ -157,14 +161,27 @@ router.post('/api/projects/:id/import', bundleUpload, wrap(async (req, res) => {
  * Viewer role. `path` narrows the doc set (default: the last import's docs,
  * else every .md under draft/). JSON is the feedback payload; zip is the §3
  * bundle plus comments.json and the docs' sibling assets.
+ * A document format (pdf|docx|tex|pptx|html) belongs to routes/render.js,
+ * which is mounted after this router: call next() and let it answer.
  */
-router.get('/api/projects/:id/export', wrap(async (req, res) => {
+router.get('/api/projects/:id/export', wrap(async (req, res, next) => {
+  const format = req.query.format ?? 'json';
+  if (typeof format === 'string' && Object.hasOwn(DOCUMENT_FORMATS, format)) {
+    next();
+    return;
+  }
+  if (format !== 'json' && format !== 'zip') {
+    res.status(400).json({
+      error: `format must be json or zip (${Object.keys(DOCUMENT_FORMATS).join('|')} export a rendered document)`,
+      code: 'invalid_format',
+    });
+    return;
+  }
   const project = await requireProjectRole(req, res, req.params.id, 'viewer');
   if (!project) return;
   const raw = req.query.path;
   const paths = raw == null ? null
     : (Array.isArray(raw) ? raw : [raw]).filter((p) => typeof p === 'string' && p.length > 0);
-  const format = req.query.format === 'zip' ? 'zip' : 'json';
   const startedAt = Date.now();
   try {
     const data = await buildExport(project, { paths, user: req.user });
