@@ -1,0 +1,30 @@
+{
+  "schema_version": "1",
+  "source": {
+    "tool": "sciwriter",
+    "project": "bendable2",
+    "revision": "0123456789abcdef0123456789abcdef01234567",
+    "exported_at": "2026-09-08T00:00:00Z",
+    "exported_by": "fixture@example.org"
+  },
+  "project": {
+    "name": "bendable2 — for review",
+    "project_type": "manuscript",
+    "org_id": null
+  },
+  "docs": [
+    {
+      "path": "draft/main.md",
+      "title": "Ketamine for treatment-resistant depression",
+      "meta": {
+        "figure_numbering": {
+          "fig:forest": 1
+        },
+        "table_numbering": {
+          "tab:endpoints": 1
+        },
+        "patent_inlines": []
+      }
+    }
+  ]
+}

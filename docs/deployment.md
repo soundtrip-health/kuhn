@@ -92,6 +92,12 @@ KUHN_SUPERADMIN_EMAILS=you@example.com
 # Optional: how long org-invitation links stay valid (default 7 days).
 # KUHN_INVITE_TTL_MS=604800000
 
+# Optional: interchange bundle import caps (docs/specs/interchange-bundle.md) —
+# uncompressed bytes per bundle and entries per bundle. Per-file size follows
+# STORAGE_MAX_FILE_BYTES.
+# KUHN_IMPORT_MAX_BYTES=209715200
+# KUHN_IMPORT_MAX_ENTRIES=500
+
 # Optional: sign-in form rate limits (see "Rate limits on the sign-in form").
 # Defaults are 3 attempts per address per 15 min, 20 per client IP per hour.
 # KUHN_LOGIN_MAX_PER_EMAIL=3

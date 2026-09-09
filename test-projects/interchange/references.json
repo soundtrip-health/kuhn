@@ -1,0 +1,42 @@
+[
+  {
+    "cite_key": "Berman2000",
+    "entry_type": "article",
+    "title": "Antidepressant effects of ketamine in depressed patients",
+    "authors": [
+      "Berman, R. M.",
+      "Cappiello, A.",
+      "Anand, A.",
+      "Krystal, J. H."
+    ],
+    "year": 2000,
+    "journal": "Biological Psychiatry",
+    "volume": "47",
+    "issue": "4",
+    "pages": "351-354",
+    "doi": "10.1016/S0006-3223(99)00230-9",
+    "pmid": "10686270"
+  },
+  {
+    "cite_key": "Zarate2006",
+    "entry_type": "article",
+    "title": "A randomized trial of an N-methyl-D-aspartate antagonist in treatment-resistant major depression",
+    "authors": [
+      {
+        "family": "Zarate",
+        "given": "C. A."
+      },
+      {
+        "family": "Singh",
+        "given": "J. B."
+      }
+    ],
+    "year": 2006,
+    "journal": "Archives of General Psychiatry",
+    "volume": "63",
+    "issue": "8",
+    "pages": "856-864",
+    "doi": "10.1001/archpsyc.63.8.856",
+    "pmid": "16894061"
+  }
+]

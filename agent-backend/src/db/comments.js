@@ -6,7 +6,7 @@
 // hang off the root via parent_id; resolve/reopen and anchor maintenance are
 // root-only operations.
 
-import { querySync } from '../db.js';
+import { querySync, transaction } from '../db.js';
 import { StorageError } from '../storage.js';
 
 /** Occurrence cap when scanning for a quote — beyond this the quote is too
@@ -258,4 +258,54 @@ export function deleteOwn(projectId, id, { userId = null, reviewLinkId = null } 
   }
   querySync(`DELETE FROM comments WHERE project_id = $1 AND id = $2`, [projectId, id]);
   return { path: row.path, rootId: row.parent_id ?? row.id };
+}
+
+/**
+ * Re-resolve every root anchor on `path` against `content` after a write
+ * that bypassed the live editor (the interchange import, issue #153). Found
+ * anchors get fresh offsets and lose the orphan flag; missing ones are
+ * flagged orphaned. Threads are never deleted. Mirrors what the editor does
+ * on open, so a doc replaced underneath its comments is consistent before
+ * anyone opens it.
+ * @returns {{reanchored: number, orphaned: number, unchanged: number}}
+ */
+export function reanchorPath(projectId, path, content) {
+  return transaction(() => {
+    const { rows } = querySync(
+      `SELECT id, anchor_quote, anchor_start, anchor_end, orphaned FROM comments
+       WHERE project_id = $1 AND path = $2 AND parent_id IS NULL`,
+      [projectId, path],
+    );
+    const out = { reanchored: 0, orphaned: 0, unchanged: 0 };
+    for (const row of rows) {
+      if (!row.anchor_quote) {
+        out.unchanged += 1;
+        continue;
+      }
+      const hit = resolveQuote(content, row.anchor_quote, { hint: row.anchor_start });
+      if (hit) {
+        if (hit.start === row.anchor_start && hit.end === row.anchor_end && row.orphaned === 0) {
+          out.unchanged += 1;
+          continue;
+        }
+        querySync(
+          `UPDATE comments SET anchor_start = $3, anchor_end = $4, orphaned = 0,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           WHERE project_id = $1 AND id = $2`,
+          [projectId, row.id, hit.start, hit.end],
+        );
+        out.reanchored += 1;
+      } else {
+        if (row.orphaned === 0) {
+          querySync(
+            `UPDATE comments SET orphaned = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = $1 AND id = $2`,
+            [projectId, row.id],
+          );
+        }
+        out.orphaned += 1;
+      }
+    }
+    return out;
+  });
 }
