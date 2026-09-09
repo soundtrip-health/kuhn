@@ -11,7 +11,7 @@ import { Router } from 'express';
 import multer from 'multer';
 
 import { config } from '../config.js';
-import { primaryOrgId } from '../db/orgs.js';
+import { listUserOrgs } from '../db/orgs.js';
 import { createProject } from '../db/projects.js';
 import { BundleError, parseBundle } from '../interchange/bundle.js';
 import { ImportConflictError, importBundle } from '../interchange/import.js';
@@ -92,6 +92,37 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
+/**
+ * Which org a created project lands in: the multipart field `org_id`, else
+ * manifest.project.org_id, else the caller's only organization. A caller who
+ * belongs to several orgs must say which — the webapp shows one org at a
+ * time, so a silent "first org" default puts the project where they are not
+ * looking. Sends the 400 itself and returns null.
+ */
+async function resolveTargetOrg(req, res, manifestOrgId) {
+  const raw = req.body?.org_id ?? manifestOrgId;
+  if (raw != null && raw !== '') {
+    const id = Number(raw);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: 'org_id must be an integer', code: 'invalid_bundle' });
+      return null;
+    }
+    return id;
+  }
+  const orgs = (await listUserOrgs(req.user.id)).filter((o) => o.status !== 'suspended');
+  if (orgs.length === 1) return orgs[0].id;
+  if (orgs.length === 0) {
+    res.status(400).json({ error: 'no organization available for this user', code: 'org_required', orgs: [] });
+    return null;
+  }
+  res.status(400).json({
+    error: `org_id is required: you belong to ${orgs.length} organizations (pass it as a form field or in manifest.project.org_id)`,
+    code: 'org_required',
+    orgs: orgs.map((o) => ({ id: o.id, name: o.name, slug: o.slug, role: o.role })),
+  });
+  return null;
+}
+
 /** POST /api/projects/import — create a project from a bundle. 201. */
 router.post('/api/projects/import', bundleUpload, wrap(async (req, res) => {
   const bundle = parseOrRefuse(req, res);
@@ -101,11 +132,8 @@ router.post('/api/projects/import', bundleUpload, wrap(async (req, res) => {
     res.status(400).json({ error: 'manifest.project.name is required to create a project', code: 'invalid_bundle' });
     return;
   }
-  const targetOrg = spec.org_id ?? await primaryOrgId(req.user.id);
-  if (targetOrg == null) {
-    res.status(400).json({ error: 'no organization available for this user' });
-    return;
-  }
+  const targetOrg = await resolveTargetOrg(req, res, spec.org_id);
+  if (targetOrg == null) return;
   const ctx = await requireOrgRole(req, res, targetOrg, 'editor');
   if (!ctx) return;
   const project = await createProject({ name: spec.name, projectType: spec.project_type, orgId: ctx.orgId });

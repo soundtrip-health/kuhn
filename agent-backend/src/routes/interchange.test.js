@@ -178,6 +178,23 @@ describe('POST /api/projects/import (create)', () => {
     expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(1);
   });
 
+  it('a caller in several orgs must name one — as a form field or in the manifest', async () => {
+    querySync('INSERT INTO memberships (user_id, org_id, role) VALUES ($1, 2, $2)', [USERS.editorA.id, 'editor']);
+    const refused = await create();
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ code: 'org_required' });
+    expect(refused.body.orgs.map((o) => o.id)).toEqual([1, 2]);
+    expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(0);
+
+    const viaField = await create(bundle(), { fields: { org_id: '2' } });
+    expect(viaField.status).toBe(201);
+    expect(viaField.body.project.org_id).toBe(2);
+    const m = fixtureManifest();
+    m.project.org_id = 1;
+    expect((await create(bundle({ 'manifest.json': m }))).body.project.org_id).toBe(1);
+    expect((await create(bundle(), { fields: { org_id: 'x' } })).status).toBe(400);
+  });
+
   it('an invalid bundle creates nothing', async () => {
     const m = fixtureManifest();
     delete m.project.name;
