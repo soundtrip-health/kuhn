@@ -85,7 +85,7 @@ Bundle paths under `files/` **are** the Kuhn workspace paths. There is no separa
 ```
 
 - `source` is free-form provenance. Kuhn stores it and labels the history checkpoint with `tool` and `revision`.
-- `project` is used on **create** only: `name` required, `project_type` one of `manuscript | grant | rwe-protocol | rct-protocol | sop` (default `manuscript`), `org_id` optional (defaults to the token user's primary org; the user must hold editor there). On **update** it is ignored; rename with `PATCH /api/projects/:id` if wanted.
+- `project` is used on **create** only: `name` required, `project_type` one of `manuscript | grant | rwe-protocol | rct-protocol | sop` (default `manuscript`), `org_id` the Kuhn organization to create in (the user must hold editor there). A user who belongs to exactly one organization may omit it; anyone in several must name one, here or as the multipart field `org_id`, or the import is refused with `400 org_required` listing their organizations — the Kuhn UI shows one organization at a time, so a silent default would put the project where they are not looking. On **update** it is ignored; rename with `PATCH /api/projects/:id` if wanted.
 - `docs[].path` must exist under `files/`. `meta` is opaque JSON (≤ 64 KB per doc); Kuhn stores it under the project's `interchange` config and returns it unchanged on export. sciwriter can keep its sidecar as well; this just means a fresh clone can recover it from Kuhn.
 - Files under `files/` not listed in `docs` are assets and are written verbatim.
 
@@ -151,7 +151,7 @@ All three require a bearer token or a session. Role: editor for import, viewer f
 
 ### `POST /api/projects/import` — create a project from a bundle
 
-`multipart/form-data` with one field `bundle` (the zip). Optional field `label` (history checkpoint label suffix).
+`multipart/form-data` with one field `bundle` (the zip). Optional fields `org_id` (overrides `manifest.project.org_id`) and `label` (history checkpoint label suffix).
 
 Response `201`:
 
@@ -207,6 +207,7 @@ Standard Kuhn shapes: `{error, code?}`.
 | Status | When |
 |---|---|
 | 400 `invalid_bundle` | not a zip, missing/invalid manifest, doc listed but absent, unsafe path (`..`, absolute, `.git`), non-UTF-8 doc, bad `project_type`, `meta` too large |
+| 400 `org_required` | create only: the user belongs to several organizations and neither the manifest nor the `org_id` field names one; body lists `orgs: [{id, name, slug, role}]` |
 | 401 | no/invalid/expired token or session |
 | 403 | token user lacks editor role, or the org is suspended |
 | 404 | project not found **or** the user is not a member (non-leaking, as everywhere in Kuhn) |
@@ -232,7 +233,7 @@ Changes to the 09-08 design, all small:
 
 1. Send `Authorization: Bearer $KUHN_API_TOKEN`; read `KUHN_URL` from the environment. Drop the "dev auth, no token" assumption. The sidecar `kuhn.json` records `kuhn_url` and `project_id`, never the token.
 2. Bundle layout: `files/draft/<relpath>.md` for docs, `files/draft/figures/<name>.png` for figures, so `![…](figures/x.png)` needs no rewriting. `references.json` uses `authors` (not `authors_json`), as family-first strings. Per-doc numbering and patent maps go under `docs[].meta`.
-3. First push: `POST /api/projects/import`, record `project.id` from the response. Later pushes: `POST /api/projects/{id}/import`. Handle `409 doc_open` by asking, then retrying with `force=1`.
+3. First push: `POST /api/projects/import`, record `project.id` from the response. A user in several Kuhn organizations must pass `org_id` (a `--org` flag that fills the multipart field is the natural home; the `400 org_required` body lists the choices). Later pushes: `POST /api/projects/{id}/import`. Handle `409 doc_open` by asking, then retrying with `force=1`.
 4. Apply `citations_rewritten` to the archived base before storing it, so the base matches what Kuhn holds.
 5. Feedback pull: `GET /api/projects/{id}/export` (JSON). Comments come with `author.kind`/`author.name`; anchors are offsets into the returned `content`. The `\pi{Name: …}` mapping, resolved-skipping and section-level fallback stay exactly as designed.
 6. The 09-08 push-refusal on residual `\cr{}`/`\pi{}` stays a sciwriter-side rule; Kuhn does not inspect doc content beyond citations.
