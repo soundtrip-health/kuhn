@@ -150,7 +150,7 @@ Environment variables (see `src/config.js`; `.env` supported):
 | `AGENT_MODEL` | SDK default (global fallback; `agents.model` per role wins, `AGENT_MODEL_<SLUG>` overrides at seed time) |
 | `AGENT_RETRY_MAX_ATTEMPTS` / `AGENT_RETRY_BASE_MS` / `AGENT_RETRY_MAX_MS` | `5` / `1500` / `30000` (transient model-provider error backoff, story 029) |
 | `STORAGE_MAX_FILE_BYTES` | `20971520` (20 MB per file) |
-| `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `ghcr.io/typst/typst:latest` / `pandoc/core:latest` |
+| `SANDBOX_TYPST_IMAGE` / `SANDBOX_PANDOC_IMAGE` | `kuhn/typst:latest` (built from `docker/typst`) / `pandoc/core:latest` |
 | `SANDBOX_TIMEOUT_MS` / `SANDBOX_CPUS` / `SANDBOX_MEMORY` | `60000` / `1` / `512m` |
 | `SANDBOX_MAX_OUTPUT_BYTES` | `33554432` (32 MB) |
 | `SANDBOX_R_IMAGE` | `kuhn/r-analysis:latest` (Kuhn-built — `docker build docker/r-analysis`; issue #68b) |

@@ -21,7 +21,9 @@ Current capabilities:
   research (Research Assistant + Advisor) → Writer skeleton draft.
 - **Live preview & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations)
   plus one-click docx/LaTeX export, all sandboxed. A `\newpage` line forces a page break in
-  every output (the Pandoc/R Markdown convention).
+  every output (the Pandoc/R Markdown convention), and `template: nih-grant` (or
+  `manuscript`) in a document's front matter renders it with that page layout — NIH's
+  0.5 in margins and Arial 11 pt, so the preview's page count is the one that matters.
 - **Multi-tenant by design** — organizations with role-based membership and invitation-only
   sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
   a shared curated guidance corpus.
@@ -118,10 +120,10 @@ variables, Cloudflare Tunnel configuration, inviting users, and running as a ser
 
 ### Additional prerequisites
 
-- Typst + Pandoc + Poppler sandbox images for rendering/export and
-  org-library PDF ingestion (one-time: `docker pull
-  ghcr.io/typst/typst:latest && docker pull pandoc/core:latest &&
-  docker pull minidocks/poppler:latest`)
+- Pandoc + Poppler sandbox images for export and org-library PDF ingestion
+  (one-time: `docker pull pandoc/core:latest minidocks/poppler:latest`), and
+  the Kuhn-built Typst renderer with the fonts the page-layout templates need
+  (`docker build -t kuhn/typst:latest docker/typst`)
 - The Marp slide renderer, built locally like the R runtime (STH-61 — adds
   LibreOffice so pptx exports are editable):
   `docker build -t kuhn/marp:latest docker/marp`

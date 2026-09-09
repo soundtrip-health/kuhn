@@ -142,6 +142,10 @@ vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
   getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
 }));
+vi.mock('../db/typst-templates.js', () => ({
+  listCatalogTemplates: vi.fn(() => []),
+  listOrgTemplates: vi.fn(() => []),
+}));
 // STH-61: theme discovery — the SQL substance lives in db/slide-themes.test.js.
 vi.mock('../db/slide-themes.js', () => ({
   MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],

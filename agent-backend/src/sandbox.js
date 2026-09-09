@@ -194,7 +194,8 @@ export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [],
     throw new SandboxError('failed', `Invalid output name: ${outputName}`);
   }
   for (const arg of extraArgs) {
-    if (!/^--[\w-]+(=[\w./ @-]+)?$/.test(arg)) {
+    // --flag, --opt=value, or --variable=key=value (a template file name).
+    if (!/^--[\w-]+(=[\w./ @-]+(=[\w./ @-]+)?)?$/.test(arg)) {
       throw new SandboxError('failed', `Invalid pandoc argument: ${arg}`);
     }
   }

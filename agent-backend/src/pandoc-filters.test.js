@@ -56,6 +56,17 @@ function fakeSpawn() {
   return impl;
 }
 
+describe('pandocConvert argument validation', () => {
+  it('accepts --variable=key=value (template files) and still rejects shell-ish arguments', async () => {
+    const spawn = fakeSpawn();
+    await pandocConvert(1, 'doc.md', 'preview.typ', ['--variable=template=.preview-a67d145f6a6b.tpl.typ'], spawn);
+    expect(spawn.args).toContain('--variable=template=.preview-a67d145f6a6b.tpl.typ');
+    for (const bad of ['-o /etc/passwd', '--variable=template=$(id)', '--lua-filter=/x;rm', 'plain']) {
+      expect(() => pandocConvert(1, 'doc.md', 'preview.typ', [bad], spawn)).toThrow(/Invalid pandoc argument/);
+    }
+  });
+});
+
 describe('pandocConvert page-break filter', () => {
   it('mounts the shipped filters read-only and runs pagebreak.lua on every conversion', async () => {
     const spawn = fakeSpawn();

@@ -127,7 +127,14 @@ see the threat model §5.3 (T-12/T-13) and invariant 11.
   front matter resolves through the org/catalog theme library — an active
   org-uploaded CSS shadows a Kuhn-seeded one of the same name — and the
   resolved CSS is materialized into a read-only `/themes` mount registered
-  with `--theme-set`. All of it runs in Docker with
+  with `--theme-set`. Typst templates: a prose document's `template:`
+  front matter resolves the same way through the org/catalog template
+  library (`typst-templates/`; an active org upload shadows a Kuhn one);
+  the resolved `.typ` is written beside the temp `.typ` under a hash name
+  and handed to Pandoc as its `template` variable, which becomes a relative
+  `#import "…": conf`. Both temp files are removed after the compile. A
+  `\newpage` line becomes a page break in every output via the shipped
+  `pandoc-filters/pagebreak.lua` (mounted read-only at `/filters`). All of it runs in Docker with
   `--network none`, CPU/memory/pid limits, a kill timer (60 s; 120 s for
   Marp's Chromium), and the project mounted **read-only**; output goes to a
   scratch dir that is read back and deleted. Sandbox output is treated as
