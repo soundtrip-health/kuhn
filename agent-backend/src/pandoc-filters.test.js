@@ -19,6 +19,11 @@ import {
   pandocConvert, PANDOC_FILTERS_DIR, PANDOC_FILTERS_MOUNT, PANDOC_LUA_FILTERS, PANDOC_OPTIONAL_FILTERS,
 } from './sandbox.js';
 
+const AIMS = [
+  '---', 'title: Aims', 'page_limits:', '  Specific Aims: 1', '  Research Strategy: 12', '  Bogus: nope', '---', '',
+  '# Specific Aims', '', 'Aim text.', '', '## Aim 1', '', 'Detail.', '', '# Research Strategy', '', 'Strategy.', '',
+].join('\n');
+
 const SOURCE = [
   'Intro para.', '', '\\newpage', '', 'Second page. Inline \\newpage here.', '',
   '\\pagebreak', '', '<div style="page-break-after: always;"></div>', '', 'End.', '',
@@ -33,6 +38,7 @@ beforeAll(async () => {
   config.agent.projectsRoot = root;
   await mkdir(join(root, '1'), { recursive: true });
   await writeFile(join(root, '1', 'doc.md'), SOURCE);
+  await writeFile(join(root, '1', 'aims.md'), AIMS);
 });
 
 afterAll(async () => {
@@ -135,6 +141,16 @@ describe.skipIf(!hasPandocImage)('pagebreak.lua (real pandoc)', () => {
 
     const { output: docx } = await pandocConvert(1, 'doc.md', 'export.docx', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`]);
     expect(unzipEntry(docx, 'word/document.xml')).not.toContain('kuhn-block'); // no-op outside Typst
+  }, 60_000);
+
+  it('blockmarks.lua records heading level/text and the page_limits front matter on the end marker', async () => {
+    const { output } = await pandocConvert(1, 'aims.md', 'preview.typ', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`]);
+    const typ = output.toString('utf-8');
+    expect(typ).toContain('key: "specificaims", page: here().page(), y: here().position().y.pt(), h: page.height.to-absolute().pt(), level: 1, text: "Specific Aims"');
+    expect(typ).toContain('level: 2, text: "Aim 1"');
+    expect(typ).toContain('i: -1, key: "", page: here().page(), y: here().position().y.pt(), h: page.height.to-absolute().pt(), limits: ("Research Strategy": 12, "Specific Aims": 1)');
+    expect(typ).not.toContain('Bogus'); // non-numeric limits dropped
+    expect((await pandocConvert(1, 'doc.md', 'preview.typ', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`])).output.toString()).toContain('limits: (:)');
   }, 60_000);
 
   it('leaves the raw TeX alone for LaTeX export', async () => {

@@ -23,9 +23,9 @@ vi.mock('./sandbox.js', async (importOriginal) => {
     pandocConvert: vi.fn(async () => ({ output: Buffer.from('= typst'), stdout: '', stderr: '' })),
     renderTypstPdf: vi.fn(async () => ({ output: Buffer.from('%PDF-fake'), stdout: '', stderr: '' })),
     typstQueryBlocks: vi.fn(async () => [
-      { i: 1, key: 'hello', page: 1, y: 72.04, h: 792 },
+      { i: 1, key: 'hello', page: 1, y: 72.04, h: 792, level: 1, text: 'Hello' },
       { i: 2, key: 'body', page: 2, y: 72, h: 792 },
-      { i: -1, key: '', page: 2, y: 300.5, h: 792 },
+      { i: -1, key: '', page: 2, y: 300.5, h: 792, limits: {} },
     ]),
     renderMarp: vi.fn(async () => ({ output: Buffer.from('%PDF-marp'), stdout: '', stderr: '' })),
   };
@@ -247,9 +247,28 @@ describe('page map', () => {
   it('pageMapFromMarkers shapes markers into blocks + end, and tolerates junk', () => {
     expect(pageMapFromMarkers([
       { i: 1, key: 'a', page: 1, y: 10.04, h: 792 }, { i: 2, key: 'b', page: 3, y: 20, h: 792 }, { i: -1, key: '', page: 3, y: 99, h: 792 },
-    ])).toEqual({ pages: 3, pageHeight: 792, blocks: [{ key: 'a', page: 1, y: 10 }, { key: 'b', page: 3, y: 20 }], end: { page: 3, y: 99 } });
+    ])).toEqual({ pages: 3, pageHeight: 792, blocks: [{ key: 'a', page: 1, y: 10 }, { key: 'b', page: 3, y: 20 }], end: { page: 3, y: 99 }, sections: [] });
     expect(pageMapFromMarkers([])).toBe(null);
     expect(pageMapFromMarkers([null, { i: 1, key: 'a', page: 1, y: 1, h: 792 }, 'x'])).toMatchObject({ pages: 1, end: { page: 1, y: 1 } });
+  });
+
+  it('sections: each budgeted heading measured to the next heading of its level or higher, in fractional pages', () => {
+    const h = 792;
+    const map = pageMapFromMarkers([
+      { i: 1, key: 'specificaims', page: 1, y: 36, h, level: 1, text: 'Specific Aims' },
+      { i: 2, key: 'para', page: 1, y: 60, h },
+      { i: 3, key: 'aim1', page: 1, y: 400, h, level: 2, text: 'Aim 1' }, // deeper: stays inside Specific Aims
+      { i: 4, key: 'researchstrategy', page: 2, y: 36 + 0.07 * h, h, level: 1, text: 'Research Strategy' },
+      { i: 5, key: 'approach', page: 2, y: 300, h, level: 2, text: 'Approach' },
+      { i: 6, key: 'refs', page: 3, y: 100, h, level: 1, text: 'References' },
+      { i: -1, key: '', page: 3, y: 500, h, limits: { 'Specific aims': 1, 'research strategy': 12, Approach: 1, Missing: 3 } },
+    ]);
+    expect(map.sections).toEqual([
+      { index: 0, title: 'Specific Aims', key: 'specificaims', page: 1, pages: 1.07, limit: 1, over: true },
+      { index: 3, title: 'Research Strategy', key: 'researchstrategy', page: 2, pages: 1.01, limit: 12, over: false },
+      { index: 4, title: 'Approach', key: 'approach', page: 2, pages: 0.75, limit: 1, over: false },
+    ]);
+    expect(pageMapFromMarkers([{ i: 1, key: 'a', page: 1, y: 1, h }, { i: -1, key: '', page: 1, y: 2, h }]).sections).toEqual([]);
   });
 
   it('renders with the blockmarks filter after citeproc, queries typst, and caches the map with the PDF', async () => {
@@ -257,8 +276,9 @@ describe('page map', () => {
     const first = await renderPdf(1, 'draft/main.md');
     expect(first.pageMap).toEqual({
       pages: 2, pageHeight: 792,
-      blocks: [{ key: 'hello', page: 1, y: 72 }, { key: 'body', page: 2, y: 72 }],
+      blocks: [{ key: 'hello', page: 1, y: 72, level: 1, text: 'Hello' }, { key: 'body', page: 2, y: 72 }],
       end: { page: 2, y: 300.5 },
+      sections: [],
     });
     const args = pandocConvert.mock.calls.at(-1)[3];
     expect(args.indexOf('--lua-filter=/filters/blockmarks.lua')).toBeGreaterThan(args.indexOf('--citeproc'));
