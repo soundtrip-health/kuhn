@@ -320,14 +320,15 @@ export async function seedTypstTemplateCatalog() {
   transaction(() => {
     for (const t of rows) {
       querySync(
-        `INSERT INTO catalog_typst_templates (name, title, path, description, available)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO catalog_typst_templates (name, title, path, description, available, docx_path)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (name) DO UPDATE SET
            title = excluded.title,
            path = excluded.path,
            description = excluded.description,
-           available = excluded.available`,
-        [t.name, t.title, t.path, t.description ?? null, t.available],
+           available = excluded.available,
+           docx_path = excluded.docx_path`,
+        [t.name, t.title, t.path, t.description ?? null, t.available, t.docx ?? null],
       );
     }
     querySync(

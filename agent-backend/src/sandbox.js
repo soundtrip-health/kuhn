@@ -216,8 +216,13 @@ export const PANDOC_OPTIONAL_FILTERS = { blockmarks: `${PANDOC_FILTERS_MOUNT}/bl
  * { output, stdout, stderr }. extraArgs are long-form pandoc options composed
  * by the render service (never user input); values may only reference /work
  * paths since that is the only readable mount (plus the built-in /filters).
+ * `referenceDoc` (a Word reference .docx, from the template library) is
+ * materialized into its own read-only /reference mount — the marp theme
+ * pattern — and passed as --reference-doc.
  */
-export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [], spawnImpl) {
+export async function pandocConvert(projectId, sourcePath, outputName, extraArgs = [], options = {}, spawnImpl) {
+  if (typeof options === 'function') { spawnImpl = options; options = {}; } // (projectId, path, out, args, spawn)
+  const { referenceDoc = null } = options;
   if (!/^[\w.-]+$/.test(outputName)) {
     throw new SandboxError('failed', `Invalid output name: ${outputName}`);
   }
@@ -228,12 +233,27 @@ export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [],
     }
   }
   const filterArgs = PANDOC_LUA_FILTERS.map((f) => `--lua-filter=${PANDOC_FILTERS_MOUNT}/${f}`);
-  return renderViaSandbox(projectId, sourcePath, {
-    image: config.sandbox.pandocImage,
-    makeCmd: (src, out) => [src, ...filterArgs, ...extraArgs, '-o', out],
-    outputName,
-    extraMounts: [{ hostDir: PANDOC_FILTERS_DIR, containerDir: PANDOC_FILTERS_MOUNT, readonly: true }],
-  }, spawnImpl);
+  const extraMounts = [{ hostDir: PANDOC_FILTERS_DIR, containerDir: PANDOC_FILTERS_MOUNT, readonly: true }];
+  const refArgs = [];
+  let refDir = null;
+  if (referenceDoc) {
+    const refTmpRoot = join(config.agent.projectsRoot, '.reference-tmp'); // same placement rationale as .render-tmp
+    await mkdir(refTmpRoot, { recursive: true });
+    refDir = await mkdtemp(join(refTmpRoot, 'ref-'));
+    await writeFile(join(refDir, 'reference.docx'), referenceDoc);
+    extraMounts.push({ hostDir: refDir, containerDir: '/reference', readonly: true });
+    refArgs.push('--reference-doc=/reference/reference.docx');
+  }
+  try {
+    return await renderViaSandbox(projectId, sourcePath, {
+      image: config.sandbox.pandocImage,
+      makeCmd: (src, out) => [src, ...filterArgs, ...refArgs, ...extraArgs, '-o', out],
+      outputName,
+      extraMounts,
+    }, spawnImpl);
+  } finally {
+    if (refDir) await rm(refDir, { recursive: true, force: true });
+  }
 }
 
 // STH-57: slide decks. The official Marp CLI image bundles Chromium; it gets

@@ -53,6 +53,8 @@ export interface WizardAnswers {
   timeline: string;
   sourceMaterials: string[];
   notes?: string;
+  /** Default Typst template (page layout) for the project's documents; '' = Pandoc default. */
+  template?: string;
 }
 
 export interface Project {
@@ -1599,6 +1601,8 @@ export interface CatalogTypstTemplate {
   title: string;
   description: string | null;
   available: boolean;
+  /** Ships a Word reference document, so docx exports carry the layout too. */
+  docx: boolean;
   /** An ACTIVE org template of the same name wins at render time. */
   shadowed?: boolean;
 }
@@ -1609,6 +1613,8 @@ export interface OrgTypstTemplate {
   title: string;
   status: 'active' | 'disabled';
   source_bytes: number;
+  /** Size of the attached Word reference document; 0 = none. */
+  docx_bytes: number;
   created_at: string;
   updated_at: string;
 }
@@ -1637,6 +1643,40 @@ export async function uploadOrgTypstTemplate(
     }),
   );
   return (await res.json()) as OrgTypstTemplatesPayload & { template: OrgTypstTemplate };
+}
+
+/** The Kuhn template catalog (any authenticated user) — for pickers outside the org admin. */
+export async function getTypstTemplateCatalog(): Promise<CatalogTypstTemplate[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/typst-templates/catalog`));
+  return ((await res.json()) as { templates: CatalogTypstTemplate[] }).templates;
+}
+
+/** Attach (docx bytes) or remove (null) the Word reference document of an org template (owner-only). */
+export async function uploadOrgTypstTemplateDocx(
+  orgId: number,
+  name: string,
+  docx: Blob | null,
+): Promise<OrgTypstTemplatesPayload & { template: OrgTypstTemplate }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/typst-templates/${encodeURIComponent(name)}/docx`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      body: docx ?? new Blob([]),
+    }),
+  );
+  return (await res.json()) as OrgTypstTemplatesPayload & { template: OrgTypstTemplate };
+}
+
+/** Set (or clear) the project's default Typst template — documents without `template:` front matter use it. */
+export async function setProjectTemplate(projectId: number, template: string | null): Promise<Project> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/template`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template }),
+    }),
+  );
+  return ((await res.json()) as { project: Project }).project;
 }
 
 /** Enable/disable one org Typst template (owner-only). */

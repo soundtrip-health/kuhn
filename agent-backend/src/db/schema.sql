@@ -788,7 +788,8 @@ CREATE TABLE IF NOT EXISTS catalog_typst_templates (
   title       TEXT NOT NULL,
   path        TEXT NOT NULL,                -- manifest-relative .typ file
   description TEXT,
-  available   INTEGER NOT NULL DEFAULT 1
+  available   INTEGER NOT NULL DEFAULT 1,
+  docx_path   TEXT                           -- manifest-relative Word reference .docx (pandoc --reference-doc), optional
 );
 
 CREATE TABLE IF NOT EXISTS org_typst_templates (
@@ -797,6 +798,7 @@ CREATE TABLE IF NOT EXISTS org_typst_templates (
   name       TEXT NOT NULL,                 -- from the `// @template <name>` header
   title      TEXT NOT NULL,
   source     TEXT NOT NULL,                 -- Typst source exporting `conf`
+  docx       BLOB,                           -- optional Word reference document for docx export
   status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

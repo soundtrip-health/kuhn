@@ -16,7 +16,7 @@ import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
 import { getProject } from './db/projects.js';
 import { log } from './logger.js';
 import { MARP_BUILTIN_THEMES, resolveThemeCss } from './db/slide-themes.js';
-import { resolveTemplateSource } from './db/typst-templates.js';
+import { resolveTemplateDocx, resolveTemplateSource } from './db/typst-templates.js';
 
 export const EXPORT_FORMATS = {
   // The rendered PDF as an attachment download — the same bytes the preview
@@ -60,12 +60,27 @@ export function typstTemplateName(source) {
   return m ? m[1] : null;
 }
 
+/**
+ * Which template a document renders with: its own `template:` front matter,
+ * else the project's default (projects.config.template — set by the setup
+ * wizard or PUT /api/projects/:id/template), else none.
+ */
+async function templateFor(projectId, source) {
+  const project = await getProject(projectId);
+  const name = typstTemplateName(source) ?? (project?.config?.template || null);
+  return { name, orgId: project?.org_id ?? null };
+}
+
 /** Resolve the template through the org/catalog library (throws on unknown names). */
 async function resolveTypstTemplate(projectId, source) {
-  const name = typstTemplateName(source);
-  if (!name) return null;
-  const project = await getProject(projectId);
-  return resolveTemplateSource(project?.org_id ?? null, name);
+  const { name, orgId } = await templateFor(projectId, source);
+  return name ? resolveTemplateSource(orgId, name) : null;
+}
+
+/** The template's Word reference document for a docx export (null → Pandoc's stock one). */
+async function resolveDocxReference(projectId, source) {
+  const { name, orgId } = await templateFor(projectId, source);
+  return name ? resolveTemplateDocx(orgId, name) : null;
 }
 
 /**
@@ -313,8 +328,12 @@ export async function exportDocument(projectId, sourcePath, format) {
     const bibPath = DEFAULT_BIB_PATH;
     await materializeBib(projectId, bibPath).catch(() => {});
     const hasBib = (await readIfExists(projectId, bibPath)) != null;
+    // docx carries the template's Word reference (page geometry + styles), so
+    // the export paginates like the preview; tex has no equivalent.
+    const reference = format === 'docx' ? await resolveDocxReference(projectId, source) : null;
     ({ output } = await pandocConvert(
       projectId, sourcePath, spec.outputName, pandocArgs(bibPath, hasBib),
+      { referenceDoc: reference?.docx ?? null },
     ));
   }
   const stem = basename(sourcePath).replace(/\.[^.]+$/, '');

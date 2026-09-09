@@ -6,7 +6,9 @@
 // re-opening prefills from config.setup.answers. The final step asks whether to
 // launch research + skeleton now (startSeeding) or later.
 
-import { saveProjectConfig, uploadFiles, type WizardAnswers } from './api';
+import { saveProjectConfig, uploadFiles, type WizardAnswers,
+  getTypstTemplateCatalog,
+} from './api';
 import { icon } from './icons';
 import { PROJECT_TYPES } from './project-types';
 import * as workspace from './workspace';
@@ -69,6 +71,24 @@ let stepIndex = 0;
 let answers: WizardAnswers = blankAnswers();
 let launchNow = true;
 let saving = false;
+// Page-layout templates for the type step (loaded once per open; '' = Pandoc default).
+let templateOptions: { value: string; label: string }[] = [{ value: '', label: 'No project default (documents choose their own)' }];
+
+/** The layout a document type usually needs — preselected when the wizard has no prior answer. */
+const TEMPLATE_BY_TYPE: Record<string, string> = { grant: 'nih-grant', manuscript: 'manuscript' };
+
+async function loadTemplateOptions(): Promise<void> {
+  try {
+    const catalog = await getTypstTemplateCatalog();
+    templateOptions = [
+      { value: '', label: 'No project default (documents choose their own)' },
+      ...catalog.filter((t) => t.available).map((t) => ({ value: t.name, label: `${t.title} (${t.name})` })),
+    ];
+  } catch {
+    templateOptions = [{ value: '', label: 'No project default (documents choose their own)' }];
+  }
+  render();
+}
 
 function blankAnswers(): WizardAnswers {
   return {
@@ -86,6 +106,8 @@ export function openSetupWizard(pid: number, opts: { auto?: boolean } = {}): voi
   answers = { ...blankAnswers(), ...(saved as Partial<WizardAnswers> | undefined) };
   // Seed the type from the creation-time choice when the wizard has no prior answer.
   if (!saved?.projectType && project?.project_type) answers.projectType = project.project_type;
+  if (answers.template == null) answers.template = TEMPLATE_BY_TYPE[answers.projectType] ?? '';
+  void loadTemplateOptions();
 
   ensureOverlay();
   overlay!.hidden = false;
@@ -143,11 +165,20 @@ function steps(): Step[] {
       render: (body) => {
         const select = fieldSelect('Document type', answers.projectType,
           PROJECT_TYPES.map((t) => ({ value: t.value, label: t.label })),
-          (v) => { answers.projectType = v; });
+          (v) => {
+            answers.projectType = v;
+            // Follow the type's usual layout unless the user picked one deliberately.
+            answers.template = TEMPLATE_BY_TYPE[v] ?? '';
+            render();
+          });
         const title = fieldText('Project title', answers.title,
           'e.g. GLP-1 receptor agonists and cardiovascular outcomes',
           (v) => { answers.title = v; });
-        body.append(select, title);
+        // Page layout (Typst template): margins, font, spacing for the PDF
+        // preview and the Word export. Documents may override it in front matter.
+        const template = fieldSelect('Page layout', answers.template ?? '', templateOptions,
+          (v) => { answers.template = v; });
+        body.append(select, title, template);
       },
     },
     {
