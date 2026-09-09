@@ -1,7 +1,8 @@
 // Interchange bundle endpoints (docs/specs/interchange-bundle.md §4).
 //   POST /api/projects/import      — create a project from a bundle (issue #153)
 //   POST /api/projects/:id/import  — update a project from a bundle (issue #153)
-// Export (issue #154) lands here too. Tenancy: creation requires editor in
+//   GET  /api/projects/:id/export  — docs + comments + references (issue #154)
+// Tenancy: export needs viewer; creation requires editor in
 // the target org (never trusted from the bundle blindly — the org is the
 // manifest's org_id ONLY if the caller holds editor there, else their primary
 // org); update passes requireProjectRole('editor'). Bundle parsing happens
@@ -14,7 +15,9 @@ import { config } from '../config.js';
 import { primaryOrgId } from '../db/orgs.js';
 import { createProject } from '../db/projects.js';
 import { BundleError, parseBundle } from '../interchange/bundle.js';
+import { buildExport, buildExportZip } from '../interchange/export.js';
 import { ImportConflictError, importBundle } from '../interchange/import.js';
+import { log } from '../logger.js';
 import { StorageError } from '../storage.js';
 import { requireOrgRole, requireProjectRole } from './guards.js';
 
@@ -119,6 +122,45 @@ router.post('/api/projects/:id/import', bundleUpload, wrap(async (req, res) => {
   const bundle = parseOrRefuse(req, res);
   if (!bundle) return;
   await runImport(project, bundle, req, res, 200);
+}));
+
+/**
+ * GET /api/projects/:id/export?path=…&path=…&format=json|zip
+ * Viewer role. `path` narrows the doc set (default: the last import's docs,
+ * else every .md under draft/). JSON is the feedback payload; zip is the §3
+ * bundle plus comments.json and the docs' sibling assets.
+ */
+router.get('/api/projects/:id/export', wrap(async (req, res) => {
+  const project = await requireProjectRole(req, res, req.params.id, 'viewer');
+  if (!project) return;
+  const raw = req.query.path;
+  const paths = raw == null ? null
+    : (Array.isArray(raw) ? raw : [raw]).filter((p) => typeof p === 'string' && p.length > 0);
+  const format = req.query.format === 'zip' ? 'zip' : 'json';
+  const startedAt = Date.now();
+  try {
+    const data = await buildExport(project, { paths, user: req.user });
+    const zip = format === 'zip' ? await buildExportZip(project, data) : null;
+    log.info('interchange_export', {
+      projectId: project.id, userId: req.user.id, format,
+      docs: data.docs.length, references: data.references.length,
+      comments: data.docs.reduce((n, d) => n + d.comments.length, 0),
+      revision: data.revision, bytes: zip?.length ?? null, durationMs: Date.now() - startedAt,
+    });
+    if (zip) {
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="kuhn-project-${project.id}.zip"`);
+      res.send(zip);
+      return;
+    }
+    res.json(data);
+  } catch (err) {
+    if (err instanceof StorageError) {
+      res.status(STORAGE_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
 }));
 
 export default router;

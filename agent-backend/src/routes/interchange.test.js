@@ -28,7 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolve(__dirname, '../../../test-projects/interchange');
 
 let config; let exec; let querySync;
-let comments; let getProject;
+let comments; let getProject; let createProject; let writeProjectFile;
 let evictRoom;
 let server; let base; let root;
 const USERS = {};
@@ -38,7 +38,8 @@ beforeAll(async () => {
   ({ exec, querySync } = await import('../db.js'));
   exec(readFileSync(resolve(__dirname, '../db/schema.sql'), 'utf-8'));
   comments = await import('../db/comments.js');
-  ({ getProject } = await import('../db/projects.js'));
+  ({ getProject, createProject } = await import('../db/projects.js'));
+  ({ writeProjectFile } = await import('../storage.js'));
   ({ evictRoom } = await import('../yjs-websocket.js'));
   root = await mkdtemp(join(tmpdir(), 'kuhn-interchange-'));
   config.agent.projectsRoot = root;
@@ -281,5 +282,118 @@ describe('POST /api/projects/:id/import (update)', () => {
     const { status } = await update(id, bundle({ 'files/draft/figures/fig1.png': null }));
     expect(status).toBe(200);
     expect((await readFile(join(root, String(id), 'draft/figures/fig1.png'))).length).toBeGreaterThan(0);
+  });
+});
+
+// ---- export ------------------------------------------------------------------
+
+async function getExport(id, { user = 'editorA', query = '' } = {}) {
+  const res = await fetch(`${base}/api/projects/${id}/export${query}`, { headers: { 'x-test-user': user } });
+  if (res.headers.get('content-type')?.includes('application/zip')) {
+    return { status: res.status, zip: Buffer.from(await res.arrayBuffer()) };
+  }
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+describe('GET /api/projects/:id/export', () => {
+  it('returns the feedback payload: docs, provenance, references, head revision', async () => {
+    const created = (await create()).body;
+    const { status, body } = await getExport(created.project.id, { user: 'viewerA' }); // viewer may export
+    expect(status).toBe(200);
+    expect(body.schema_version).toBe('1');
+    expect(body.project).toEqual({ id: created.project.id, name: 'bendable2 — for review', project_type: 'manuscript' });
+    expect(body.exported_by).toBe('viewer@a.org');
+    expect(body.revision).toBe(created.checkpoint);
+    expect(body.last_import).toMatchObject({ source: { tool: 'sciwriter' }, checkpoint: created.checkpoint });
+    expect(body.docs).toHaveLength(1);
+    expect(body.docs[0]).toMatchObject({
+      path: 'draft/main.md',
+      title: 'Ketamine for treatment-resistant depression',
+      meta: { figure_numbering: { 'fig:forest': 1 } },
+      modified_since_import: false,
+      content: fixtureDoc(),
+      comments: [],
+    });
+    expect(body.references.map((r) => r.cite_key)).toEqual(['Berman2000', 'Zarate2006']);
+    expect(body.references[1]).toMatchObject({ authors: ['Zarate, C. A.', 'Singh, J. B.'], pmid: '16894061', entry_type: 'article' });
+    expect(body.references[0]).not.toHaveProperty('id');
+  });
+
+  it('reflects edits and comments made in Kuhn, with authors normalized and anchors re-resolved', async () => {
+    const id = (await create()).body.project.id;
+    const quote = 'Response rates exceeded 60%';
+    const doc = `# Retitled by a reviewer\n\n${fixtureDoc()}`;
+    await writeProjectFile(id, 'draft/main.md', doc);
+    const oldStart = fixtureDoc().indexOf(quote);
+    const t = comments.createThread(id, { path: 'draft/main.md', body: 'Which trial?', quote, start: oldStart, end: oldStart + quote.length, userId: USERS.editorA.id });
+    comments.addReply(id, t.id, { body: 'Zarate 2006.', agentSlug: 'reviewer' });
+    const gone = comments.createThread(id, { path: 'draft/main.md', body: 'orphan me', quote: 'text that never existed', start: 5, end: 9, userId: USERS.viewerA.id });
+    comments.setResolved(id, gone.id, true, { userId: USERS.editorA.id });
+    querySync("INSERT INTO review_links (id, project_id, path, mode, token_hash, created_by, reviewer_name, expires_at) VALUES (77, $1, 'draft/main.md', 'comment', 'h', $2, 'A. Reviewer', '2999-01-01')", [id, USERS.editorA.id]);
+    comments.createThread(id, { path: 'draft/main.md', body: 'from outside', reviewLinkId: 77 });
+
+    const { body } = await getExport(id);
+    const [d] = body.docs;
+    expect(d.modified_since_import).toBe(true);
+    expect(d.content).toBe(doc);
+    expect(d.comments).toHaveLength(3);
+    const [first, second, third] = d.comments;
+    expect(first).toMatchObject({
+      body: 'Which trial?',
+      author: { kind: 'member', name: 'editorA', id: USERS.editorA.id },
+      anchor: { quote, start: doc.indexOf(quote), end: doc.indexOf(quote) + quote.length },
+      orphaned: false,
+      resolved_at: null,
+    });
+    expect(first.replies).toEqual([expect.objectContaining({ body: 'Zarate 2006.', author: { kind: 'agent', name: 'reviewer', id: null } })]);
+    expect(second).toMatchObject({ orphaned: true, anchor: { quote: 'text that never existed', start: 5, end: 9 }, resolved_by: 'editorA' });
+    expect(second.resolved_at).toBeTruthy();
+    expect(third).toMatchObject({ author: { kind: 'reviewer', name: 'A. Reviewer', id: 77 }, anchor: null });
+    // Export never persisted the re-anchoring.
+    expect(comments.listThreads(id, { path: 'draft/main.md' })[0].anchor.start).toBe(oldStart);
+  });
+
+  it('narrows to ?path=, 404s an unknown path, and enforces tenancy', async () => {
+    const id = (await create()).body.project.id;
+    await writeProjectFile(id, 'draft/extra.md', 'Extra doc.\n');
+    expect((await getExport(id, { query: '?path=draft/extra.md' })).body.docs.map((d) => d.path)).toEqual(['draft/extra.md']);
+    expect((await getExport(id, { query: '?path=draft/main.md&path=draft/extra.md' })).body.docs).toHaveLength(2);
+    expect((await getExport(id)).body.docs.map((d) => d.path)).toEqual(['draft/main.md']); // default = last import
+    expect((await getExport(id, { query: '?path=draft/nope.md' })).status).toBe(404);
+    expect((await getExport(id, { query: '?path=../etc/passwd' })).status).toBe(403);
+    expect((await getExport(id, { user: 'ownerB' })).status).toBe(404);
+  });
+
+  it('a never-imported project exports every markdown doc under draft/', async () => {
+    const p = await createProject({ name: 'Plain', projectType: 'grant', orgId: 1 });
+    await writeProjectFile(p.id, 'draft/a.md', 'A\n');
+    await writeProjectFile(p.id, 'draft/sub/b.md', 'B\n');
+    await writeProjectFile(p.id, 'draft/notes.txt', 'not a doc\n');
+    await writeProjectFile(p.id, 'draft/references.bib', '% derived\n');
+    const { body } = await getExport(p.id);
+    expect(body.docs.map((d) => d.path)).toEqual(['draft/a.md', 'draft/sub/b.md']);
+    expect(body.docs[0].modified_since_import).toBeNull();
+    expect(body.last_import).toBeNull();
+    expect(body.revision).toBeNull(); // no history yet — nothing has been committed
+  });
+
+  it('round-trips: export zip → import into a new project → export again is identical', async () => {
+    const first = (await create()).body.project.id;
+    await writeProjectFile(first, 'draft/tables/t1.csv', 'a,b\n1,2\n');
+    const one = (await getExport(first)).body;
+    const { status, zip } = await getExport(first, { query: '?format=zip' });
+    expect(status).toBe(200);
+
+    const imported = await post('/api/projects/import', zip);
+    expect(imported.status).toBe(201);
+    expect(imported.body.files.map((f) => f.path).sort()).toEqual(['draft/figures/fig1.png', 'draft/main.md', 'draft/tables/t1.csv']);
+    expect(imported.body.references.every((r) => r.status === 'created' && r.actual_key === r.cite_key)).toBe(true);
+    const two = (await getExport(imported.body.project.id)).body;
+
+    expect(two.docs.map(({ path, content, title, meta }) => ({ path, content, title, meta })))
+      .toEqual(one.docs.map(({ path, content, title, meta }) => ({ path, content, title, meta })));
+    expect(two.references).toEqual(one.references);
+    expect(two.last_import.source).toMatchObject({ tool: 'kuhn', project_id: first, revision: one.revision });
+    expect((await readFile(join(root, String(imported.body.project.id), 'draft/figures/fig1.png'))).length).toBeGreaterThan(0);
   });
 });

@@ -21,6 +21,7 @@
     "suggestion-check": "node scripts/suggestion-check.mjs",
     "comments-check": "node scripts/comments-check.mjs",
     "review-check": "node scripts/review-check.mjs",
+    "interchange-check": "node scripts/interchange-check.mjs",
     "move-check": "node scripts/move-check.mjs",
     "files-check": "node scripts/files-check.mjs",
     "raw-content-check": "node scripts/raw-content-check.mjs",
