@@ -15,8 +15,9 @@
 // an "Open" button that did nothing (bug report, 2026-09-04). Canvases paint
 // everywhere; the Download button covers saving the file.
 
-import { exportUrl, fetchFileBlob, fileBlobUrl, renderPdf, type ExportFormat } from './api';
-import { currentDocumentPath, flushSave } from './editor';
+import { exportUrl, fetchFileBlob, fetchPageMap, fileBlobUrl, renderPdf, type ExportFormat } from './api';
+import { currentDocumentPath, editorView, flushSave } from './editor';
+import { applyPageMap, clearPageMap } from './page-breaks';
 
 type PdfJs = typeof import('pdfjs-dist');
 type PdfTask = import('pdfjs-dist').PDFDocumentLoadingTask;
@@ -172,6 +173,14 @@ async function render(): Promise<void> {
     await showPdf(await pdf.arrayBuffer());
     const count = (await pdfDoc()?.promise)?.numPages ?? 0;
     setStatus(`${path} · ${count} page${count === 1 ? '' : 's'}`);
+    // Page-break lines in the editor: the map comes from the render cache the
+    // PDF just filled. Losing it loses only the lines, never the preview.
+    try {
+      const map = await fetchPageMap(projectId, path);
+      if (currentDocumentPath() === path) applyPageMap(editorView(), map);
+    } catch {
+      clearPageMap(editorView());
+    }
   } catch (err) {
     setStatus((err as Error).message, true);
     // The PDF may be fine and only the painter broken (pdf.js failed to
