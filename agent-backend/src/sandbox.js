@@ -9,7 +9,8 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { config } from './config.js';
 import { resolveSafe } from './storage.js';
@@ -174,11 +175,19 @@ export function renderTypstPdf(projectId, sourcePath, spawnImpl) {
   }, spawnImpl);
 }
 
+// Pandoc Lua filters shipped with the backend, mounted read-only at
+// /filters for every pandoc run. pagebreak.lua turns `\newpage` (raw TeX,
+// which pandoc keeps only for LaTeX) into Typst/docx/html page breaks so the
+// PDF preview and the docx export paginate like the LaTeX export.
+export const PANDOC_FILTERS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'pandoc-filters');
+export const PANDOC_FILTERS_MOUNT = '/filters';
+export const PANDOC_LUA_FILTERS = ['pagebreak.lua'];
+
 /**
  * Convert a project file with Pandoc (e.g. markdown → docx/tex). Returns
  * { output, stdout, stderr }. extraArgs are long-form pandoc options composed
  * by the render service (never user input); values may only reference /work
- * paths since that is the only readable mount.
+ * paths since that is the only readable mount (plus the built-in /filters).
  */
 export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [], spawnImpl) {
   if (!/^[\w.-]+$/.test(outputName)) {
@@ -189,10 +198,12 @@ export function pandocConvert(projectId, sourcePath, outputName, extraArgs = [],
       throw new SandboxError('failed', `Invalid pandoc argument: ${arg}`);
     }
   }
+  const filterArgs = PANDOC_LUA_FILTERS.map((f) => `--lua-filter=${PANDOC_FILTERS_MOUNT}/${f}`);
   return renderViaSandbox(projectId, sourcePath, {
     image: config.sandbox.pandocImage,
-    makeCmd: (src, out) => [src, ...extraArgs, '-o', out],
+    makeCmd: (src, out) => [src, ...filterArgs, ...extraArgs, '-o', out],
     outputName,
+    extraMounts: [{ hostDir: PANDOC_FILTERS_DIR, containerDir: PANDOC_FILTERS_MOUNT, readonly: true }],
   }, spawnImpl);
 }
 

@@ -20,7 +20,8 @@ Current capabilities:
 - **One-click project seeding** — a deterministic pipeline runs a PM interview → parallel
   research (Research Assistant + Advisor) → Writer skeleton draft.
 - **Live preview & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations)
-  plus one-click docx/LaTeX export, all sandboxed.
+  plus one-click docx/LaTeX export, all sandboxed. A `\newpage` line forces a page break in
+  every output (the Pandoc/R Markdown convention).
 - **Multi-tenant by design** — organizations with role-based membership and invitation-only
   sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
   a shared curated guidance corpus.
