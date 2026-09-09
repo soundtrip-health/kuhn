@@ -100,7 +100,7 @@ app.use(citationsRouter);
 app.use(commentsRouter);
 app.use(filesRouter);
 app.use(historyRouter);
-app.use(interchangeRouter); // interchange bundle import/export (issues #153/#154) — before projectsRouter so /api/projects/import is not read as an id
+app.use(interchangeRouter); // interchange bundle import/export (issues #153/#154) — before projectsRouter so /api/projects/import is not read as an id; shares the export URL with renderRouter and yields to it for document formats
 app.use(knowledgeRouter); // Kuhn knowledge catalog + per-org selections (issue #65)
 app.use(orgsRouter);
 app.use(orgAdminRouter); // owner-gated members/invitations/settings (epic 011)

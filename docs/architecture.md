@@ -292,7 +292,9 @@ the map.
   (4001), which the editor already handles — the reconnectable refresh close would let a
   member client re-seed the room from its own stale state. Provenance (source, checkpoint,
   per-doc sha256 and `meta`) is stored under the project's `interchange` config.
-- **Export** (`GET /api/projects/:id/export?format=json|zip`, viewer role). JSON is the
+- **Export** (`GET /api/projects/:id/export?format=json|zip`, viewer role; the same URL
+  with a document format — pdf, docx, tex, pptx, html — is the render service's export,
+  and the interchange route hands those on to it). JSON is the
   feedback payload: current content, `modified_since_import`, comment threads with a
   normalized author (`member` / `reviewer` / `agent`) and anchors re-resolved in memory,
   all references, history head and last-import provenance. The zip form is the bundle
