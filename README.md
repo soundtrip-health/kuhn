@@ -24,6 +24,9 @@ Current capabilities:
 - **Multi-tenant by design** — organizations with role-based membership and invitation-only
   sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
   a shared curated guidance corpus.
+- **Interchange with other writing tools** — push a draft, its references and figures in as
+  a bundle, collect anchored comments and edits in Kuhn, pull them back out; personal API
+  tokens for scripts. See [docs/specs/interchange-bundle.md](docs/specs/interchange-bundle.md).
 
 ## Quick start
 
@@ -161,6 +164,11 @@ See [docs/architecture.md](docs/architecture.md) for details and
 [ADR 001](docs/adr/001-provider-agnostic-runtime-foundation.md) for the provider-runtime
 migration decision. The Claude runtime remains the current production path while the Pi-core
 adapter proves contract and quality parity.
+
+Integrating another writing tool? [docs/specs/interchange-bundle.md](docs/specs/interchange-bundle.md)
+is the bundle format and API contract (bearer tokens, `POST …/import`, `GET …/export`);
+`test-projects/interchange/` is a ready-made bundle and `webapp/scripts/interchange-check.mjs`
+walks the whole round trip against a running backend.
 
 Evaluating Kuhn for your organization? [docs/data-pipeline.md](docs/data-pipeline.md) lays
 out where all data is stored and processed, what is ephemeral, what leaves the machine

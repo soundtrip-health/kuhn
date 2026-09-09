@@ -263,6 +263,45 @@ The advisor's knowledge base is **per-tenant by default**:
   curation is an explicit, Kuhn-side editorial act, and a catalog version bump surfaces as
   an explicit per-org "update available" state rather than an automatic re-import.
 
+## Interchange with External Writing Tools
+
+Kuhn can act as the **feedback surface** for a manuscript whose source of truth lives in
+another tool (first client: sciwriter). The contract is a zip **interchange bundle** and
+three endpoints — `docs/specs/interchange-bundle.md` is the normative spec; this section is
+the map.
+
+- **Identity.** External tools call the API as a Kuhn user with a **personal API token**
+  (`Authorization: Bearer kuhn_…`, minted in the account menu, `api_tokens` stores the
+  sha256). `session.js` checks the bearer header first, in every auth mode; the token
+  resolves to the same `users` row a cookie would, so guards, tenancy and attribution are
+  unchanged. A token cannot mint or revoke tokens.
+- **Bundle.** `manifest.json` (provenance, project spec for creation, the doc list with an
+  opaque per-doc `meta`), optional `references.json` (keyed by the tool's cite keys), and
+  `files/<workspace path>` for docs and assets. Paths are Kuhn workspace paths; relative
+  links inside docs resolve against the doc's directory, so assets sit under it.
+- **Import** (`POST /api/projects/import` creates, `POST /api/projects/:id/import` updates;
+  `src/interchange/`). The zip is fully validated before a byte is written (safe paths,
+  size/entry caps on declared sizes, UTF-8 docs, cite-key grammar). References are
+  upserted **under the supplied key** (`db/references.js` `upsertReferenceByKey`); when
+  dedup or a collision forces another key, `[@key]` citations in the bundle's docs are
+  rewritten and the map is returned. Writes go through `storage.js`, bracketed by two
+  history checkpoints, followed by `file_change` events (activity log, idle-room eviction,
+  reviewer-room refresh), `references.bib` materialization and server-side re-anchoring of
+  existing comments. A doc a member holds open in the editor makes the import refuse with
+  `409 doc_open`; `force=1` evicts that room with the terminal *document replaced* close
+  (4001), which the editor already handles — the reconnectable refresh close would let a
+  member client re-seed the room from its own stale state. Provenance (source, checkpoint,
+  per-doc sha256 and `meta`) is stored under the project's `interchange` config.
+- **Export** (`GET /api/projects/:id/export?format=json|zip`, viewer role). JSON is the
+  feedback payload: current content, `modified_since_import`, comment threads with a
+  normalized author (`member` / `reviewer` / `agent`) and anchors re-resolved in memory,
+  all references, history head and last-import provenance. The zip form is the bundle
+  layout plus `comments.json` and the docs' sibling assets, and imports back into Kuhn —
+  the route tests prove export → import → export identity.
+- **Everything else is the tool's problem.** Marker conversion, redlines against the
+  pushed base, and turning comments into the tool's own syntax happen in the tool. Kuhn
+  never inspects doc content beyond citation keys.
+
 ## Slash Commands
 
 | Command | Agent | Action |
