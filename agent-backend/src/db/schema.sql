@@ -115,6 +115,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+-- Personal API tokens (issue #152): a long-lived bearer credential a user
+-- mints for scripts and external tools (the sciwriter interchange). Acts as
+-- that user through the same session() → guards path as a cookie. Only the
+-- sha256 of the raw token is stored; the raw value is returned once at mint.
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  token_hash    TEXT NOT NULL UNIQUE,
+  last_used_at  TEXT,
+  expires_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+
 -- ============================================================
 -- Projects
 -- ============================================================

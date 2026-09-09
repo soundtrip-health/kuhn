@@ -264,6 +264,25 @@ anyone or any system that can read collected logs. A shared/production magic-lin
 deployment requires SMTP, and the target production profile in STH-17 must refuse to
 start without it.
 
+### Personal API tokens
+
+Scripts and external tools (the sciwriter interchange, `docs/specs/interchange-bundle.md`)
+call the API as a user with a **personal API token** rather than a browser session. A
+signed-in user mints one from the account menu (avatar → *API tokens*): choose a name and
+an expiry (30 days, 90 days, or a year), copy the value once, and send it on every request as
+
+```
+Authorization: Bearer kuhn_…
+```
+
+The token acts as that user — same organizations, roles, and attribution on comments, file
+events, and history — through the same guards as a cookie. Kuhn stores only its SHA-256, so
+a lost token can only be revoked (same menu), never recovered. Tokens work in every auth
+mode, including `dev`. A token cannot create, list, or revoke tokens; that needs the app.
+Mint and revoke are recorded as `token.minted` / `token.revoked` rows in `auth_events` and
+as `api_token_minted` / `api_token_revoked` log lines; a refused bearer token logs
+`api_token_rejected`.
+
 ## Running as a service
 
 Any process supervisor works; the backend is a single foreground Node

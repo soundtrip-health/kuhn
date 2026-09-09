@@ -24,7 +24,9 @@
 import { query } from './db.js';
 import { config } from './config.js';
 import { getSessionUser } from './db/auth.js';
+import { resolveApiToken } from './db/api-tokens.js';
 import { getOrgSettings } from './db/org-settings.js';
+import { log } from './logger.js';
 
 const DEV_USER_EMAIL = process.env.DEV_USER_EMAIL || 'dev@kuhn.local';
 const DEFAULT_ORG_SLUG = 'default';
@@ -142,13 +144,46 @@ export async function ensureDefaultMembership(userId) {
 }
 
 /**
+ * The raw bearer token from an `Authorization: Bearer …` header, or null.
+ * Only the Bearer scheme is recognized; anything else is treated as absent
+ * so the cookie/dev path still applies.
+ */
+export function readBearerToken(req) {
+  const header = req.get?.('authorization') ?? req.headers?.authorization;
+  if (typeof header !== 'string') return null;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
+  return match ? match[1] : null;
+}
+
+/**
  * Express middleware: attach `req.user` (see module doc for the two modes).
  * Fails closed — 401 without a valid session outside dev mode, 503 if
  * identity can't be resolved at all (e.g. DB down) — so handlers never run
  * unscoped.
+ *
+ * A personal API token (issue #152) is a third way to present an identity,
+ * checked FIRST and in every mode: `Authorization: Bearer kuhn_…` resolves to
+ * the minting user (`req.authVia = 'api-token'`) or is refused outright — a
+ * request that chose to send a token never falls through to the dev header
+ * or a cookie, so a revoked token cannot be quietly rescued by either.
  */
 export async function session(req, res, next) {
   try {
+    const bearer = readBearerToken(req);
+    if (bearer) {
+      const user = resolveApiToken(bearer);
+      if (!user) {
+        log.warn('api_token_rejected', { path: req.path, method: req.method });
+        res.status(401).json({ error: 'authentication required', code: 'token_invalid' });
+        return;
+      }
+      const { tokenId, ...principal } = user;
+      req.user = principal;
+      req.authVia = 'api-token';
+      req.apiTokenId = tokenId;
+      next();
+      return;
+    }
     if (config.auth.mode === 'dev') {
       req.user = await resolveUser(req.get('x-kuhn-user'));
       await ensureDefaultMembership(req.user.id);

@@ -465,3 +465,108 @@ describe('dev mode & startup guard (story 007-002)', () => {
     }
   });
 });
+
+describe('personal API tokens (issue #152)', () => {
+  const tokensUrl = () => `${base}/api/me/tokens`;
+  const mint = (cookie, body, extraHeaders = {}) =>
+    fetch(tokensUrl(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cookie ? { Cookie: `kuhn_session=${encodeURIComponent(cookie)}` } : {}),
+        ...extraHeaders,
+      },
+      body: JSON.stringify(body),
+    });
+  const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+
+  beforeEach(() => {
+    querySync('DELETE FROM api_tokens');
+  });
+
+  it('a signed-in user mints a token, shown once, and it authenticates as them', async () => {
+    const { cookie } = await login('pi@lab.org');
+    const res = await mint(cookie, { name: 'sciwriter' });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.token).toMatch(/^kuhn_/);
+    expect(body).toMatchObject({ name: 'sciwriter' });
+    expect(typeof body.expires_at).toBe('string');
+
+    const probed = await probe(null, bearer(body.token));
+    expect(probed.status).toBe(200);
+    expect(await probed.json()).toEqual({ email: 'pi@lab.org' });
+
+    // The list never repeats the raw value.
+    const list = await fetch(tokensUrl(), { headers: { Cookie: `kuhn_session=${encodeURIComponent(cookie)}` } });
+    const { tokens } = await list.json();
+    expect(tokens).toHaveLength(1);
+    expect(JSON.stringify(tokens)).not.toContain(body.token);
+    expect(tokens[0]).toMatchObject({ id: body.id, name: 'sciwriter' });
+
+    const me = await fetch(`${base}/api/auth/me`, { headers: bearer(body.token) });
+    expect((await me.json()).via).toBe('api-token');
+  });
+
+  it('a bad, revoked or expired bearer token is 401 and never falls back to the dev header', async () => {
+    const { cookie } = await login('pi@lab.org');
+    const { token, id } = await (await mint(cookie, { name: 't' })).json();
+
+    expect((await probe(null, bearer('kuhn_nope'))).status).toBe(401);
+    expect((await probe(null, { Authorization: 'Basic abc' })).status).toBe(401);
+
+    querySync("UPDATE api_tokens SET expires_at = '2020-01-01T00:00:00.000Z' WHERE id = $1", [id]);
+    expect((await probe(null, bearer(token))).status).toBe(401);
+    querySync("UPDATE api_tokens SET expires_at = '2999-01-01T00:00:00.000Z' WHERE id = $1", [id]);
+    expect((await probe(null, bearer(token))).status).toBe(200);
+
+    const del = await fetch(`${tokensUrl()}/${id}`, {
+      method: 'DELETE', headers: { Cookie: `kuhn_session=${encodeURIComponent(cookie)}` },
+    });
+    expect(del.status).toBe(204);
+    expect((await probe(null, bearer(token))).status).toBe(401);
+
+    // Dev mode: a request that SENDS a bad token is refused even though the
+    // header user would otherwise be accepted — choosing token auth is final.
+    config.auth.mode = 'dev';
+    try {
+      expect((await probe(null, { ...bearer(token), 'x-kuhn-user': 'someone@lab.org' })).status).toBe(401);
+    } finally {
+      config.auth.mode = 'magic-link';
+    }
+  });
+
+  it('works in dev mode too, and a token cannot manage tokens', async () => {
+    const { cookie } = await login('pi@lab.org');
+    const { token } = await (await mint(cookie, { name: 't' })).json();
+    config.auth.mode = 'dev';
+    try {
+      const probed = await probe(null, bearer(token));
+      expect(probed.status).toBe(200);
+      expect(await probed.json()).toEqual({ email: 'pi@lab.org' });
+    } finally {
+      config.auth.mode = 'magic-link';
+    }
+    // Token-authenticated calls to the token routes are refused (a leaked
+    // token must not be able to mint itself a replacement or list siblings).
+    expect((await mint(null, { name: 'child' }, bearer(token))).status).toBe(403);
+    expect((await fetch(tokensUrl(), { headers: bearer(token) })).status).toBe(403);
+  });
+
+  it('validates input and scopes revoke to the owner', async () => {
+    const { cookie: pi } = await login('pi@lab.org');
+    const { cookie: other } = await login('other@lab.org');
+    expect((await mint(pi, { name: '' })).status).toBe(400);
+    expect((await mint(pi, { name: 't', expires_in_days: 9999 })).status).toBe(400);
+    const { id } = await (await mint(pi, { name: 't', expires_in_days: 30 })).json();
+    const foreign = await fetch(`${tokensUrl()}/${id}`, {
+      method: 'DELETE', headers: { Cookie: `kuhn_session=${encodeURIComponent(other)}` },
+    });
+    expect(foreign.status).toBe(404);
+    expect((await fetch(`${tokensUrl()}/abc`, {
+      method: 'DELETE', headers: { Cookie: `kuhn_session=${encodeURIComponent(pi)}` },
+    })).status).toBe(400);
+    const events = querySync("SELECT type FROM auth_events WHERE type LIKE 'token.%' ORDER BY id").rows.map((r) => r.type);
+    expect(events).toEqual(['token.minted']);
+  });
+});

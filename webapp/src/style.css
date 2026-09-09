@@ -1791,6 +1791,18 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .sh-link-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
 .sh-revoke { flex: none; }
 
+/* API tokens dialog (api-tokens.ts) — reuses the share-dialog card and
+   list primitives; only the mint form differs. */
+.tk-name {
+  flex: 1; min-width: 160px;
+  font: var(--ui-body); color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+.tk-name:focus { outline: none; border-color: var(--accent-line); }
+.tk-expired { color: var(--ink-3); font-style: italic; }
+.tk-code { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); background: var(--soft); padding: 1px 4px; border-radius: var(--r-xs); }
+
 /* ---- Org admin & platform console (epic 011) ------------------------
    Shared admin primitives (plan §4.6): org-admin.ts defines the markup;
    admin-console.ts (wave 4) reuses these classes untouched. */

@@ -4,6 +4,7 @@
 // here rather than in the org menu: the org menu is about *where* you are,
 // this is about *who* you are. Same button+menu idiom as help.ts.
 
+import { openApiTokensDialog } from './api-tokens';
 import { icon } from './icons';
 import { authMode, currentUser, signOut } from './login';
 import * as workspace from './workspace';
@@ -132,6 +133,21 @@ function renderMenu(menu: HTMLElement): void {
 
   const foot = document.createElement('div');
   foot.className = 'user-menu-foot';
+  // Personal API tokens (issue #152): scripts and external tools (the
+  // sciwriter interchange) act as this user with a bearer token. Works in
+  // dev mode too, so it sits above the mode-specific sign-out line.
+  if (me) {
+    const tokens = document.createElement('button');
+    tokens.type = 'button';
+    tokens.className = 'user-menu-item';
+    tokens.innerHTML = `${icon('terminal', { size: 14, stroke: 1.8 })}<span>API tokens</span>`;
+    tokens.title = 'Create and revoke bearer tokens for scripts and external tools';
+    tokens.addEventListener('click', () => {
+      menu.hidden = true;
+      openApiTokensDialog();
+    });
+    foot.append(tokens);
+  }
   if (authMode() === 'dev') {
     foot.append(line('user-menu-note', 'Dev mode — identity comes from the x-kuhn-user header; there is no session to sign out of.'));
   } else {
