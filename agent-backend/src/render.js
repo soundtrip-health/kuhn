@@ -15,6 +15,7 @@ import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } f
 import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
 import { getProject } from './db/projects.js';
 import { MARP_BUILTIN_THEMES, resolveThemeCss } from './db/slide-themes.js';
+import { resolveTemplateSource } from './db/typst-templates.js';
 
 export const EXPORT_FORMATS = {
   // The rendered PDF as an attachment download — the same bytes the preview
@@ -44,6 +45,26 @@ export function marpThemeName(source) {
   if (!fm) return null;
   const m = /^\s*theme\s*:\s*["']?([A-Za-z0-9][\w-]*)["']?\s*$/m.exec(fm[1]);
   return m ? m[1] : null;
+}
+
+/**
+ * The document's front-matter `template:` name (leading block only) — the
+ * Typst page layout it renders with (typst-templates/). Absent → Pandoc's
+ * built-in layout.
+ */
+export function typstTemplateName(source) {
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source.toString('utf-8'));
+  if (!fm) return null;
+  const m = /^\s*template\s*:\s*["']?([A-Za-z0-9][\w-]*)["']?\s*$/m.exec(fm[1]);
+  return m ? m[1] : null;
+}
+
+/** Resolve the template through the org/catalog library (throws on unknown names). */
+async function resolveTypstTemplate(projectId, source) {
+  const name = typstTemplateName(source);
+  if (!name) return null;
+  const project = await getProject(projectId);
+  return resolveTemplateSource(project?.org_id ?? null, name);
 }
 
 /**
@@ -102,9 +123,11 @@ export async function renderPdf(projectId, sourcePath) {
   // Marp decks skip citeproc entirely (STH-57): slides cite informally.
   let bib = null;
   let theme = null;
+  let template = null;
   if (marp) {
     theme = await resolveMarpTheme(projectId, source); // theme edits must re-render (hash below)
   } else {
+    template = await resolveTypstTemplate(projectId, source); // throws TemplateError on unknown names
     await materializeBib(projectId, bibPath).catch(() => {});
     bib = await readIfExists(projectId, bibPath);
   }
@@ -112,6 +135,7 @@ export async function renderPdf(projectId, sourcePath) {
   const hash = createHash('sha256')
     .update(`${projectId}:${sourcePath}:${marp ? 'marp:' : ''}`).update(source).update(bib ?? '')
     .update(theme?.css ?? '')
+    .update(template ? `template:${template.origin}:${template.source}` : '')
     .digest('hex');
   if (pdfCache.has(hash)) return { pdf: pdfCache.get(hash), cached: true };
   if (inFlight.has(hash)) {
@@ -120,7 +144,7 @@ export async function renderPdf(projectId, sourcePath) {
 
   const run = marp
     ? doRenderMarp(projectId, sourcePath, hash, theme)
-    : doRender(projectId, sourcePath, bibPath, bib, hash);
+    : doRender(projectId, sourcePath, bibPath, bib, hash, template);
   inFlight.set(hash, run);
   try {
     return { pdf: await run, cached: false };
@@ -129,15 +153,23 @@ export async function renderPdf(projectId, sourcePath) {
   }
 }
 
-async function doRender(projectId, sourcePath, bibPath, bib, hash) {
+async function doRender(projectId, sourcePath, bibPath, bib, hash, template = null) {
   // Stage 1: markdown → Typst. Stage 2 compiles inside the read-only project
   // mount, so the intermediate .typ is written next to the source (relative
-  // image paths keep resolving) and removed afterwards.
-  const { output: typSource } = await pandocConvert(
-    projectId, sourcePath, 'preview.typ', pandocArgs(bibPath, bib != null),
-  );
+  // image paths keep resolving) and removed afterwards. A template is
+  // materialized beside it under a hash-derived name and handed to Pandoc as
+  // the `template` variable, which its Typst layout turns into
+  // `#import "<file>": conf` — a relative import, resolved by Typst against
+  // the .typ's own directory. (A -V variable, not -M metadata: metadata
+  // values are markdown-escaped, which mangles the leading dot.)
   const dir = dirname(sourcePath);
-  const typPath = `${dir === '.' ? '' : `${dir}/`}.preview-${hash.slice(0, 12)}.typ`;
+  const prefix = `${dir === '.' ? '' : `${dir}/`}.preview-${hash.slice(0, 12)}`;
+  const typPath = `${prefix}.typ`;
+  const templateFile = `.preview-${hash.slice(0, 12)}.tpl.typ`;
+  const args = pandocArgs(bibPath, bib != null);
+  if (template) args.push(`--variable=template=${templateFile}`);
+  const { output: typSource } = await pandocConvert(projectId, sourcePath, 'preview.typ', args);
+  if (template) await writeProjectFile(projectId, `${prefix}.tpl.typ`, template.source);
   await writeProjectFile(projectId, typPath, typSource);
   try {
     const { output: pdf } = await renderTypstPdf(projectId, typPath);
@@ -145,6 +177,7 @@ async function doRender(projectId, sourcePath, bibPath, bib, hash) {
     return pdf;
   } finally {
     await deleteProjectEntry(projectId, typPath).catch(() => {});
+    if (template) await deleteProjectEntry(projectId, `${prefix}.tpl.typ`).catch(() => {});
   }
 }
 

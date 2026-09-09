@@ -6,6 +6,7 @@ import { AGENTS, TOOLS, ASSIGNMENTS, DEFAULT_ORG, DEFAULT_USER } from './seed-da
 import { catalogFileExists, loadCatalogManifest } from './knowledge-catalog.js';
 import { scriptFileExists, loadScriptManifest } from './script-catalog.js';
 import { themeFileExists, loadThemeManifest } from './slide-themes.js';
+import { templateFileExists, loadTemplateManifest } from './typst-templates.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -82,6 +83,7 @@ export async function seed() {
   await seedKnowledgeCatalog();
   await seedScriptCatalog();
   await seedSlideThemeCatalog();
+  await seedTypstTemplateCatalog();
 
   console.log('[seed] Applied default tenant, agents, tools, assignments, and catalogs.');
 }
@@ -291,4 +293,49 @@ export async function seedSlideThemeCatalog() {
   });
 
   console.log(`[seed] Slide theme catalog v${manifest.catalog_version}: ${rows.length} themes.`);
+}
+
+/**
+ * Typst template catalog: seed catalog_typst_templates from
+ * typst-templates/catalog.json — the same contract as the slide themes: a
+ * missing .typ marks the row unavailable, rows that leave the manifest go
+ * available = 0, never deleted.
+ */
+export async function seedTypstTemplateCatalog() {
+  const manifest = await loadTemplateManifest();
+  if (!manifest) {
+    console.warn('[seed] typst-templates/catalog.json not found — Typst template catalog not seeded.');
+    return;
+  }
+
+  const rows = [];
+  for (const tpl of manifest.templates) {
+    const exists = await templateFileExists(tpl.path);
+    if (!exists) {
+      console.warn(`[seed] typst template ${tpl.name}: file missing (${tpl.path}) — marked unavailable.`);
+    }
+    rows.push({ ...tpl, available: exists ? 1 : 0 });
+  }
+
+  transaction(() => {
+    for (const t of rows) {
+      querySync(
+        `INSERT INTO catalog_typst_templates (name, title, path, description, available)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (name) DO UPDATE SET
+           title = excluded.title,
+           path = excluded.path,
+           description = excluded.description,
+           available = excluded.available`,
+        [t.name, t.title, t.path, t.description ?? null, t.available],
+      );
+    }
+    querySync(
+      `UPDATE catalog_typst_templates SET available = 0
+       WHERE name NOT IN (SELECT value FROM json_each($1))`,
+      [JSON.stringify(rows.map((t) => t.name))],
+    );
+  });
+
+  console.log(`[seed] Typst template catalog v${manifest.catalog_version}: ${rows.length} templates.`);
 }

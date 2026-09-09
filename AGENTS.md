@@ -23,6 +23,7 @@ kuhn/
 ├── guidance-docs/   # Kuhn knowledge catalog (issue #65): catalog.json + curated reference corpus, DB-seeded at startup
 ├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
 ├── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
+├── typst-templates/ # Kuhn Typst page-layout catalog: catalog.json + .typ templates (NIH, manuscript), DB-seeded at startup
 └── test-projects/   # end-to-end test-project fixtures (wizard answers + prompts + data prep) — see test-projects/README.md
 ```
 
@@ -60,7 +61,7 @@ project files both live under an explicit data directory, `KUHN_DATA_DIR`
 `data/files/<projectId>/`. Override the DB path alone with `KUHN_SQLITE_PATH`,
 or the file root with `PROJECTS_ROOT`. Render/export shell out to **sandboxed**
 Typst/Pandoc Docker images
-(`docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The analyst's `run_script` R runtime is **built**, not pulled: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network). The marp slide renderer is also built: `docker build -t kuhn/marp:latest docker/marp` (STH-61; adds LibreOffice for editable pptx — the pulled `marpteam/marp-cli` image works too, minus editable pptx).
+(`docker pull pandoc/core:latest minidocks/poppler:latest` — poppler powers org-library PDF ingestion, story 006-002; marp renders slide decks, STH-57). The Typst renderer is **built**: `docker build -t kuhn/typst:latest docker/typst` (the official image plus the metric-compatible fonts the page-layout templates name — Liberation Sans for Arial etc.; the stock `ghcr.io/typst/typst` image works via `SANDBOX_TYPST_IMAGE`, but NIH/journal templates then fall back to Libertinus and page counts drift). The analyst's `run_script` R runtime is also built: `docker build -t kuhn/r-analysis:latest docker/r-analysis` (issue #68b; packages are baked in because the sandbox has no network). So is the marp slide renderer: `docker build -t kuhn/marp:latest docker/marp` (STH-61; adds LibreOffice for editable pptx — the pulled `marpteam/marp-cli` image works too, minus editable pptx).
 
 **The local data directory is disposable.** There is no production data in a
 dev checkout: every project under `data/` is a test project. Delete

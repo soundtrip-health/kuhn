@@ -1591,6 +1591,69 @@ export async function setOrgSlideThemeStatus(
   return ((await res.json()) as { theme: OrgSlideTheme }).theme;
 }
 
+// ---- Typst templates (page layout: margins, font, spacing) ----
+
+export interface CatalogTypstTemplate {
+  name: string;
+  title: string;
+  description: string | null;
+  available: boolean;
+  /** An ACTIVE org template of the same name wins at render time. */
+  shadowed?: boolean;
+}
+
+export interface OrgTypstTemplate {
+  id: number;
+  name: string;
+  title: string;
+  status: 'active' | 'disabled';
+  source_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgTypstTemplatesPayload {
+  catalog: CatalogTypstTemplate[];
+  templates: OrgTypstTemplate[];
+}
+
+export async function getOrgTypstTemplates(orgId: number): Promise<OrgTypstTemplatesPayload> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/typst-templates`));
+  return (await res.json()) as OrgTypstTemplatesPayload;
+}
+
+/** Upload/replace an org Typst template (owner-only); the name comes from its `// @template` header. */
+export async function uploadOrgTypstTemplate(
+  orgId: number,
+  source: string,
+  title?: string,
+): Promise<OrgTypstTemplatesPayload & { template: OrgTypstTemplate }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/typst-templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, title }),
+    }),
+  );
+  return (await res.json()) as OrgTypstTemplatesPayload & { template: OrgTypstTemplate };
+}
+
+/** Enable/disable one org Typst template (owner-only). */
+export async function setOrgTypstTemplateStatus(
+  orgId: number,
+  name: string,
+  status: 'active' | 'disabled',
+): Promise<OrgTypstTemplate> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/typst-templates/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+  return ((await res.json()) as { template: OrgTypstTemplate }).template;
+}
+
 // ---- Shared scripts (issue #68) ----
 
 export interface ScriptArg {

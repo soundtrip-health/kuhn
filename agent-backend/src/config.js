@@ -252,6 +252,13 @@ export const config = {
     // Theme CSS is text: small, diffable, stored in the DB for org uploads.
     maxThemeBytes: parseInt(process.env.SLIDE_THEME_MAX_BYTES || String(256 * 1024)),
   },
+  typstTemplates: {
+    // Typst page-layout templates — typst-templates/catalog.json plus the
+    // .typ files it points at; same deployment contract as the slide themes.
+    catalogRoot: process.env.KUHN_TYPST_TEMPLATES
+      || fileURLToPath(new URL('../../typst-templates', import.meta.url)),
+    maxTemplateBytes: parseInt(process.env.TYPST_TEMPLATE_MAX_BYTES || String(256 * 1024)),
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).
@@ -279,7 +286,13 @@ export const config = {
     // Container images for document-derived code execution (Typst/Pandoc now,
     // analyst Python later). All sandbox runs: no network, project mounted
     // read-only, CPU/memory/time limits.
-    typstImage: process.env.SANDBOX_TYPST_IMAGE || 'ghcr.io/typst/typst:latest',
+    // Typst is a Kuhn-BUILT image (docker/typst: the official image plus the
+    // metric-compatible fonts grant/journal templates name — Liberation for
+    // Arial/Times, Carlito for Calibri, URW for Helvetica/Palatino):
+    // docker build -t kuhn/typst:latest docker/typst. The stock
+    // ghcr.io/typst/typst image also works, but templates then fall back to
+    // Libertinus and page counts drift from what Word/NIH would show.
+    typstImage: process.env.SANDBOX_TYPST_IMAGE || 'kuhn/typst:latest',
     pandocImage: process.env.SANDBOX_PANDOC_IMAGE || 'pandoc/core:latest',
     // PDF text extraction for org-library ingestion (story 006-002)
     popplerImage: process.env.SANDBOX_POPPLER_IMAGE || 'minidocks/poppler:latest',
