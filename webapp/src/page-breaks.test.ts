@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { blockKey, computeLines, type PageMap } from './page-breaks';
+import { blockKey, computeBadges, computeLines, type PageMap } from './page-breaks';
 
 // A minimal stand-in for a ProseMirror doc: top-level blocks with textContent.
 const doc = (texts: string[]) => ({
-  forEach(fn: (node: { textContent: string }, offset: number) => void) {
+  forEach(fn: (node: { textContent: string; nodeSize: number }, offset: number) => void) {
     let offset = 0;
-    for (const t of texts) { fn({ textContent: t }, offset); offset += t.length + 2; }
+    for (const t of texts) { fn({ textContent: t, nodeSize: t.length + 2 }, offset); offset += t.length + 2; }
   },
 }) as unknown as Parameters<typeof computeLines>[0];
 
@@ -21,6 +21,20 @@ describe('blockKey', () => {
     expect(blockKey('Specific Aims: a study — of things!')).toBe('specificaimsastudyofthin');
     expect(blockKey('  \\newpage ')).toBe('newpage');
     expect(blockKey('')).toBe('');
+  });
+});
+
+describe('computeBadges', () => {
+  it('puts a badge at the end of each budgeted heading it can find', () => {
+    const m = map([['specificaims', 1], ['aimtext', 1], ['researchstrategy', 2]]);
+    m.sections = [
+      { index: 0, title: 'Specific Aims', key: 'specificaims', page: 1, pages: 1.07, limit: 1, over: true },
+      { index: 2, title: 'Research Strategy', key: 'researchstrategy', page: 2, pages: 0.4, limit: 12, over: false },
+      { index: 9, title: 'Ghost', key: 'ghost', page: 2, pages: 1, limit: 1, over: false },
+    ];
+    const badges = computeBadges(doc(['Specific Aims', 'Aim text.', 'Research Strategy']), m);
+    // pos = block offset + nodeSize - 1 (inside the heading, after its text)
+    expect(badges.map((b) => [b.pos, b.section.title])).toEqual([[14, 'Specific Aims'], [15 + 11 + 19 - 1, 'Research Strategy']]);
   });
 });
 
