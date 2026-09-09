@@ -266,6 +266,47 @@ async function expectOk(res: Response): Promise<Response> {
 export interface Me {
   user: { id: number; email: string; display_name: string | null; is_superadmin: boolean };
   mode: 'dev' | 'magic-link';
+  /** How this request authenticated: a cookie/dev header, or a bearer API token. */
+  via?: 'session' | 'api-token';
+}
+
+// ---- Personal API tokens (issue #152) ----
+
+/** Token metadata as the list endpoint returns it — never the raw token. */
+export interface ApiToken {
+  id: number;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string;
+  revokedAt: string | null;
+}
+
+/** The caller's unrevoked tokens, newest first. */
+export async function listApiTokens(): Promise<ApiToken[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/me/tokens`));
+  const { tokens } = (await res.json()) as { tokens: ApiToken[] };
+  return tokens;
+}
+
+/** Mint a token. The response's `token` is the only time the raw value is
+ *  visible; the backend stores just its hash. */
+export async function mintApiToken(
+  params: { name: string; expiresInDays?: number },
+): Promise<{ token: string; id: number; name: string; expires_at: string }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/me/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: params.name, expires_in_days: params.expiresInDays }),
+    }),
+  );
+  return (await res.json()) as { token: string; id: number; name: string; expires_at: string };
+}
+
+/** Revoke one of the caller's tokens; scripts using it get 401 from then on. */
+export async function revokeApiToken(id: number): Promise<void> {
+  await expectOk(await apiFetch(`${BACKEND_URL}/api/me/tokens/${id}`, { method: 'DELETE' }));
 }
 
 /**

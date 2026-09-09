@@ -25,7 +25,14 @@ import {
   redeemInvitation,
 } from '../db/invitations.js';
 import { recordAccessRequest, resolvePendingRequestsFor } from '../db/access-requests.js';
+import {
+  ApiTokenError,
+  createApiToken,
+  listApiTokens,
+  revokeApiToken,
+} from '../db/api-tokens.js';
 import { recordAuthEvent } from '../db/auth-events.js';
+import { log } from '../logger.js';
 import { sendAccessRequestReceived, sendInviteLink, sendLoginLink } from '../mailer.js';
 import {
   findEligibleUser,
@@ -264,9 +271,90 @@ authRouter.post('/api/auth/logout', async (req, res) => {
 
 const meRouter = Router();
 
-/** GET /api/auth/me — the session user and the active auth mode. */
+/** GET /api/auth/me — the session user, the active auth mode, and how this
+ *  request authenticated (`session` — cookie or dev header — or `api-token`). */
 meRouter.get('/api/auth/me', (req, res) => {
-  res.json({ user: req.user, mode: config.auth.mode === 'dev' ? 'dev' : 'magic-link' });
+  res.json({
+    user: req.user,
+    mode: config.auth.mode === 'dev' ? 'dev' : 'magic-link',
+    via: req.authVia ?? 'session',
+  });
+});
+
+// ---- Personal API tokens (issue #152) ----------------------------------
+// Minted and managed from a real session only: a request that authenticated
+// WITH a token is refused here, so a leaked token can neither list its
+// siblings nor mint itself a replacement with a longer life.
+
+function requireSessionNotToken(req, res) {
+  if (req.authVia === 'api-token') {
+    res.status(403).json({ error: 'API tokens cannot manage API tokens — sign in to the app', code: 'token_scope' });
+    return false;
+  }
+  return true;
+}
+
+/** POST /api/me/tokens — body { name, expires_in_days? }. The raw token is
+ *  in this response and nowhere else. */
+meRouter.post('/api/me/tokens', (req, res) => {
+  if (!requireSessionNotToken(req, res)) return;
+  const { name, expires_in_days: expiresInDays } = req.body ?? {};
+  let minted;
+  try {
+    minted = createApiToken(req.user.id, { name, expiresInDays });
+  } catch (err) {
+    if (err instanceof ApiTokenError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+  recordAuthEvent({
+    type: 'token.minted',
+    actorUserId: req.user.id,
+    email: req.user.email,
+    meta: { tokenId: minted.row.id, name: minted.row.name, expiresAt: minted.row.expiresAt },
+  });
+  log.info('api_token_minted', {
+    userId: req.user.id, tokenId: minted.row.id, name: minted.row.name, expiresAt: minted.row.expiresAt,
+  });
+  res.status(201).json({
+    token: minted.token,
+    id: minted.row.id,
+    name: minted.row.name,
+    created_at: minted.row.createdAt,
+    expires_at: minted.row.expiresAt,
+  });
+});
+
+/** GET /api/me/tokens — the caller's unrevoked tokens (metadata only). */
+meRouter.get('/api/me/tokens', (req, res) => {
+  if (!requireSessionNotToken(req, res)) return;
+  res.json({ tokens: listApiTokens(req.user.id) });
+});
+
+/** DELETE /api/me/tokens/:id — revoke one of the caller's tokens. 204, or
+ *  404 for an unknown / already-revoked / someone else's id. */
+meRouter.delete('/api/me/tokens/:id', (req, res) => {
+  if (!requireSessionNotToken(req, res)) return;
+  const tokenId = Number(req.params.id);
+  if (!Number.isInteger(tokenId)) {
+    res.status(400).json({ error: 'invalid token id' });
+    return;
+  }
+  const revoked = revokeApiToken(req.user.id, tokenId);
+  if (!revoked) {
+    res.status(404).json({ error: 'token not found' });
+    return;
+  }
+  recordAuthEvent({
+    type: 'token.revoked',
+    actorUserId: req.user.id,
+    email: req.user.email,
+    meta: { tokenId: revoked.id, name: revoked.name },
+  });
+  log.info('api_token_revoked', { userId: req.user.id, tokenId: revoked.id, name: revoked.name });
+  res.status(204).end();
 });
 
 export { authRouter, meRouter };
