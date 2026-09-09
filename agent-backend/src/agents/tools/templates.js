@@ -34,8 +34,8 @@ export function createTemplateTools(ctx) {
         const catalog = listCatalogTemplates().filter((t) => t.available && !orgNames.has(t.name));
         const lines = [
           "Available Typst templates (use as `template: <name>` in the document's front matter):",
-          ...catalog.map((t) => `- ${t.name} — ${t.title}${t.description ? `: ${t.description}` : ''}`),
-          ...org.map((t) => `- ${t.name} — ${t.title} (organization template)`),
+          ...catalog.map((t) => `- ${t.name} — ${t.title}${t.description ? `: ${t.description}` : ''}${t.docx_path ? ' [Word reference for docx export]' : ''}`),
+          ...org.map((t) => `- ${t.name} — ${t.title} (organization template)${t.docx_bytes ? ' [Word reference for docx export]' : ''}`),
         ];
         return toolOk(lines.join('\n'));
       } catch (err) {

@@ -102,6 +102,28 @@ describe('typst-template routes', () => {
     expect((await post({ source: `// @template acme\n${CONF}` })).status).not.toBe(200);
   });
 
+  it('PUT/GET docx attaches and serves a Word reference document; non-zip bodies are refused', async () => {
+    await post({ source: `// @template acme\n${CONF}` });
+    const put = (body, type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') =>
+      fetch(`${base}/api/orgs/10/typst-templates/acme/docx`, { method: 'PUT', headers: { 'Content-Type': type }, body });
+    expect((await put('not a zip')).status).toBe(400);
+    const ok = await put(Buffer.from('PK\x03\x04ref'));
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body.template).toMatchObject({ name: 'acme', docx_bytes: 7 });
+    expect(body.templates[0].docx_bytes).toBe(7);
+    expect(body.catalog).toMatchObject([{ name: 'nih-grant', docx: false }]);
+
+    const got = await fetch(`${base}/api/orgs/10/typst-templates/acme/docx`);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toMatch(/wordprocessingml/);
+    expect(Buffer.from(await got.arrayBuffer()).toString()).toBe('PK\x03\x04ref');
+
+    expect((await put('')).status).toBe(200); // empty body removes it
+    expect((await fetch(`${base}/api/orgs/10/typst-templates/acme/docx`)).status).toBe(404);
+    expect((await fetch(`${base}/api/orgs/10/typst-templates/ghost/docx`, { method: 'PUT', body: Buffer.from('PK\x03\x04x') })).status).toBe(404);
+  });
+
   it('caps template size', async () => {
     const { config } = await import('../config.js');
     const res = await post({ source: `// @template big\n${CONF}\n// ${'x'.repeat(config.typstTemplates.maxTemplateBytes + 1)}` });

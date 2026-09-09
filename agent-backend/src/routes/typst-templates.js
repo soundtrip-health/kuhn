@@ -4,7 +4,7 @@
 // in the DB. Same guard contract as the slide themes: org reads are
 // member-level, writes are owner-only and audited.
 
-import { Router } from 'express';
+import express, { Router } from 'express';
 
 import { config } from '../config.js';
 import { recordAuthEvent } from '../db/auth-events.js';
@@ -12,6 +12,7 @@ import {
   getOrgTemplate,
   listCatalogTemplates,
   listOrgTemplates,
+  setOrgTemplateDocx,
   setOrgTemplateStatus,
   templateNameFromSource,
   upsertOrgTemplate,
@@ -25,6 +26,7 @@ const publicCatalogTemplate = (row) => ({
   title: row.title,
   description: row.description,
   available: !!row.available,
+  docx: !!row.docx_path, // ships a Word reference document
 });
 
 // Lists stay light: source comes back only from the single-template GET.
@@ -34,6 +36,7 @@ const publicOrgTemplate = (row) => ({
   title: row.title,
   status: row.status,
   source_bytes: Buffer.byteLength(row.source, 'utf-8'),
+  docx_bytes: row.docx_bytes ?? (row.docx ? row.docx.length : 0),
   created_at: row.created_at,
   updated_at: row.updated_at,
 });
@@ -118,6 +121,50 @@ router.post('/api/orgs/:orgId/typst-templates', async (req, res) => {
     meta: { template: name },
   });
   res.json({ template: publicOrgTemplate(template), ...templatesPayload(ctx.orgId) });
+});
+
+/**
+ * PUT /api/orgs/:orgId/typst-templates/:name/docx — owner; the raw .docx
+ * bytes as the body. The Word reference document pandoc's docx export uses
+ * for this template (page geometry + styles). An empty body removes it.
+ */
+router.put(
+  '/api/orgs/:orgId/typst-templates/:name/docx',
+  (req, res, next) => express.raw({ type: () => true, limit: config.typstTemplates.maxDocxBytes })(req, res, next),
+  async (req, res) => {
+    const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
+    if (!ctx) return;
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    // A .docx is a zip: "PK\x03\x04" — reject anything else before it reaches pandoc.
+    if (body.length > 0 && !(body[0] === 0x50 && body[1] === 0x4b && body[2] === 0x03 && body[3] === 0x04)) {
+      res.status(400).json({ error: 'the body must be a .docx file' });
+      return;
+    }
+    const updated = setOrgTemplateDocx(ctx.orgId, req.params.name, body.length ? body : null);
+    if (!updated) {
+      res.status(404).json({ error: 'template not found' });
+      return;
+    }
+    recordAuthEvent({
+      type: body.length ? 'typst_template.docx_upload' : 'typst_template.docx_remove',
+      actorUserId: req.user.id, orgId: ctx.orgId, meta: { template: updated.name, bytes: body.length },
+    });
+    res.json({ template: publicOrgTemplate(getOrgTemplate(ctx.orgId, updated.name)), ...templatesPayload(ctx.orgId) });
+  },
+);
+
+/** GET /api/orgs/:orgId/typst-templates/:name/docx — the Word reference document, as a download. */
+router.get('/api/orgs/:orgId/typst-templates/:name/docx', async (req, res) => {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, 'viewer');
+  if (!ctx) return;
+  const template = getOrgTemplate(ctx.orgId, req.params.name);
+  if (!template?.docx) {
+    res.status(404).json({ error: 'no Word reference document' });
+    return;
+  }
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.set('Content-Disposition', `attachment; filename="${template.name}.docx"`);
+  res.send(Buffer.from(template.docx));
 });
 
 /** PATCH /api/orgs/:orgId/typst-templates/:name — owner, { status: 'active'|'disabled' }. */

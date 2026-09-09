@@ -22,8 +22,10 @@ Current capabilities:
 - **Live preview & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations)
   plus one-click docx/LaTeX export, all sandboxed. A `\newpage` line forces a page break in
   every output (the Pandoc/R Markdown convention), and `template: nih-grant` (or
-  `manuscript`) in a document's front matter renders it with that page layout — NIH's
-  0.5 in margins and Arial 11 pt, so the preview's page count is the one that matters.
+  `manuscript`) in a document's front matter — or as the project's default, picked in the
+  setup wizard — renders it with that page layout — NIH's 0.5 in margins and Arial 11 pt, so
+  the preview's page count is the one that matters. The Word export carries the same layout
+  through the template's reference `.docx`.
   After each render the editor draws dashed **page-break lines** where the PDF's pages
   actually turn (positions come from Typst, not an estimate) and the status bar shows the
   page count; the lines dim when the document is edited until the next render. Declare hard

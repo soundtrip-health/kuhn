@@ -10,7 +10,10 @@
 // default Typst template passes (typst-templates/default.typ is that partial
 // verbatim). A document selects one with `template: <name>` in its front
 // matter; render.js materializes the source next to the temp .typ and points
-// Pandoc's `template` variable at it.
+// Pandoc's `template` variable at it. A template may pair a Word reference
+// document (.docx; pandoc --reference-doc) so docx exports carry the same
+// page geometry and styles — typst-templates/tools/make-reference-docx.py
+// generates the catalog ones.
 
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
@@ -115,7 +118,12 @@ export function validateTemplateManifest(manifest) {
     }
     try {
       resolveTemplateFile(tpl.path); // confinement is a manifest invariant
+      if (tpl.docx != null) {
+        if (typeof tpl.docx !== 'string' || !tpl.docx.endsWith('.docx')) fail(`template ${tpl.name}: docx must be a .docx path`);
+        resolveTemplateFile(tpl.docx);
+      }
     } catch (err) {
+      if (err instanceof TemplateError && err.code === 'invalid_manifest') throw err;
       fail(`template ${tpl.name}: invalid path (${err.message})`);
     }
     names.add(tpl.name);
@@ -147,9 +155,12 @@ export function listCatalogTemplates() {
   return querySync('SELECT * FROM catalog_typst_templates ORDER BY name').rows;
 }
 
+/** Lists leave the Word reference blob out: `docx_bytes` says whether one exists. */
 export function listOrgTemplates(orgId) {
   return querySync(
-    'SELECT * FROM org_typst_templates WHERE org_id = $1 ORDER BY name', [orgId],
+    `SELECT id, org_id, name, title, source, status, created_by, created_at, updated_at,
+            length(docx) AS docx_bytes
+     FROM org_typst_templates WHERE org_id = $1 ORDER BY name`, [orgId],
   ).rows;
 }
 
@@ -172,6 +183,17 @@ export function upsertOrgTemplate({ orgId, name, title, source, createdBy = null
      RETURNING *`,
     [orgId, name, title, source, createdBy],
   ).rows[0];
+}
+
+/** Attach (or replace) the Word reference document of an org template; null removes it. */
+export function setOrgTemplateDocx(orgId, name, docx) {
+  return querySync(
+    `UPDATE org_typst_templates
+     SET docx = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE org_id = $1 AND name = $2
+     RETURNING id, org_id, name, title, status, created_by, created_at, updated_at, length(docx) AS docx_bytes`,
+    [orgId, name, docx],
+  ).rows[0] ?? null;
 }
 
 export function setOrgTemplateStatus(orgId, name, status) {
@@ -209,6 +231,36 @@ export async function resolveTemplateSource(orgId, name) {
       return { name, source: await readCatalogTemplateFile(cat.path), origin: 'catalog' };
     } catch (err) {
       throw new TemplateError('not_found', `Template "${name}" is missing from this deployment (${err.message})`);
+    }
+  }
+  throw new TemplateError('not_found', `Unknown template "${name}" — see the template list (front matter \`template:\`)`);
+}
+
+/**
+ * The Word reference document for a `template:` name at docx export time —
+ * same shadowing as resolveTemplateSource. Null when the name is absent or
+ * the template has no reference document (Pandoc's stock one applies); an
+ * unknown name throws exactly as the Typst side does.
+ * @returns {Promise<{ name: string, docx: Buffer, origin: 'org'|'catalog' }|null>}
+ */
+export async function resolveTemplateDocx(orgId, name) {
+  if (!name) return null;
+  if (orgId != null) {
+    const row = querySync(
+      `SELECT docx FROM org_typst_templates WHERE org_id = $1 AND name = $2 AND status = 'active'`,
+      [orgId, name],
+    ).rows[0];
+    if (row) return row.docx ? { name, docx: Buffer.from(row.docx), origin: 'org' } : null;
+  }
+  const cat = querySync(
+    'SELECT * FROM catalog_typst_templates WHERE name = $1 AND available = 1', [name],
+  ).rows[0];
+  if (cat) {
+    if (!cat.docx_path) return null;
+    try {
+      return { name, docx: await readFile(await realTemplateFile(cat.docx_path)), origin: 'catalog' };
+    } catch {
+      return null; // a missing reference document degrades to Pandoc's stock one
     }
   }
   throw new TemplateError('not_found', `Unknown template "${name}" — see the template list (front matter \`template:\`)`);

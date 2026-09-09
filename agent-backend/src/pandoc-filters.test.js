@@ -68,8 +68,20 @@ describe('pandocConvert argument validation', () => {
     await pandocConvert(1, 'doc.md', 'preview.typ', ['--variable=template=.preview-a67d145f6a6b.tpl.typ'], spawn);
     expect(spawn.args).toContain('--variable=template=.preview-a67d145f6a6b.tpl.typ');
     for (const bad of ['-o /etc/passwd', '--variable=template=$(id)', '--lua-filter=/x;rm', 'plain']) {
-      expect(() => pandocConvert(1, 'doc.md', 'preview.typ', [bad], spawn)).toThrow(/Invalid pandoc argument/);
+      await expect(pandocConvert(1, 'doc.md', 'preview.typ', [bad], spawn)).rejects.toThrow(/Invalid pandoc argument/);
     }
+  });
+});
+
+describe('pandocConvert reference document', () => {
+  it('materializes the Word reference into a read-only /reference mount, passes --reference-doc, and cleans up', async () => {
+    const spawn = fakeSpawn();
+    await pandocConvert(1, 'doc.md', 'export.docx', ['--standalone'], { referenceDoc: Buffer.from('PK\x03\x04ref') }, spawn);
+    const mount = spawn.args.find((a) => a.endsWith(':/reference:ro'));
+    expect(mount).toBeTruthy();
+    expect(spawn.args).toContain('--reference-doc=/reference/reference.docx');
+    expect(spawn.args.indexOf('--reference-doc=/reference/reference.docx')).toBeLessThan(spawn.args.indexOf('-o'));
+    await expect(readFile(mount.split(':')[0] + '/reference.docx')).rejects.toThrow(); // temp dir removed
   });
 });
 
@@ -151,6 +163,18 @@ describe.skipIf(!hasPandocImage)('pagebreak.lua (real pandoc)', () => {
     expect(typ).toContain('i: -1, key: "", page: here().page(), y: here().position().y.pt(), h: page.height.to-absolute().pt(), limits: ("Research Strategy": 12, "Specific Aims": 1)');
     expect(typ).not.toContain('Bogus'); // non-numeric limits dropped
     expect((await pandocConvert(1, 'doc.md', 'preview.typ', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`])).output.toString()).toContain('limits: (:)');
+  }, 60_000);
+
+  it('the NIH Word reference gives the docx export half-inch margins and Arial 11 pt', async () => {
+    const ref = await readFile(join(PANDOC_FILTERS_DIR, '../../../typst-templates/nih-grant.docx'));
+    const { output } = await pandocConvert(1, 'aims.md', 'export.docx', ['--standalone'], { referenceDoc: ref });
+    const doc = unzipEntry(output, 'word/document.xml');
+    expect(doc).toMatch(/<w:pgMar [^>]*w:left="720"/);
+    expect(doc).toMatch(/<w:pgSz [^>]*w:w="12240"/);
+    expect(doc).toMatch(/<w:pgSz [^>]*w:h="15840"/);
+    const styles = unzipEntry(output, 'word/styles.xml');
+    expect(styles).toMatch(/<w:rFonts w:ascii="Arial"/);
+    expect(styles).toMatch(/<w:sz w:val="22"/);
   }, 60_000);
 
   it('leaves the raw TeX alone for LaTeX export', async () => {
