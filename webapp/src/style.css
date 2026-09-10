@@ -597,6 +597,19 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
   text-transform: uppercase; white-space: nowrap;
 }
 #editor .ProseMirror.pb-stale .pb-break { opacity: .4; border-top-style: dotted; }
+/* `\newpage` chip (page-break-chip.ts): a block atom the author placed — a hard
+   break in every output — as opposed to the dashed pb-break lines, which only
+   report where the last render turned a page. */
+#editor .ProseMirror .page-break-chip {
+  display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--ink-3);
+  font: var(--doc-meta); letter-spacing: .06em; text-transform: uppercase; user-select: none; cursor: default;
+}
+#editor .ProseMirror .page-break-chip::before,
+#editor .ProseMirror .page-break-chip::after { content: ''; flex: 1; border-top: 2px solid var(--line-strong); }
+#editor .ProseMirror .page-break-chip-label {
+  padding: 2px 9px; border-radius: var(--r-pill); background: var(--soft-2); border: 1px solid var(--line);
+}
+#editor .ProseMirror .page-break-chip.ProseMirror-selectednode .page-break-chip-label { box-shadow: 0 0 0 2px var(--accent-line); }
 #editor-pagecount { color: var(--ink-3); }
 #editor-pagecount.is-over { color: var(--warn); }
 /* Section page-budget badge (`page_limits:` front matter), inline after the heading text. */
