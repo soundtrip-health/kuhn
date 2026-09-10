@@ -101,7 +101,7 @@ Token-free check scripts (drive the app without spending model quota):
 **`webapp/src/`** — flat TS modules, one concern each: `main.ts` (entry), `chat.ts`,
 `editor.ts` (Milkdown/Crepe), `files.ts`, `project-browser.ts`, `preview.ts`,
 `api.ts` (backend client), `citation.ts`/`cite-picker.ts`/`bib.ts` (`/cite`),
-`page-breaks.ts` (page lines from the render's page map), `seeding.ts`, plus `style.css` / `kuhn-tokens.css` for the design system.
+`page-breaks.ts` (page lines from the render's page map), `page-break-chip.ts` (`\newpage` chips), `seeding.ts`, plus `style.css` / `kuhn-tokens.css` for the design system.
 
 ## Agent prompts (`db/prompts/` + `db/seed-data.js`)
 

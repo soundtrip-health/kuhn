@@ -67,6 +67,10 @@ import { findBibPath } from './tree-state';
 import * as workspace from './workspace';
 import { startWrite } from './write-suggestion';
 import { clearPageMap } from './page-breaks';
+import { pageBreakSchema } from './page-break-chip';
+import { commandsCtx } from '@milkdown/kit/core';
+import { addBlockTypeCommand, clearTextInCurrentBlockCommand, paragraphSchema } from '@milkdown/kit/preset/commonmark';
+import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state';
 
 // On open, reflect the persisted state in the top-bar "Saved" affordance.
 
@@ -383,6 +387,9 @@ function runAgentCommand(ctx: Ctx, command: AgentCommand): void {
   command.run(view);
 }
 
+/** Block-menu icon for "Page break": a page with a dashed cut across it. */
+const PAGE_BREAK_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v3"/><path d="M6 3v7"/><path d="M6 14v7h13v-7"/><path d="M3 12h2M8 12h2M13 12h2M18 12h3"/></svg>`;
+
 /** Update the status-bar word count and toggle the empty-document hint. */
 function updateDocMeta(markdown: string): void {
   const words = (markdown.trim().match(/\S+/g) ?? []).length;
@@ -533,6 +540,27 @@ async function openDocumentInner(
     stored,
     override: { restore: opts.restore, preferStored: opts.preferStored },
     buildBlockEditMenu: (builder) => {
+      // "Page break" sits next to Crepe's Divider in the Text group: a
+      // `\newpage` chip — a hard page break in the PDF preview and every export.
+      builder.getGroup('text').addItem('page-break', {
+        label: 'Page break',
+        icon: PAGE_BREAK_ICON,
+        onRun: (ctx) => {
+          const commands = ctx.get(commandsCtx);
+          commands.call(clearTextInCurrentBlockCommand.key);
+          commands.call(addBlockTypeCommand.key, { nodeType: pageBreakSchema.type(ctx) });
+          // The chip is a block atom: inserting it at the end of the document
+          // leaves it node-selected, and the next keystroke would replace it.
+          // Put the caret in a fresh paragraph after it instead.
+          const view = ctx.get(editorViewCtx);
+          const { selection } = view.state;
+          if (selection instanceof NodeSelection && selection.node.type.name === 'page_break') {
+            const tr = view.state.tr.insert(selection.to, paragraphSchema.type(ctx).create());
+            tr.setSelection(TextSelection.create(tr.doc, selection.to + 1));
+            view.dispatch(tr.scrollIntoView());
+          }
+        },
+      });
       const group = builder.addGroup('kuhn-agents', 'AI commands');
       for (const command of commands) {
         group.addItem(command.label.toLowerCase(), {
