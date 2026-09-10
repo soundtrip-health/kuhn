@@ -7,9 +7,14 @@
 // Round trip (same shape as citation.ts): a remark transform turns a
 // paragraph whose only content is the marker into a custom `pageBreak` mdast
 // node (parse side); a toMarkdown handler emits the raw marker (serialize
-// side). The block-edit menu's "Page break" item (editor.ts) inserts the node.
+// side). The block-edit menu's "Page break" item (editor.ts) inserts the node,
+// and an input rule turns a marker typed into an empty paragraph into the
+// chip on the spot — the remark transform only sees markdown being loaded.
 
-import { $nodeSchema, $remark } from '@milkdown/kit/utils';
+import { $inputRule, $nodeSchema, $remark } from '@milkdown/kit/utils';
+import { InputRule } from '@milkdown/kit/prose/inputrules';
+import { TextSelection } from '@milkdown/kit/prose/state';
+import { paragraphSchema } from '@milkdown/kit/preset/commonmark';
 
 interface MdNode {
   type: string;
@@ -79,5 +84,28 @@ export const pageBreakSchema = $nodeSchema('page_break', () => ({
   },
 }));
 
+/**
+ * Typing `\newpage` (or \pagebreak, \clearpage) as the whole content of a
+ * paragraph swaps the paragraph for the chip — Crepe's `---` → divider rule,
+ * for page breaks. Headings and code stay literal. The caret moves to the
+ * paragraph after the chip (created when there is none), so typing goes on.
+ */
+export const pageBreakInputRule = $inputRule((ctx) => new InputRule(
+  /^\\(newpage|pagebreak|clearpage)$/,
+  (state, match, start, end) => {
+    const $start = state.doc.resolve(start);
+    if ($start.parent.type.name !== 'paragraph' || $start.parentOffset !== 0) return null;
+    const from = $start.before();
+    const to = $start.after();
+    if (end !== to - 1) return null; // the marker must be the whole paragraph
+    const chip = pageBreakSchema.type(ctx).create({ marker: `\\${match[1]}` });
+    const tr = state.tr.replaceWith(from, to, chip);
+    const after = from + chip.nodeSize;
+    const next = tr.doc.nodeAt(after);
+    if (!next?.isTextblock) tr.insert(after, paragraphSchema.type(ctx).create());
+    return tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView();
+  },
+));
+
 /** All plugins the page-break chip needs; spread into Editor.use(). */
-export const pageBreakPlugins = [remarkPageBreak, pageBreakSchema].flat();
+export const pageBreakPlugins = [remarkPageBreak, pageBreakSchema, pageBreakInputRule].flat();
