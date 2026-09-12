@@ -71,6 +71,14 @@ function renderMenu(menu: HTMLElement): void {
     tip('Citations', `${kbd('/cite')} inserts a reference from the project's <code>references.bib</code>; hover a citation to see its details.`),
     tip('Comments', `Select text and open <em>Comments</em> to leave a margin note. <em>Source</em> shows the raw markdown.`),
     tip('Agent edits', `Suggestions from agents appear as diffs in the document — approve or reject each one.`),
+    tip('Page breaks', `${kbd('/')} → <em>Page break</em> (or a ${kbd('\\newpage')} line) forces a new page in the PDF and every export. It shows as a chip.`),
+  ];
+
+  const pages = [
+    heading('Pages & limits'),
+    tip('Page lines', `Dashed <em>Page N</em> lines show where the PDF turns a page. They come from the last render — click <em>Preview PDF</em> first, and again after editing (they dim when stale).`),
+    tip('Page limits', `Add <code>page_limits</code> to the front matter (e.g. <code>Specific Aims: 1</code>) and that heading gets a badge like <em>1.07 / 1 page</em>, red when over. Measured on each render.`),
+    tip('Page layout', `Margins and fonts come from the project's template (set in project setup) or a <code>template:</code> line in the front matter — e.g. <code>nih-grant</code>, <code>manuscript</code>. Word exports use the same layout.`),
   ];
 
   const rows = slashCommandCatalog().map((cmd) => {
@@ -101,5 +109,5 @@ function renderMenu(menu: HTMLElement): void {
     tip('Where am I', `The breadcrumb shows organization / project / document — each part is clickable.`),
   ];
 
-  menu.replaceChildren(...editing, heading('Slash commands'), ...rows, ...panels);
+  menu.replaceChildren(...editing, ...pages, heading('Slash commands'), ...rows, ...panels);
 }
