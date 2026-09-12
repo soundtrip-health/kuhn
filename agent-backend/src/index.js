@@ -34,6 +34,7 @@ import renderRouter from './routes/render.js';
 import reviewRouter from './routes/review.js';
 import scriptsRouter from './routes/scripts.js';
 import slideThemesRouter from './routes/slide-themes.js';
+import typstTemplatesRouter from './routes/typst-templates.js';
 import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
 import { requestLog } from './request-log.js';
@@ -114,7 +115,8 @@ app.use(promotionsRouter); // owner-gated promotion-approval queue (story 011-00
 app.use(renderRouter);
 app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013)
 app.use(scriptsRouter);
-app.use(slideThemesRouter); // shared-script library: catalog, org scripts, promotions (issue #68)
+app.use(slideThemesRouter); // slide-theme library: catalog + org themes (STH-58)
+app.use(typstTemplatesRouter); // Typst template library: catalog + org templates
 
 const server = createServer(app);
 

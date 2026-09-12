@@ -776,6 +776,35 @@ CREATE TABLE IF NOT EXISTS org_slide_themes (
 );
 
 -- ============================================================
+-- Typst templates: page layout (paper, margins, font, spacing) a document
+-- renders with — `template: <name>` in its front matter. Same shape as the
+-- slide-theme tables: catalog_typst_templates is seeded from
+-- typst-templates/catalog.json (dropped entries go available = 0);
+-- org_typst_templates holds org-uploaded Typst source as DB text, and an
+-- ACTIVE org template shadows a catalog one of the same name at render time.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS catalog_typst_templates (
+  name        TEXT PRIMARY KEY,             -- the front-matter `template:` handle
+  title       TEXT NOT NULL,
+  path        TEXT NOT NULL,                -- manifest-relative .typ file
+  description TEXT,
+  available   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS org_typst_templates (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  name       TEXT NOT NULL,                 -- from the `// @template <name>` header
+  title      TEXT NOT NULL,
+  source     TEXT NOT NULL,                 -- Typst source exporting `conf`
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, name)
+);
+
+-- ============================================================
 -- Script runs (issue #68b): provenance for every run_script execution — which
 -- script (org-library reference or project-local path), which version, what
 -- arguments, how it ended, and where its outputs landed. Append-only; the

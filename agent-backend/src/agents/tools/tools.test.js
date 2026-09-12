@@ -80,6 +80,17 @@ vi.mock('../../db/org-secrets.js', () => ({
   listSecretNamesForProject: vi.fn(() => []),
   secretEnvName: (name) => `KUHN_SECRET_${name.toUpperCase().replace(/-/g, '_')}`,
 }));
+// Typst template discovery — the SQL substance lives in db/typst-templates.test.js.
+vi.mock('../../db/typst-templates.js', () => ({
+  listCatalogTemplates: vi.fn(() => [
+    { name: 'nih-grant', title: 'NIH grant attachment', description: '0.5 in margins, Arial 11 pt', available: 1 },
+    { name: 'retired', title: 'Retired', description: null, available: 0 },
+  ]),
+  listOrgTemplates: vi.fn(() => [
+    { name: 'acme-letter', title: 'Acme letterhead', status: 'active' },
+    { name: 'old-tpl', title: 'Old', status: 'disabled' },
+  ]),
+}));
 // STH-61: theme discovery — the SQL substance lives in db/slide-themes.test.js.
 vi.mock('../../db/slide-themes.js', () => ({
   MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
@@ -120,7 +131,7 @@ const ALL_GRANTS = [
   'add_citation', 'add_reference', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'web_search',
+  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'web_search',
 ];
 
 // Stable domain order as the provider sees it (factory order + web_search).
@@ -133,6 +144,7 @@ const EXPECTED_ORDER = [
   'ask_user', 'dispatch_agent',
   'save_project_config',
   'list_slide_themes',
+  'list_typst_templates',
   'web_search',
 ];
 
@@ -403,6 +415,19 @@ describe('org-derived catalogs and secrets (STH-61 / secrets store)', () => {
     expect(text).toContain('- acme — Acme (organization theme)');
     expect(text).not.toContain('gone'); // unavailable catalog rows hidden
     expect(text).not.toContain('- old'); // disabled org themes hidden
+  });
+
+  it('list_typst_templates reports available catalog and active org templates', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
+    const ctx = makeCtx({ agent: agent(['list_typst_templates']) });
+    const result = await run(findTool(ctx, 'list_typst_templates'), {});
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('`template: <name>`');
+    expect(text).toContain('- nih-grant — NIH grant attachment: 0.5 in margins, Arial 11 pt');
+    expect(text).toContain('- acme-letter — Acme letterhead (organization template)');
+    expect(text).not.toContain('retired'); // unavailable catalog rows hidden
+    expect(text).not.toContain('old-tpl'); // disabled org templates hidden
   });
 
   it('list_secrets renders names and env vars, never values', async () => {

@@ -133,7 +133,8 @@ These apply to **all project types:**
 2. **Do not fill gaps.** Write text that aligns with provided notes and guidance. If information is missing, insert `[TODO: ...]` so the PI can supply it. Do not invent or infer missing details.
 3. **Citations must come from PubMed** (or other authoritative MCP sources). Use the PubMed MCP server. Save raw output (including complete abstracts) in `draft/references.bib` (natbib). Never recall a citation from memory.
 4. **Citation format:** Pandoc cite keys from the bibliography — `[@key]` for one work, `[@key1; @key2]` for several in one group, `[@key, p. 12]` with a locator. Never write author–year text by hand and never backslash-escape the bracket; the editor renders these as citation chips and export resolves them against `draft/references.bib`.
-5. **Page breaks:** put `\newpage` on its own line (blank lines around it) where a section must start on a fresh page — title page, table of contents, appendices. It becomes a real page break in the PDF preview, docx and LaTeX exports. Do not use it inside slide decks (`marp: true`), where `---` separates slides.
+5. **Page layout:** a document's leading YAML front matter may name a Typst template with `template: <name>` (for example `template: nih-grant` for NIH attachments — 0.5 in margins, Arial 11 pt, single-spaced — or `template: manuscript` for a journal draft). Use `list_typst_templates` for the names available to this project; never invent one, and never emulate margins or fonts in the markdown itself.
+6. **Page breaks:** put `\newpage` on its own line (blank lines around it) where a section must start on a fresh page — title page, table of contents, appendices. It becomes a real page break in the PDF preview, docx and LaTeX exports. Do not use it inside slide decks (`marp: true`), where `---` separates slides.
 
 ### PubMed MCP Usage
 

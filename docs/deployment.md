@@ -26,7 +26,8 @@ as a Cloudflare Tunnel.
   and PDF ingestion run in network-isolated containers):
 
   ```bash
-  docker pull ghcr.io/typst/typst:latest pandoc/core:latest minidocks/poppler:latest
+  docker pull pandoc/core:latest minidocks/poppler:latest
+  docker build -t kuhn/typst:latest docker/typst              # typst + Arial/Times-metric fonts (page-layout templates)
   docker build -t kuhn/marp:latest docker/marp                # marp + LibreOffice (editable pptx, STH-61)
   docker build -t kuhn/r-analysis:latest docker/r-analysis   # analyst R runtime (issue #68b) — built, not pulled
   ```

@@ -109,6 +109,12 @@ export const TOOLS = [
     slug: 'list_slide_themes', name: 'List Slide Themes', description: 'List the Marp slide themes available to this project (marp built-ins, Kuhn catalog, organization uploads)',
     parameterSchema: { type: 'object', properties: {} },
   },
+  {
+    // Typst template discovery: the page layout (margins, font, spacing) a
+    // document's `template:` front matter may name.
+    slug: 'list_typst_templates', name: 'List Typst Templates', description: 'List the Typst page-layout templates available to this project (Kuhn catalog, organization uploads) for the `template:` front matter',
+    parameterSchema: { type: 'object', properties: {} },
+  },
 ];
 
 // [agentSlug, toolSlug] pairs — the agent→tool matrix.
@@ -143,6 +149,9 @@ export const ASSIGNMENTS = [
   // Slide themes (STH-61): the roles that author decks pick a real theme
   // name instead of guessing.
   ['pm', 'list_slide_themes'], ['writer', 'list_slide_themes'],
+  // Typst templates: the same roles pick a real page layout (NIH, journal)
+  // instead of guessing at margins in prose.
+  ['pm', 'list_typst_templates'], ['writer', 'list_typst_templates'],
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],

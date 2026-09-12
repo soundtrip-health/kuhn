@@ -65,6 +65,10 @@ export function getConformanceConfig() {
       catalogRoot: join(dataDir, 'slide-themes-catalog'),
       maxThemeBytes: 256 * 1024,
     },
+    typstTemplates: {
+      catalogRoot: join(dataDir, 'typst-templates-catalog'),
+      maxTemplateBytes: 256 * 1024,
+    },
     auth: { superadminEmails: [] },
     // Runtime selector (STH-47): 'claude' by default; the Pi conformance
     // driver switches this to 'pi' for its suite run and the harness resets

@@ -9,6 +9,7 @@ import { log } from '../logger.js';
 import { renderPdf, exportDocument, EXPORT_FORMATS } from '../render.js';
 import { SandboxError } from '../sandbox.js';
 import { StorageError } from '../storage.js';
+import { TemplateError } from '../db/typst-templates.js';
 import { requireProjectRole } from './guards.js';
 
 const router = Router();
@@ -51,6 +52,10 @@ function handle(minRole, fn) {
       } else if (err instanceof SandboxError) {
         log.warn('render_failed', { ...ctx, code: err.code, message: err.message });
         res.status(SANDBOX_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
+      } else if (err instanceof TemplateError) {
+        // A `template:` name that resolves to nothing — the author's to fix.
+        log.warn('render_failed', { ...ctx, code: `template_${err.code}`, message: err.message });
+        res.status(422).json({ error: err.message, code: `template_${err.code}` });
       } else {
         log.error('render_failed', { ...ctx, error: err });
         res.status(500).json({ error: 'Internal error' });

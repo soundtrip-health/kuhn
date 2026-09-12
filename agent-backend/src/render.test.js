@@ -35,11 +35,17 @@ vi.mock('./db/slide-themes.js', () => ({
   MARP_BUILTIN_THEMES: ['default', 'gaia', 'uncover'],
   resolveThemeCss: vi.fn(async () => null),
 }));
+// Typst templates: resolution is mocked here; the SQL lives in db/typst-templates.test.js.
+vi.mock('./db/typst-templates.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, resolveTemplateSource: vi.fn(async () => null) };
+});
 
 import { config } from './config.js';
 import { SandboxError, pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
 import { resolveThemeCss } from './db/slide-themes.js';
-import { renderPdf, exportDocument, isMarpSource, marpThemeName } from './render.js';
+import { TemplateError, resolveTemplateSource } from './db/typst-templates.js';
+import { renderPdf, exportDocument, isMarpSource, marpThemeName, typstTemplateName } from './render.js';
 
 let root;
 let savedProjectsRoot;
@@ -229,6 +235,55 @@ describe('marp slide themes (STH-58)', () => {
   it('built-in theme names skip the library entirely', async () => {
     await renderPdf(1, 'draft/deck.md'); // fixture uses theme: default
     expect(resolveThemeCss).not.toHaveBeenCalled();
+  });
+});
+
+describe('typst templates', () => {
+  it('typstTemplateName reads only the leading front matter', () => {
+    expect(typstTemplateName('---\ntitle: T\ntemplate: nih-grant\n---\n')).toBe('nih-grant');
+    expect(typstTemplateName('---\ntemplate: "manuscript"\n---\n')).toBe('manuscript');
+    expect(typstTemplateName('---\ntitle: T\n---\n\ntemplate: nope\n')).toBe(null);
+    expect(typstTemplateName('# no front matter\n')).toBe(null);
+  });
+
+  it('materializes the template beside the temp .typ, hands pandoc the variable, and cleans up', async () => {
+    await writeFile(join(root, '1', 'draft', 'aims.md'), '---\ntemplate: nih-grant\n---\n\n# Aims\n');
+    resolveTemplateSource.mockResolvedValueOnce({ name: 'nih-grant', source: '// @template nih-grant\nSRC1', origin: 'catalog' });
+    const staged = [];
+    renderTypstPdf.mockImplementationOnce(async (_pid, typPath) => {
+      // Both temp files exist while typst runs, in the source's directory.
+      const dir = join(root, '1', 'draft');
+      staged.push(...(await readdir(dir)).filter((f) => f.startsWith('.preview-')));
+      expect(typPath).toMatch(/^draft\/\.preview-[0-9a-f]{12}\.typ$/);
+      return { output: Buffer.from('%PDF-fake'), stdout: '', stderr: '' };
+    });
+    const { cached } = await renderPdf(1, 'draft/aims.md');
+    expect(cached).toBe(false);
+    expect(resolveTemplateSource).toHaveBeenCalledWith(10, 'nih-grant'); // the project's org
+    const args = pandocConvert.mock.calls.at(-1)[3];
+    const tplArg = args.find((a) => a.startsWith('--variable=template='));
+    expect(tplArg).toMatch(/^--variable=template=\.preview-[0-9a-f]{12}\.tpl\.typ$/);
+    expect(staged.sort()).toEqual([`${tplArg.split('=')[2].replace('.tpl.typ', '')}.tpl.typ`, `${tplArg.split('=')[2].replace('.tpl.typ', '')}.typ`].sort());
+    expect((await readdir(join(root, '1', 'draft'))).filter((f) => f.startsWith('.preview-'))).toEqual([]);
+
+    // Same source bytes, changed template source → a fresh render, not a cache hit.
+    resolveTemplateSource.mockResolvedValueOnce({ name: 'nih-grant', source: '// @template nih-grant\nSRC2', origin: 'org' });
+    expect((await renderPdf(1, 'draft/aims.md')).cached).toBe(false);
+  });
+
+  it('documents without template: front matter pass no template variable', async () => {
+    await writeFile(join(root, '2', 'nobib.md'), `# Plain ${Math.random()}\n`); // fresh bytes: no cache hit
+    await renderPdf(2, 'nobib.md');
+    expect(resolveTemplateSource).not.toHaveBeenCalled(); // no name → no library lookup
+    const args = pandocConvert.mock.calls.at(-1)[3];
+    expect(args.some((a) => a.startsWith('--variable=template='))).toBe(false);
+  });
+
+  it('an unknown template name fails the render with TemplateError, before pandoc runs', async () => {
+    await writeFile(join(root, '1', 'draft', 'typo.md'), '---\ntemplate: nih-grnat\n---\n\n# Aims\n');
+    resolveTemplateSource.mockRejectedValueOnce(new TemplateError('not_found', 'Unknown template "nih-grnat"'));
+    await expect(renderPdf(1, 'draft/typo.md')).rejects.toBeInstanceOf(TemplateError);
+    expect(pandocConvert).not.toHaveBeenCalled();
   });
 });
 

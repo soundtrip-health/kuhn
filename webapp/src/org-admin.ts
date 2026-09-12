@@ -20,6 +20,7 @@ import {
   getOrgScript,
   getOrgScripts,
   getOrgSlideThemes,
+  getOrgTypstTemplates,
   getOrgBudgets,
   getOrgSettings,
   getScriptPromotion,
@@ -39,7 +40,9 @@ import {
   revokeInvitation,
   setOrgScriptStatus,
   setOrgSlideThemeStatus,
+  setOrgTypstTemplateStatus,
   uploadOrgSlideTheme,
+  uploadOrgTypstTemplate,
   updateMemberRole,
   resetBudget,
   setBudgetLimit,
@@ -51,6 +54,7 @@ import {
   type OrgMember,
   type OrgScriptsPayload,
   type OrgSlideThemesPayload,
+  type OrgTypstTemplatesPayload,
   type OrgBudgetReport,
   type OrgSettings,
   type BudgetScope,
@@ -73,11 +77,11 @@ import { emptyRow, inlineError, sectionTitle } from './admin-ui';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'agents';
+type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'templates' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'agents'];
-const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'templates', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'templates', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -146,6 +150,12 @@ let themesData: OrgSlideThemesPayload | null = null;
 let themesLoading = false;
 let themesError: string | null = null;
 let themesBusy = false;
+
+// Templates tab: the Typst page-layout catalog + this org's uploaded templates.
+let templatesData: OrgTypstTemplatesPayload | null = null;
+let templatesLoading = false;
+let templatesError: string | null = null;
+let templatesBusy = false;
 
 // Secrets tab (org secrets store): metadata only — values are write-only.
 let secretsRows: OrgSecret[] | null = null;
@@ -244,6 +254,9 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   themesData = null;
   themesError = null;
   themesBusy = false;
+  templatesData = null;
+  templatesError = null;
+  templatesBusy = false;
   secretsRows = null;
   secretsError = null;
   secretsBusy = false;
@@ -262,6 +275,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   void reloadAgentPrompts();
   void reloadScripts();
     void reloadThemes();
+  void reloadTemplates();
   void reloadSecrets();
 
   // Live import status for the Knowledge tab: doc_status events land on the
@@ -1830,6 +1844,23 @@ function agentsTab(): HTMLElement[] {
   return parts;
 }
 
+async function reloadTemplates(): Promise<void> {
+  const orgId = adminOrgId;
+  templatesLoading = templatesData === null;
+  render();
+  try {
+    const payload = await getOrgTypstTemplates(orgId);
+    if (orgId !== adminOrgId) return;
+    templatesData = payload;
+    templatesError = null;
+  } catch (err) {
+    templatesError = (err as Error).message;
+  } finally {
+    templatesLoading = false;
+  }
+  render();
+}
+
 // ---- Themes tab (STH-58) ---------------------------------------------------------
 
 async function themeAction(fn: () => Promise<unknown>): Promise<void> {
@@ -1935,6 +1966,105 @@ function themesTab(): HTMLElement[] {
       void themeAction(async () => {
         const css = await picked.text();
         await uploadOrgSlideTheme(adminOrgId, css, title.value.trim() || undefined);
+      });
+    });
+    parts.push(form);
+  }
+  return parts;
+}
+
+// ---- Templates tab (Typst page layouts) -------------------------------------------
+
+async function templateAction(fn: () => Promise<unknown>): Promise<void> {
+  templatesBusy = true;
+  render();
+  try {
+    await fn();
+    templatesError = null;
+  } catch (err) {
+    templatesError = (err as Error).message;
+  } finally {
+    templatesBusy = false;
+  }
+  await reloadTemplates();
+}
+
+function templatesTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (templatesError) parts.push(inlineError(templatesError));
+  if (templatesLoading || templatesData === null) {
+    if (!templatesError) parts.push(emptyRow('Loading templates…'));
+    return parts;
+  }
+  const owner = workspace.isOwner();
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'Typst page layouts — paper, margins, font and spacing. A document picks one with `template: <name>` front matter; an active org template shadows a Kuhn template of the same name.'
+    : 'Page-layout templates available to this organization’s documents (`template: <name>` front matter). Only owners can upload or disable templates.';
+  parts.push(blurb);
+
+  parts.push(sectionTitle('Kuhn templates'));
+  if (templatesData.catalog.length === 0) parts.push(emptyRow('No seeded templates in this deployment.'));
+  for (const t of templatesData.catalog) {
+    const meta = [
+      t.description ?? '',
+      t.available ? '' : 'unavailable in this deploy',
+      t.shadowed ? 'shadowed by an org template of the same name' : '',
+    ].filter(Boolean).join(' — ');
+    parts.push(themeRow(t.name, t.title, meta, null));
+  }
+
+  parts.push(sectionTitle('Organization templates'));
+  if (templatesData.templates.length === 0) parts.push(emptyRow('No uploaded templates yet.'));
+  for (const t of templatesData.templates) {
+    let control: HTMLElement | null = null;
+    if (owner) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-quiet btn-sm';
+      btn.textContent = t.status === 'active' ? 'Disable' : 'Enable';
+      btn.disabled = templatesBusy;
+      btn.addEventListener('click', () => void templateAction(
+        () => setOrgTypstTemplateStatus(adminOrgId, t.name, t.status === 'active' ? 'disabled' : 'active'),
+      ));
+      control = btn;
+    }
+    const meta = `${t.status} · ${(t.source_bytes / 1024).toFixed(1)} KB · updated ${formatDate(t.updated_at)}`;
+    parts.push(themeRow(t.name, t.title, meta, control));
+  }
+
+  if (owner) {
+    parts.push(sectionTitle('Upload a template'));
+    const form = document.createElement('form');
+    form.className = 'theme-upload';
+    const hint = document.createElement('p');
+    hint.className = 'ol-blurb';
+    hint.textContent = 'Pick a Typst file that defines `conf` (start from a Kuhn template in typst-templates/). Its `// @template <name>` header names the template; re-uploading a name replaces it.';
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.accept = '.typ,text/plain';
+    const title = document.createElement('input');
+    title.type = 'text';
+    title.placeholder = 'Display title (optional)';
+    title.className = 'invite-input';
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'btn btn-solid btn-sm';
+    submit.textContent = 'Upload template';
+    submit.disabled = templatesBusy;
+    form.append(hint, file, title, submit);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const picked = file.files?.[0];
+      if (!picked) {
+        templatesError = 'Choose a .typ file to upload.';
+        render();
+        return;
+      }
+      void templateAction(async () => {
+        const source = await picked.text();
+        await uploadOrgTypstTemplate(adminOrgId, source, title.value.trim() || undefined);
       });
     });
     parts.push(form);
@@ -2213,6 +2343,7 @@ const TAB_LABEL: Record<Tab, string> = {
   scripts: 'Scripts',
   secrets: 'Secrets',
   themes: 'Themes',
+  templates: 'Templates',
   agents: 'Agents',
 };
 
@@ -2301,6 +2432,7 @@ function render(): void {
     : activeTab === 'scripts' ? scriptsTab()
     : activeTab === 'secrets' ? secretsTab()
     : activeTab === 'themes' ? themesTab()
+    : activeTab === 'templates' ? templatesTab()
     : knowledgeTab();
   body.append(...parts);
 

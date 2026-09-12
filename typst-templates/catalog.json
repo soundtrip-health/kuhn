@@ -1,0 +1,23 @@
+{
+  "catalog_version": 1,
+  "templates": [
+    {
+      "name": "default",
+      "title": "Pandoc default",
+      "path": "default.typ",
+      "description": "Pandoc's stock layout: 1.25 in margins, 11 pt Libertinus, justified, page numbers"
+    },
+    {
+      "name": "nih-grant",
+      "title": "NIH grant attachment",
+      "path": "nih-grant.typ",
+      "description": "SF424 R&R rules: US letter, 0.5 in margins, Arial 11 pt, single-spaced, no page numbers — Specific Aims, Research Strategy and the other page-limited attachments"
+    },
+    {
+      "name": "manuscript",
+      "title": "Journal manuscript",
+      "path": "manuscript.typ",
+      "description": "Submission draft: US letter, 1 in margins, Times 12 pt, double-spaced, line and page numbers, title block with authors and abstract"
+    }
+  ]
+}
