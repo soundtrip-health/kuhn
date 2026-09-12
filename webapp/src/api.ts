@@ -1415,6 +1415,7 @@ export interface KnowledgeItem {
 }
 
 /** A catalog item merged with one org's selection/import state. */
+import type { PageMap } from './page-breaks';
 export interface OrgKnowledgeItem extends KnowledgeItem {
   enabled: boolean;
   doc_id: number | null;
@@ -2023,6 +2024,18 @@ export const fileBlobUrl = (projectId: number, path: string): string => fileUrl(
 // ---- Render & export (story 019) ----
 
 /** Render a markdown document to PDF; rejects with the backend's readable error. */
+/** The page map of the rendered PDF (null for slide decks / a failed page query) — see page-breaks.ts. */
+export async function fetchPageMap(projectId: number, path: string): Promise<PageMap | null> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/page-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  );
+  return ((await res.json()) as { pageMap: PageMap | null }).pageMap;
+}
+
 export async function renderPdf(projectId: number, path: string): Promise<Blob> {
   const res = await expectOk(
     await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/render`, {

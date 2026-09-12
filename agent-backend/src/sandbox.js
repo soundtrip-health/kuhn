@@ -166,6 +166,32 @@ async function renderViaSandbox(projectId, sourcePath, { image, makeCmd, outputN
   }
 }
 
+/**
+ * Read the page map a compiled Typst source carries (pandoc-filters/
+ * blockmarks.lua): every `<kuhn-block>` marker's value, in document order.
+ * A second, query-only Typst run over the same read-only mount — nothing is
+ * written. Returns the parsed JSON array; throws SandboxError on failure.
+ */
+export async function typstQueryBlocks(projectId, sourcePath, spawnImpl) {
+  const { root, abs } = await resolveSafe(projectId, sourcePath);
+  const sourceRel = abs.slice(root.length + 1);
+  const result = await runSandboxed({
+    image: config.sandbox.typstImage,
+    cmd: ['eval', 'query(<kuhn-block>).map(it => it.value)', '--in', `/work/${sourceRel}`],
+    projectDir: root,
+  }, spawnImpl);
+  if (result.exitCode !== 0) {
+    throw new SandboxError('failed', `Page query failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 4000)}`);
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    if (!Array.isArray(parsed)) throw new Error('not an array');
+    return parsed;
+  } catch (err) {
+    throw new SandboxError('failed', `Page query returned no JSON (${err.message})`);
+  }
+}
+
 /** Compile a Typst source file in the project to PDF. Returns { output, stdout, stderr }. */
 export function renderTypstPdf(projectId, sourcePath, spawnImpl) {
   return renderViaSandbox(projectId, sourcePath, {
@@ -182,6 +208,8 @@ export function renderTypstPdf(projectId, sourcePath, spawnImpl) {
 export const PANDOC_FILTERS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'pandoc-filters');
 export const PANDOC_FILTERS_MOUNT = '/filters';
 export const PANDOC_LUA_FILTERS = ['pagebreak.lua'];
+/** Opt-in filters a caller adds by name (render.js: the preview's page map). */
+export const PANDOC_OPTIONAL_FILTERS = { blockmarks: `${PANDOC_FILTERS_MOUNT}/blockmarks.lua` };
 
 /**
  * Convert a project file with Pandoc (e.g. markdown → docx/tex). Returns

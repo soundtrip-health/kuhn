@@ -66,6 +66,7 @@ import { toast } from './toast';
 import { findBibPath } from './tree-state';
 import * as workspace from './workspace';
 import { startWrite } from './write-suggestion';
+import { clearPageMap } from './page-breaks';
 
 // On open, reflect the persisted state in the top-bar "Saved" affordance.
 
@@ -223,6 +224,11 @@ function renderReviewerBanner(reviewers: ReviewerPresence[]): void {
 }
 
 // ---- Buffer state -----------------------------------------------------------
+
+/** The rich editor's ProseMirror view, or null in source mode / with no document open. */
+export function editorView(): EditorView | null {
+  return sourceView || !docHandle ? null : docHandle.view();
+}
 
 /** The live buffer in whichever mode is open, or null if no document is. */
 function currentMarkdown(): string | null {
@@ -580,6 +586,7 @@ async function openDocumentInner(
 
 export async function closeDocument(): Promise<void> {
   if (docHandle?.pendingSave() || sourceEngine?.pending()) await flushSave();
+  clearPageMap(editorView());
   await teardownRich();
   destroySourceView();
   setModeToggle(null);

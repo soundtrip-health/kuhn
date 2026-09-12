@@ -16,7 +16,7 @@ vi.mock('./db.js', () => ({
 
 import { config } from './config.js';
 import {
-  pandocConvert, PANDOC_FILTERS_DIR, PANDOC_FILTERS_MOUNT, PANDOC_LUA_FILTERS,
+  pandocConvert, PANDOC_FILTERS_DIR, PANDOC_FILTERS_MOUNT, PANDOC_LUA_FILTERS, PANDOC_OPTIONAL_FILTERS,
 } from './sandbox.js';
 
 const SOURCE = [
@@ -119,6 +119,22 @@ describe.skipIf(!hasPandocImage)('pagebreak.lua (real pandoc)', () => {
     const xml = unzipEntry(output, 'word/document.xml');
     expect(xml.match(/<w:br w:type="page"\/>/g)).toHaveLength(4);
     expect(xml).not.toContain('newpage');
+  }, 60_000);
+
+  it('blockmarks.lua marks every top-level block (Typst only) with a fingerprint the webapp can recompute', async () => {
+    const { output } = await pandocConvert(1, 'doc.md', 'preview.typ', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`]);
+    const typ = output.toString('utf-8');
+    const markers = [...typ.matchAll(/#context \[#metadata\(\(i: (-?\d+), key: "([^"]*)", page: here\(\)\.page\(\)/g)];
+    // 6 blocks in SOURCE (paragraph, pagebreak, paragraph, pagebreak, div→pagebreak, paragraph) + the end marker
+    expect(markers.map((m) => m[1])).toEqual(['1', '2', '3', '4', '5', '6', '-1']);
+    expect(markers[0][2]).toBe('intropara');
+    expect(markers[2][2]).toBe('secondpageinlinehere'); // raw inline (the \newpage) contributes no text
+    expect(markers[5][2]).toBe('end');
+    expect(markers.at(-1)[2]).toBe('');
+    expect(typ).toContain('<kuhn-block>');
+
+    const { output: docx } = await pandocConvert(1, 'doc.md', 'export.docx', ['--standalone', `--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`]);
+    expect(unzipEntry(docx, 'word/document.xml')).not.toContain('kuhn-block'); // no-op outside Typst
   }, 60_000);
 
   it('leaves the raw TeX alone for LaTeX export', async () => {

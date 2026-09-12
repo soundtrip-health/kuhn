@@ -85,6 +85,28 @@ router.post('/api/projects/:projectId/render', handle('viewer', async (projectId
 }));
 
 /**
+ * POST /api/projects/:projectId/page-map — body { path }.
+ * The page map of the rendered PDF (see renderPdf): where each top-level
+ * block lands, for the editor's page-break lines. Served from the render
+ * cache when the preview just rendered the same bytes; otherwise renders.
+ * `pageMap` is null for slide decks and when the page query failed.
+ */
+router.post('/api/projects/:projectId/page-map', handle('viewer', async (projectId, req, res) => {
+  const path = req.body?.path;
+  if (typeof path !== 'string' || path.length === 0) {
+    res.status(400).json({ error: 'path is required in the request body' });
+    return;
+  }
+  const started = Date.now();
+  const { pageMap, cached } = await renderPdf(projectId, path);
+  log.info('page_map', {
+    projectId, path, cached, pages: pageMap?.pages ?? null, blocks: pageMap?.blocks.length ?? 0,
+    ms: Date.now() - started, userId: req.user?.id ?? null,
+  });
+  res.json({ pageMap });
+}));
+
+/**
  * GET /api/projects/:projectId/export?path=...&format=pdf|docx|tex|pptx|html
  * Export (Pandoc, Marp, or the rendered PDF itself), served as an attachment
  * download.

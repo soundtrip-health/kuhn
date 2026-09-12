@@ -10,10 +10,11 @@
 import { createHash } from 'node:crypto';
 import { dirname, basename } from 'node:path';
 
-import { SandboxError, pandocConvert, renderMarp, renderTypstPdf } from './sandbox.js';
+import { SandboxError, PANDOC_OPTIONAL_FILTERS, pandocConvert, renderMarp, renderTypstPdf, typstQueryBlocks } from './sandbox.js';
 import { StorageError, readProjectFile, writeProjectFile, deleteProjectEntry } from './storage.js';
 import { materializeBib, DEFAULT_BIB_PATH } from './db/references.js';
 import { getProject } from './db/projects.js';
+import { log } from './logger.js';
 import { MARP_BUILTIN_THEMES, resolveThemeCss } from './db/slide-themes.js';
 import { resolveTemplateSource } from './db/typst-templates.js';
 
@@ -79,8 +80,9 @@ async function resolveMarpTheme(projectId, source) {
   return resolveThemeCss(project?.org_id ?? null, name);
 }
 
-// Rendered PDFs keyed by content hash — re-render only when the source or
-// bibliography changed. Small bounded map; eviction is oldest-first.
+// Rendered PDFs (with their page map) keyed by content hash — re-render only
+// when the source or bibliography changed. Small bounded map; eviction is
+// oldest-first.
 const pdfCache = new Map();
 const PDF_CACHE_MAX = 20;
 
@@ -109,7 +111,13 @@ function pandocArgs(bibPath, hasBib) {
 }
 
 /**
- * Render a markdown source file to PDF. Returns { pdf, cached }.
+ * Render a markdown source file to PDF. Returns { pdf, pageMap, cached }.
+ * pageMap (prose documents only; null for Marp decks or when the page query
+ * failed) is what the editor's page-break lines are drawn from:
+ *   { pages, pageHeight, blocks: [{ key, page, y }], end: { page, y } }
+ * — one entry per top-level Pandoc block with the page and vertical offset
+ * (pt) where it starts, `key` the fingerprint blockmarks.lua computed, and
+ * `end` the position after the last block (how full the last page is).
  * Throws SandboxError (failed | timeout | output_too_large) or StorageError.
  */
 export async function renderPdf(projectId, sourcePath) {
@@ -137,9 +145,9 @@ export async function renderPdf(projectId, sourcePath) {
     .update(theme?.css ?? '')
     .update(template ? `template:${template.origin}:${template.source}` : '')
     .digest('hex');
-  if (pdfCache.has(hash)) return { pdf: pdfCache.get(hash), cached: true };
+  if (pdfCache.has(hash)) return { ...pdfCache.get(hash), cached: true };
   if (inFlight.has(hash)) {
-    return { pdf: await inFlight.get(hash), cached: true };
+    return { ...(await inFlight.get(hash)), cached: true };
   }
 
   const run = marp
@@ -147,10 +155,27 @@ export async function renderPdf(projectId, sourcePath) {
     : doRender(projectId, sourcePath, bibPath, bib, hash, template);
   inFlight.set(hash, run);
   try {
-    return { pdf: await run, cached: false };
+    return { ...(await run), cached: false };
   } finally {
     inFlight.delete(hash);
   }
+}
+
+/** Shape the raw marker values (blockmarks.lua) into the page map the UI consumes. */
+export function pageMapFromMarkers(markers) {
+  const blocks = [];
+  let end = null;
+  let pageHeight = null;
+  for (const m of markers) {
+    if (!m || typeof m.page !== 'number') continue;
+    if (pageHeight == null && typeof m.h === 'number') pageHeight = m.h;
+    const entry = { key: String(m.key ?? ''), page: m.page, y: Math.round(m.y * 10) / 10 };
+    if (m.i === -1) end = { page: entry.page, y: entry.y };
+    else blocks.push(entry);
+  }
+  if (!end && blocks.length === 0) return null;
+  const last = end ?? blocks[blocks.length - 1];
+  return { pages: last.page, pageHeight, blocks, end: end ?? { page: last.page, y: last.y } };
 }
 
 async function doRender(projectId, sourcePath, bibPath, bib, hash, template = null) {
@@ -168,13 +193,26 @@ async function doRender(projectId, sourcePath, bibPath, bib, hash, template = nu
   const templateFile = `.preview-${hash.slice(0, 12)}.tpl.typ`;
   const args = pandocArgs(bibPath, bib != null);
   if (template) args.push(`--variable=template=${templateFile}`);
+  // The page-map markers go in AFTER citeproc (argument order = filter
+  // order), so the bibliography block is marked like any other.
+  args.push(`--lua-filter=${PANDOC_OPTIONAL_FILTERS.blockmarks}`);
   const { output: typSource } = await pandocConvert(projectId, sourcePath, 'preview.typ', args);
   if (template) await writeProjectFile(projectId, `${prefix}.tpl.typ`, template.source);
   await writeProjectFile(projectId, typPath, typSource);
   try {
     const { output: pdf } = await renderTypstPdf(projectId, typPath);
-    cachePdf(hash, pdf);
-    return pdf;
+    // The page map is a second, query-only Typst pass. Losing it must not
+    // lose the PDF: the preview still paints, only the editor's page lines
+    // go missing (and the log says why).
+    let pageMap = null;
+    try {
+      pageMap = pageMapFromMarkers(await typstQueryBlocks(projectId, typPath));
+    } catch (err) {
+      log.warn('page_map_failed', { projectId, path: sourcePath, message: err.message });
+    }
+    const result = { pdf, pageMap };
+    cachePdf(hash, result);
+    return result;
   } finally {
     await deleteProjectEntry(projectId, typPath).catch(() => {});
     if (template) await deleteProjectEntry(projectId, `${prefix}.tpl.typ`).catch(() => {});
@@ -186,12 +224,13 @@ async function doRenderMarp(projectId, sourcePath, hash, theme) {
   const { output: pdf } = await renderMarp(projectId, sourcePath, 'pdf', {
     themeName: theme?.name, themeCss: theme?.css,
   });
-  cachePdf(hash, pdf);
-  return pdf;
+  const result = { pdf, pageMap: null }; // slides paginate by `---`; no page lines
+  cachePdf(hash, result);
+  return result;
 }
 
-function cachePdf(hash, pdf) {
-  pdfCache.set(hash, pdf);
+function cachePdf(hash, result) {
+  pdfCache.set(hash, result);
   if (pdfCache.size > PDF_CACHE_MAX) {
     pdfCache.delete(pdfCache.keys().next().value);
   }

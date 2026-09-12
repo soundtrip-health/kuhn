@@ -584,6 +584,20 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 }
 #editor .milkdown .ProseMirror pre code { background: none; padding: 0; }
 #editor .milkdown .ProseMirror hr { border: none; border-top: 1px solid var(--line); margin: 28px 0; }
+/* Page-break lines from the last render (page-breaks.ts): a dashed rule with
+   a "Page N" tag, quieter than a real hr; dimmed once the document has been
+   edited since that render. */
+#editor .ProseMirror .pb-break {
+  position: relative; height: 0; margin: 18px 0 14px; border-top: 1px dashed var(--line-strong);
+  user-select: none; pointer-events: none;
+}
+#editor .ProseMirror .pb-break span {
+  position: absolute; right: 0; top: -9px; padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--soft); color: var(--ink-3); font: var(--doc-meta); letter-spacing: .04em;
+  text-transform: uppercase; white-space: nowrap;
+}
+#editor .ProseMirror.pb-stale .pb-break { opacity: .4; border-top-style: dotted; }
+#editor-pagecount { color: var(--ink-3); }
 /* Document caption / eyebrow */
 #editor .milkdown .ProseMirror .doc-eyebrow,
 .doc-eyebrow {

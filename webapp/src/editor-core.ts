@@ -41,6 +41,7 @@ import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
 
 import { citationPlugins } from './citation';
+import { pageBreaksPlugin } from './page-breaks';
 import {
   attachComments,
   beginCommentFromSelection,
@@ -359,6 +360,7 @@ export async function openDoc(options: OpenDocOptions): Promise<DocHandle> {
     // the doc schema); the rest per feature flags.
     .addFeature((editor: Editor) => {
       editor.use(citationPlugins);
+      editor.use(pageBreaksPlugin); // page lines from the last render (preview.ts feeds it)
       if (features.slashCommands) editor.use(writeSuggestionPlugin);
       if (features.suggestions) editor.use(suggestionHunksPlugin);
       if (features.comments) editor.use(commentsPlugin);

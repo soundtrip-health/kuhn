@@ -134,7 +134,12 @@ see the threat model §5.3 (T-12/T-13) and invariant 11.
   and handed to Pandoc as its `template` variable, which becomes a relative
   `#import "…": conf`. Both temp files are removed after the compile. A
   `\newpage` line becomes a page break in every output via the shipped
-  `pandoc-filters/pagebreak.lua` (mounted read-only at `/filters`). All of it runs in Docker with
+  `pandoc-filters/pagebreak.lua` (mounted read-only at `/filters`). The
+  preview also carries a **page map**: `blockmarks.lua` plants an invisible
+  Typst metadata marker before every top-level block (and after the last);
+  a second, query-only Typst run (`typst eval 'query(<kuhn-block>)'`) reads
+  back each block's page and vertical offset, cached with the PDF and served
+  by `POST /page-map` — the editor's page-break lines and page count. All of it runs in Docker with
   `--network none`, CPU/memory/pid limits, a kill timer (60 s; 120 s for
   Marp's Chromium), and the project mounted **read-only**; output goes to a
   scratch dir that is read back and deleted. Sandbox output is treated as
