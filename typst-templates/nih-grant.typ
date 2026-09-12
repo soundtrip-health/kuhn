@@ -12,6 +12,10 @@
 //   headings   bold, unnumbered, the same size as body text
 //   numbering  none, always — the NIH assembly system adds page numbers
 //
+// Pair it with `page_limits:` front matter (Specific Aims: 1, Research
+// Strategy: 12, …) — the editor then measures each section against the
+// limit using this exact layout.
+//
 // Pandoc calls `conf` with the arguments its default Typst template passes
 // (see `pandoc --print-default-data-file templates/template.typst`); every
 // parameter is accepted so front-matter overrides (fontsize, margin, …)

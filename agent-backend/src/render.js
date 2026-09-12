@@ -161,21 +161,64 @@ export async function renderPdf(projectId, sourcePath) {
   }
 }
 
-/** Shape the raw marker values (blockmarks.lua) into the page map the UI consumes. */
+/**
+ * Shape the raw marker values (blockmarks.lua) into the page map the UI
+ * consumes. Headings keep their level/text; `page_limits:` front matter
+ * (section title → max pages) becomes `sections`: each budgeted heading
+ * measured from its own start to the next heading of the same or a higher
+ * level (or the end of the document), in fractional pages — 1.07 means
+ * "spills 7% of a page past the first". `over` is what the badge turns red on.
+ */
 export function pageMapFromMarkers(markers) {
   const blocks = [];
   let end = null;
   let pageHeight = null;
+  let limits = {};
   for (const m of markers) {
     if (!m || typeof m.page !== 'number') continue;
     if (pageHeight == null && typeof m.h === 'number') pageHeight = m.h;
     const entry = { key: String(m.key ?? ''), page: m.page, y: Math.round(m.y * 10) / 10 };
-    if (m.i === -1) end = { page: entry.page, y: entry.y };
-    else blocks.push(entry);
+    if (typeof m.level === 'number') {
+      entry.level = m.level;
+      entry.text = String(m.text ?? '');
+    }
+    if (m.i === -1) {
+      end = { page: entry.page, y: entry.y };
+      if (m.limits && typeof m.limits === 'object') limits = m.limits;
+    } else {
+      blocks.push(entry);
+    }
   }
   if (!end && blocks.length === 0) return null;
   const last = end ?? blocks[blocks.length - 1];
-  return { pages: last.page, pageHeight, blocks, end: end ?? { page: last.page, y: last.y } };
+  const map = { pages: last.page, pageHeight, blocks, end: end ?? { page: last.page, y: last.y } };
+  map.sections = sectionsFromMap(map, limits);
+  return map;
+}
+
+const normTitle = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+
+function sectionsFromMap({ blocks, end, pageHeight }, limits) {
+  const limitByTitle = new Map(
+    Object.entries(limits).map(([title, n]) => [normTitle(title), Number(n)]).filter(([, n]) => n > 0),
+  );
+  if (limitByTitle.size === 0) return [];
+  const sections = [];
+  blocks.forEach((b, index) => {
+    if (b.level == null) return;
+    const limit = limitByTitle.get(normTitle(b.text));
+    if (limit == null) return;
+    let stop = end;
+    for (let j = index + 1; j < blocks.length; j += 1) {
+      if (blocks[j].level != null && blocks[j].level <= b.level) { stop = blocks[j]; break; }
+    }
+    const pages = pageHeight
+      ? (stop.page - b.page) + (stop.y - b.y) / pageHeight
+      : stop.page - b.page + 1;
+    const rounded = Math.round(pages * 100) / 100;
+    sections.push({ index, title: b.text, key: b.key, page: b.page, pages: rounded, limit, over: rounded > limit });
+  });
+  return sections;
 }
 
 async function doRender(projectId, sourcePath, bibPath, bib, hash, template = null) {

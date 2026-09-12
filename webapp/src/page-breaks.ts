@@ -19,11 +19,24 @@ export interface PageMapBlock {
   y: number;
 }
 
+/** A heading with a `page_limits:` budget, measured by the backend (fractional pages). */
+export interface PageMapSection {
+  /** Index into `blocks` of the heading. */
+  index: number;
+  title: string;
+  key: string;
+  page: number;
+  pages: number;
+  limit: number;
+  over: boolean;
+}
+
 export interface PageMap {
   pages: number;
   pageHeight: number | null;
   blocks: PageMapBlock[];
   end: { page: number; y: number };
+  sections?: PageMapSection[];
 }
 
 const key = new PluginKey<DecorationSet>('kuhn-page-breaks');
@@ -71,30 +84,81 @@ export interface PageBreakLine {
   skipped: number;
 }
 
+/** One editor block matched to one page-map block. */
+export interface Aligned {
+  /** Index into map.blocks. */
+  index: number;
+  pos: number;
+  nodeSize: number;
+}
+
 /**
  * Align the page map with the editor's top-level blocks. Greedy, in order:
  * each editor block looks a few map entries ahead for its fingerprint;
  * blocks Pandoc merged, split or invented (bibliography, raw markers) are
  * skipped on whichever side lacks them. Pure — exported for tests.
  */
-export function computeLines(doc: EditorState['doc'], map: PageMap): PageBreakLine[] {
-  const lines: PageBreakLine[] = [];
+export function alignBlocks(doc: EditorState['doc'], map: PageMap): Aligned[] {
+  const out: Aligned[] = [];
   let j = 0;
-  let lastPage = 1;
   doc.forEach((node, offset) => {
     const k = blockKey(node.textContent);
     if (!k) return;
-    let found = -1;
     for (let m = j; m < map.blocks.length && m < j + MATCH_WINDOW; m += 1) {
-      if (map.blocks[m].key === k) { found = m; break; }
+      if (map.blocks[m].key === k) {
+        out.push({ index: m, pos: offset, nodeSize: node.nodeSize });
+        j = m + 1;
+        return;
+      }
     }
-    if (found === -1) return;
-    const page = map.blocks[found].page;
-    j = found + 1;
-    if (page > lastPage) lines.push({ pos: offset, page, skipped: page - lastPage - 1 });
-    if (page > lastPage) lastPage = page;
   });
+  return out;
+}
+
+/** The page-break lines: one before each matched block that starts a later page than the last matched one. */
+export function computeLines(doc: EditorState['doc'], map: PageMap): PageBreakLine[] {
+  const lines: PageBreakLine[] = [];
+  let lastPage = 1;
+  for (const a of alignBlocks(doc, map)) {
+    const page = map.blocks[a.index].page;
+    if (page > lastPage) {
+      lines.push({ pos: a.pos, page, skipped: page - lastPage - 1 });
+      lastPage = page;
+    }
+  }
   return lines;
+}
+
+/** A budget badge: drawn at the end of the heading's text. */
+export interface SectionBadge {
+  pos: number;
+  section: PageMapSection;
+}
+
+export function computeBadges(doc: EditorState['doc'], map: PageMap): SectionBadge[] {
+  const sections = map.sections ?? [];
+  if (sections.length === 0) return [];
+  const byIndex = new Map(alignBlocks(doc, map).map((a) => [a.index, a]));
+  const badges: SectionBadge[] = [];
+  for (const section of sections) {
+    const a = byIndex.get(section.index);
+    if (a) badges.push({ pos: a.pos + a.nodeSize - 1, section });
+  }
+  return badges;
+}
+
+/** "1.07" → "1.07", "1.00" → "1", "0.50" → "0.5". */
+const fmtPages = (n: number): string => n.toFixed(2).replace(/\.?0+$/, '');
+
+function badgeWidget(section: PageMapSection): HTMLElement {
+  const el = document.createElement('span');
+  el.className = `pb-limit${section.over ? ' is-over' : ''}`;
+  el.contentEditable = 'false';
+  el.textContent = `${fmtPages(section.pages)} / ${section.limit} page${section.limit === 1 ? '' : 's'}`;
+  el.title = section.over
+    ? `"${section.title}" runs ${fmtPages(section.pages)} pages against a ${section.limit}-page limit (page_limits front matter) — from the last render`
+    : `"${section.title}" fits its ${section.limit}-page limit (${fmtPages(section.pages)} pages at the last render)`;
+  return el;
 }
 
 function lineWidget(line: PageBreakLine): HTMLElement {
@@ -126,11 +190,21 @@ export function applyPageMap(view: EditorView | null, map: PageMap | null): void
     () => lineWidget(line),
     { key: `pb-${line.page}`, side: -1, ignoreSelection: true, stopEvent: () => true },
   ));
+  for (const badge of computeBadges(view.state.doc, map)) {
+    decos.push(Decoration.widget(
+      badge.pos,
+      () => badgeWidget(badge.section),
+      { key: `pb-limit-${badge.section.index}`, side: 1, ignoreSelection: true, stopEvent: () => true },
+    ));
+  }
   view.dispatch(view.state.tr.setMeta(key, { type: 'set', decos } satisfies Meta));
   view.dom.classList.remove(STALE_CLASS);
   if (el) {
     const fill = map.pageHeight ? Math.round((map.end.y / map.pageHeight) * 100) : null;
-    el.textContent = `${map.pages} page${map.pages === 1 ? '' : 's'}${fill != null ? ` (last ${fill}% full)` : ''}`;
+    const over = (map.sections ?? []).filter((s) => s.over);
+    el.textContent = `${map.pages} page${map.pages === 1 ? '' : 's'}${fill != null ? ` (last ${fill}% full)` : ''}`
+      + (over.length ? ` · over limit: ${over.map((s) => `${s.title} ${fmtPages(s.pages)}/${s.limit}`).join(', ')}` : '');
+    el.classList.toggle('is-over', over.length > 0);
     el.title = 'From the last PDF render — re-render the preview after editing to refresh';
     el.hidden = false;
   }
@@ -145,6 +219,7 @@ export function clearPageMap(view: EditorView | null): void {
   const el = pageCountEl();
   if (el) {
     el.textContent = '';
+    el.classList.remove('is-over');
     el.hidden = true;
   }
 }
