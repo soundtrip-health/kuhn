@@ -16,7 +16,9 @@ import {
   listProjectsForUser,
   setActiveDocument,
   updateProjectConfig,
+  setProjectTemplate,
 } from '../db/projects.js';
+import { TemplateError, resolveTemplateSource } from '../db/typst-templates.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { getOrgSettings } from '../db/org-settings.js';
 import { createPromotionRequest } from '../db/promotions.js';
@@ -142,6 +144,9 @@ router.put('/api/projects/:id/config', async (req, res) => {
     errors.push(`projectType must be one of: ${PROJECT_TYPES.join(', ')}`);
   }
   if (!answers.researchQuestion.trim()) errors.push('research question is required');
+  if (answers.template && !(await templateResolves(project.org_id ?? null, answers.template))) {
+    errors.push(`unknown template "${answers.template}"`);
+  }
   if (errors.length) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -155,6 +160,7 @@ router.put('/api/projects/:id/config', async (req, res) => {
     timeline: answers.timeline,
     source_materials: answers.sourceMaterials,
     ...(answers.notes ? { notes: answers.notes } : {}),
+    template: answers.template || null,
   };
   const { project: updated } = await applyProjectConfig(project.id, canonical, {
     extraConfig: { setup: { status: 'complete', answers } },
@@ -173,8 +179,42 @@ function normalizeAnswers(a) {
     timeline: typeof a.timeline === 'string' ? a.timeline : '',
     sourceMaterials: strArr(a.sourceMaterials),
     ...(typeof a.notes === 'string' && a.notes.trim() ? { notes: a.notes.trim() } : {}),
+    // Default Typst template (page layout) for the project's documents; '' = none.
+    template: typeof a.template === 'string' ? a.template.trim() : '',
   };
 }
+
+/** A project default template must resolve for the project's org — a typo would fail every render. */
+async function templateResolves(orgId, name) {
+  try {
+    await resolveTemplateSource(orgId, name);
+    return true;
+  } catch (err) {
+    if (err instanceof TemplateError) return false;
+    throw err;
+  }
+}
+
+/**
+ * PUT /api/projects/:id/template — body { template: name | null }
+ * The project's default Typst template (page layout) for documents without
+ * their own `template:` front matter. Editor role; the name must resolve.
+ */
+router.put('/api/projects/:id/template', async (req, res) => {
+  const project = await authorizeProject(req, res, 'editor');
+  if (!project) return;
+  const raw = req.body?.template ?? null;
+  if (raw != null && (typeof raw !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(raw))) {
+    res.status(400).json({ error: 'template must be a template name or null' });
+    return;
+  }
+  if (raw && !(await templateResolves(project.org_id ?? null, raw))) {
+    res.status(400).json({ error: `unknown template "${raw}" — see the template list` });
+    return;
+  }
+  const updated = await setProjectTemplate(project.id, raw || null);
+  res.json({ project: updated });
+});
 
 /**
  * PUT /api/projects/:id/active-document — body { path }

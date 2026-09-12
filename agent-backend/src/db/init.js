@@ -58,6 +58,10 @@ const COLUMN_MIGRATIONS = [
   // Issue #107/#112: model-routing diagnostics on the job row.
   { table: 'jobs', column: 'profile', ddl: 'TEXT' },
   { table: 'jobs', column: 'endpoint', ddl: 'TEXT' },
+  // Typst templates: Word reference documents for docx export. Nullable —
+  // templates without one export with Pandoc's stock reference.
+  { table: 'catalog_typst_templates', column: 'docx_path', ddl: 'TEXT' },
+  { table: 'org_typst_templates', column: 'docx', ddl: 'BLOB' },
   { table: 'jobs', column: 'difficulty', ddl: 'REAL' },
   { table: 'jobs', column: 'route_source', ddl: 'TEXT' },
 ];

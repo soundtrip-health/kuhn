@@ -74,6 +74,27 @@ export async function setActiveDocument(projectId, path) {
 }
 
 /**
+ * Set (or clear, with null) the project's default Typst template —
+ * projects.config.template — the layout documents without their own
+ * `template:` front matter render with. Same read-modify-write as
+ * setActiveDocument. Returns the updated project, or undefined if none.
+ */
+export async function setProjectTemplate(projectId, template) {
+  return transaction(() => {
+    const { rows: cur } = querySync('SELECT config FROM projects WHERE id = $1', [projectId]);
+    if (!cur[0]) return undefined;
+    const merged = { ...JSON.parse(cur[0].config || '{}') };
+    if (template) merged.template = template; else delete merged.template;
+    const { rows } = querySync(
+      `UPDATE projects SET config = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = $1 RETURNING *`,
+      [projectId, JSON.stringify(merged)],
+    );
+    return parseProject(rows[0]);
+  });
+}
+
+/**
  * Apply the PM interview result (story 012): optionally set the project type
  * and merge the structured config into projects.config. `name` is set only
  * when explicitly provided — the seeding interview leaves the user's chosen

@@ -43,6 +43,7 @@ import {
   setOrgTypstTemplateStatus,
   uploadOrgSlideTheme,
   uploadOrgTypstTemplate,
+  uploadOrgTypstTemplateDocx,
   updateMemberRole,
   resetBudget,
   setBudgetLimit,
@@ -2009,6 +2010,7 @@ function templatesTab(): HTMLElement[] {
   for (const t of templatesData.catalog) {
     const meta = [
       t.description ?? '',
+      t.docx ? 'Word reference for docx export' : 'PDF only (docx exports use Pandoc\'s stock styles)',
       t.available ? '' : 'unavailable in this deploy',
       t.shadowed ? 'shadowed by an org template of the same name' : '',
     ].filter(Boolean).join(' — ');
@@ -2020,6 +2022,8 @@ function templatesTab(): HTMLElement[] {
   for (const t of templatesData.templates) {
     let control: HTMLElement | null = null;
     if (owner) {
+      control = document.createElement('div');
+      control.className = 'theme-controls';
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-quiet btn-sm';
@@ -2028,9 +2032,34 @@ function templatesTab(): HTMLElement[] {
       btn.addEventListener('click', () => void templateAction(
         () => setOrgTypstTemplateStatus(adminOrgId, t.name, t.status === 'active' ? 'disabled' : 'active'),
       ));
-      control = btn;
+      // Word reference document: attach/replace via a hidden file input; remove when one exists.
+      const docxInput = document.createElement('input');
+      docxInput.type = 'file';
+      docxInput.accept = '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      docxInput.hidden = true;
+      docxInput.addEventListener('change', () => {
+        const picked = docxInput.files?.[0];
+        if (picked) void templateAction(() => uploadOrgTypstTemplateDocx(adminOrgId, t.name, picked));
+      });
+      const docxBtn = document.createElement('button');
+      docxBtn.type = 'button';
+      docxBtn.className = 'btn btn-quiet btn-sm';
+      docxBtn.textContent = t.docx_bytes ? 'Replace Word reference' : 'Attach Word reference';
+      docxBtn.title = 'A .docx whose page setup and styles Word exports of this template should use';
+      docxBtn.disabled = templatesBusy;
+      docxBtn.addEventListener('click', () => docxInput.click());
+      control.append(btn, docxInput, docxBtn);
+      if (t.docx_bytes) {
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'btn btn-quiet btn-sm';
+        rm.textContent = 'Remove Word reference';
+        rm.disabled = templatesBusy;
+        rm.addEventListener('click', () => void templateAction(() => uploadOrgTypstTemplateDocx(adminOrgId, t.name, null)));
+        control.append(rm);
+      }
     }
-    const meta = `${t.status} · ${(t.source_bytes / 1024).toFixed(1)} KB · updated ${formatDate(t.updated_at)}`;
+    const meta = `${t.status} · ${(t.source_bytes / 1024).toFixed(1)} KB · ${t.docx_bytes ? `Word reference ${(t.docx_bytes / 1024).toFixed(0)} KB` : 'no Word reference'} · updated ${formatDate(t.updated_at)}`;
     parts.push(themeRow(t.name, t.title, meta, control));
   }
 
@@ -2040,7 +2069,7 @@ function templatesTab(): HTMLElement[] {
     form.className = 'theme-upload';
     const hint = document.createElement('p');
     hint.className = 'ol-blurb';
-    hint.textContent = 'Pick a Typst file that defines `conf` (start from a Kuhn template in typst-templates/). Its `// @template <name>` header names the template; re-uploading a name replaces it.';
+    hint.textContent = 'Pick a Typst file that defines `conf` (start from a Kuhn template in typst-templates/). Its `// @template <name>` header names the template; re-uploading a name replaces it. Attach a Word reference document afterwards so docx exports match.';
     const file = document.createElement('input');
     file.type = 'file';
     file.accept = '.typ,text/plain';

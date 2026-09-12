@@ -68,6 +68,7 @@ export function getConformanceConfig() {
     typstTemplates: {
       catalogRoot: join(dataDir, 'typst-templates-catalog'),
       maxTemplateBytes: 256 * 1024,
+      maxDocxBytes: 4 * 1024 * 1024,
     },
     auth: { superadminEmails: [] },
     // Runtime selector (STH-47): 'claude' by default; the Pi conformance

@@ -2067,3 +2067,4 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .theme-row .theme-name { color: var(--ink-3); font-size: 12px; }
 .theme-row .theme-meta { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
 .theme-upload { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 4px; }
+.theme-controls { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }

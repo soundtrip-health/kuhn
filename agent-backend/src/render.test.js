@@ -43,13 +43,14 @@ vi.mock('./db/slide-themes.js', () => ({
 // Typst templates: resolution is mocked here; the SQL lives in db/typst-templates.test.js.
 vi.mock('./db/typst-templates.js', async (importOriginal) => {
   const actual = await importOriginal();
-  return { ...actual, resolveTemplateSource: vi.fn(async () => null) };
+  return { ...actual, resolveTemplateSource: vi.fn(async () => null), resolveTemplateDocx: vi.fn(async () => null) };
 });
 
 import { config } from './config.js';
 import { SandboxError, pandocConvert, renderMarp, renderTypstPdf, typstQueryBlocks } from './sandbox.js';
 import { resolveThemeCss } from './db/slide-themes.js';
-import { TemplateError, resolveTemplateSource } from './db/typst-templates.js';
+import { TemplateError, resolveTemplateDocx, resolveTemplateSource } from './db/typst-templates.js';
+import { getProject } from './db/projects.js';
 import { renderPdf, exportDocument, isMarpSource, marpThemeName, typstTemplateName, pageMapFromMarkers } from './render.js';
 
 let root;
@@ -344,6 +345,27 @@ describe('typst templates', () => {
     expect(resolveTemplateSource).not.toHaveBeenCalled(); // no name → no library lookup
     const args = pandocConvert.mock.calls.at(-1)[3];
     expect(args.some((a) => a.startsWith('--variable=template='))).toBe(false);
+  });
+
+  it('falls back to the project default template when the front matter names none', async () => {
+    getProject.mockResolvedValueOnce({ id: 2, org_id: 10, config: { template: 'manuscript' } });
+    await writeFile(join(root, '2', 'nobib.md'), `# Plain ${Math.random()}\n`);
+    resolveTemplateSource.mockResolvedValueOnce({ name: 'manuscript', source: '// @template manuscript\nMS', origin: 'catalog' });
+    await renderPdf(2, 'nobib.md');
+    expect(resolveTemplateSource).toHaveBeenCalledWith(10, 'manuscript');
+    expect(pandocConvert.mock.calls.at(-1)[3].some((a) => a.startsWith('--variable=template='))).toBe(true);
+  });
+
+  it('docx export hands pandoc the template\'s Word reference document; tex does not', async () => {
+    await writeFile(join(root, '1', 'draft', 'aims.md'), '---\ntemplate: nih-grant\n---\n\n# Aims\n');
+    resolveTemplateDocx.mockResolvedValueOnce({ name: 'nih-grant', docx: Buffer.from('PK\x03\x04ref'), origin: 'catalog' });
+    await exportDocument(1, 'draft/aims.md', 'docx');
+    expect(resolveTemplateDocx).toHaveBeenCalledWith(10, 'nih-grant');
+    expect(pandocConvert.mock.calls.at(-1)[4]).toEqual({ referenceDoc: Buffer.from('PK\x03\x04ref') });
+
+    await exportDocument(1, 'draft/aims.md', 'tex');
+    expect(pandocConvert.mock.calls.at(-1)[4]).toEqual({ referenceDoc: null });
+    expect(resolveTemplateDocx).toHaveBeenCalledTimes(1);
   });
 
   it('an unknown template name fails the render with TemplateError, before pandoc runs', async () => {

@@ -36,6 +36,7 @@ export function createProjectTools(ctx) {
         timeline: { type: 'string', description: 'Key milestones and dates (use absolute dates)' },
         source_materials: { type: 'array', items: { type: 'string' }, default: [], description: 'Source materials the user already has (guidance docs, prior protocols, key papers, data)' },
         notes: { type: 'string', description: 'Anything else from the interview worth preserving' },
+        template: { type: 'string', description: 'Default Typst page-layout template for the project\'s documents (a name from list_typst_templates, e.g. nih-grant for NIH applications, manuscript for journal drafts); documents may override it with their own `template:` front matter' },
       },
       required: ['title', 'project_type', 'research_question', 'deliverables', 'timeline'],
     },
@@ -49,6 +50,7 @@ export function createProjectTools(ctx) {
           timeline: input.timeline,
           source_materials: input.source_materials ?? [],
           ...(input.notes ? { notes: input.notes } : {}),
+          ...(input.template ? { template: input.template } : {}),
         };
         // Keep the user's chosen project name; the manuscript title lives in
         // config.title (and the user can rename the project explicitly).

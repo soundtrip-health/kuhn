@@ -129,7 +129,11 @@ see the threat model §5.3 (T-12/T-13) and invariant 11.
   resolved CSS is materialized into a read-only `/themes` mount registered
   with `--theme-set`. Typst templates: a prose document's `template:`
   front matter resolves the same way through the org/catalog template
-  library (`typst-templates/`; an active org upload shadows a Kuhn one);
+  library (`typst-templates/`; an active org upload shadows a Kuhn one;
+  a document without `template:` takes the project default,
+  `projects.config.template`); the docx export passes the template's Word
+  reference document (`--reference-doc`, a read-only `/reference` mount)
+  so Word carries the same page setup and styles;
   the resolved `.typ` is written beside the temp `.typ` under a hash name
   and handed to Pandoc as its `template` variable, which becomes a relative
   `#import "…": conf`. Both temp files are removed after the compile. A

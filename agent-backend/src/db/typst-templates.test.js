@@ -54,6 +54,8 @@ describe('validateTemplateManifest', () => {
     bad([{ name: 'a', title: 'A', path: '../escape.typ' }]);
     bad([{ name: 'Bad Name', title: 'A', path: 'a.typ' }]);
     bad([{ name: 'a', title: '', path: 'a.typ' }]);
+    bad([{ name: 'a', title: 'A', path: 'a.typ', docx: '../x.docx' }]);
+    bad([{ name: 'a', title: 'A', path: 'a.typ', docx: 'a.dotx' }]);
     expect(tpl.validateTemplateManifest(manifest([{ name: 'default', title: 'Default', path: 'default.typ' }])))
       .toBeTruthy();
   });
@@ -90,7 +92,9 @@ describe('seedTypstTemplateCatalog', () => {
         const src = await tpl.readCatalogTemplateFile(t.path);
         expect(tpl.templateNameFromSource(src)).toBe(t.name);
         expect(src).toMatch(/#let conf\(/);
+        if (t.docx) expect(await tpl.templateFileExists(t.docx)).toBe(true);
       }
+      expect(m.templates.filter((t) => t.docx).map((t) => t.name)).toEqual(['nih-grant', 'manuscript']);
     } finally {
       config.typstTemplates.catalogRoot = saved;
     }
@@ -128,5 +132,32 @@ describe('org templates + render-time resolution', () => {
     tpl.setOrgTemplateStatus(1, 'nih-grant', 'disabled');
     expect((await tpl.resolveTemplateSource(1, 'nih-grant')).origin).toBe('catalog');
     expect((await tpl.resolveTemplateSource(2, 'nih-grant')).origin).toBe('catalog');
+  });
+
+  it('resolveTemplateDocx: catalog file, org blob, none, unknown', async () => {
+    await writeFile(join(tplRoot, 'catalog.json'), JSON.stringify(manifest([
+      { name: 'nih-grant', title: 'NIH', path: 'nih-grant.typ', docx: 'nih-grant.docx' },
+      { name: 'plain', title: 'Plain', path: 'plain.typ' },
+    ])));
+    await writeFile(join(tplRoot, 'nih-grant.typ'), '// @template nih-grant\n');
+    await writeFile(join(tplRoot, 'plain.typ'), '// @template plain\n');
+    await writeFile(join(tplRoot, 'nih-grant.docx'), Buffer.from('PK\x03\x04catalog'));
+    await seedTypstTemplateCatalog();
+
+    expect(await tpl.resolveTemplateDocx(1, null)).toBe(null);
+    expect(await tpl.resolveTemplateDocx(1, 'plain')).toBe(null); // template without a reference doc
+    await expect(tpl.resolveTemplateDocx(1, 'nope')).rejects.toMatchObject({ code: 'not_found' });
+    const cat = await tpl.resolveTemplateDocx(1, 'nih-grant');
+    expect(cat.origin).toBe('catalog');
+    expect(cat.docx.toString()).toContain('catalog');
+
+    tpl.upsertOrgTemplate({ orgId: 1, name: 'nih-grant', title: 'NIH (org)', source: '// @template nih-grant\nORG' });
+    expect(await tpl.resolveTemplateDocx(1, 'nih-grant')).toBe(null); // org shadows, and has no docx
+    expect(tpl.setOrgTemplateDocx(1, 'nih-grant', Buffer.from('PK\x03\x04org')).docx_bytes).toBe(7);
+    expect((await tpl.resolveTemplateDocx(1, 'nih-grant')).docx.toString()).toContain('org');
+    expect(tpl.listOrgTemplates(1)[0]).toMatchObject({ name: 'nih-grant', docx_bytes: 7 });
+    expect(tpl.listOrgTemplates(1)[0].docx).toBeUndefined(); // lists leave the blob out
+    expect(tpl.setOrgTemplateDocx(1, 'nih-grant', null).docx_bytes).toBe(null);
+    expect(tpl.setOrgTemplateDocx(1, 'ghost', null)).toBe(null);
   });
 });

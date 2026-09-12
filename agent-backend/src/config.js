@@ -258,6 +258,8 @@ export const config = {
     catalogRoot: process.env.KUHN_TYPST_TEMPLATES
       || fileURLToPath(new URL('../../typst-templates', import.meta.url)),
     maxTemplateBytes: parseInt(process.env.TYPST_TEMPLATE_MAX_BYTES || String(256 * 1024)),
+    // Word reference documents (docx export) are zips with styles + maybe a logo.
+    maxDocxBytes: parseInt(process.env.TYPST_TEMPLATE_DOCX_MAX_BYTES || String(4 * 1024 * 1024)),
   },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
