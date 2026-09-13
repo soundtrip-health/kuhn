@@ -311,7 +311,7 @@ export const citationsReferences = {
 /** 7 — Comment lifecycle with cross-role attribution. */
 export const commentsLifecycle = {
   id: 'comments-lifecycle',
-  title: 'Reviewer files a comment; the writer replies and resolves; attribution is preserved',
+  title: 'Reviewer files a comment; the writer replies, resolves and files its own; attribution is preserved',
   fixture: {
     files: { 'draft/main.md': 'The cohort was small. Recruitment was slow.\n' },
   },
@@ -349,10 +349,34 @@ export const commentsLifecycle = {
         }],
       },
     },
+    // Issue #168: the writer files its own question instead of asking the PM to.
+    {
+      role: 'writer',
+      input: 'Flag anything the PI needs to confirm.',
+      model: {
+        attempts: [{
+          turns: [
+            { toolCalls: [{
+              tool: 'add_comment',
+              args: {
+                path: 'draft/main.md',
+                quote: 'Recruitment was slow.',
+                body: 'Can you confirm the enrolment window? The notes give two different dates.',
+              },
+            }] },
+            { text: 'Question filed.', usage: { input: 8, output: 3 } },
+          ],
+        }],
+      },
+    },
   ],
   assert: async (ctx) => {
-    const threads = ctx.comments(ctx.fixture.projectId).filter((c) => c.parent_id == null);
-    ctx.check('one comment thread filed', threads.length === 1);
+    const all = ctx.comments(ctx.fixture.projectId);
+    const writerThreads = all.filter((c) => c.parent_id == null && c.agent_slug === 'writer');
+    ctx.check('writer filed its own comment thread', writerThreads.length === 1
+      && writerThreads[0].anchor_quote === 'Recruitment was slow.' && writerThreads[0].orphaned === 0);
+    const threads = all.filter((c) => c.parent_id == null && c.agent_slug === 'reviewer');
+    ctx.check('one reviewer comment thread filed', threads.length === 1);
     const root = threads[0];
     ctx.check('comment attributed to the reviewer agent', root?.agent_slug === 'reviewer' && root.orphaned === 0);
     ctx.check('anchor quote stored', root?.anchor_quote === 'The cohort was small.');

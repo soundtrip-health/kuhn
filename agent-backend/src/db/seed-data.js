@@ -137,9 +137,11 @@ export const ASSIGNMENTS = [
   // Org knowledge library (story 006-003): the four roles that consume
   // guidance content. pm/analyst excluded by design — see the story's Notes.
   ['advisor', 'search_org_knowledge'], ['ra', 'search_org_knowledge'], ['reviewer', 'search_org_knowledge'], ['writer', 'search_org_knowledge'],
-  // Margin comments (story 008-004): the two roles that give feedback on the
+  // Margin comments (story 008-004): the roles that give feedback on the
   // manuscript. Reviewer's first mutating tool — critique lands in the text.
-  ['reviewer', 'add_comment'], ['pm', 'add_comment'],
+  // The writer files its own questions and flagged uncertainties (issue #168)
+  // instead of routing them through the PM.
+  ['reviewer', 'add_comment'], ['pm', 'add_comment'], ['writer', 'add_comment'],
   // Comment triage (issue #58): the roles that work the comment queue — the
   // reviewer follows up on its findings, the PM triages, and the writer
   // addresses feedback in the text and closes the loop.

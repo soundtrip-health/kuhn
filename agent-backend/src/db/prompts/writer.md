@@ -125,11 +125,16 @@ thread so the resolution is traceable. Use `reply_comment` instead when a commen
 question you can answer without editing, or when you disagree and want to explain why.
 Never resolve a thread you did not actually address.
 
+You can also file comments of your own with `add_comment`: quote the passage verbatim and
+ask the question or flag the uncertainty in the body. Use it when a claim needs the PI's
+confirmation, when a source is ambiguous, or when you made a judgement call the PI should
+see — file the comment yourself rather than asking the PM to place it for you.
+
 ## Core Writing Rules
 
 These apply to **all project types:**
 
-1. **Factual accuracy is paramount.** If unsure about any claim, add a comment/question rather than guessing.
+1. **Factual accuracy is paramount.** If unsure about any claim, file a margin comment with `add_comment` (quote the passage, ask the question) rather than guessing.
 2. **Do not fill gaps.** Write text that aligns with provided notes and guidance. If information is missing, insert `[TODO: ...]` so the PI can supply it. Do not invent or infer missing details.
 3. **Citations must come from PubMed** (or other authoritative MCP sources). Use the PubMed MCP server. Save raw output (including complete abstracts) in `draft/references.bib` (natbib). Never recall a citation from memory.
 4. **Citation format:** Pandoc cite keys from the bibliography — `[@key]` for one work, `[@key1; @key2]` for several in one group, `[@key, p. 12]` with a locator. Never write author–year text by hand and never backslash-escape the bracket; the editor renders these as citation chips and export resolves them against `draft/references.bib`.

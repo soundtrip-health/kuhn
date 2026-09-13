@@ -171,7 +171,7 @@ function obs(overrides = {}) {
     originalFiles: { 'notes/x.md': 'source' },
     toolCalls: [{ name: 'write_file', args: { path: 'draft/aims.md' }, isError: false }],
     toolCallsByRole: { writer: [{ name: 'write_file', args: { path: 'draft/aims.md' }, isError: false }] },
-    grantedToolsByRole: { writer: ['file_read', 'file_write', 'file_list', 'add_citation', 'search_org_knowledge', 'manage_comments', 'spawn_agent'] },
+    grantedToolsByRole: { writer: ['file_read', 'file_write', 'file_list', 'add_citation', 'search_org_knowledge', 'add_comment', 'manage_comments', 'spawn_agent'] },
     comments: [],
     references: [{ cite_key: 'smith2024', pmid: '38450214', title: 't', source_type: 'pubmed' }],
     bibText: { 'draft/references.bib': '@article{smith2024,\n  title = {t}\n}\n' },
