@@ -228,6 +228,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- init.js COLUMN_MIGRATIONS.
   difficulty       REAL,
   route_source     TEXT,
+  -- The chat this top-level run belongs to (issue #113 item 1). NULL for
+  -- sub-agent jobs, compose-mode (/write) runs, seeding stages, and
+  -- pre-migration rows. Mirrored in init.js COLUMN_MIGRATIONS.
+  chat_id          INTEGER REFERENCES chats(id) ON DELETE SET NULL,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -240,6 +244,38 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status
 -- point in time.
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created
   ON jobs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_chat
+  ON jobs(chat_id, created_at DESC);
+
+-- ============================================================
+-- Chats (issue #113 item 1): one durable thread between a user and one
+-- agent in one project. The provider session id, the canonical
+-- continuation, the user's model pin and the fresh-start hand-off note live
+-- HERE, not in the browser tab — so a conversation continues from any tab
+-- or device instead of forking, and the client merely names the chat.
+-- There is deliberately no `status` column: status is a read-time
+-- projection of current_job_id's job row (db/chats.js chatStatus) until
+-- #118 stage 1 lands explicit job states.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chats (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  agent_slug      TEXT NOT NULL,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title           TEXT,
+  session_id      TEXT,
+  continuation    TEXT,  -- JSON (STH-47 canonical continuation of the last run)
+  pinned_profile  TEXT,  -- the user's model pick for this agent (issue #134)
+  pending_handoff TEXT,  -- STH-55 note captured at the last fresh start; delivered with the next message
+  current_job_id  INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  last_message_at TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (project_id, agent_slug, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chats_project_user
+  ON chats(project_id, user_id);
 
 -- ============================================================
 -- Org token budgets (issue #110, parts 3–4): per-user / per-project overrides

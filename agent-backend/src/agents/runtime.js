@@ -17,6 +17,7 @@ import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
+import { recordChatRun, startChatJob } from '../db/chats.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { resolveDocType } from '../db/doc-types.js';
@@ -58,6 +59,11 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *   agent they are addressing (issue #134). Must be on the agent's route
  *   list (the owner's allowlist) or the task is refused as route_invalid.
  *   Sub-agent dispatches never carry it — they route by difficulty.
+ * @param {number} [task.chatId] - The chat this top-level run belongs to
+ *   (issue #113 item 1): the job row is stamped with it, the chat's current
+ *   job follows the run, and the session id / continuation the run leaves
+ *   behind are recorded on the chat at each terminal. Sub-agent runs
+ *   (depth > 0) never touch a chat; compose and seeding runs carry none.
  * @param {string} [task.sessionId] - Continue a prior provider session
  * @param {object} [task.continuation] - Canonical Kuhn continuation (STH-47)
  *   to resume from: the provider-neutral record of a prior run (a follow-up
@@ -295,6 +301,9 @@ async function runTask(task, internal, channel, state) {
   const { role, projectId, input, context = null, sessionId = null, compose = false, seeding = false, userId = null, difficulty = undefined, profile: requestedProfile = null } = task;
   const depth = internal.depth ?? 0;
   const parentJobId = internal.parentJobId ?? null;
+  // Only a top-level run belongs to a chat (issue #113): a dispatched
+  // sub-agent's session is the dispatch's, not the user's conversation.
+  const chatId = depth === 0 && task.chatId != null ? task.chatId : null;
   const budget = internal.budget ?? { used: 0, limit: config.agent.tokenBudget };
 
   let agent = await getAgentWithTools(role);
@@ -377,8 +386,21 @@ async function runTask(task, internal, channel, state) {
     }
   }
 
-  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId });
+  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId, chatId });
   state.job = job;
+  if (chatId != null) {
+    // The chat's current job follows the run (and its status projection
+    // with it); the spliced hand-off note counts as delivered from here.
+    await startChatJob(chatId, job.id);
+  }
+  // What this run leaves on its chat (issue #113): the provider session and
+  // the canonical record a follow-up from ANY tab resumes. Best effort at
+  // every terminal — the run's own outcome never fails because of it.
+  const syncChat = () => (chatId != null
+    ? recordChatRun(chatId, job.id, { sessionId: state.sessionId, continuation: state.continuation ?? null }).catch((err) => {
+        log.warn('chat_sync_failed', { jobId: job.id, chatId, err });
+      })
+    : Promise.resolve());
   if (depth === 0) {
     // Top-level job-start marker for the project feed (story 005-001); the
     // matching terminal 'done'/'error' flows through the channel tee.
@@ -533,6 +555,7 @@ async function runTask(task, internal, channel, state) {
       // The stop request already marked the row; this stamps the identity
       // and usage on it (status again, in case a retry landed 'running').
       await updateJob(job.id, { status: 'cancelled', ...fields, ...jobIdentity() }).catch(() => {});
+      await syncChat();
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason: 'user',
         contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
@@ -548,6 +571,7 @@ async function runTask(task, internal, channel, state) {
       return;
     }
     await updateJob(job.id, fields).catch(() => {});
+    await syncChat();
     log.info('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: state.cancelReason === 'budget' ? 'error' : 'cancelled',
       reason: state.cancelReason ?? 'cancelled', contextTokens: lastContextTokens,
@@ -613,6 +637,7 @@ async function runTask(task, internal, channel, state) {
         // another runtime) can resume provider-neutrally (STH-47).
         continuation: state.continuation ?? null,
       });
+      await syncChat();
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'done',
         contextTokens: lastContextTokens, inputTokens: productUsage.inputTokens,
@@ -652,6 +677,8 @@ async function runTask(task, internal, channel, state) {
       turnInput = renderSessionHandoff({ transcript, input: prompt, ...caps });
       state.sessionId = null;
       state.continuation = null;
+      // The dead id must not be handed back by ANOTHER tab either.
+      await syncChat();
       retries = 0;
       log.warn('session_fallback', {
         jobId: job.id, agent: agent.slug, depth, deadSession,
@@ -731,6 +758,7 @@ async function runTask(task, internal, channel, state) {
       // failure resumes provider-neutrally instead of starting cold.
       continuation: state.continuation ?? null,
     });
+    await syncChat();
     log.error('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
       contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
@@ -789,8 +817,10 @@ async function runTask(task, internal, channel, state) {
             if (event.sessionId !== state.sessionId) {
               state.sessionId = event.sessionId;
               // Record the session so a retry resumes it and a terminal
-              // transient error can hand it back to a chat retry (story 029).
+              // transient error can hand it back to a chat retry (story 029)
+              // — on the chat too, so a crash mid-run loses nothing.
               await updateJob(job.id, { sessionId: event.sessionId });
+              await syncChat();
             }
             // Audit (STH-51): per-attempt session initialization, sourced
             // from the normalized identity event — never provider message
@@ -889,6 +919,9 @@ async function runTask(task, internal, channel, state) {
             });
             state.cancelReason = 'budget';
             state.controller.abort();
+            // The paused session stays on the chat: a resume (or the user's
+            // next message from any tab) continues this exact conversation.
+            await syncChat();
             // Hand-off before the pause (issue #110). The interrupted agent
             // cannot write its own note — its turn was just aborted — so one
             // is distilled from Kuhn's record of the conversation (the turn

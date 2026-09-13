@@ -64,6 +64,11 @@ const COLUMN_MIGRATIONS = [
   { table: 'org_typst_templates', column: 'docx', ddl: 'BLOB' },
   { table: 'jobs', column: 'difficulty', ddl: 'REAL' },
   { table: 'jobs', column: 'route_source', ddl: 'TEXT' },
+  // Issue #113 item 1: the chat a top-level run belongs to. Nullable —
+  // sub-agent, compose, seeding and pre-migration rows stay NULL. Safe to
+  // ALTER: chats is created by schema.sql before this runs, and SQLite only
+  // checks the reference on writes.
+  { table: 'jobs', column: 'chat_id', ddl: 'INTEGER REFERENCES chats(id) ON DELETE SET NULL' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK
@@ -353,6 +358,18 @@ export function applyKnowledgeIndexMigration() {
           ON org_documents(org_id, catalog_item_id) WHERE catalog_item_id IS NOT NULL`);
 }
 
+/**
+ * Issue #113 item 1: index over the migrated jobs.chat_id column. Same
+ * ordering trap as above — schema.sql's copy only helps fresh databases,
+ * since on an existing one the column is added after the schema script ran.
+ */
+export function applyChatIndexMigration() {
+  const have = new Set(querySync("SELECT name FROM pragma_table_info('jobs')").rows.map((r) => r.name));
+  // Partial-stub test databases may lack the columns; a real jobs table has both.
+  if (!have.has('chat_id') || !have.has('created_at')) return;
+  exec('CREATE INDEX IF NOT EXISTS idx_jobs_chat ON jobs(chat_id, created_at DESC)');
+}
+
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */
 export function applyColumnMigrations() {
   for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
@@ -378,6 +395,7 @@ export async function initDb() {
   applyModelProfilesProviderMigration();
   applyProjectTypeCheckMigration();
   applyKnowledgeIndexMigration();
+  applyChatIndexMigration();
   console.log('[db] Schema applied.');
 
   // Seed default tenant, agents, tools, and assignments.

@@ -27,14 +27,16 @@ function parseJob(row) {
  * @param {string|null} [job.provider] - Effective runtime provider (STH-47)
  * @param {string|null} [job.model] - Effective runtime model (STH-47)
  * @param {object|null} [job.continuation] - Canonical continuation envelope (STH-47)
+ * @param {number|null} [job.chatId] - The chat this top-level run belongs to
+ *   (issue #113); null for sub-agent, compose and seeding runs
  * @returns {Promise<object>} The inserted job row
  */
-export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null }) {
+export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null, chatId = null }) {
   const { rows } = await query(
-    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation, chat_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
-    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null],
+    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null, chatId],
   );
   return parseJob(rows[0]);
 }

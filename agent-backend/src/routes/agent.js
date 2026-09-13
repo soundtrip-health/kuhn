@@ -12,6 +12,7 @@ import { deliverReply, getPendingQuestion, hasPendingQuestion } from '../agents/
 import { runAgentTask, reattach, cancelRun } from '../agents/runtime.js';
 import { routeOptions } from '../agents/model-routing.js';
 import { getAgentWithTools } from '../db/agents.js';
+import { getChat, getOrCreateChat, setPinnedProfile } from '../db/chats.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
 import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
 import { requireProjectRole } from './guards.js';
@@ -36,24 +37,45 @@ async function requireJobRole(req, res, minRole) {
   return job;
 }
 
+/** How a parked fresh-start hand-off note travels with the next message (STH-55). */
+export function spliceHandoff(note, input) {
+  return `[Hand-off note carried from your previous conversation with this user]\n${note}\n\n---\n\n${input}`;
+}
+
 /**
  * POST /api/agent/task
- * Body: { role, projectId, input, context?, sessionId?, compose?, continuation?, difficulty?, profile? }
+ * Body: { chatId } | { role, projectId }, plus { input, context?, compose?,
+ *         difficulty?, profile?, sessionId?, continuation? }
+ * A chat turn (issue #113 item 1): the message goes to the caller's chat
+ * with that agent in that project — named by `chatId`, or resolved (and
+ * created on first use) from `role` + `projectId`. The chat row is
+ * authoritative for the provider session and the canonical continuation the
+ * run resumes; `sessionId` / `continuation` in the body are honoured only
+ * when the chat has none yet (compatibility with pre-#113 clients and the
+ * token-free check scripts). A parked fresh-start hand-off note is spliced
+ * ahead of the input and consumed once the run has a job.
  * `difficulty` (0..1, issue #107) steers the org's per-role model routing;
  * absent means the strongest configured profile. `profile` (issue #134) pins
- * one of the agent's routed profiles for this conversation — the user's
- * choice of which model powers the agent they talk to; anything off the
- * agent's route list is refused (route_invalid), never rerouted.
+ * one of the agent's routed profiles for this chat — the user's choice of
+ * which model powers the agent they talk to; when present it is stored on
+ * the chat, otherwise the stored pin applies. Anything off the agent's
+ * route list is refused (route_invalid), never rerouted.
  * `compose: true` runs the task in compose mode — file-mutating tools are
  * withheld so the agent returns text only (the /write contract, story 017).
+ * Compose runs are stateless: they neither bind to nor mutate a chat.
  * `continuation` (STH-47): the canonical Kuhn continuation envelope from a
  * prior run's `done` event — a follow-up task resumes that provider-neutral
  * record (the only way Pi-runtimed conversations carry context forward).
  * Streams AgentEvents to the browser as Server-Sent Events.
  */
 router.post('/api/agent/task', async (req, res) => {
-  const { role, projectId, input, context, sessionId, compose, continuation, difficulty, profile } = req.body ?? {};
-  if (!role || projectId == null || !input) {
+  const { chatId, input, context, sessionId, compose, continuation, difficulty, profile } = req.body ?? {};
+  let { role, projectId } = req.body ?? {};
+  if (chatId != null && !Number.isInteger(Number(chatId))) {
+    res.status(400).json({ error: 'chatId must be a chat id' });
+    return;
+  }
+  if ((chatId == null && (!role || projectId == null)) || !input) {
     res.status(400).json({ error: 'role, projectId, and input are required' });
     return;
   }
@@ -69,15 +91,54 @@ router.post('/api/agent/task', async (req, res) => {
       return;
     }
   }
+  let chat = null;
+  if (chatId != null) {
+    chat = await getChat(Number(chatId));
+    if (!chat) {
+      res.status(404).json({ error: 'chat not found' });
+      return;
+    }
+    ({ project_id: projectId, agent_slug: role } = chat);
+  }
   const project = await requireProjectRole(req, res, projectId, 'editor');
   if (!project) return;
+  if (chat && chat.user_id !== req.user.id) {
+    // Another member's thread is not this user's conversation to continue.
+    res.status(403).json({ error: 'not your chat' });
+    return;
+  }
   // detachable: survive a browser disconnect while parked on an ask_user
   // question, so the user can reload and reconnect to the question (story 027).
   // The abort signal lets runAgentTask end its consume loop promptly on
   // disconnect even while parked (no events arrive to unblock channel.next()).
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, difficulty, profile: profile ?? null, userId: req.user.id, detachable: true, signal: ac.signal }));
+  if (compose) {
+    // The /write flow: text only, no conversation — exactly as before #113.
+    await streamEvents(res, runAgentTask({ role, projectId: project.id, input, context, sessionId, compose, continuation: continuation ?? null, difficulty, profile: profile ?? null, userId: req.user.id, detachable: true, signal: ac.signal }));
+    return;
+  }
+  chat ??= await getOrCreateChat({ projectId: project.id, agentSlug: role, userId: req.user.id });
+  let pinned = chat.pinned_profile ?? null;
+  if (profile !== undefined && (profile ?? null) !== pinned) {
+    pinned = profile ?? null;
+    await setPinnedProfile(chat.id, pinned);
+  }
+  const turnInput = chat.pending_handoff ? spliceHandoff(chat.pending_handoff, input) : input;
+  await streamEvents(res, runAgentTask({
+    role: chat.agent_slug,
+    projectId: project.id,
+    chatId: chat.id,
+    input: turnInput,
+    context,
+    sessionId: chat.session_id ?? sessionId ?? undefined,
+    continuation: chat.continuation ?? continuation ?? null,
+    difficulty,
+    profile: pinned,
+    userId: req.user.id,
+    detachable: true,
+    signal: ac.signal,
+  }));
 });
 
 /**
@@ -107,9 +168,10 @@ router.get('/api/agent/model-options', async (req, res) => {
 /**
  * POST /api/agent/handoff — body { projectId, role } (STH-55).
  * Scan the tail of the recorded conversation with `role` for a clear
- * hand-off and return { handoff: string | null }. Called by the webapp when
- * the user starts a fresh conversation; editor-gated like dispatching work,
- * since it spends model quota and feeds the next dispatch.
+ * hand-off and return { handoff: string | null }. Kept for compatibility:
+ * since issue #113 the webapp resets the chat server-side instead
+ * (POST /api/chats/:id/reset, which captures and parks the note itself).
+ * Editor-gated like dispatching work, since it spends model quota.
  */
 router.post('/api/agent/handoff', async (req, res) => {
   const { projectId, role } = req.body ?? {};
@@ -179,6 +241,7 @@ router.post('/api/agent/jobs/:id/dispatch', async (req, res) => {
   await streamEvents(res, runAgentTask({
     role: job.role,
     projectId: job.project_id,
+    chatId: job.chat_id ?? undefined, // the re-run stays on the original chat (issue #113)
     input: job.input,
     context: job.context,
     sessionId: job.session_id ?? undefined,
@@ -209,6 +272,9 @@ router.post('/api/agent/jobs/:id/resume', async (req, res) => {
   await streamEvents(res, runAgentTask({
     role: job.role,
     projectId: job.project_id,
+    // The resumed run stays on the paused job's chat (issue #113), so the
+    // chat's current job — and its projected status — follow the resume.
+    chatId: job.chat_id ?? undefined,
     input: renderResumeInput(job),
     context: context ?? null,
     sessionId: job.session_id ?? undefined,

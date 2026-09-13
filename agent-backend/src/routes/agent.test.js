@@ -14,6 +14,19 @@ vi.mock('../db/orgs.js', () => ({
 vi.mock('../agents/handoff.js', () => ({
   captureHandoff: vi.fn(async () => ({ handoff: 'note' })),
 }));
+// Issue #113: the chat store's SQL is covered in db/chats.test.js; here the
+// task route's use of the chat row is scripted. `chatState.row` is the
+// stored chat (null → a fresh one is "created").
+const chatState = { row: null };
+const freshChat = ({ projectId, agentSlug, userId }) => ({
+  id: 300, project_id: projectId, agent_slug: agentSlug, user_id: userId,
+  session_id: null, continuation: null, pinned_profile: null, pending_handoff: null, current_job_id: null, status: 'idle',
+});
+vi.mock('../db/chats.js', () => ({
+  getChat: vi.fn(async (id) => (chatState.row && chatState.row.id === id ? chatState.row : undefined)),
+  getOrCreateChat: vi.fn(async (key) => chatState.row ?? freshChat(key)),
+  setPinnedProfile: vi.fn(async () => ({})),
+}));
 // Issue #110: the resume route's dispatch is asserted by its arguments; the
 // run itself is the runtime's business (agents/runtime.test.js).
 vi.mock('../agents/runtime.js', async (importOriginal) => {
@@ -38,6 +51,7 @@ vi.mock('../db/agents.js', () => ({
 import { query } from '../db.js';
 import { checkOrgAccess } from '../db/orgs.js';
 import { captureHandoff } from '../agents/handoff.js';
+import { getChat, getOrCreateChat, setPinnedProfile } from '../db/chats.js';
 import { runAgentTask } from '../agents/runtime.js';
 import { routeOptions } from '../agents/model-routing.js';
 import { waitForReply, deliverReply } from '../agents/questions.js';
@@ -63,6 +77,10 @@ afterAll(() => new Promise((ok) => server.close(ok)));
 beforeEach(() => {
   checkOrgAccess.mockReset();
   checkOrgAccess.mockImplementation(async (_u, orgId) => ({ ok: true, role: 'owner', org: { id: orgId } }));
+  chatState.row = null;
+  getChat.mockClear();
+  getOrCreateChat.mockClear();
+  setPinnedProfile.mockClear();
 });
 
 /** Make the mocked db serve a jobs row for `id` (getJob) for the duration of fn. */
@@ -199,6 +217,92 @@ describe('POST /api/agent/task (010-003 scoping)', () => {
 
     checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'not-member' });
     expect((await task({ role: 'pm', projectId: 5, input: 'go' })).status).toBe(404);
+  });
+});
+
+describe('POST /api/agent/task by chat (issue #113 item 1)', () => {
+  const task = async (body) => {
+    runAgentTask.mockClear();
+    const res = await fetch(`${base}/api/agent/task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 200) await res.text(); // drain the stream
+    return res;
+  };
+  const stored = (fields) => ({ ...freshChat({ projectId: 5, agentSlug: 'pm', userId: 1 }), ...fields });
+
+  it('resolves (creating) the caller\'s chat for role + project and stamps the run with it', async () => {
+    expect((await task({ role: 'pm', projectId: 5, input: 'go' })).status).toBe(200);
+    expect(getOrCreateChat).toHaveBeenCalledWith({ projectId: 5, agentSlug: 'pm', userId: 1 });
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'pm', projectId: 5, chatId: 300, input: 'go', sessionId: undefined, continuation: null, profile: null, userId: 1, detachable: true,
+    }));
+  });
+
+  it('the chat row is authoritative for the session and continuation; client values only seed an empty chat', async () => {
+    chatState.row = stored({ session_id: 'stored-sess', continuation: { version: 1, messages: [] } });
+    await task({ role: 'pm', projectId: 5, input: 'go', sessionId: 'client-sess' });
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'stored-sess', continuation: { version: 1, messages: [] },
+    }));
+    chatState.row = null;
+    await task({ role: 'pm', projectId: 5, input: 'go', sessionId: 'client-sess' });
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'client-sess' }));
+  });
+
+  it('splices a parked hand-off note ahead of the input exactly as the client used to', async () => {
+    chatState.row = stored({ pending_handoff: 'Open: pick a journal.' });
+    await task({ role: 'pm', projectId: 5, input: 'Let us continue.' });
+    expect(runAgentTask.mock.calls[0][0].input).toBe(
+      '[Hand-off note carried from your previous conversation with this user]\nOpen: pick a journal.\n\n---\n\nLet us continue.',
+    );
+    // Consumption happens when the run has a job (runtime → startChatJob),
+    // not here: a run refused before a job exists keeps the note.
+  });
+
+  it('stores a supplied profile as the chat\'s pin and otherwise runs on the stored pin', async () => {
+    await task({ role: 'pm', projectId: 5, input: 'go', profile: 'strong' });
+    expect(setPinnedProfile).toHaveBeenCalledWith(300, 'strong');
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ profile: 'strong' }));
+
+    setPinnedProfile.mockClear();
+    chatState.row = stored({ pinned_profile: 'cheap' });
+    await task({ role: 'pm', projectId: 5, input: 'go' });
+    expect(setPinnedProfile).not.toHaveBeenCalled();
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ profile: 'cheap' }));
+
+    // An explicit null unpins.
+    await task({ role: 'pm', projectId: 5, input: 'go', profile: null });
+    expect(setPinnedProfile).toHaveBeenCalledWith(300, null);
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ profile: null }));
+  });
+
+  it('addresses the chat by id: 404 unknown, 403 another user\'s, and the chat names role + project', async () => {
+    expect((await task({ chatId: 999, input: 'go' })).status).toBe(404);
+    expect((await task({ chatId: 'x', input: 'go' })).status).toBe(400);
+    chatState.row = stored({ user_id: 2, session_id: 'theirs' });
+    const theirs = await task({ chatId: 300, input: 'go' });
+    expect(theirs.status).toBe(403);
+    expect(await theirs.json()).toEqual({ error: 'not your chat' });
+    expect(runAgentTask).not.toHaveBeenCalled();
+
+    chatState.row = stored({ session_id: 'mine' });
+    expect((await task({ chatId: 300, input: 'go' })).status).toBe(200);
+    expect(getOrCreateChat).not.toHaveBeenCalled();
+    expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ role: 'pm', projectId: 5, chatId: 300, sessionId: 'mine' }));
+  });
+
+  it('compose mode (/write) neither binds to nor mutates a chat', async () => {
+    chatState.row = stored({ session_id: 'stored-sess', pending_handoff: 'note', pinned_profile: 'cheap' });
+    await task({ role: 'pm', projectId: 5, input: 'draft a paragraph', compose: true, profile: 'strong' });
+    expect(getOrCreateChat).not.toHaveBeenCalled();
+    expect(setPinnedProfile).not.toHaveBeenCalled();
+    const call = runAgentTask.mock.calls[0][0];
+    expect(call).toMatchObject({ compose: true, input: 'draft a paragraph', profile: 'strong' });
+    expect(call.chatId).toBeUndefined();
+    expect(call.sessionId).toBeUndefined();
   });
 });
 

@@ -15,13 +15,20 @@ describe('createJob', () => {
     await createJob({ role: 'ra', projectId: 3, input: 'find papers', context: { files: ['a.md'] }, parentJobId: 9, userId: 4 });
     const [sql, params] = query.mock.calls[0];
     expect(sql).toContain('INSERT INTO jobs');
-    expect(params).toEqual(['ra', 3, 'find papers', JSON.stringify({ files: ['a.md'] }), 9, 4, null, null, null]);
+    expect(params).toEqual(['ra', 3, 'find papers', JSON.stringify({ files: ['a.md'] }), 9, 4, null, null, null, null]);
+  });
+
+  it('stamps the chat a top-level run belongs to (issue #113)', async () => {
+    await createJob({ role: 'pm', projectId: 3, input: 'hi', userId: 4, chatId: 12 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toContain('chat_id');
+    expect(params.at(-1)).toBe(12);
   });
 
   it('defaults user_id to NULL when no user is supplied (story 007-001)', async () => {
     await createJob({ role: 'ra', projectId: 3, input: 'find papers' });
     const [, params] = query.mock.calls[0];
-    expect(params).toEqual(['ra', 3, 'find papers', null, null, null, null, null, null]);
+    expect(params).toEqual(['ra', 3, 'find papers', null, null, null, null, null, null, null]);
   });
 });
 

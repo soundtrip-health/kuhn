@@ -55,6 +55,7 @@ const ORG_B = 2;
 const PROJECT_A = 1; // in org A
 const PROJECT_B = 2; // in org B
 const JOB_A = 1;     // job in project A
+const CHAT_A = 1;    // chat in project A, owned by editorA (user 2)
 
 let config; let exec; let querySync;
 let server; let base;
@@ -106,6 +107,8 @@ beforeAll(async () => {
   querySync(`INSERT INTO projects (id, org_id, name, project_type) VALUES (${PROJECT_B}, ${ORG_B}, 'Beta', 'manuscript')`);
   querySync(`INSERT INTO jobs (id, project_id, user_id, role, status, input)
              VALUES (${JOB_A}, ${PROJECT_A}, 2, 'writer', 'done', 'draft the intro')`);
+  querySync(`INSERT INTO chats (id, project_id, agent_slug, user_id)
+             VALUES (${CHAT_A}, ${PROJECT_A}, 'writer', 2)`);
 
   const { createSession } = await import('../db/auth.js');
   for (const [name, userId] of [
@@ -120,7 +123,7 @@ beforeAll(async () => {
   app.use(session);
   // The full post-session() tenant surface, in index.js mount order.
   for (const mod of [
-    './agent.js', './agent-prompts.js', './citations.js', './comments.js', './files.js',
+    './agent.js', './agent-prompts.js', './chats.js', './citations.js', './comments.js', './files.js',
     './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
@@ -197,6 +200,8 @@ const ROUTES = [
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/jobs', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/agent/jobs/${JOB_A}/trace`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/pending', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
+  // Issue #113: the caller's durable chats in a project.
+  { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/chats`, ok: { status: 200 } },
 
   // -- project-scoped writes (editor) -------------------------------------
   { scope: 'project', minRole: 'editor', method: 'PUT', path: `/api/projects/${PROJECT_A}/file`, req: () => ({ query: { path: 'matrix-write.md' }, text: 'written by the matrix' }), ok: { status: 201 } },
@@ -229,6 +234,13 @@ const ROUTES = [
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/agent/jobs/${JOB_A}/dispatch`, sse: true },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/agent/jobs/${JOB_A}/reply`, req: () => ({ json: { reply: 'x' } }), ok: { status: 409, error: 'no pending question for this job' } },
   { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/agent/jobs/${JOB_A}/reconnect`, ok: { status: 404, error: 'no live run for this job' } },
+  // Issue #113: chat writes. CHAT_A belongs to editorA, the at-threshold
+  // principal; the guard's project check runs before the ownership check, so
+  // the refusal sweeps below hit the guard first. `handoff: false` skips the
+  // reset's model scan (and project A has no transcript to scan anyway).
+  { scope: 'project', minRole: 'editor', method: 'PUT', path: `/api/projects/${PROJECT_A}/chats/writer`, ok: { status: 200 } },
+  { scope: 'project', minRole: 'editor', method: 'PATCH', path: `/api/chats/${CHAT_A}`, req: () => ({ json: { pinned_profile: null } }), ok: { status: 200 } },
+  { scope: 'project', minRole: 'editor', method: 'POST', path: `/api/chats/${CHAT_A}/reset`, req: () => ({ json: { handoff: false } }), ok: { status: 200 } },
 
   // -- org-scoped (viewer reads) -------------------------------------------
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/projects`, ok: { status: 200 } },
