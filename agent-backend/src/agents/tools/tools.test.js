@@ -103,6 +103,13 @@ vi.mock('../../db/slide-themes.js', () => ({
     { name: 'old', title: 'Old', status: 'disabled' },
   ]),
 }));
+// Issue #170: feature-guide search — the SQL substance lives in db/guide.test.js.
+vi.mock('../../db/guide.js', () => ({
+  guidePageCount: vi.fn(() => 1),
+  searchGuide: vi.fn(() => [
+    { file: 'editor.md', title: 'Editor', area: 'editor', headingPath: 'Editor > Page limits', seq: 3, text: 'Add `page_limits:` to the front matter.', snippet: '>>page<< limits' },
+  ]),
+}));
 vi.mock('../../sandbox.js', () => ({
   SandboxError: class SandboxError extends Error {},
   RUNNABLE_LANGUAGES: ['python'],
@@ -131,7 +138,7 @@ const ALL_GRANTS = [
   'add_citation', 'add_reference', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'web_search',
+  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'web_search',
 ];
 
 // Stable domain order as the provider sees it (factory order + web_search).
@@ -145,6 +152,7 @@ const EXPECTED_ORDER = [
   'save_project_config',
   'list_slide_themes',
   'list_typst_templates',
+  'search_kuhn_guide',
   'web_search',
 ];
 
@@ -404,6 +412,20 @@ describe('server-derived identity (STH-1)', () => {
 });
 
 describe('org-derived catalogs and secrets (STH-61 / secrets store)', () => {
+  it('search_kuhn_guide returns guide sections with page + heading provenance (issue #170)', async () => {
+    const tool = findTool(makeCtx(), 'search_kuhn_guide');
+    expect(tool.readOnly).toBe(true);
+    const res = await run(tool, { query: 'page limits' });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('Page: "Editor" (editor.md) — section: Editor > Page limits');
+    expect(res.content[0].text).toContain('Add `page_limits:` to the front matter.');
+    const { guidePageCount, searchGuide } = await import('../../db/guide.js');
+    searchGuide.mockReturnValueOnce([]);
+    expect((await run(tool, { query: 'zzz' })).content[0].text).toMatch(/No guide section matched/);
+    guidePageCount.mockReturnValueOnce(0);
+    expect((await run(tool, { query: 'x' })).content[0].text).toMatch(/not available in this deployment/);
+  });
+
   it('list_slide_themes reports built-ins, available catalog, and active org themes (STH-61)', async () => {
     getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
     const ctx = makeCtx({ agent: agent(['list_slide_themes']) });

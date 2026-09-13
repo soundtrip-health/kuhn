@@ -261,6 +261,13 @@ export const config = {
     // Word reference documents (docx export) are zips with styles + maybe a logo.
     maxDocxBytes: parseInt(process.env.TYPST_TEMPLATE_DOCX_MAX_BYTES || String(4 * 1024 * 1024)),
   },
+  guide: {
+    // Kuhn feature guide (issue #170): docs/features/*.md, indexed at startup
+    // for the in-app help agent. Shipped in the repo tree, read-only at
+    // runtime — same deployment contract as the catalogs above.
+    root: process.env.KUHN_FEATURE_GUIDE
+      || fileURLToPath(new URL('../../docs/features', import.meta.url)),
+  },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in
     // characters (~4 chars/token: target ≈800 tokens, hard cap ≈1100).

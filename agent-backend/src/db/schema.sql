@@ -900,3 +900,50 @@ CREATE TABLE IF NOT EXISTS agent_model_routes (
   updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (org_id, agent_slug, profile_slug)
 );
+
+-- ============================================================
+-- Kuhn feature guide (issue #170): docs/features/*.md indexed at startup
+-- for the in-app help agent. Platform-scoped (no org_id) — the guide
+-- describes Kuhn itself. guide_pages is one row per file (hash lets the
+-- seeder skip unchanged pages); guide_sections is the heading-aware chunk
+-- list with the page title/keywords denormalized so the FTS index can weight
+-- them. Same external-content FTS5 + trigger pattern as org_document_chunks.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS guide_pages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file        TEXT NOT NULL UNIQUE,      -- e.g. editor.md
+  title       TEXT NOT NULL,
+  area        TEXT,
+  keywords    TEXT,
+  hash        TEXT NOT NULL,             -- sha256 of the source file
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS guide_sections (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  page_id       INTEGER NOT NULL REFERENCES guide_pages(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,
+  heading_path  TEXT,
+  title         TEXT NOT NULL,           -- page title (denormalized for FTS)
+  keywords      TEXT,                    -- page keywords (denormalized for FTS)
+  text          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_guide_sections_page ON guide_sections(page_id, seq);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS guide_fts USING fts5(
+  text, heading_path, title, keywords,
+  content='guide_sections',
+  content_rowid='id',
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS guide_sections_ai AFTER INSERT ON guide_sections BEGIN
+  INSERT INTO guide_fts(rowid, text, heading_path, title, keywords)
+  VALUES (new.id, new.text, new.heading_path, new.title, new.keywords);
+END;
+
+CREATE TRIGGER IF NOT EXISTS guide_sections_ad AFTER DELETE ON guide_sections BEGIN
+  INSERT INTO guide_fts(guide_fts, rowid, text, heading_path, title, keywords)
+  VALUES ('delete', old.id, old.text, old.heading_path, old.title, old.keywords);
+END;
