@@ -80,6 +80,17 @@ vi.mock('../../db/org-secrets.js', () => ({
   listSecretNamesForProject: vi.fn(() => []),
   secretEnvName: (name) => `KUHN_SECRET_${name.toUpperCase().replace(/-/g, '_')}`,
 }));
+// Issue #106: document types — the SQL substance lives in db/doc-types.test.js.
+vi.mock('../../db/doc-types.js', () => {
+  const TYPES = [
+    { slug: 'manuscript', title: 'Manuscript', description: 'IMRaD article', source: 'catalog' },
+    { slug: 'white-paper', title: 'White paper', description: null, source: 'org' },
+  ];
+  return {
+    effectiveDocTypes: vi.fn(() => TYPES),
+    resolveDocType: vi.fn((_org, slug) => TYPES.find((t) => t.slug === slug) ?? null),
+  };
+});
 // Typst template discovery — the SQL substance lives in db/typst-templates.test.js.
 vi.mock('../../db/typst-templates.js', () => ({
   listCatalogTemplates: vi.fn(() => [
@@ -128,6 +139,7 @@ import { extractProjectPdfText } from '../../ingest.js';
 import { isProposable, proposeEdit } from '../../pending-edits.js';
 import { createThread } from '../../db/comments.js';
 import { getProject } from '../../db/projects.js';
+import { applyProjectConfig } from '../project-config.js';
 import { getSecretValueForProject, listSecretNamesForProject } from '../../db/org-secrets.js';
 import { runScriptSandboxed } from '../../sandbox.js';
 import { pubmedSearch } from '../search.js';
@@ -138,7 +150,7 @@ const ALL_GRANTS = [
   'add_citation', 'add_reference', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'web_search',
+  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'list_doc_types', 'web_search',
 ];
 
 // Stable domain order as the provider sees it (factory order + web_search).
@@ -153,6 +165,7 @@ const EXPECTED_ORDER = [
   'list_slide_themes',
   'list_typst_templates',
   'search_kuhn_guide',
+  'list_doc_types',
   'web_search',
 ];
 
@@ -450,6 +463,37 @@ describe('org-derived catalogs and secrets (STH-61 / secrets store)', () => {
     expect(text).toContain('- acme-letter — Acme letterhead (organization template)');
     expect(text).not.toContain('retired'); // unavailable catalog rows hidden
     expect(text).not.toContain('old-tpl'); // disabled org templates hidden
+  });
+
+  it('list_doc_types reports the org\'s effective catalog with slugs, titles and descriptions (issue #106)', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
+    const ctx = makeCtx({ agent: agent(['list_doc_types']) });
+    const result = await run(findTool(ctx, 'list_doc_types'), {});
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('use the slug as project_type');
+    expect(text).toContain('- manuscript — Manuscript: IMRaD article');
+    expect(text).toContain('- white-paper — White paper (organization type)');
+  });
+
+  it('save_project_config refuses a document type the org lacks, listing the valid slugs (issue #106)', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
+    const ctx = makeCtx({ agent: agent(['project_config']) });
+    const result = await run(findTool(ctx, 'save_project_config'), {
+      title: 'T', project_type: 'poem', research_question: 'q', deliverables: ['d'], timeline: 't',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Unknown document type "poem"');
+    expect(result.content[0].text).toContain('- manuscript — Manuscript');
+    expect(result.content[0].text).toContain('- white-paper — White paper');
+    expect(applyProjectConfig).not.toHaveBeenCalled();
+    // An org-defined type is accepted like a catalog one.
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3 });
+    const ok = await run(findTool(ctx, 'save_project_config'), {
+      title: 'T', project_type: 'white-paper', research_question: 'q', deliverables: ['d'], timeline: 't',
+    });
+    expect(ok.isError).toBeUndefined();
+    expect(applyProjectConfig).toHaveBeenCalledWith(1, expect.objectContaining({ project_type: 'white-paper' }));
   });
 
   it('list_secrets renders names and env vars, never values', async () => {

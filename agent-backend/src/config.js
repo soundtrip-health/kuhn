@@ -267,6 +267,7 @@ export const config = {
     // runtime — same deployment contract as the catalogs above.
     root: process.env.KUHN_FEATURE_GUIDE
       || fileURLToPath(new URL('../../docs/features', import.meta.url)),
+  },
   docTypes: {
     // Issue #106: the document-type catalog — doc-types/catalog.json (slug,
     // title, wizard hints, agent guidance per type); same deployment contract

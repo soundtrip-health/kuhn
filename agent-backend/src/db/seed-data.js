@@ -97,7 +97,7 @@ export const TOOLS = [
   },
   {
     slug: 'project_config', name: 'Save Project Config', description: 'Persist the structured project configuration gathered in the intake interview',
-    parameterSchema: { type: 'object', properties: { title: { type: 'string', description: 'Project title' }, project_type: { type: 'string', enum: ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'], description: 'Document type' }, research_question: { type: 'string', description: 'Central research question or document purpose' }, deliverables: { type: 'array', items: { type: 'string' }, description: 'Key deliverables' }, timeline: { type: 'string', description: 'Key milestones and dates' }, source_materials: { type: 'array', items: { type: 'string' }, description: 'Existing source materials' }, notes: { type: 'string', description: 'Other interview findings worth preserving' } }, required: ['title', 'project_type', 'research_question', 'deliverables', 'timeline'] },
+    parameterSchema: { type: 'object', properties: { title: { type: 'string', description: 'Project title' }, project_type: { type: 'string', description: 'Document type slug (see list_doc_types)' }, research_question: { type: 'string', description: 'Central research question or document purpose' }, deliverables: { type: 'array', items: { type: 'string' }, description: 'Key deliverables' }, timeline: { type: 'string', description: 'Key milestones and dates' }, source_materials: { type: 'array', items: { type: 'string' }, description: 'Existing source materials' }, notes: { type: 'string', description: 'Other interview findings worth preserving' } }, required: ['title', 'project_type', 'research_question', 'deliverables', 'timeline'] },
   },
   {
     slug: 'spawn_agent', name: 'Spawn Agent', description: 'Dispatch a sub-agent to perform a focused task',
@@ -123,6 +123,10 @@ export const TOOLS = [
     // indexed feature guide (docs/features/), platform-scoped and read-only.
     slug: 'search_kuhn_guide', name: 'Search Kuhn Guide', description: 'Search the Kuhn feature guide (docs/features/) for how a feature works and how to use it; returns matching sections with page and heading provenance (read-only)',
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Keywords describing the feature or question' }, limit: { type: 'integer', description: 'Maximum sections to return', default: 4 } }, required: ['query'] },
+    // Issue #106: document-type discovery — the project_type enum became an
+    // org-extensible catalog.
+    slug: 'list_doc_types', name: 'List Document Types', description: 'List the document types a project in this organization can be (Kuhn catalog plus organization-defined types), with a one-line description of each',
+    parameterSchema: { type: 'object', properties: {} },
   },
 ];
 
@@ -161,6 +165,9 @@ export const ASSIGNMENTS = [
   // Typst templates: the same roles pick a real page layout (NIH, journal)
   // instead of guessing at margins in prose.
   ['pm', 'list_typst_templates'], ['writer', 'list_typst_templates'],
+  // Document types (issue #106): the PM picks a real type during intake; the
+  // writer and advisor read what a type means for structure and guidance.
+  ['pm', 'list_doc_types'], ['writer', 'list_doc_types'], ['advisor', 'list_doc_types'],
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],

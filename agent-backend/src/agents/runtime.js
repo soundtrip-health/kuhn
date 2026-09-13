@@ -19,6 +19,7 @@ import { createConversation, logMessage, getSessionTranscript } from '../db/conv
 import { createJob, updateJob } from '../db/jobs.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
+import { resolveDocType } from '../db/doc-types.js';
 import { resolveProjectDir } from '../storage.js';
 import { publishProjectEvent } from '../project-events.js';
 import { log } from '../logger.js';
@@ -405,6 +406,13 @@ async function runTask(task, internal, channel, state) {
   const orgAddition = project?.org_id
     ? getOrgAgentPrompt(project.org_id, agent.slug)?.addition ?? null
     : null;
+  // Per-type guidance (issue #106): what this kind of document is, its
+  // canonical structure and what reviewers look for — from the org's
+  // effective document-type catalog. Resolved once per task, like the org
+  // addition; a project whose type no longer resolves simply gets none.
+  const docType = project?.project_type
+    ? resolveDocType(project.org_id ?? null, project.project_type)
+    : null;
 
   // Which document the user is looking at (STH-43). The chat client sends it
   // with every turn; other callers (check scripts, the REST route without
@@ -490,7 +498,7 @@ async function runTask(task, internal, channel, state) {
     },
   });
 
-  const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition);
+  const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition, docType);
   const prompt = buildPrompt(input, taskContext);
 
   // Product-side usage in effective (budget/job) terms; the runtime's
@@ -1053,7 +1061,7 @@ function effectiveInputTokens(usage) {
     + (usage?.cacheWriteTokens ?? 0);
 }
 
-function buildSystemPrompt(agent, projectDir, orgAddition = null) {
+function buildSystemPrompt(agent, projectDir, orgAddition = null, docType = null) {
   const parts = [
     agent.system_prompt,
     '',
@@ -1068,6 +1076,17 @@ function buildSystemPrompt(agent, projectDir, orgAddition = null) {
       'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
       'file access; they take paths relative to the workspace root and cannot reach outside it.',
     );
+  }
+  // Issue #106: the project's document type, from the org's effective
+  // catalog. After the runtime block (it describes the work, not the tools)
+  // and before the org guardrails (which may restrict it further).
+  if (docType) {
+    parts.push(
+      '',
+      `## Document type: ${docType.title}`,
+      `This project's document type is "${docType.slug}"${docType.description ? ` — ${docType.description}` : ''}.`,
+    );
+    if (docType.guidance) parts.push('', docType.guidance);
   }
   // Issue #67: org-owner guardrails go AFTER the runtime block so they can
   // never shadow the tool contract, and are framed as policy on top of the

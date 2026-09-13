@@ -97,7 +97,7 @@ For a full review pass, also save a report to `review/reports/` with a descripti
 ```markdown
 # Review: [Topic]
 **Date:** YYYY-MM-DD
-**Project type:** [RWE protocol / RCT protocol / grant / manuscript / SOP]
+**Project type:** [the project's document type from its configuration]
 **Sections reviewed:** [list]
 **Severity scale:** Critical / Major / Minor / Note
 
