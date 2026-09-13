@@ -34,7 +34,7 @@ A project is one document effort — a manuscript, a grant, a protocol, an SOP �
 
 **How to use it.** It opens automatically once per new project, from "Set up project" in the PM's greeting card in chat, or from the project browser. Each step has a collapsed "What helps here?" disclosure.
 
-1. "What are you writing?" — "Document type", "Project title", and "Page layout": the project's default page-layout template, either "No project default (documents choose their own)" or an available template such as "NIH grant attachment (nih-grant)". "Grant" preselects `nih-grant` and "Manuscript" preselects `manuscript`; a document can override the default with `template:` in its front matter (see `editor.md`).
+1. "What are you writing?" — "Document type", "Project title", and "Page layout": the project's default page-layout template, either "No project default (documents choose their own)" or an available template such as "NIH grant attachment (nih-grant)". "Grant" preselects `nih-grant` and "Manuscript" preselects `manuscript` (each type's default layout comes from the document-type catalog, see `org-admin.md`); a document can override the default with `template:` in its front matter (see `editor.md`).
 2. "What is it about?" — "Research question / purpose" (placeholder "What are you trying to establish, and in whom?"), the single most useful thing you provide: the Research Assistant searches from it.
 3. "Deliverables & timeline" — a chip list ("Add a deliverable…") and a free-text "Timeline" (placeholder "e.g. Draft by 2026-08-01, submit by 2026-09-15").
 4. "Add your materials" — "Drop files here or click to choose". Files upload into `seed_docs/`. The disclosure lists what helps for the chosen type, for example "Key papers you are building on or citing" and "Target journal + author guidelines" for a manuscript, "The funder RFA / PA / solicitation" and "Preliminary data and figures" for a grant, prior protocols and an SAP for an RWE protocol, precedent protocols and ICH/CONSORT/SPIRIT guidance for an RCT protocol, existing SOPs and ISO/GxP standards for an SOP.
@@ -60,11 +60,11 @@ The footer offers "Skip for now" on the first step and "Save & close" afterwards
 
 **What it does.** The type tunes the team: the wizard's material guidance, the default page layout, and the project description every agent task receives.
 
-**How to use it.** Pick it in the "New project" form or change it in wizard step 1. The built-in types are Manuscript (`manuscript`), RWE protocol (`rwe-protocol`), RCT protocol (`rct-protocol`), Grant (`grant`) and SOP (`sop`). The type shows as a pill on the card and in the breadcrumb.
+**How to use it.** Pick it in the "New project" form or change it in wizard step 1 ("Document type"). The Kuhn catalog ships Manuscript (`manuscript`), RWE protocol (`rwe-protocol`), RCT protocol (`rct-protocol`), Grant (`grant`) and SOP (`sop`); organization owners can add their own types, or replace a catalog type, in Org admin under "Document types" (see `org-admin.md`). Each type sets the layout the wizard preselects, the upload hints it shows, and a guidance section every agent receives for the project. The type shows as a pill on the card and in the breadcrumb.
 
 **Prerequisites.** None.
 
-**Gotchas.** The server rejects any other value with `projectType must be one of: …`.
+**Gotchas.** The server rejects a type that is not in the organization's list with `projectType must be one of: …`. A type that was disabled later stays on the projects that already use it.
 
 ## Project configuration
 
