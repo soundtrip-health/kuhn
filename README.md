@@ -186,7 +186,7 @@ out where all data is stored and processed, what is ephemeral, what leaves the m
 
 ### Agents
 
-The six agents' system prompts live in
+The seven agents' system prompts (including the in-app `help` agent, which answers questions about Kuhn from `docs/features/`) live in
 [`agent-backend/src/db/prompts/`](agent-backend/src/db/prompts/) and their models/tools in
 `agent-backend/src/db/seed-data.js`; both are seeded into the database at startup, and the
 runtime loads prompts from there.

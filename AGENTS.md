@@ -105,7 +105,7 @@ Token-free check scripts (drive the app without spending model quota):
 
 ## Agent prompts (`db/prompts/` + `db/seed-data.js`)
 
-The six agents (pm, writer, ra, advisor, reviewer, analyst) have their system
+The seven agents (pm, writer, ra, advisor, reviewer, analyst, help) have their system
 prompts in **`agent-backend/src/db/prompts/<slug>.md`** (plain markdown, no
 escaping). Their names/models, the tool definitions, the agent→tool matrix, and
 the default-tenant rows live in **`db/seed-data.js`**. `seed.js` applies both via
@@ -119,6 +119,19 @@ from the `agents` table.
 (Historical note: prompts lived in a top-level `agents/` tree, then in a single
 dollar-quoted `seed.sql`. The Postgres→SQLite move retired dollar-quoting, so
 prompts returned to per-agent `.md` files — now under `db/prompts/`.)
+
+## Feature guide (`docs/features/`) — keep it current
+
+`docs/features/*.md` is the user-facing feature guide the in-app **help agent** answers
+from (issue #170). The backend indexes it at startup (FTS5, `db/guide.js`); the `help`
+agent's only tool searches it. **Any PR that adds or changes user-facing behaviour — a
+button, a panel, a slash command, a front-matter key, a role requirement, a render or
+restart prerequisite — updates the relevant page in the same PR.** `docs/features/README.md`
+defines the page format. Two tests keep it honest: `agent-backend/src/db/guide.test.js`
+(every agent and every key in `render.js` `FRONT_MATTER_KEYS` is documented) and
+`webapp/src/slash-commands.test.ts` (every slash command is documented). Add a new
+front-matter parser to `FRONT_MATTER_KEYS`; add a new slash command to
+`webapp/src/slash-commands.ts`.
 
 ## Stories — project-management rules
 

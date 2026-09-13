@@ -5,6 +5,7 @@
 // block-edit menu (editor.ts agentCommands) so the two can't drift apart.
 // Same button+menu idiom as agent-selector.ts and user-menu.ts.
 
+import { selectAgent } from './agent-selector';
 import { agentIdentity } from './agents';
 import { slashCommandCatalog } from './editor';
 import { icon } from './icons';
@@ -22,7 +23,7 @@ export function initHelp(): void {
     button.setAttribute('aria-expanded', 'false');
   };
   const open = (): void => {
-    renderMenu(menu);
+    renderMenu(menu, close);
     menu.hidden = false;
     button.setAttribute('aria-expanded', 'true');
   };
@@ -62,7 +63,31 @@ function tip(what: string, howHtml: string): HTMLElement {
 
 const kbd = (k: string): string => `<kbd>${k}</kbd>`;
 
-function renderMenu(menu: HTMLElement): void {
+/**
+ * "Ask about Kuhn" (issue #170): hands the question to the Help agent — a
+ * small model grounded in the indexed feature guide — instead of the static
+ * tips below, which cannot keep up with the feature set. Selecting the agent,
+ * revealing the chat panel and focusing the composer is all it does; the
+ * user types the question.
+ */
+function askAboutKuhn(close: () => void): HTMLElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'help-ask';
+  btn.innerHTML =
+    `<span class="dot"></span><span class="help-ask-title">Ask about Kuhn</span>`
+    + `<span class="help-ask-sub">How do I…? Why doesn't…? The Help agent answers from the feature guide.</span>`;
+  btn.addEventListener('click', () => {
+    selectAgent('help');
+    document.getElementById('chat-panel')?.classList.remove('collapsed');
+    close();
+    const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+    input?.focus();
+  });
+  return btn;
+}
+
+function renderMenu(menu: HTMLElement, close: () => void): void {
   const editing = [
     heading('Editing'),
     tip('Format as you type', `Markdown shortcuts: ${kbd('#')} heading, ${kbd('-')} list, ${kbd('**bold**')}, ${kbd('\`code\`')}, ${kbd('$math$')}. Select text for the formatting toolbar.`),
@@ -109,5 +134,5 @@ function renderMenu(menu: HTMLElement): void {
     tip('Where am I', `The breadcrumb shows organization / project / document — each part is clickable.`),
   ];
 
-  menu.replaceChildren(...editing, ...pages, heading('Slash commands'), ...rows, ...panels);
+  menu.replaceChildren(askAboutKuhn(close), ...editing, ...pages, heading('Slash commands'), ...rows, ...panels);
 }
