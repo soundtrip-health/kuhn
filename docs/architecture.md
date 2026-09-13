@@ -338,6 +338,11 @@ Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
   working-tree-only state — git cannot track it, so it survives reloads and
   the per-file restore, but it is invisible to version history.
 - Agent prompts, conversations, jobs, references, and project metadata in SQLite (project/tenant-scoped)
+- **Chats** (`chats`, issue #113): one durable row per (project, agent, user) holding the
+  provider session id, the canonical continuation, the user's model pin and the fresh-start
+  hand-off note; a top-level job is stamped with `jobs.chat_id` and the chat's `status` is
+  projected at read time from its current job (no stored state until #118 stage 1). The client
+  names the chat; the server resumes it — so two tabs or devices continue one conversation.
 - Tenant KB under the tenant's storage; shared guidance corpus in a separate global store
 
 ## Decision Revisions (2026-06-11)

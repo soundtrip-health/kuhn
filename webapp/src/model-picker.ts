@@ -3,33 +3,55 @@
 // is right for dispatched sub-tasks but odd for the agent a user addresses
 // directly — the PM would otherwise always run on the strongest model, and a
 // per-turn choice would defeat prompt caching. So the user pins a model for
-// the conversation, per project and agent (localStorage), from the agent's
-// routed models — the owner's allowlist, never anything else — and the pin
-// travels with each task (`profile`). Hidden when there is nothing to choose
-// (one routed model): the status-bar chip already says what is running.
+// the conversation, per project and agent, from the agent's routed models —
+// the owner's allowlist, never anything else — and the pin travels with each
+// task (`profile`). The pin lives on the chat row (issue #113), so it follows
+// the user across tabs and devices; pre-#113 localStorage pins are ignored.
+// Hidden when there is nothing to choose (one routed model): the status-bar
+// chip already says what is running.
 
-import { getAgentModelOptions, type AgentModelOption, type AgentModelOptions } from './api';
+import { getAgentModelOptions, getOrCreateChat, patchChat, type AgentModelOption, type AgentModelOptions, type Chat } from './api';
 import { icon } from './icons';
 import { compactModel } from './status';
 
-const KEY_PREFIX = 'kuhn-model-pick';
-const key = (projectId: number, agent: string) => `${KEY_PREFIX}:${projectId}:${agent}`;
+// Per-tab mirror of the chat rows' pins, so the pill renders synchronously.
+// Keyed by project + agent (the chat's natural key: the id is unknown until
+// the row exists); the id is filled in once known so a pick can be written.
+interface PinEntry { chatId: number | null; pin: string | null }
+const pins = new Map<string, PinEntry>();
+const pinKey = (projectId: number, agent: string) => `${projectId}:${agent}`;
+
+/** Seed the mirror from the project's chat rows (chat.ts does this on load). */
+export function primeChatPins(projectId: number, chats: Chat[]): void {
+  for (const c of chats) pins.set(pinKey(projectId, c.agent_slug), { chatId: c.id, pin: c.pinned_profile });
+}
 
 /** The pinned profile slug for an agent in a project, or null for the route's own choice. */
 export function pinnedProfile(projectId: number, agent: string): string | null {
-  try {
-    return localStorage.getItem(key(projectId, agent));
-  } catch {
-    return null;
-  }
+  return pins.get(pinKey(projectId, agent))?.pin ?? null;
 }
 
 function setPinned(projectId: number, agent: string, slug: string | null): void {
+  const key = pinKey(projectId, agent);
+  pins.set(key, { chatId: pins.get(key)?.chatId ?? null, pin: slug });
+  void persistPin(projectId, agent, slug);
+}
+
+/** Write the pick to the chat row (creating the chat on a first pick). */
+async function persistPin(projectId: number, agent: string, slug: string | null): Promise<void> {
+  const key = pinKey(projectId, agent);
   try {
-    if (slug) localStorage.setItem(key(projectId, agent), slug);
-    else localStorage.removeItem(key(projectId, agent));
+    let chatId = pins.get(key)?.chatId ?? null;
+    if (chatId == null) {
+      chatId = (await getOrCreateChat(projectId, agent)).id;
+      const entry = pins.get(key);
+      if (entry) entry.chatId = chatId;
+    }
+    if ((pins.get(key)?.pin ?? null) !== slug) return; // a newer pick superseded this one
+    await patchChat(chatId, { pinned_profile: slug });
   } catch {
-    // Storage unavailable: the pick simply does not persist.
+    // Not persisted (offline, view-only): the pick still goes out with the
+    // next task as `profile`, which the server stores on the chat.
   }
 }
 

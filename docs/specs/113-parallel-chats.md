@@ -1,6 +1,11 @@
 # Design: Manage multiple projects and chats in parallel (issue #113)
 
-**Status:** design pass — proposed for review, then split into the issues in §7
+**Status:** §7 item 1 landed (2026-09-13): `chats` table + `jobs.chat_id`, `POST /api/agent/task`
+by chat (or role + project), session/continuation/pin/hand-off on the chat row, fresh start as
+`POST /api/chats/:id/reset`, `GET /api/projects/:id/chats`; the webapp reads its per-agent state
+from the chat. Deferred from item 1: `status` is a read-time projection of the current job
+(`idle | running | paused`) rather than a column, and `waiting_for_user` waits for #118 stage 1
+(no persisted question state yet). Items 2–5 remain as drafted.
 **Issue:** [#113 — manage multiple projects and chats in parallel](https://github.com/soundtrip-health/kuhn/issues/113)
 **Depends on:** [#118 durable jobs](118-durable-agent-jobs.md) stages 1–3 for indicators and
 reconnection that survive reloads and restarts; builds on #136 (Stop), #137 (run tracker),

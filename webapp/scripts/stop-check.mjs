@@ -53,6 +53,10 @@ for (const agent of ['pm', 'ra']) {
   const res = await put(`${BACKEND}/api/orgs/${org.id}/model-routes/${agent}`, { routes: [{ profile_slug: MODEL, difficulty: 1 }] });
   check(res.status === 200, `${agent} routed to the fake (got ${res.status})`);
 }
+// A model pin left by another check (issue #134) would route the PM elsewhere.
+// Pins live on the chat row (issue #113), not in the browser.
+const pmChat = (await json(await put(`${BACKEND}/api/projects/${project.id}/chats/pm`))).chat;
+await fetch(`${BACKEND}/api/chats/${pmChat.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned_profile: null }) });
 const jobs = async () => (await json(await fetch(`${BACKEND}/api/agent/jobs?projectId=${project.id}&limit=50`))).jobs;
 // New jobs are those above the highest id seen so far (the list is newest-first and capped).
 let maxJobId = Math.max(0, ...(await jobs()).map((j) => j.id));
@@ -73,8 +77,6 @@ await page.waitForTimeout(800);
 // the PM directly, so dismiss it.
 await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
-// A model pin left by another check (issue #134) would route the PM elsewhere.
-await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('kuhn-model-pick')) localStorage.removeItem(k); });
 check(!(await page.$('#setup-wizard:visible')), 'setup wizard dismissed');
 // Record every status-bar change: the fake model answers within milliseconds,
 // so the RA's turn is too short to catch by polling — the log is the record.
