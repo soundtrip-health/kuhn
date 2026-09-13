@@ -15,6 +15,7 @@ import { Router } from 'express';
 import multer from 'multer';
 
 import { config } from '../config.js';
+import { docTypeResolves } from '../db/doc-types.js';
 import { listUserOrgs } from '../db/orgs.js';
 import { createProject } from '../db/projects.js';
 import { BundleError, parseBundle } from '../interchange/bundle.js';
@@ -24,6 +25,7 @@ import { log } from '../logger.js';
 import { EXPORT_FORMATS as DOCUMENT_FORMATS } from '../render.js';
 import { StorageError } from '../storage.js';
 import { requireOrgRole, requireProjectRole } from './guards.js';
+import { projectTypeError } from './projects.js';
 
 const router = Router();
 
@@ -143,6 +145,12 @@ router.post('/api/projects/import', bundleUpload, wrap(async (req, res) => {
   if (targetOrg == null) return;
   const ctx = await requireOrgRole(req, res, targetOrg, 'editor');
   if (!ctx) return;
+  // Issue #106: the type must be one the TARGET org can use (same message
+  // shape as POST /api/projects) — the bundle only checked the slug shape.
+  if (!docTypeResolves(ctx.orgId, spec.project_type)) {
+    res.status(400).json({ error: projectTypeError(ctx.orgId), code: 'invalid_bundle' });
+    return;
+  }
   const project = await createProject({ name: spec.name, projectType: spec.project_type, orgId: ctx.orgId });
   await runImport(project, bundle, req, res, 201);
 }));

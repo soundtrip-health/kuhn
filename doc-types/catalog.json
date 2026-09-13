@@ -1,0 +1,70 @@
+{
+  "catalog_version": 1,
+  "types": [
+    {
+      "slug": "manuscript",
+      "title": "Manuscript",
+      "description": "A scientific journal article: IMRaD structure, reporting-guideline compliance, target-journal conventions",
+      "default_template": "manuscript",
+      "wizard_hints": [
+        "Key papers you are building on or citing",
+        "Your dataset, results tables, or figures",
+        "Any draft, outline, or abstract you already have",
+        "Target journal + author guidelines"
+      ],
+      "guidance": "A manuscript is a scientific article written for peer review and publication in a journal. It reports a study, analysis or method to specialists in the field and argues from evidence, not authority.\n\n**Canonical structure (IMRaD).** Title and author block; an abstract (structured or unstructured, per the target journal); Introduction (the gap, why it matters, the question or hypothesis); Methods (design, setting, participants, variables, data sources, statistical analysis — enough detail that another group could repeat the work); Results (findings in the order the Methods set up, with tables and figures carrying the numbers); Discussion (principal findings, comparison with prior work, strengths and limitations, implications); then acknowledgements, funding, conflicts, data availability and references.\n\n**Conventions.** Follow the target journal's author guidelines for length, section names, abstract format, reference style and figure limits — when the target is unknown, write to a generic IMRaD template and flag the choice. Adhere to the reporting guideline that matches the design (CONSORT for randomized trials, STROBE for observational studies, PRISMA for systematic reviews, STARD for diagnostic accuracy, TRIPOD for prediction models). Every quantitative claim carries its estimate, uncertainty (confidence interval) and the test or model that produced it. Results describe; the Discussion interprets. Cite primary sources from the bibliography, never from memory.\n\n**What reviewers look for.** A question the study can actually answer; a Methods section precise enough to reproduce the analysis; claims that do not outrun the evidence (association is not causation; a non-significant result is not equivalence); honest limitations; novelty relative to the existing literature; and internal consistency between the abstract, the tables and the text. Overstated conclusions, missing denominators and unreported multiplicity are the commonest reasons for rejection or major revision."
+    },
+    {
+      "slug": "rwe-protocol",
+      "title": "RWE protocol",
+      "description": "A real-world evidence study protocol for a regulatory audience: fitness-for-use of the data, target-trial design, estimands, pre-specified analysis",
+      "default_template": null,
+      "wizard_hints": [
+        "Prior or template protocols",
+        "A statistical analysis plan (SAP), if drafted",
+        "Data dictionary / cohort definitions",
+        "Relevant FDA guidance you must follow"
+      ],
+      "guidance": "A real-world evidence (RWE) protocol pre-specifies an observational study built on routinely collected data — electronic health records, claims, registries — usually to support a regulatory decision about a drug's effectiveness or safety. It is a commitment made before the data are analysed, so that the results can be trusted afterwards.\n\n**Canonical structure.** Title page and version history; synopsis; background and rationale; objectives with explicit estimands (ICH E9(R1): treatment, population, endpoint, intercurrent-event strategy and population-level summary for each); study design framed as an emulated target trial (eligibility, treatment strategies, assignment, time zero, follow-up, outcome, causal contrast); data sources and their fitness for use (provenance, completeness, validation of key variables, linkage); study population with inclusion/exclusion criteria and cohort entry; exposure, outcome and covariate definitions with code lists; statistical analysis (confounding control such as propensity scores, handling of missing data, sensitivity and negative-control analyses, power); bias assessment; data management and quality control; ethics, privacy and governance; dissemination; references and appendices.\n\n**Conventions.** Anchor every design decision to the three FDA regulatory pillars — is the data fit for use, is the design adequate to answer the regulatory question, does study conduct meet regulatory requirements. Cite the applicable FDA RWE framework and guidance documents. Pre-specify primary and secondary analyses and label anything exploratory. If a non-inferiority question is posed, justify the margins (M1 and M2), document assay sensitivity and constancy, and state the confidence-interval decision rule. Use absolute dates and versioned amendments.\n\n**What reviewers look for.** Whether the emulated trial is one that could in principle have been run; alignment of time zero with eligibility and treatment assignment (no immortal-time bias); a credible confounding strategy with its assumptions stated; validated outcome definitions; sensitivity analyses that probe the weakest assumptions; and a clear line between what was pre-specified and what was not."
+    },
+    {
+      "slug": "rct-protocol",
+      "title": "RCT protocol",
+      "description": "A randomized controlled trial protocol: SPIRIT-complete, ICH-compliant, with endpoints, randomization, blinding and the statistical plan pre-specified",
+      "default_template": null,
+      "wizard_hints": [
+        "Precedent trial protocols",
+        "Draft endpoints or statistical plan",
+        "Investigator brochure / product background",
+        "Applicable ICH, CONSORT, or SPIRIT guidance"
+      ],
+      "guidance": "A randomized controlled trial (RCT) protocol is the governing document for an interventional study: it fixes the question, the design, the conduct and the analysis before the first participant is enrolled, and it is what ethics committees, regulators and sponsors approve.\n\n**Canonical structure (SPIRIT 2013).** Administrative information (title, registration, version, funding, roles); introduction (background, rationale, objectives, trial design); methods — participants, interventions and outcomes (setting, eligibility, interventions and their modification or adherence, primary and secondary outcomes with measurement and timing, participant timeline, sample size, recruitment); methods — assignment of interventions (sequence generation, allocation concealment, implementation, blinding and emergency unblinding); methods — data collection, management and analysis (statistical methods for primary and secondary outcomes, additional analyses, handling of missing data and protocol non-adherence); methods — monitoring (data monitoring committee, interim analyses and stopping rules, harms, auditing); ethics and dissemination (approval, amendments, consent, confidentiality, conflicts, access to data, ancillary care, dissemination policy); appendices (consent materials, biological specimens).\n\n**Conventions.** Write to ICH E6 (GCP), E8 and E9/E9(R1); define an estimand for each objective. Endpoints are specific, measurable and time-anchored. The sample-size calculation states every input (effect size, variance, alpha, power, attrition). Interim analyses and adaptive features are pre-specified with their alpha-spending or decision rules. Anticipate CONSORT reporting so that what the protocol promises can be reported later. Version every amendment.\n\n**What reviewers look for.** Protocol completeness against the SPIRIT checklist; bias control (concealed allocation, adequate blinding, intention-to-treat framing); a primary endpoint that matches the objective; a statistical plan that leaves no analytic freedom; participant safety provisions proportionate to the risk; and feasibility of recruitment and timelines."
+    },
+    {
+      "slug": "grant",
+      "title": "Grant",
+      "description": "A funding application: Specific Aims, Significance, Innovation, Approach, and team, written to the funder's review criteria and page limits",
+      "default_template": "nih-grant",
+      "wizard_hints": [
+        "The funder RFA / PA / solicitation",
+        "Preliminary data and figures",
+        "An aims page or prior application drafts",
+        "Biosketches / team background"
+      ],
+      "guidance": "A grant application asks a funder to invest in a research programme. It is persuasive as well as technical: reviewers must come away convinced that the problem matters, the approach will work, and this team is the one to do it — within strict page limits and a fixed section order.\n\n**Canonical structure (NIH research plan; other funders vary).** Specific Aims (one page: the problem, the gap, the long-term goal, the objective, the central hypothesis, two to four aims with expected outcomes, and the payoff); Research Strategy — Significance (why the problem matters and how the field changes if the aims succeed), Innovation (what is new about the concept, approach or tools), Approach (for each aim: rationale, preliminary data, design and methods, expected results, potential pitfalls and alternatives, timeline); plus bibliography, biosketches, facilities and equipment, budget and justification, human-subjects or vertebrate-animal sections, and letters of support. Funders such as NSF, DoD, foundations and SBIR/STTR programmes impose their own headings — the solicitation (RFA, PA, NOFO) is the authority.\n\n**Conventions.** Write to the funder's published review criteria (for NIH: significance, investigators, innovation, approach, environment, plus rigor and reproducibility and consideration of relevant biological variables). Respect page limits exactly (NIH: Specific Aims 1 page, Research Strategy 12 pages for an R01) and the mandated format (SF424 R&R, 0.5-inch margins, 11-point Arial or equivalent). Aims must be independent — the failure of one must not doom the others. Preliminary data belong where they support feasibility. Use the funder's terminology and headings verbatim so reviewers can find each criterion.\n\n**What reviewers look for.** A compelling and specific gap; hypotheses that can actually be tested; rigor in design and statistics; feasibility demonstrated by preliminary data and team expertise; realistic timelines and budgets; and a clear statement of impact. The commonest weaknesses are over-ambitious or interdependent aims, vague methods, and preliminary data that do not support the proposed approach."
+    },
+    {
+      "slug": "sop",
+      "title": "SOP",
+      "description": "A standard operating procedure: purpose, scope, responsibilities, step-by-step procedure, acceptance criteria and revision history for a controlled process",
+      "default_template": null,
+      "wizard_hints": [
+        "Existing SOPs or templates",
+        "Applicable regulatory standards (ISO / GxP)",
+        "Process notes or validation data",
+        "Related work instructions"
+      ],
+      "guidance": "A standard operating procedure (SOP) is a controlled document that tells a trained person exactly how to perform a process so that it is done the same way every time, by anyone, and can be audited afterwards. Clarity and testability outrank prose quality.\n\n**Canonical structure.** Header block (title, document number, version, effective date, owner, approvers); Purpose (what the procedure achieves and why it exists); Scope (where, to whom and to what it applies, and what it excludes); Definitions and abbreviations; Responsibilities (who performs, who verifies, who approves — by role, not name); Materials, equipment and prerequisites (with training required); Procedure (numbered steps in execution order, one action per step, with decision points, expected results, records to complete, and safety or data-integrity warnings placed before the step they concern); Quality control and acceptance criteria (how success is judged, what to do on failure, deviation handling); Records and retention; References and related documents (parent policies, work instructions, forms, applicable standards); Revision history (what changed, why, and when); Appendices (forms, checklists, diagrams).\n\n**Conventions.** Imperative mood, present tense, one instruction per step (\"Record the lot number on Form QC-12\"). Use the organisation's document-control numbering and template. Cite the governing standards and regulations — ISO 9001/13485/17025, GxP (GLP, GCP, GMP), 21 CFR Part 11 for electronic records — where they impose a requirement. Avoid ambiguity words (\"appropriate\", \"as needed\") unless the criterion is defined. Keep procedure and rationale separate; put the rationale in Purpose or a note.\n\n**What reviewers look for.** Completeness (could a trained newcomer execute it without asking?); clarity and unambiguous acceptance criteria; compliance with the referenced standards; traceability (every record the procedure generates is named and retained); consistency with related SOPs and forms; and evidence that the procedure was validated or verified before becoming effective."
+    }
+  ]
+}

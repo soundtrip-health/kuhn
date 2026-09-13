@@ -267,6 +267,15 @@ export const config = {
     // runtime — same deployment contract as the catalogs above.
     root: process.env.KUHN_FEATURE_GUIDE
       || fileURLToPath(new URL('../../docs/features', import.meta.url)),
+  docTypes: {
+    // Issue #106: the document-type catalog — doc-types/catalog.json (slug,
+    // title, wizard hints, agent guidance per type); same deployment contract
+    // as the slide themes. Org rows live in the DB (org_doc_types).
+    catalogRoot: process.env.KUHN_DOC_TYPES
+      || fileURLToPath(new URL('../../doc-types', import.meta.url)),
+    // Per-type guidance is prompt text: a few hundred words, capped well
+    // below anything that would crowd out the agent's own prompt.
+    maxGuidanceBytes: parseInt(process.env.DOC_TYPE_GUIDANCE_MAX_BYTES || String(16 * 1024)),
   },
   ingest: {
     // Org-library ingestion bounds (story 006-002). Chunk sizes are in

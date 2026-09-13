@@ -85,7 +85,7 @@ Bundle paths under `files/` **are** the Kuhn workspace paths. There is no separa
 ```
 
 - `source` is free-form provenance. Kuhn stores it and labels the history checkpoint with `tool` and `revision`.
-- `project` is used on **create** only: `name` required, `project_type` one of `manuscript | grant | rwe-protocol | rct-protocol | sop` (default `manuscript`), `org_id` the Kuhn organization to create in (the user must hold editor there). A user who belongs to exactly one organization may omit it; anyone in several must name one, here or as the multipart field `org_id`, or the import is refused with `400 org_required` listing their organizations — the Kuhn UI shows one organization at a time, so a silent default would put the project where they are not looking. On **update** it is ignored; rename with `PATCH /api/projects/:id` if wanted.
+- `project` is used on **create** only: `name` required, `project_type` a document-type slug the target organization can use (default `manuscript`; Kuhn ships `manuscript | grant | rwe-protocol | rct-protocol | sop`, and organization owners can add or shadow types under Org admin → Document types — `GET /api/orgs/:orgId/doc-types` lists the effective set), `org_id` the Kuhn organization to create in (the user must hold editor there). A user who belongs to exactly one organization may omit it; anyone in several must name one, here or as the multipart field `org_id`, or the import is refused with `400 org_required` listing their organizations — the Kuhn UI shows one organization at a time, so a silent default would put the project where they are not looking. On **update** it is ignored; rename with `PATCH /api/projects/:id` if wanted.
 - `docs[].path` must exist under `files/`. `meta` is opaque JSON (≤ 64 KB per doc); Kuhn stores it under the project's `interchange` config and returns it unchanged on export. sciwriter can keep its sidecar as well; this just means a fresh clone can recover it from Kuhn.
 - Files under `files/` not listed in `docs` are assets and are written verbatim.
 
@@ -208,7 +208,7 @@ Standard Kuhn shapes: `{error, code?}`.
 
 | Status | When |
 |---|---|
-| 400 `invalid_bundle` | not a zip, missing/invalid manifest, doc listed but absent, unsafe path (`..`, absolute, `.git`), non-UTF-8 doc, bad `project_type`, `meta` too large |
+| 400 `invalid_bundle` | not a zip, missing/invalid manifest, doc listed but absent, unsafe path (`..`, absolute, `.git`), non-UTF-8 doc, `project_type` not a slug or not a document type of the target organization (the error lists the valid slugs), `meta` too large |
 | 400 `org_required` | create only: the user belongs to several organizations and neither the manifest nor the `org_id` field names one; body lists `orgs: [{id, name, slug, role}]` |
 | 401 | no/invalid/expired token or session |
 | 403 | token user lacks editor role, or the org is suspended |

@@ -18,6 +18,15 @@ vi.mock('../db/orgs.js', () => ({
   primaryOrgId: vi.fn(async () => 7),
 }));
 vi.mock('../agents/seeding.js', () => ({ runSeedPipeline: vi.fn() }));
+// Issue #106: document types resolve through the catalog (SQL substance in
+// db/doc-types.test.js); here a fixed effective list stands in.
+vi.mock('../db/doc-types.js', () => {
+  const TYPES = ['manuscript', 'rwe-protocol', 'grant'];
+  return {
+    docTypeResolves: vi.fn((_org, slug) => TYPES.includes(slug)),
+    effectiveDocTypes: vi.fn(() => TYPES.map((slug) => ({ slug, title: slug, source: 'catalog' }))),
+  };
+});
 // Promote policy branch (story 011-004): settings, request store, library
 // store, and file reads are all seams here — the real wiring runs in
 // routes/promotions.test.js against real SQLite and a temp storage root.
@@ -145,6 +154,18 @@ describe('POST /api/projects (story 005)', () => {
     expect(res.status).toBe(201);
     expect(primaryOrgId).toHaveBeenCalledWith(1);
     expect(createProject).toHaveBeenCalledWith({ name: 'New', projectType: 'manuscript', orgId: 7 });
+  });
+
+  it('400s an unknown document type after the org guard, listing the org\'s types (issue #106)', async () => {
+    const res = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'X', orgId: 3, projectType: 'white-paper' }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('projectType must be one of: manuscript, rwe-protocol, grant');
+    expect(checkOrgAccess).toHaveBeenCalledWith(1, 3, 'editor');
+    expect(createProject).not.toHaveBeenCalled();
   });
 
   it('honors an orgId the user holds editor in', async () => {
@@ -405,12 +426,13 @@ describe('PUT /api/projects/:id/config', () => {
     );
   });
 
-  it('rejects a final save missing required fields', async () => {
+  it('rejects a final save missing required fields, naming the org\'s document types (issue #106)', async () => {
     const res = await fetch(`${base}/api/projects/5/config`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers: { ...answers, title: '', projectType: 'nope' } }),
     });
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('projectType must be one of: manuscript, rwe-protocol, grant');
     expect(applyProjectConfig).not.toHaveBeenCalled();
   });
 

@@ -275,6 +275,72 @@ export function applyModelProfilesProviderMigration() {
   }
 }
 
+// Issue #106: projects.project_type lost its CHECK — document types are an
+// extensible catalog now (db/doc-types.js), validated at the API boundary.
+// A CHECK cannot be dropped in place, so an existing database gets the same
+// table rebuild as above. Keep this DDL byte-compatible with projects in
+// schema.sql.
+const PROJECTS_NEW_DDL = `
+  CREATE TABLE projects_new (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id      TEXT NOT NULL DEFAULT 'default',
+    org_id        INTEGER REFERENCES organizations(id) ON DELETE RESTRICT,
+    name          TEXT NOT NULL,
+    project_type  TEXT NOT NULL,
+    config        TEXT NOT NULL DEFAULT '{}',
+    root_path     TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`;
+
+const PROJECTS_COLUMNS = [
+  'id', 'owner_id', 'org_id', 'name', 'project_type', 'config', 'root_path', 'created_at', 'updated_at',
+];
+
+const PROJECTS_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id)',
+  'CREATE INDEX IF NOT EXISTS idx_projects_org   ON projects(org_id)',
+];
+
+/**
+ * Rebuild projects without the project_type CHECK (issue #106). Idempotent:
+ * runs only when the live DDL still carries `project_type IN (...)`. Same
+ * 12-step ALTER discipline as the rebuilds above — foreign_keys toggled
+ * OUTSIDE the transaction because projects carries an outbound FK (org_id)
+ * and is the parent of many tables (jobs, conversations, file_events, …)
+ * whose rows SQLite would otherwise re-validate as the old table drops.
+ */
+export function applyProjectTypeCheckMigration() {
+  const { rows } = querySync(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+  );
+  const currentDdl = rows[0]?.sql;
+  if (!currentDdl || !/project_type\s+IN\s*\(/i.test(currentDdl)) return;
+
+  const [{ foreign_keys: fkEnabled }] = db.pragma('foreign_keys');
+  db.pragma('foreign_keys = OFF');
+  try {
+    transaction(() => {
+      const present = new Set(
+        querySync("SELECT name FROM pragma_table_info('projects')").rows.map((r) => r.name),
+      );
+      const cols = PROJECTS_COLUMNS.filter((c) => present.has(c)).join(', ');
+      querySync(PROJECTS_NEW_DDL);
+      querySync(`INSERT INTO projects_new (${cols}) SELECT ${cols} FROM projects`);
+      querySync('DROP TABLE projects');
+      querySync('ALTER TABLE projects_new RENAME TO projects');
+      for (const ddl of PROJECTS_INDEXES) querySync(ddl);
+    });
+    const violations = db.pragma('foreign_key_check');
+    if (violations.length) {
+      throw new Error(`projects rebuild left ${violations.length} foreign key violation(s)`);
+    }
+    console.log('[db] Migrated: projects rebuilt without the project_type CHECK (issue #106).');
+  } finally {
+    db.pragma(`foreign_keys = ${fkEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
 /**
  * Issue #65: partial unique index over migrated columns. schema.sql cannot
  * carry it — on an existing database exec(schemaSql) runs BEFORE
@@ -310,6 +376,7 @@ export async function initDb() {
   applyFileEventsKindMigration();
   applyMembershipsRoleMigration();
   applyModelProfilesProviderMigration();
+  applyProjectTypeCheckMigration();
   applyKnowledgeIndexMigration();
   console.log('[db] Schema applied.');
 

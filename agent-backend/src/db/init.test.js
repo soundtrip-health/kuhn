@@ -6,15 +6,15 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 
 let db; let exec; let querySync;
 let applyColumnMigrations; let applyFileEventsKindMigration; let applyMembershipsRoleMigration;
-let applyModelProfilesProviderMigration;
+let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration;
 
 const columns = (table) =>
   querySync(`SELECT name FROM pragma_table_info('${table}')`).rows.map((r) => r.name);
 
 beforeAll(async () => {
   ({ db, exec, querySync } = await import('../db.js'));
-  ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration } =
-    await import('./init.js'));
+  ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration,
+    applyProjectTypeCheckMigration } = await import('./init.js'));
   // Pre-007-001 shapes: the tables exist (so schema.sql's CREATE IF NOT EXISTS
   // skips them on a real upgrade) but lack the user_id column. `projects` is
   // stubbed too: file_events' outbound FK targets are what the 012-002 rebuild
@@ -32,7 +32,15 @@ beforeAll(async () => {
     );
     CREATE INDEX idx_memberships_user ON memberships(user_id);
     CREATE INDEX idx_memberships_org  ON memberships(org_id);
-    CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+    -- Issue #106: the legacy project_type CHECK, so the rebuild has real work to do.
+    CREATE TABLE projects (
+      id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+      project_type TEXT NOT NULL DEFAULT 'manuscript' CHECK (project_type IN (
+        'rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'
+      )),
+      config TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX idx_projects_owner ON projects(name);
     CREATE TABLE conversations (id INTEGER PRIMARY KEY, agent_slug TEXT NOT NULL);
     CREATE TABLE jobs (id INTEGER PRIMARY KEY, role TEXT NOT NULL, input TEXT NOT NULL);
     CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, role TEXT NOT NULL);
@@ -216,6 +224,39 @@ describe('applyMembershipsRoleMigration (story 010-003)', () => {
     const before = querySync('SELECT COUNT(*) AS n FROM memberships').rows[0].n;
     expect(() => applyMembershipsRoleMigration()).not.toThrow();
     expect(querySync('SELECT COUNT(*) AS n FROM memberships').rows[0].n).toBe(before);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
+});
+
+describe('applyProjectTypeCheckMigration (issue #106)', () => {
+  it('rebuilds projects without the project_type CHECK, preserving rows and indexes', () => {
+    querySync("UPDATE projects SET config = '{\"title\":\"P\"}' WHERE id = 1");
+    expect(() => querySync("INSERT INTO projects (name, project_type) VALUES ('Q', 'white-paper')"))
+      .toThrow(/CHECK constraint failed/);
+
+    applyProjectTypeCheckMigration();
+
+    expect(querySync('SELECT id, name, project_type, config FROM projects').rows).toEqual([
+      { id: 1, name: 'P', project_type: 'manuscript', config: '{"title":"P"}' },
+    ]);
+    // Any catalog/org slug is storable now; the API boundary validates.
+    querySync("INSERT INTO projects (name, project_type) VALUES ('Q', 'white-paper')");
+    expect(querySync("SELECT name FROM projects WHERE project_type = 'white-paper'").rows).toEqual([{ name: 'Q' }]);
+    // Columns the old stub lacked take the schema defaults.
+    expect(querySync('SELECT owner_id FROM projects WHERE id = 1').rows).toEqual([{ owner_id: 'default' }]);
+
+    const indexes = querySync(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'projects'",
+    ).rows.map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(['idx_projects_owner', 'idx_projects_org']));
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
+
+  it('is a no-op on a second run', () => {
+    const before = querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n;
+    expect(() => applyProjectTypeCheckMigration()).not.toThrow();
+    expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(before);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
   });
 });

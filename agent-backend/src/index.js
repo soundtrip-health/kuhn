@@ -35,6 +35,7 @@ import reviewRouter from './routes/review.js';
 import scriptsRouter from './routes/scripts.js';
 import slideThemesRouter from './routes/slide-themes.js';
 import typstTemplatesRouter from './routes/typst-templates.js';
+import docTypesRouter from './routes/doc-types.js';
 import reviewLinksRouter from './routes/review-links.js';
 import { createUpgradeHandler } from './collab-auth.js';
 import { requestLog } from './request-log.js';
@@ -117,6 +118,7 @@ app.use(reviewLinksRouter); // member mint/list/revoke of review links (epic 013
 app.use(scriptsRouter);
 app.use(slideThemesRouter); // slide-theme library: catalog + org themes (STH-58)
 app.use(typstTemplatesRouter); // Typst template library: catalog + org templates
+app.use(docTypesRouter); // document-type library: catalog + org types (issue #106)
 
 const server = createServer(app);
 
