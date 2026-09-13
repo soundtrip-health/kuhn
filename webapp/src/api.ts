@@ -757,7 +757,7 @@ export async function listOrgProjects(orgId: number): Promise<Project[]> {
 
 export async function createProject(
   name: string,
-  projectType = 'manuscript',
+  projectType: string, // a slug from the org's document types (project-types.ts)
   orgId?: number,
 ): Promise<Project> {
   const res = await expectOk(
@@ -1693,6 +1693,95 @@ export async function setOrgTypstTemplateStatus(
     }),
   );
   return ((await res.json()) as { template: OrgTypstTemplate }).template;
+}
+
+// ---- Document types (issue #106) ----
+
+export interface CatalogDocType {
+  slug: string;
+  title: string;
+  description: string | null;
+  default_template: string | null;
+  wizard_hints: string[];
+  guidance: string;
+  available: boolean;
+  /** An ACTIVE org type of the same slug wins. */
+  shadowed?: boolean;
+}
+
+export interface OrgDocType {
+  id: number;
+  slug: string;
+  title: string;
+  description: string | null;
+  default_template: string | null;
+  wizard_hints: string[];
+  guidance: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
+}
+
+/** One entry of the merged list a project in the org may be. */
+export interface EffectiveDocType {
+  slug: string;
+  title: string;
+  description: string | null;
+  default_template: string | null;
+  wizard_hints: string[];
+  guidance: string;
+  source: 'catalog' | 'org';
+}
+
+export interface OrgDocTypesPayload {
+  catalog: CatalogDocType[];
+  types: OrgDocType[];
+  effective: EffectiveDocType[];
+}
+
+export interface OrgDocTypeInput {
+  slug: string;
+  title: string;
+  description?: string | null;
+  default_template?: string | null;
+  wizard_hints?: string[];
+  guidance?: string;
+}
+
+export async function getOrgDocTypes(orgId: number): Promise<OrgDocTypesPayload> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/doc-types`));
+  return (await res.json()) as OrgDocTypesPayload;
+}
+
+/** Create/replace an org document type by slug (owner-only); re-saving re-activates it. */
+export async function upsertOrgDocType(
+  orgId: number,
+  body: OrgDocTypeInput,
+): Promise<OrgDocTypesPayload & { type: OrgDocType }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/doc-types`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
+  return (await res.json()) as OrgDocTypesPayload & { type: OrgDocType };
+}
+
+/** Enable/disable one org document type (owner-only). */
+export async function setOrgDocTypeStatus(
+  orgId: number,
+  slug: string,
+  status: 'active' | 'disabled',
+): Promise<OrgDocType> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/doc-types/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+  return ((await res.json()) as { type: OrgDocType }).type;
 }
 
 // ---- Shared scripts (issue #68) ----

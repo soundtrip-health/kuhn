@@ -24,6 +24,7 @@ kuhn/
 ├── shared-scripts/  # Kuhn shared-script catalog (issue #68): catalog.json + known-good analysis scripts, DB-seeded at startup
 ├── slide-themes/    # Kuhn Marp slide-theme catalog (STH-58): catalog.json + theme CSS, DB-seeded at startup
 ├── typst-templates/ # Kuhn Typst page-layout catalog: catalog.json + .typ templates (NIH, manuscript) + their Word reference .docx (tools/make-reference-docx.py), DB-seeded at startup
+├── doc-types/       # Kuhn document-type catalog (issue #106): catalog.json — slug, title, wizard hints, per-type agent guidance; org owners extend/shadow it in Org admin → Document types; DB-seeded at startup
 └── test-projects/   # end-to-end test-project fixtures (wizard answers + prompts + data prep) — see test-projects/README.md
 ```
 

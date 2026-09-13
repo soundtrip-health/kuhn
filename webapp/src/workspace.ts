@@ -17,6 +17,7 @@ import {
   type Project,
   type Role,
 } from './api';
+import { loadDocTypes } from './project-types';
 
 /** What changed, so subscribers can re-render the minimum. */
 export type WorkspaceChange = 'init' | 'orgs' | 'projects' | 'project' | 'document';
@@ -199,10 +200,17 @@ async function loadProjects(): Promise<void> {
   try {
     // A suspended org 403s every content fetch — skip it and let the
     // suspended banner explain, instead of surfacing a generic error.
-    state.projects =
-      state.activeOrgId != null && !activeOrgSuspended()
-        ? await listOrgProjects(state.activeOrgId)
-        : [];
+    if (state.activeOrgId != null && !activeOrgSuspended()) {
+      // The org's document types (issue #106) ride along with its projects:
+      // every consumer of a type label or picker reads the store after the
+      // 'projects' emit that follows. loadDocTypes never rejects.
+      [state.projects] = await Promise.all([
+        listOrgProjects(state.activeOrgId),
+        loadDocTypes(state.activeOrgId),
+      ]);
+    } else {
+      state.projects = [];
+    }
   } catch (err) {
     state.projects = [];
     state.projectsError = (err as Error).message;

@@ -21,6 +21,9 @@ import {
   getOrgScripts,
   getOrgSlideThemes,
   getOrgTypstTemplates,
+  getOrgDocTypes,
+  upsertOrgDocType,
+  setOrgDocTypeStatus,
   getOrgBudgets,
   getOrgSettings,
   getScriptPromotion,
@@ -56,6 +59,8 @@ import {
   type OrgScriptsPayload,
   type OrgSlideThemesPayload,
   type OrgTypstTemplatesPayload,
+  type OrgDocTypesPayload,
+  type OrgDocTypeInput,
   type OrgBudgetReport,
   type OrgSettings,
   type BudgetScope,
@@ -75,14 +80,15 @@ import { renderMarkdown } from './markdown';
 import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { modelsTab, reloadModels, resetModelsTab } from './org-models';
 import { emptyRow, inlineError, sectionTitle } from './admin-ui';
+import { loadDocTypes } from './project-types';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'templates' | 'agents';
+type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'templates' | 'doctypes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'templates', 'agents'];
-const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'templates', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'templates', 'doctypes', 'agents'];
+const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'templates', 'doctypes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
 
@@ -157,6 +163,16 @@ let templatesData: OrgTypstTemplatesPayload | null = null;
 let templatesLoading = false;
 let templatesError: string | null = null;
 let templatesBusy = false;
+
+// Document types tab (issue #106): the Kuhn catalog + this org's own types.
+let docTypesData: OrgDocTypesPayload | null = null;
+let docTypesLoading = false;
+let docTypesError: string | null = null;
+let docTypesBusy = false;
+/** The owner form's draft; survives re-renders, pre-filled by "Edit". */
+const blankDocTypeForm = (): OrgDocTypeInput & { hintsText: string } =>
+  ({ slug: '', title: '', description: '', default_template: '', hintsText: '', guidance: '' });
+let docTypeForm = blankDocTypeForm();
 
 // Secrets tab (org secrets store): metadata only — values are write-only.
 let secretsRows: OrgSecret[] | null = null;
@@ -258,6 +274,10 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   templatesData = null;
   templatesError = null;
   templatesBusy = false;
+  docTypesData = null;
+  docTypesError = null;
+  docTypesBusy = false;
+  docTypeForm = blankDocTypeForm();
   secretsRows = null;
   secretsError = null;
   secretsBusy = false;
@@ -277,6 +297,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   void reloadScripts();
     void reloadThemes();
   void reloadTemplates();
+  void reloadDocTypes();
   void reloadSecrets();
 
   // Live import status for the Knowledge tab: doc_status events land on the
@@ -460,6 +481,23 @@ async function reloadThemes(): Promise<void> {
     themesError = (err as Error).message;
   } finally {
     themesLoading = false;
+  }
+  render();
+}
+
+async function reloadDocTypes(): Promise<void> {
+  const orgId = adminOrgId;
+  docTypesLoading = docTypesData === null;
+  render();
+  try {
+    const payload = await getOrgDocTypes(orgId);
+    if (orgId !== adminOrgId) return;
+    docTypesData = payload;
+    docTypesError = null;
+  } catch (err) {
+    docTypesError = (err as Error).message;
+  } finally {
+    docTypesLoading = false;
   }
   render();
 }
@@ -2101,6 +2139,206 @@ function templatesTab(): HTMLElement[] {
   return parts;
 }
 
+// ---- Document types tab (issue #106) --------------------------------------------
+
+async function docTypeAction(fn: () => Promise<unknown>): Promise<void> {
+  docTypesBusy = true;
+  render();
+  try {
+    await fn();
+    docTypesError = null;
+  } catch (err) {
+    docTypesError = (err as Error).message;
+  } finally {
+    docTypesBusy = false;
+  }
+  await reloadDocTypes();
+  // Pickers and pills in the open workspace follow the org's effective list.
+  if (workspace.activeOrg()?.id === adminOrgId) await loadDocTypes(adminOrgId);
+}
+
+function docTypesTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (docTypesError) parts.push(inlineError(docTypesError));
+  if (docTypesLoading || docTypesData === null) {
+    if (!docTypesError) parts.push(emptyRow('Loading document types…'));
+    return parts;
+  }
+  const owner = workspace.isOwner();
+  const blurb = document.createElement('p');
+  blurb.className = 'ol-blurb';
+  blurb.textContent = owner
+    ? 'The kinds of document a project can be. Each type carries setup hints and the guidance the agents get for projects of that type; an active organization type shadows a Kuhn type of the same slug.'
+    : 'Document types available to this organization’s projects. Only owners can add, edit or disable types.';
+  parts.push(blurb);
+
+  parts.push(sectionTitle('Kuhn document types'));
+  if (docTypesData.catalog.length === 0) parts.push(emptyRow('No seeded document types in this deployment.'));
+  for (const t of docTypesData.catalog) {
+    const meta = [
+      t.description ?? '',
+      t.default_template ? `default layout ${t.default_template}` : '',
+      t.available ? '' : 'unavailable in this deploy',
+      t.shadowed ? 'shadowed by an organization type of the same slug' : '',
+    ].filter(Boolean).join(' — ');
+    parts.push(themeRow(t.slug, t.title, meta, null));
+  }
+
+  parts.push(sectionTitle('Organization document types'));
+  if (docTypesData.types.length === 0) parts.push(emptyRow('No organization types yet.'));
+  for (const t of docTypesData.types) {
+    let control: HTMLElement | null = null;
+    if (owner) {
+      control = document.createElement('div');
+      control.className = 'theme-controls';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'btn btn-quiet btn-sm';
+      edit.textContent = 'Edit';
+      edit.disabled = docTypesBusy;
+      edit.addEventListener('click', () => {
+        docTypeForm = {
+          slug: t.slug,
+          title: t.title,
+          description: t.description ?? '',
+          default_template: t.default_template ?? '',
+          hintsText: t.wizard_hints.join('\n'),
+          guidance: t.guidance,
+        };
+        render();
+        document.getElementById('dt-title')?.focus();
+      });
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn btn-quiet btn-sm';
+      toggle.textContent = t.status === 'active' ? 'Disable' : 'Enable';
+      toggle.disabled = docTypesBusy;
+      toggle.addEventListener('click', () => void docTypeAction(
+        () => setOrgDocTypeStatus(adminOrgId, t.slug, t.status === 'active' ? 'disabled' : 'active'),
+      ));
+      control.append(edit, toggle);
+    }
+    const meta = [
+      t.description ?? '',
+      `${t.status}`,
+      t.default_template ? `default layout ${t.default_template}` : '',
+      `updated ${formatDate(t.updated_at)}`,
+    ].filter(Boolean).join(' · ');
+    parts.push(themeRow(t.slug, t.title, meta, control));
+  }
+
+  if (owner) {
+    parts.push(sectionTitle(docTypeForm.slug && docTypesData.types.some((t) => t.slug === docTypeForm.slug)
+      ? `Edit “${docTypeForm.slug}”`
+      : 'Add a document type'));
+    const form = document.createElement('form');
+    form.className = 'theme-upload doctype-form';
+    const hint = document.createElement('p');
+    hint.className = 'ol-blurb';
+    hint.textContent = 'The slug is what projects store (lowercase letters, digits, hyphens); reuse a Kuhn slug to shadow that type for this organization. Saving an existing slug replaces it and re-enables it.';
+
+    const field = (id: string, label: string, el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'admin-field';
+      const span = document.createElement('span');
+      span.className = 'admin-field-label';
+      span.textContent = label;
+      el.id = id;
+      wrap.append(span, el);
+      return wrap;
+    };
+    const text = (id: string, label: string, key: 'slug' | 'title' | 'description', placeholder: string) => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'pb-input';
+      input.placeholder = placeholder;
+      input.value = docTypeForm[key] ?? '';
+      input.addEventListener('input', () => { docTypeForm[key] = input.value; });
+      return field(id, label, input);
+    };
+    const area = (id: string, label: string, key: 'hintsText' | 'guidance', rows: number, placeholder: string) => {
+      const ta = document.createElement('textarea');
+      ta.className = 'pb-input ap-editor';
+      ta.rows = rows;
+      ta.placeholder = placeholder;
+      ta.value = docTypeForm[key] ?? '';
+      ta.addEventListener('input', () => { docTypeForm[key] = ta.value; });
+      return field(id, label, ta);
+    };
+    // Default page layout: the Typst catalog (any authenticated user may pick
+    // one) plus "none". The Templates tab already loads the catalog.
+    const template = document.createElement('select');
+    template.className = 'pb-select';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No default layout';
+    template.append(none);
+    for (const tpl of templatesData?.catalog.filter((c) => c.available) ?? []) {
+      const opt = document.createElement('option');
+      opt.value = tpl.name;
+      opt.textContent = `${tpl.title} (${tpl.name})`;
+      template.append(opt);
+    }
+    if (docTypeForm.default_template && ![...template.options].some((o) => o.value === docTypeForm.default_template)) {
+      const opt = document.createElement('option');
+      opt.value = docTypeForm.default_template;
+      opt.textContent = docTypeForm.default_template;
+      template.append(opt);
+    }
+    template.value = docTypeForm.default_template ?? '';
+    template.addEventListener('change', () => { docTypeForm.default_template = template.value; });
+
+    const actions = document.createElement('div');
+    actions.className = 'theme-controls';
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'btn btn-solid btn-sm';
+    submit.textContent = 'Save document type';
+    submit.disabled = docTypesBusy;
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'btn btn-ghost btn-sm';
+    reset.textContent = 'Clear';
+    reset.disabled = docTypesBusy;
+    reset.addEventListener('click', () => { docTypeForm = blankDocTypeForm(); render(); });
+    actions.append(submit, reset);
+
+    form.append(
+      hint,
+      text('dt-slug', 'Slug', 'slug', 'e.g. white-paper'),
+      text('dt-title', 'Title', 'title', 'e.g. White paper'),
+      text('dt-description', 'Description (one line)', 'description', 'What this kind of document is, for pickers and the agents'),
+      field('dt-template', 'Default page layout', template),
+      area('dt-hints', 'Setup hints (one per line)', 'hintsText', 4, 'Materials that help for this type — shown in the project setup wizard'),
+      area('dt-guidance', 'Agent guidance (markdown)', 'guidance', 10, 'What this document type is, its canonical structure and sections, conventions, what reviewers look for. Added to every agent’s instructions for projects of this type.'),
+      actions,
+    );
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const body: OrgDocTypeInput = {
+        slug: docTypeForm.slug.trim().toLowerCase(),
+        title: docTypeForm.title.trim(),
+        description: docTypeForm.description?.trim() || null,
+        default_template: docTypeForm.default_template || null,
+        wizard_hints: docTypeForm.hintsText.split('\n').map((h) => h.trim()).filter(Boolean),
+        guidance: docTypeForm.guidance?.trim() ?? '',
+      };
+      if (!body.slug || !body.title) {
+        docTypesError = 'A slug and a title are required.';
+        render();
+        return;
+      }
+      void docTypeAction(async () => {
+        await upsertOrgDocType(adminOrgId, body);
+        docTypeForm = blankDocTypeForm();
+        toast(`Document type “${body.slug}” saved.`);
+      });
+    });
+    parts.push(form);
+  }
+  return parts;
+}
+
 // ---- Render ----------------------------------------------------------------------
 
 // ---- Secrets tab (org secrets store) ---------------------------------------------
@@ -2373,6 +2611,7 @@ const TAB_LABEL: Record<Tab, string> = {
   secrets: 'Secrets',
   themes: 'Themes',
   templates: 'Templates',
+  doctypes: 'Document types',
   agents: 'Agents',
 };
 
@@ -2462,6 +2701,7 @@ function render(): void {
     : activeTab === 'secrets' ? secretsTab()
     : activeTab === 'themes' ? themesTab()
     : activeTab === 'templates' ? templatesTab()
+    : activeTab === 'doctypes' ? docTypesTab()
     : knowledgeTab();
   body.append(...parts);
 
