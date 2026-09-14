@@ -155,4 +155,17 @@ describe('the shipped docs/features guide', () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].file).toBe('editor.md');
   });
+
+  it('survives a synonym-padded query (the first production question)', async () => {
+    await guide.seedFeatureGuide(SHIPPED_GUIDE);
+    // Haiku's actual query for "why don't I see page lines?": nine words, no
+    // section contains them all, and under plain OR-BM25 "tables"/"settings"
+    // outranked the section named "Page lines" — so the agent denied a
+    // documented feature. The heading tier + coverage re-rank must win.
+    const hits = guide.searchGuide('page lines pagination display page breaks ruler view settings');
+    // "Page breaks" legitimately ties (the query names it too); both must be in the top two.
+    expect(hits.slice(0, 2).map((h) => h.headingPath).join(' | ')).toMatch(/Page lines/);
+    expect(guide.searchGuide('dashed page lines editor')[0].headingPath).toMatch(/Page lines|Page map/);
+    expect(guide.searchGuide('how do I export to word?')[0].headingPath).toMatch(/Export/);
+  });
 });

@@ -23,8 +23,9 @@ export function createGuideTools(_ctx) {
       'Search the Kuhn feature guide — the maintained documentation of what Kuhn does and how to use it '
       + '(editor, page breaks and limits, preview and export, citations, comments, agents and chat, files, '
       + 'organization admin, interchange, accounts). Returns the best-matching guide sections in full, each '
-      + 'with its page and section heading. Cite the page and section you rely on. Plain keywords work best '
-      + '(e.g. "page limits badge", "export word"). Read-only; reads no project or organization data.',
+      + 'with its page and section heading. Cite the page and section you rely on. Query with TWO TO FOUR plain '
+      + 'words the user would say (e.g. "page lines", "export word", "invite member") — not a list of synonyms; '
+      + 'if nothing relevant comes back, search once more with different words. Read-only; reads no project or organization data.',
     parameters: {
       type: 'object',
       properties: {

@@ -123,6 +123,8 @@ export const TOOLS = [
     // indexed feature guide (docs/features/), platform-scoped and read-only.
     slug: 'search_kuhn_guide', name: 'Search Kuhn Guide', description: 'Search the Kuhn feature guide (docs/features/) for how a feature works and how to use it; returns matching sections with page and heading provenance (read-only)',
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Keywords describing the feature or question' }, limit: { type: 'integer', description: 'Maximum sections to return', default: 4 } }, required: ['query'] },
+  },
+  {
     // Issue #106: document-type discovery — the project_type enum became an
     // org-extensible catalog.
     slug: 'list_doc_types', name: 'List Document Types', description: 'List the document types a project in this organization can be (Kuhn catalog plus organization-defined types), with a one-line description of each',
