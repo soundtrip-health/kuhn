@@ -8,6 +8,7 @@
  * added later by listening to doc updates.
  */
 
+import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
@@ -25,6 +26,17 @@ const MSG_AWARENESS = 1;
 // template. Kills the race where two clients both observe an empty room and
 // both seed it. y-websocket reserves 0-3; 64 leaves headroom for upstream.
 const MSG_SEED_GRANT = 64;
+// Payload since the Canopy-R01 duplication fix: varUint granted (0|1), then
+// varString ROOM GENERATION — a random id minted when this room instance was
+// created. A client that reconnects and sees a different generation than the
+// one it first synced with knows the room was torn down and rebuilt while it
+// was away (30 s idle expiry with the tab frozen, a server restart, an
+// eviction) and that the current room may already hold a fresh seed from
+// storage. Merging its own Yjs history into that room would concatenate two
+// independent copies of the document (the CRDT has no shared origin to
+// reconcile them by) — the 2× / 4× duplication seen in production. So the
+// client must re-open instead of merging. Older clients ignore the extra
+// bytes.
 /**
  * Kuhn extension (epic 013): server-attributed external presence. Broadcast to
  * every connection in a room on any reviewer join/leave (and sent once to each
@@ -194,8 +206,9 @@ function getOrCreateDoc(name) {
     }
   });
 
-  const entry = { doc, awareness, conns: new Set() };
+  const entry = { doc, awareness, conns: new Set(), generation: randomUUID().slice(0, 8) };
   docs.set(name, entry);
+  log.info('ws_room_created', { room: name, generation: entry.generation });
   return entry;
 }
 
@@ -267,6 +280,11 @@ export function evictRoomsUnder(prefix, opts = {}) {
 }
 
 /** Test hook: does a room currently exist in memory? */
+/** Test hook: live connections in a room (0 when the room does not exist). */
+export function roomConnectionCount(name) {
+  return docs.get(name)?.conns.size ?? 0;
+}
+
 export function hasRoom(name) {
   return docs.has(name);
 }
@@ -296,6 +314,57 @@ function ensureSweep() {
     void sweepMemberConnections();
   }, SWEEP_MS);
   sweepTimer.unref?.();
+}
+
+/**
+ * Liveness (Canopy-R01 follow-up). A browser that vanishes without a close
+ * frame — a closed laptop lid, a dropped tunnel, a killed tab behind a
+ * proxy — leaves a socket the server still counts as a room member. Such a
+ * zombie keeps its room alive past the 30 s idle expiry indefinitely, and a
+ * room that outlives every real client is a stale copy waiting to win over
+ * storage (story 038's hazard, with no one there to reconcile it). It also
+ * blocks the "room is empty" premise everything else relies on. Standard ws
+ * pattern: ping every connection on an interval; one that did not pong since
+ * the previous round is terminated, which fires its 'close' like any other
+ * departure (leave logged, room count corrected, 30 s expiry armed).
+ */
+const LIVENESS_MS = 30_000;
+let livenessTimer = null;
+const liveConns = new Set();
+
+function trackLiveness(ws) {
+  ws.kuhnAlive = true;
+  ws.on('pong', () => { ws.kuhnAlive = true; });
+  liveConns.add(ws);
+  if (livenessTimer) return;
+  livenessTimer = setInterval(sweepLiveness, LIVENESS_MS);
+  livenessTimer.unref?.();
+}
+
+export function sweepLiveness() {
+  for (const ws of [...liveConns]) {
+    if (ws.readyState !== 1) {
+      liveConns.delete(ws);
+      continue;
+    }
+    if (ws.kuhnAlive === false) {
+      liveConns.delete(ws);
+      log.warn('ws_zombie_terminated', { room: ws.kuhnRoom ?? null, principal: ws.kuhnPrincipal?.kind ?? null });
+      try {
+        if (typeof ws.terminate === 'function') ws.terminate();
+        else ws.close(1001, 'No pong');
+      } catch {
+        // a dying socket must not block the sweep
+      }
+      continue;
+    }
+    ws.kuhnAlive = false;
+    try {
+      ws.ping?.();
+    } catch {
+      // ping on a half-dead socket: the next round terminates it
+    }
+  }
 }
 
 /** Close one reviewer socket with the verdict for a non-live link state. */
@@ -600,11 +669,13 @@ export function handleYjsConnection(ws, req) {
 
   const entry = getOrCreateDoc(roomName);
   entry.conns.add(ws);
+  ws.kuhnRoom = roomName;
+  trackLiveness(ws);
   const joinedAt = Date.now();
   const who = reviewer
     ? { principal: 'reviewer', linkId: reviewer.linkId }
     : { principal: ws.kuhnPrincipal ? 'member' : null, userId: ws.kuhnPrincipal?.user?.id ?? null };
-  log.info('ws_room_join', { room: roomName, access: ws.kuhnAccess, conns: entry.conns.size, ...who });
+  log.info('ws_room_join', { room: roomName, access: ws.kuhnAccess, conns: entry.conns.size, generation: entry.generation, ...who });
 
   if (reviewer) {
     let set = reviewerConns.get(reviewer.linkId);
@@ -680,6 +751,7 @@ export function handleYjsConnection(ws, req) {
   ws.on('close', (code, reasonBuf) => {
     entry.conns.delete(ws);
     memberConns.delete(ws);
+    liveConns.delete(ws);
     log.info('ws_room_leave', {
       room: roomName, code, reason: reasonBuf?.toString?.() || undefined,
       conns: entry.conns.size, seconds: Math.round((Date.now() - joinedAt) / 1000), ...who,
@@ -734,6 +806,7 @@ export function handleYjsConnection(ws, req) {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MSG_SEED_GRANT);
     encoding.writeVarUint(encoder, granted ? 1 : 0);
+    encoding.writeVarString(encoder, entry.generation);
     ws.send(encoding.toUint8Array(encoder));
   }
 

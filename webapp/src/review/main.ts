@@ -218,6 +218,16 @@ async function mountCollab(): Promise<void> {
     awarenessUser: { name: c.name, external: true, color: REVIEWER_COLOR },
     commentsIdentity: identityFor(c),
     onClose: (code, reason) => void handleTerminalClose(code, reason),
+    // Room rebuilt while this page was away: re-mount with a fresh Y.Doc
+    // rather than merging stale history (the duplication incident). Flush a
+    // pending save first — refreshDoc's teardown cancels the engine.
+    onStale: () => {
+      setNotice('Reconnected — reloading the document…');
+      void (async () => {
+        if (handle?.pendingSave()) await handle.flushSave().catch(() => {});
+        await refreshDoc();
+      })();
+    },
     onSaveState: setSaveState,
     onMarkdownUpdated: updateWordCount,
     onSynced: ({ empty }) => {

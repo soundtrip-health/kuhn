@@ -33,6 +33,7 @@ import { publishProjectEvent } from '../project-events.js';
 import { sendRawFile } from '../raw-content.js';
 import { REVIEW_COOKIE, reviewerPrincipal, reviewerSession } from '../review-auth.js';
 import { StorageError, readProjectFile, writeProjectFile } from '../storage.js';
+import { bodyWithStoredFrontMatter } from './files.js';
 
 const router = Router();
 
@@ -280,7 +281,12 @@ router.put('/api/review/file', reviewerAccess, requireMode('edit'), rawBody,
       res.status(415).json({ error: 'Send the raw file content as the request body' });
       return;
     }
-    const { created } = await writeProjectFile(projectId, path, req.body);
+    // ?body=1: the reviewer's rich editor edits the body only; the stored
+    // front matter (template, page limits) is re-attached server-side. The
+    // Canopy-R01 incident: a reviewer save without this dropped the
+    // `template:` block and the R01 layout with it.
+    const bytes = req.query.body === '1' ? await bodyWithStoredFrontMatter(projectId, path, req.body) : req.body;
+    const { created } = await writeProjectFile(projectId, path, bytes);
     if (req.query.checkpoint === '1') {
       void commitNow(projectId, {
         reviewer: { linkId, name }, reviewerCheckpoint: true, label: `Save ${path}`,

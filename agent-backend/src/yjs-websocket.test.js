@@ -21,7 +21,7 @@ import * as decoding from 'lib0/decoding';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-let handleYjsConnection; let evictRoom; let evictRoomsUnder; let hasRoom;
+let handleYjsConnection; let evictRoom; let evictRoomsUnder; let hasRoom; let sweepLiveness; let roomConnectionCount;
 let closeReviewerConnections; let closeReviewerOnlyRoom; let sweepReviewerConnections;
 let sweepMemberConnections;
 let publishProjectEvent;
@@ -35,7 +35,7 @@ beforeAll(async () => {
   ({ exec, querySync } = await import('./db.js'));
   exec(readFileSync(resolve(__dirname, 'db/schema.sql'), 'utf-8'));
   ({
-    handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom,
+    handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom, sweepLiveness, roomConnectionCount,
     closeReviewerConnections, closeReviewerOnlyRoom, sweepReviewerConnections,
     sweepMemberConnections,
   } = await import('./yjs-websocket.js'));
@@ -87,6 +87,15 @@ function fakeWs() {
     disconnect() {
       handlers.get('close')?.();
     },
+    // Liveness (ws ping/pong). A fake that never pongs models a zombie.
+    pings: 0,
+    ping() { this.pings += 1; },
+    pong() { handlers.get('pong')?.(); },
+    terminate() {
+      this.closed = { code: 'terminated' };
+      this.readyState = 3;
+      handlers.get('close')?.();
+    },
   };
 }
 
@@ -117,11 +126,19 @@ const memberCollab = (id, access = 'write') => ({ principal: { kind: 'member', u
 const msgType = (m) => decoding.readVarUint(decoding.createDecoder(new Uint8Array(m)));
 const messagesOfType = (ws, type) => ws.sent.filter((m) => msgType(m) === type);
 
-/** Decode a seed-grant message (varUint type 64, varUint 0|1). */
+/** Decode a seed-grant message (varUint type 64, varUint 0|1, varString generation). */
 function decodeGrant(message) {
   const dec = decoding.createDecoder(new Uint8Array(message));
   expect(decoding.readVarUint(dec)).toBe(64);
   return decoding.readVarUint(dec);
+}
+
+/** The room generation carried by a seed-grant message. */
+function decodeGeneration(message) {
+  const dec = decoding.createDecoder(new Uint8Array(message));
+  expect(decoding.readVarUint(dec)).toBe(64);
+  decoding.readVarUint(dec);
+  return decoding.readVarString(dec);
 }
 
 /** Decode a MSG_REVIEWERS message (varUint type 65, varString JSON). */
@@ -241,6 +258,39 @@ describe('collab room eviction (story 038)', () => {
     evictRoom(room);
     const third = connect(room);
     expect(decodeGrant(third.sent[0])).toBe(1);
+  });
+
+  it('terminates a socket that stops answering pings, so a vanished tab cannot keep its room alive', () => {
+    const room = 'project-909/draft/zombie.md';
+    const live = connect(room);
+    const zombie = connect(room);
+    sweepLiveness(); // round 1: everyone is pinged
+    expect(live.pings).toBe(1);
+    expect(zombie.pings).toBe(1);
+    live.pong();
+    sweepLiveness(); // round 2: the live socket answered, the zombie did not
+    expect(live.closed).toBe(null);
+    expect(zombie.closed).toEqual({ code: 'terminated' });
+    expect(roomConnectionCount(room)).toBe(1);
+    live.disconnect();
+    expect(roomConnectionCount(room)).toBe(0);
+  });
+
+  it('stamps every grant with the room generation, which changes when the room is rebuilt', () => {
+    const room = 'project-908/draft/generation.md';
+    const first = connect(room);
+    const second = connect(room);
+    const g1 = decodeGeneration(first.sent[0]);
+    expect(g1).toMatch(/^[0-9a-f]{8}$/);
+    // Same room instance → same generation for every connection into it.
+    expect(decodeGeneration(second.sent[0])).toBe(g1);
+    first.disconnect();
+    second.disconnect();
+    evictRoom(room);
+    // Rebuilt room → a new generation: a client that synced with g1 and
+    // reconnects here must re-open, not merge its history into the new seed.
+    const third = connect(room);
+    expect(decodeGeneration(third.sent[0])).not.toBe(g1);
   });
 
   it('closes with the caller\'s code and reason when a move redirects the room (story 012-002)', () => {

@@ -35,6 +35,7 @@ import {
   writeTextFile,
   type Comment,
 } from './api';
+import { stripFrontMatter } from './front-matter';
 import { agentIdentity } from './agents';
 import { currentBibPath, refreshBib } from './bib';
 import { installCitationCards } from './cite-card';
@@ -139,25 +140,17 @@ const memberCommentsApi: CommentsTransport = {
 // has no front-matter node — the round trip rewrote the `---` fences into a
 // thematic break and a setext underline, destroying `marp: true` and the
 // theme/paginate directives on the first save (which broke Marp preview).
-// The member transport strips the block before content reaches Crepe (so the
-// collab room only ever holds the body) and re-prepends it on every write.
+// The transport strips the block before content reaches Crepe (so the collab
+// room only ever holds the body); writes go out body-only (`body=1`) and the
+// SERVER re-attaches the block the stored file carries. (This tab used to
+// re-prepend a copy it remembered at open time — a copy a source-mode edit in
+// another tab could silently undo, and one the reviewer surface never kept,
+// which is how a reviewer's autosave dropped a document's `template:`.)
 // Source mode bypasses the transport and edits the full bytes, so front
 // matter itself is edited there.
-const docFrontMatter = new Map<string, string>();
-const FRONT_MATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$))/;
-
-function stripFrontMatter(path: string, content: string | null): string | null {
-  if (content == null) return content;
-  const m = FRONT_MATTER_RE.exec(content);
-  if (m) docFrontMatter.set(path, m[1]);
-  else docFrontMatter.delete(path);
-  return m ? content.slice(m[1].length) : content;
-}
-
 const memberTransport: DocTransport = {
-  readFile: async (projectId, path) => stripFrontMatter(path, await readTextFile(projectId, path)),
-  writeFile: (projectId, path, content, opts) =>
-    writeTextFile(projectId, path, (docFrontMatter.get(path) ?? '') + content, opts),
+  readFile: async (projectId, path) => stripFrontMatter(await readTextFile(projectId, path)),
+  writeFile: (projectId, path, content, opts) => writeTextFile(projectId, path, content, opts),
   commentsApi: memberCommentsApi,
   wsUrl: BACKEND_WS_URL,
 };
@@ -273,7 +266,7 @@ export async function applyExternalChange(path: string): Promise<boolean> {
   if (!docHandle) return false;
   if (docHandle.isDirty()) return false;
 
-  const stored = stripFrontMatter(path, await readTextFile(currentProjectId, path));
+  const stored = stripFrontMatter(await readTextFile(currentProjectId, path));
   if (stored == null || stored === docHandle.lastSaved()) return true; // nothing new to apply
   // Preset lastSaved so the markdownUpdated listener's save guard short-circuits
   // (we're mirroring storage, not making a new local edit).
@@ -510,7 +503,7 @@ async function openDocumentInner(
   // to openDoc, so without stripping here the front matter would reach Crepe
   // on every normal open and be mangled on the next save (the transport's
   // readFile only covers the paths that DON'T pass `stored` explicitly).
-  const stored = stripFrontMatter(path, await readTextFile(projectId, path));
+  const stored = stripFrontMatter(await readTextFile(projectId, path));
   if (seq !== openSeq) return; // switched away before we touched the singletons
 
   // Viewers open read-only (010-003): no seeding, no saves, no slash commands,
@@ -568,6 +561,12 @@ async function openDocumentInner(
     onClose: (code, reason) => {
       if (code === CLOSE_ROOM_MOVED) void followMovedRoom(reason);
     },
+    // The room was rebuilt while this tab was away (frozen tab, server
+    // restart): editor-core has disconnected the provider; re-open from the
+    // room / storage with a fresh Y.Doc instead of merging stale history —
+    // the merge is what produced the duplicated documents. closeDocument
+    // flushes a pending save first, so a keystroke made offline still lands.
+    onStale: () => void reopenAfterStaleRoom(projectId, path, seq),
     onReviewers: renderReviewerBanner,
     // MB2 (010-003): a read-only client on an EMPTY room must not sit on a
     // blank document — it can never seed, and rooms die 30s after the last
@@ -598,6 +597,13 @@ async function openDocumentInner(
     return;
   }
   docHandle = handle;
+}
+
+/** Re-open the current document after its collab room was rebuilt (see
+ *  editor-core onStale). A stale callback for a superseded open is ignored. */
+async function reopenAfterStaleRoom(projectId: number, path: string, seq: number): Promise<void> {
+  if (seq !== openSeq || projectId !== currentProjectId || path !== currentPath) return;
+  await openDocument(projectId, path);
 }
 
 export async function closeDocument(): Promise<void> {
@@ -652,7 +658,7 @@ async function mountViewerStatic(projectId: number, path: string): Promise<void>
   if (seq !== openSeq || path !== currentPath) return;
   let stored: string | null;
   try {
-    stored = stripFrontMatter(path, await readTextFile(projectId, path));
+    stored = stripFrontMatter(await readTextFile(projectId, path));
   } catch {
     return; // transient — reopening the document retries the whole path
   }
@@ -857,13 +863,8 @@ export async function retargetDocument(path: string): Promise<void> {
   const projectId = currentProjectId;
   await performRetarget({
     setCurrentPath: (p) => {
-      // The front-matter stash follows the move (STH-61): a racing autosave
-      // on the new path must still re-prepend the deck's front matter.
-      const fm = docFrontMatter.get(currentPath);
-      if (fm != null) {
-        docFrontMatter.set(p, fm);
-        docFrontMatter.delete(currentPath);
-      }
+      // (The front matter needs no forwarding: a body-only autosave on the
+      // new path re-attaches whatever block the moved file carries there.)
       currentPath = p;
       // The rich handle captures its save path internally — retarget it too,
       // so a racing autosave lands on the new path (rule 1).

@@ -16,6 +16,7 @@ import { publishProjectEvent } from '../project-events.js';
 import { sendRawFile } from '../raw-content.js';
 import { bodyErrorHandler, uploadMiddleware } from './uploads.js';
 import { requireProjectRole } from './guards.js';
+import { withStoredFrontMatter } from '../front-matter.js';
 import {
   StorageError,
   createProjectDir,
@@ -98,6 +99,17 @@ router.get('/api/projects/:projectId/file', handle('viewer', async (projectId, r
  * this is the editor's debounced autosave path, which would flood the log and
  * mark the open document perpetually unseen; live doc sync is Yjs's job.
  */
+/** The stored file's leading front matter + the incoming body (absent file → the body). */
+export async function bodyWithStoredFrontMatter(projectId, path, body) {
+  let existing = null;
+  try {
+    existing = await readProjectFile(projectId, path);
+  } catch (err) {
+    if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
+  }
+  return withStoredFrontMatter(existing, body);
+}
+
 // Same request-time-limit rationale as uploadMiddleware below.
 const rawBody = (req, res, next) =>
   express.raw({ type: () => true, limit: config.storage.maxFileBytes })(req, res, next);
@@ -112,7 +124,13 @@ router.put(
       res.status(415).json({ error: 'Send the raw file content as the request body' });
       return;
     }
-    const { created } = await writeProjectFile(projectId, path, req.body);
+    // ?body=1 (STH-61 follow-up): the rich editor edits the document BODY —
+    // the leading front matter never enters the collab room — so the stored
+    // block is re-attached here, from the file as it is now, rather than
+    // from a copy the client remembered at open time (which a source-mode
+    // edit in another tab, or a reviewer's save, silently overwrote).
+    const bytes = req.query.body === '1' ? await bodyWithStoredFrontMatter(projectId, path, req.body) : req.body;
+    const { created } = await writeProjectFile(projectId, path, bytes);
     // Version history (008-002): autosaves coalesce into the throttled
     // auto-commit; an explicit Cmd/Ctrl+S (?checkpoint=1) commits now.
     if (req.query.checkpoint === '1') {
