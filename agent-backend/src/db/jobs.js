@@ -11,6 +11,9 @@ function parseJob(row) {
   if (row && typeof row.continuation === 'string') {
     row.continuation = JSON.parse(row.continuation);
   }
+  if (row && typeof row.pause === 'string') {
+    row.pause = JSON.parse(row.pause);
+  }
   return row;
 }
 
@@ -70,6 +73,7 @@ const OPEN_LIST = OPEN_JOB_STATUSES.map((st) => `'${st}'`).join(', ');
  * @param {object|null} [fields.continuation] - Canonical continuation envelope (STH-47)
  * @param {number} [fields.contextTokens] - last turn's prompt size (STH-52 meter)
  * @param {string|null} [fields.handoff] - hand-off note written at a budget pause (issue #110)
+ * @param {{ scope: string, period?: string, resetsAt?: string }|null} [fields.pause] - which budget paused the run (issue #129)
  * @param {number} [fields.weightedTokens] - cost-weighted tokens for the org budget ledger (issue #110)
  * @param {string|null} [fields.profile] - the model profile the route selected (issue #107)
  * @param {string|null} [fields.endpoint] - the provider endpoint the job egressed to (issue #112)
@@ -100,6 +104,7 @@ export async function updateJob(jobId, fields) {
     continuation: 'continuation',
     contextTokens: 'context_tokens',
     handoff: 'handoff',
+    pause: 'pause',
     weightedTokens: 'weighted_tokens',
     profile: 'profile',
     endpoint: 'endpoint',
@@ -120,7 +125,7 @@ export async function updateJob(jobId, fields) {
   const params = [];
   for (const [key, column] of Object.entries(columns)) {
     if (fields[key] !== undefined) {
-      params.push(column === 'continuation' && fields[key] != null ? JSON.stringify(fields[key]) : fields[key]);
+      params.push((column === 'continuation' || column === 'pause') && fields[key] != null ? JSON.stringify(fields[key]) : fields[key]);
       sets.push(`${column} = $${params.length}`);
     }
   }

@@ -660,7 +660,12 @@ function restorePausedRuns(jobs: Job[]): void {
     .filter((job) => job.status === 'error' && job.error === BUDGET_EXCEEDED_ERROR)
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
   for (const job of paused) {
-    appendBudgetNotice({ agent: job.role, jobId: job.id, handoff: job.handoff, isoTime: job.created_at });
+    // The row carries whose budget and when it resets (issue #129 item 3),
+    // so the rebuilt card matches the one that streamed in.
+    appendBudgetNotice({
+      agent: job.role, jobId: job.id, handoff: job.handoff, isoTime: job.created_at,
+      scope: job.pause?.scope ?? 'task', period: job.pause?.period, resetsAt: job.pause?.resetsAt,
+    });
   }
 }
 

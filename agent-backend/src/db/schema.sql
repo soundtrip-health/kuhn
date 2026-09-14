@@ -219,6 +219,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- runs that ended any other way (or whose note could not be captured).
   -- Mirrored in init.js COLUMN_MIGRATIONS.
   handoff          TEXT,
+  -- Which budget paused the run and when it resets (issue #129 item 3):
+  -- JSON { scope: 'task'|'user'|'project', period?, resetsAt? }, written
+  -- beside the hand-off note so a reload rebuilds the same pause card.
+  -- NULL for runs that ended any other way. Mirrored in init.js.
+  pause            TEXT,  -- JSON
   -- Spend ledger (issue #110): this job's tokens weighted by model cost
   -- relative to the top tier (runtime.js ledgerWeight), so org budgets sum a
   -- spend-like figure across models. Updated per turn. Mirrored in init.js.

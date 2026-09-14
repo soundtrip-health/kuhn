@@ -679,7 +679,7 @@ describe('runAgentTask', () => {
     expect(error).toMatchObject({ reason: 'budget_exceeded', jobId: 42, budget: { limit: 250000 } });
     expect(events.find((e) => e.type === 'done')).toBeUndefined();
     expect(sdkState.interrupt).toHaveBeenCalled();
-    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error', error: 'token budget exceeded' }));
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error', error: 'token budget exceeded', pause: { scope: 'task' } }));
   });
 
   describe('budget pause hand-off (issue #110)', () => {
@@ -730,6 +730,11 @@ describe('runAgentTask', () => {
       });
       expect(error.message).toMatch(/Your monthly token budget is used up/);
       expect(error.message).toMatch(/resets at 2026-10-01 00:00 UTC/);
+      // The row keeps the same scope and reset time (#129 item 3) for the reload path.
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({
+        status: 'error', error: 'token budget exceeded',
+        pause: { scope: 'user', period: 'month', resetsAt: '2026-10-01T00:00:00.000Z' },
+      }));
     });
 
     it('does not write a note for a dispatched sub-agent\'s cutoff', async () => {
@@ -2750,5 +2755,26 @@ describe('run gate (issue #118 stage 1)', () => {
     expect(createJob).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentJobId: 42, rootJobId: 42, deadlineAt: '2030-01-01T00:00:00.000Z' }));
     // The child's turn books the tree's spend on the root row, not its own.
     expect(updateJob).toHaveBeenCalledWith(42, { budgetUsed: expect.any(Number) });
+  });
+});
+
+describe('session_init audit (#128 item 1)', () => {
+  it('logs one session_init per session id — a resume of the same session writes no second row', async () => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+    const { log } = await import('../logger.js');
+    const infos = vi.spyOn(log, 'info');
+    sdkState.messages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1' },
+      { type: 'system', subtype: 'init', session_id: 'sess-1' },
+      { type: 'result', subtype: 'success', session_id: 'sess-1', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    try {
+      await collect({ role: 'pm', projectId: 7, input: 'go' });
+      const inits = infos.mock.calls.filter(([event]) => event === 'session_init');
+      expect(inits).toHaveLength(1);
+      expect(inits[0][1]).toMatchObject({ jobId: 42, sessionId: 'sess-1', freshContext: true });
+    } finally {
+      infos.mockRestore();
+    }
   });
 });

@@ -138,6 +138,17 @@ describe('createJob root identity (issue #118)', () => {
   });
 });
 
+describe('updateJob pause column (issue #129 item 3)', () => {
+  it('stores the pause scope as JSON and parses it back', async () => {
+    query.mockResolvedValueOnce({ rows: [{ id: 7, pause: '{"scope":"user","period":"month","resetsAt":"r"}', context: null, continuation: null }] });
+    const row = await updateJob(7, { pause: { scope: 'user', period: 'month', resetsAt: 'r' } });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toContain('pause = $1');
+    expect(params).toEqual(['{"scope":"user","period":"month","resetsAt":"r"}', 7]);
+    expect(row.pause).toEqual({ scope: 'user', period: 'month', resetsAt: 'r' });
+  });
+});
+
 describe('updateJob lifecycle columns (issue #118)', () => {
   it('maps the stage-1 fields to their columns', async () => {
     await updateJob(7, { cancelReason: 'suspended', workerId: 'h:1:t', attempt: 1, budgetUsed: 120, deadlineAt: 'd' });
