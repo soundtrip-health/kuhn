@@ -11,7 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Columns added after a table first shipped. schema.sql only covers fresh
 // databases (CREATE TABLE IF NOT EXISTS skips existing tables), so each entry
 // here is ALTERed in when missing — keep the two in sync.
-const COLUMN_MIGRATIONS = [
+export const COLUMN_MIGRATIONS = [
   // Story 007-001: user attribution on content rows (+ the Epic 005 gap on
   // file_events). Nullable — existing rows stay NULL, no fake backfill.
   { table: 'conversations', column: 'user_id', ddl: 'INTEGER REFERENCES users(id) ON DELETE SET NULL' },
@@ -359,15 +359,17 @@ export function applyKnowledgeIndexMigration() {
 }
 
 /**
- * Issue #113 item 1: index over the migrated jobs.chat_id column. Same
- * ordering trap as above — schema.sql's copy only helps fresh databases,
- * since on an existing one the column is added after the schema script ran.
+ * Indexes over migrated jobs columns (issue #110 user_id, issue #113 chat_id):
+ * they cannot live in schema.sql, which runs BEFORE applyColumnMigrations on
+ * an upgrade — a CREATE INDEX over a column that does not exist yet aborts the
+ * boot (that is how #113 broke `npm run db:seed` on a pre-#113 database).
+ * Idempotent; skips partial stub tables that lack the columns.
  */
-export function applyChatIndexMigration() {
+export function applyJobsIndexMigration() {
   const have = new Set(querySync("SELECT name FROM pragma_table_info('jobs')").rows.map((r) => r.name));
-  // Partial-stub test databases may lack the columns; a real jobs table has both.
-  if (!have.has('chat_id') || !have.has('created_at')) return;
-  exec('CREATE INDEX IF NOT EXISTS idx_jobs_chat ON jobs(chat_id, created_at DESC)');
+  if (!have.has('created_at')) return; // partial-stub test databases
+  if (have.has('user_id')) exec('CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at)');
+  if (have.has('chat_id')) exec('CREATE INDEX IF NOT EXISTS idx_jobs_chat ON jobs(chat_id, created_at DESC)');
 }
 
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */
@@ -395,7 +397,7 @@ export async function initDb() {
   applyModelProfilesProviderMigration();
   applyProjectTypeCheckMigration();
   applyKnowledgeIndexMigration();
-  applyChatIndexMigration();
+  applyJobsIndexMigration();
   console.log('[db] Schema applied.');
 
   // Seed default tenant, agents, tools, and assignments.
