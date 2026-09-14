@@ -1,6 +1,6 @@
 # Spec: Shared project memory for agents (issue #150)
 
-**Status:** design — proposed for review; nothing landed. Stages in §9.
+**Status:** design reviewed 2026-09-14 (§10); stage 1 in progress. Stages in §9.
 **Issue:** [#150 — need better memory](https://github.com/soundtrip-health/kuhn/issues/150)
 **Antecedents:** the meta-manuscript incident (the RA re-ran a clean-up the previous RA run had
 already finished, because the only record of it was in the PM's context window); #147 / #145
@@ -48,18 +48,22 @@ happened.
 CREATE TABLE IF NOT EXISTS project_memory (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  kind          TEXT NOT NULL CHECK (kind IN ('fact', 'decision', 'task_state', 'note')),
-  key           TEXT,            -- optional stable slug; UNIQUE (project_id, key) WHERE key IS NOT NULL → upsert
-  body          TEXT NOT NULL,   -- markdown, bounded (§4: 2 KB)
+  kind          TEXT NOT NULL CHECK (kind IN ('fact', 'decision', 'task_state', 'issue', 'note')),
+  key           TEXT,            -- optional stable slug; at most one LIVE entry per (project_id, key)
+  body          TEXT NOT NULL,   -- markdown, bounded (§4: 2 KB); immutable once written
   tags          TEXT NOT NULL DEFAULT '[]',  -- JSON array of short strings
   source_agent  TEXT,            -- agent slug that wrote it; NULL for a human
   user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
   job_id        INTEGER REFERENCES jobs(id) ON DELETE SET NULL,   -- provenance; root_job_id reachable through it
-  supersedes_id INTEGER REFERENCES project_memory(id) ON DELETE SET NULL,
+  auto          INTEGER NOT NULL DEFAULT 0,  -- 1 when the runtime wrote it (§5), 0 for a model or human write
+  supersedes_id INTEGER REFERENCES project_memory(id) ON DELETE SET NULL,  -- the live entry this one replaced
   retired_at    TEXT,            -- soft delete: retired entries are excluded from recall, kept for audit
-  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  retired_by    TEXT,            -- agent slug, 'user:<id>', 'supersede' or 'cap'
+  retire_reason TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_live_key
+  ON project_memory(project_id, key) WHERE key IS NOT NULL AND retired_at IS NULL;
 -- External-content FTS5 shadow + triggers, the guide_fts / org_chunks_fts pattern.
 CREATE VIRTUAL TABLE IF NOT EXISTS project_memory_fts USING fts5(body, tags, key, content='project_memory', content_rowid='id');
 ```
@@ -67,12 +71,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS project_memory_fts USING fts5(body, tags, key
 **Kinds.** `fact` — something true about the project or its materials ("the NSDUH extract has
 38 210 rows after exclusions"); `decision` — a choice and its rationale, with who made it
 ("PI chose JAMA Netw Open over BMJ, 2026-09-10"); `task_state` — what a run did and left
-undone (the dispatch-outcome record, §5); `note` — anything else. `key` gives an entry a
-stable identity so a later write *replaces* it (`reference-store-audit`, `target-journal`)
-instead of accumulating near-duplicates; keyless entries append.
+undone (the dispatch-outcome record, §5); `issue` — an open question, data concern or
+unresolved reviewer finding (retiring it means it is resolved — this is what `pm/issues.md`
+held); `note` — anything else. `key` gives an entry a stable identity
+(`reference-store-audit`, `target-journal`) so a later write *replaces* it instead of
+accumulating near-duplicates; keyless entries append.
 
-**Bounds.** `body` ≤ 2 KB, ≤ 8 tags, and a per-project cap (default 2 000 live entries; the
-oldest keyless `note`/`task_state` entries are retired first). Memory is a summary layer;
+**Rows are immutable.** A write never updates a body. A keyed write inserts a new row and
+retires the previous live row for that key with `retired_by = 'supersede'`, the new row's
+`supersedes_id` pointing back. So history is never lost, the FTS shadow needs only insert
+and delete triggers, and an audit reads as a chain. (The one mutable column set is the
+retire triple.)
+
+**PI-authored entries are protected.** A live entry whose `user_id` is set (a PI decision
+recorded from `ask_user`, or a human write from the UI / `/remember`) cannot be superseded or
+retired by an agent write. The tool returns an error naming the entry and telling the agent
+to raise the disagreement with the user — `ask_user` where it has it, otherwise an `issue`
+entry or a note in its reply — rather than overwrite. Agents should challenge the PI when the
+evidence warrants it; they must never do so silently.
+
+**Bounds.** `body` ≤ 2 KB, ≤ 8 tags, and a per-project cap (default 2 000 live entries). Above
+the cap the oldest live `auto` entries (§5 — dispatch and run outcomes, keyed or not) are
+retired first with `retired_by = 'cap'`, then the oldest keyless `note` / `task_state` entries;
+keyed model-written entries and every `decision` / `issue` survive. Memory is a summary layer;
 anything longer belongs in a file the entry points at.
 
 ## 4. Tools
@@ -81,25 +102,31 @@ Three neutral tools in `agents/tools/memory.js`, granted to every agent except `
 
 | Tool | Effect | Contract |
 |---|---|---|
-| `remember` | write | `{ kind, body, key?, tags?, supersedes? }` → the entry id. Upserts on `key`. Bounded as §3. Goes through the #118 run gate like every mutating tool. |
+| `remember` | write | `{ kind, body, key?, tags? }` → the entry id. A keyed write supersedes the live entry under that key (§3); a PI-authored live entry refuses the write. Bounded as §3. Goes through the #118 run gate like every mutating tool. |
 | `recall` | read | `{ query?, kind?, tags?, limit=10 }` → ranked entries (BM25 over body/tags/key, ties by recency; no `query` = most recent first). Each hit carries `id`, `kind`, `key`, `body`, `source_agent`, `created_at`, `job_id`. |
-| `forget` | write | `{ id, reason }` → retires an entry (soft delete, provenance kept). Editors can do the same from the UI (§7). |
+| `forget` | write | `{ id, reason }` → retires an entry (soft delete, provenance kept). Refuses a PI-authored entry (§3). Editors can retire anything from the UI (§7). |
 
 `recall` is read-only and ungated; `remember` / `forget` are audit-logged (`memory_write`
-with `jobId`, `kind`, `key`) like every other mutation.
+with `jobId`, `kind`, `key`) like every other mutation. Every `recall` — the tool's and the
+injection's (§6) — also logs `memory_recall` with the query terms, hit count and hit ids from
+day one, so the embeddings decision (§6) has data without a later change.
 
 ## 5. Deterministic writes — the hooks (#145)
 
 Prompt rules alone would recreate #150 with a smaller model. The following are written by code:
 
 1. **Dispatch outcomes.** When `dispatch_agent` returns, the runtime stores the child's final
-   reply as a `task_state` entry: `key = task:<child job id>`, body = the first 2 KB of the
-   reply, tags `[<child agent>, dispatch]`, `job_id` = the child job, `source_agent` = the
+   reply as an `auto` `task_state` entry: `key = task:<child job id>`, body = the first 2 KB of
+   the reply, tags `[<child agent>, dispatch]`, `job_id` = the child job, `source_agent` = the
    child. The PM's tool result gains one line — `Recorded as memory #123.` — so the PM can
    point at it instead of pasting. (This alone would have carried "the 13 keys are already
    gone" into the next RA run.)
-2. **Top-level run outcomes.** The same for a top-level chat run's final assistant text
-   (`key = run:<job id>`), so a writer's chat leaves a trace the RA's chat can find.
+2. **Top-level run outcomes — mutating runs only.** The same for a top-level run's final
+   assistant text (`key = run:<job id>`), *only when the run executed at least one tool with
+   product-side effects* (the #118 gate already sees every such call: a file write, a
+   reference change, a comment, a dispatch, a `remember`). A read-only turn — "what does
+   section 3 say?", "fixed the typo" — leaves no trace; recording every chat turn would fill
+   memory with noise that no cap could keep useful.
 3. **Reference-store changes.** `remove_reference`, `update_reference` and a `verify_references`
    run that changed the verdict of any key write/upsert a `fact` under
    `key = references:<cite key>` ("removed 2026-09-08 by ra: duplicate of lewis2020" /
@@ -117,28 +144,43 @@ prompt guidance (§9 stage 2) on *what* is worth keeping.
 ## 6. Injection: how memory reaches a run
 
 Recall on demand is not enough (the RA in #150 did not know there was anything to ask about).
-At task start the runtime appends a bounded **Project memory** section to the prompt:
+At task start the runtime appends a bounded **Project memory** section to the *user prompt*
+(after the task text, never in the system prompt, which stays byte-stable and cacheable):
 
-- the newest `decision` entries (≤ 10) and the newest `task_state` entries (≤ 10, so the last
-  few things anyone did are always visible);
-- a `recall` for the task input itself (top 5 by BM25 over the task text's terms), so a task
-  about "arXiv references" surfaces `references:*` facts and the audit `task_state`;
-- total ≤ 3 KB; entries are rendered as `- [#id kind, agent, date] body` so the model can
-  cite or `forget` them.
+- the newest live `decision` and `issue` entries (≤ 10 together) and the newest `task_state`
+  entries (≤ 10, so the last few things anyone did are always visible);
+- a `recall` for the task input itself (top 5 by BM25 over the task text's content words —
+  the guide search's term sanitizer with its stopword list, so a long task neither breaks
+  FTS5 MATCH syntax nor matches everything), so a task about "arXiv references" surfaces
+  `references:*` facts and the audit `task_state`;
+- **headlines, not bodies**: each entry renders as `- [#id kind, agent, date] <first ~200
+  characters>` — the full body is one `recall` away, and a dispatch reply written for the PM
+  is chatty prose that would blow the budget. Total ≤ 3 KB.
+- a one-line preface: entries are dated summaries; the reference store, the files and the
+  transcript are the source of truth, so verify before acting on a state claim that matters.
 
 Sub-agents get the same section built from *their* task text. This is a prompt-size cost of a
 few hundred tokens per run — small next to the pass-through it replaces.
+
+**Continued sessions get the delta.** A top-level chat resumes its provider session, so the
+full section on every turn would repeat itself into the transcript. A run that resumes a
+session (a continuation or session id is present) gets only the entries created since the
+chat's previous job started, under the same caps; a fresh session gets the full section. A
+turn with nothing new gets no section at all.
 
 **Why not embeddings now.** BM25 over short, keyed, tagged entries written by agents about a
 single project is precise enough for the failure this fixes: the entries share vocabulary with
 the tasks that need them (cite keys, file names, section names). Semantic search buys recall
 on paraphrase, at the cost of an embedding provider (or a local model) in the render/export
 sandbox's no-network world, a vector index, and a second ranking to explain. Decide it from
-evidence: §8's conformance scenario plus a recall log (`memory_recall` with query, hit count,
-and whether an injected entry was later cited) tell us whether keyword recall misses in
-practice. If it does, an embeddings column on the same table is an additive stage (§9 stage 4).
+evidence: §8's conformance scenario plus the `memory_recall` log (§4: query terms, hit count,
+hit ids — from stage 1) tell us whether keyword recall misses in practice. If it does, an
+embeddings column on the same table is an additive stage (§9 stage 4).
 
 ## 7. UI
+
+Stage 1 ships a read-only `GET /api/projects/:id/memory` (viewer role; `?q=`, `?kind=`,
+`?retired=1`) so the memory of a real project can be inspected before the tab exists.
 
 A **Memory** tab in the project browser: entries newest first, filter by kind/agent/tag,
 full-text search (the same `recall`), and for editors: edit body, retire, add a `decision` or
@@ -153,8 +195,12 @@ model — it is the project's data, under the project's roles.
   the arXiv references"; assert its prompt's Project memory section contains the `task_state`
   from run 1 and the `references:*` facts, and that run 2's scripted model, told to call
   `recall('corrupted keys')`, gets them back ranked first.
-- Unit: bounds and upsert-by-key; FTS triggers keep the shadow in sync on update/retire;
-  tenancy — `recall` never crosses projects (the tenancy matrix test gains a memory row).
+- Unit: bounds; supersede-by-key retires the old row and links the new one; a PI-authored
+  entry refuses agent supersede and `forget`; the cap retires `auto` entries first; the FTS
+  shadow stays in sync on insert and excludes retired rows; term extraction never produces
+  an FTS5 syntax error; the injection budget holds; a resumed session gets only the delta;
+  a read-only run writes no `run:` entry. Tenancy — `recall` never crosses projects (the
+  tenancy matrix test gains the memory route).
 - Token-free check: `memory-check.mjs` writes entries through the tool, reloads, and verifies
   the Memory tab renders and a retire hides them.
 
@@ -162,8 +208,8 @@ model — it is the project's data, under the project's roles.
 
 | Stage | Scope | Depends on |
 |---|---|---|
-| 1 | Table + FTS + `remember` / `recall` / `forget`; injection (§6); deterministic writes 1, 2, 4, 5 of §5; audit lines; conformance scenario | #118 stage 1 (gate, `root_job_id`) — landed |
-| 2 | Prompt guidance for all agents (what to remember, how to cite an entry); §5 write 3 (reference-store facts); `pm/status.md` becomes a *rendering* of memory (`decision` + `task_state`) the PM regenerates instead of hand-maintaining; `pm/decisions.md` / `pm/issues.md` retired in favour of kinds | 1 |
+| 1 | Table + FTS + `remember` / `recall` / `forget`; injection (§6, headlines + delta); deterministic writes 1, 2 (mutating runs), 4, 5 of §5; `memory_write` / `memory_recall` log lines; read-only REST listing; a runtime-appended "Project memory" paragraph in every granted agent's system prompt (what the tools are for, PI entries are not overwritten); conformance scenario | #118 stage 1 (gate, `root_job_id`) — landed |
+| 2 | Per-agent prompt guidance (what each role should remember, how to cite an entry); §5 write 3 (reference-store facts); `pm/status.md` becomes a *rendering* of memory (`decision` + `task_state` + `issue`) the PM regenerates instead of hand-maintaining; `pm/decisions.md` / `pm/issues.md` retired in favour of the `decision` / `issue` kinds | 1 |
 | 3 | Memory tab (§7); interchange bundle export/import of memory (`docs/specs/interchange-bundle.md` gains a `memory.jsonl`) | 1 |
 | 4 | *Only if §6's evidence says so:* embeddings column + hybrid ranking | 1–2, a recall log with misses |
 
@@ -173,13 +219,15 @@ Drafted issue titles:
 2. **Project memory stage 2 — agent guidance and status.md rendered from memory** (§5.3, §9)
 3. **Project memory stage 3 — Memory tab and interchange** (§7)
 
-## 10. Open questions for the PI
+## 10. Decisions (PI review, 2026-09-14)
 
-1. Should a user's own chat messages be recorded (as `note`, `user_id` set), or only their
-   answers to agent questions (§5.4)? Recording everything makes memory noisy; recording
-   nothing loses instructions given in passing. Proposal: answers only, plus an explicit
-   `/remember <text>` slash command.
-2. Retention: keep retired entries forever (audit) or purge after N days? Proposal: keep;
-   they are small.
-3. Should `recall` results be visible to reviewers with a review link? Proposal: no — memory
-   is working state, not the document.
+1. A user's own chat messages are **not** recorded; only their answers to agent questions
+   (§5.4) are, plus an explicit `/remember <text>` slash command (stage 3, with the tab).
+2. Retired entries are kept indefinitely; they are small and they are the audit trail.
+3. `recall` results are **not** visible through a review link — memory is working state,
+   not the document.
+4. Agents may challenge a PI-authored entry but never overwrite or retire it (§3). The PI's
+   words: agents should challenge the PI when appropriate — humans are fallible — but not
+   silently overwrite.
+5. Stage 1 proceeds with the amendments above so the design can be tested on a real project;
+   the mutating-run rule for run outcomes (§5.2) is the point most likely to need tuning.
