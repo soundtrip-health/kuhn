@@ -939,20 +939,21 @@ async function runTask(task, internal, channel, state) {
     for await (const event of runtime.runTurn(turn)) {
       switch (event.type) {
         case 'provider': {
-          if (event.sessionId) {
+          if (event.sessionId && event.sessionId !== state.sessionId) {
             const priorSession = state.sessionId;
-            if (event.sessionId !== state.sessionId) {
-              state.sessionId = event.sessionId;
-              // Record the session so a retry resumes it and a terminal
-              // transient error can hand it back to a chat retry (story 029)
-              // — on the chat too, so a crash mid-run loses nothing.
-              await updateJob(job.id, { sessionId: event.sessionId });
-              await syncChat();
-            }
-            // Audit (STH-51): per-attempt session initialization, sourced
-            // from the normalized identity event — never provider message
-            // parsing. Runtimes without provider sessions (Pi) simply emit
-            // no sessionId; their identity is the job_start record.
+            state.sessionId = event.sessionId;
+            // Record the session so a retry resumes it and a terminal
+            // transient error can hand it back to a chat retry (story 029)
+            // — on the chat too, so a crash mid-run loses nothing.
+            await updateJob(job.id, { sessionId: event.sessionId });
+            await syncChat();
+            // Audit (STH-51): session initialization, sourced from the
+            // normalized identity event — never provider message parsing.
+            // Logged once per session id (#128 item 1): a retry or resume
+            // that continues the same provider session is not a new
+            // session, so it writes no second row. Runtimes without
+            // provider sessions (Pi) simply emit no sessionId; their
+            // identity is the job_start record.
             log.info('session_init', {
               jobId: job.id, agent: agent.slug, depth, sessionId: event.sessionId,
               freshContext: priorSession == null,
@@ -1048,6 +1049,12 @@ async function runTask(task, internal, channel, state) {
               outputTokens: usage.outputTokens,
               weightedTokens: weightedTokens(),
               contextTokens: lastContextTokens,
+              // Whose budget and when it resets (#129 item 3): what the
+              // live event carries, kept on the row so the pause card a
+              // reload rebuilds says the same thing.
+              pause: budget.scope && budget.scope !== 'task'
+                ? { scope: budget.scope, period: budget.period, resetsAt: budget.resetsAt }
+                : { scope: 'task' },
             });
             state.cancelReason = 'budget';
             state.controller.abort();

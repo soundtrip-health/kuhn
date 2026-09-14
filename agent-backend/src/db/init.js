@@ -53,6 +53,8 @@ export const COLUMN_MIGRATIONS = [
   // Issue #110: hand-off note captured at a budget pause. Nullable — runs
   // that ended any other way, and pre-migration rows, stay NULL.
   { table: 'jobs', column: 'handoff', ddl: 'TEXT' },
+  // Issue #129 item 3: which budget paused the run, beside the note.
+  { table: 'jobs', column: 'pause', ddl: 'TEXT' },
   // Issue #110: spend ledger for org budgets. Pre-migration rows count 0.
   { table: 'jobs', column: 'weighted_tokens', ddl: 'INTEGER NOT NULL DEFAULT 0' },
   // Issue #107/#112: model-routing diagnostics on the job row.
@@ -388,6 +390,7 @@ const JOBS_NEW_DDL = `
     output_tokens    INTEGER NOT NULL DEFAULT 0,
     context_tokens   INTEGER NOT NULL DEFAULT 0,
     handoff          TEXT,
+    pause            TEXT,
     weighted_tokens  INTEGER NOT NULL DEFAULT 0,
     profile          TEXT,
     endpoint         TEXT,
@@ -412,7 +415,7 @@ const JOBS_NEW_DDL = `
 const JOBS_COLUMNS = [
   'id', 'project_id', 'conversation_id', 'parent_job_id', 'user_id', 'role', 'status', 'input',
   'context', 'session_id', 'provider', 'model', 'continuation', 'error', 'input_tokens',
-  'output_tokens', 'context_tokens', 'handoff', 'weighted_tokens', 'profile', 'endpoint',
+  'output_tokens', 'context_tokens', 'handoff', 'pause', 'weighted_tokens', 'profile', 'endpoint',
   'difficulty', 'route_source', 'chat_id', 'root_job_id', 'worker_id', 'lease_until',
   'heartbeat_at', 'attempt', 'cancel_requested_at', 'cancel_reason', 'waiting_since', 'wake_at',
   'deadline_at', 'budget_used', 'created_at', 'updated_at',

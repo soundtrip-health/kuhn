@@ -6,6 +6,7 @@ import cors from 'cors';
 import { WebSocketServer } from 'ws';
 
 import { config } from './config.js';
+import { agentRuntimeKind } from './agents/provider-runtime/factory.js';
 import { initDb } from './db/init.js';
 import { platformModelEntries } from './db/model-profiles.js';
 import { markOrphanedJobsInterrupted } from './db/jobs.js';
@@ -145,6 +146,9 @@ server.on('upgrade', createUpgradeHandler({ signalingWss, yjsWss }));
 
 async function main() {
   assertAuthConfig(); // refuse to start in non-dev auth mode without a secret
+  // A misspelled KUHN_AGENT_RUNTIME fails the boot here, not the first agent
+  // task hours later (#128 item 2; belongs with the fail-closed profile, #120).
+  agentRuntimeKind();
   // Platform-level pre-configured models (issue #138): validate the list up
   // front so a typo fails the boot with the offending entry, not the first
   // agent task hours later.

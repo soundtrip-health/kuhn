@@ -209,6 +209,8 @@ export interface Job {
   error: string | null;
   /** Hand-off note written at a budget pause (issue #110); null otherwise. */
   handoff: string | null;
+  /** Which budget paused the run and when it resets (issue #129); null unless a budget pause. */
+  pause?: { scope: 'task' | 'user' | 'project'; period?: string; resetsAt?: string } | null;
   /** Effective runtime identity and the profile the route picked (STH-47, issue #107). */
   provider?: string | null;
   model?: string | null;
