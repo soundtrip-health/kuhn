@@ -225,6 +225,26 @@ export async function getReferenceByKey(projectId, citeKey) {
   return rows[0] ? parseRef(rows[0]) : null;
 }
 
+/**
+ * The cite key of another row in the project that already owns this DOI or
+ * PMID, or null. A registry resync (#147) checks this before rewriting a
+ * row's identifiers so the unique (project, doi) / (project, pmid) indexes
+ * surface as a readable "duplicate" error rather than a constraint failure.
+ */
+export async function findIdentityOwner(projectId, { doi, pmid }, excludeCiteKey) {
+  const d = normalizeDoi(doi);
+  const m = cleanPmid(pmid);
+  if (!d && !m) return null;
+  const { rows } = await query(
+    `SELECT cite_key FROM bib_references
+      WHERE project_id = $1 AND cite_key <> $4
+        AND (($2 IS NOT NULL AND doi = $2) OR ($3 IS NOT NULL AND pmid = $3))
+      LIMIT 1`,
+    [projectId, d, m, excludeCiteKey],
+  );
+  return rows[0]?.cite_key ?? null;
+}
+
 // Columns an update_reference correction may change (issue #41). cite_key is
 // deliberately immutable — in-text [@key] citations anchor to it.
 const UPDATABLE_COLUMNS = {

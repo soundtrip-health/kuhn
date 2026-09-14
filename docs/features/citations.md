@@ -62,7 +62,7 @@ Keys may contain letters, digits and `_ : . + -`. A bracket with no `@key` in it
 
 - `add_citation` — a PubMed ID; the record is fetched from PubMed.
 - `add_reference` — an arXiv id (fetched from arXiv) or a DOI (fetched from Crossref). Only an identifier-less source (a web page, government guidance) may be described manually, and then with an organization as author and a URL.
-- `update_reference` — corrects fields of an existing entry by cite key; the key itself never changes.
+- `update_reference` — resyncs an existing entry from its registry by cite key (optionally with a corrected PMID, DOI or arXiv id when the stored one points at the wrong work); the key itself never changes. Agents cannot type an author list, title, venue or year into the store — only an identifier-less manual entry accepts typed fields, and never person-name authors.
 - `remove_reference` — deletes an entry by cite key (a duplicate, or one that could not be verified).
 
 **Prerequisites.** The editor role to direct agents. The backend needs outbound network access; an organization can store an `ncbi-api-key` secret to raise the PubMed rate limit.
@@ -73,7 +73,7 @@ Keys may contain letters, digits and `_ : . + -`. A bracket with no `@key` in it
 
 **What it does.** `verify_references` re-fetches each stored entry from its registry — PubMed by PMID, Crossref by DOI, arXiv by id — and compares every field (authors, title, year, DOI, volume, issue, pages, venue). Each entry comes back `verified`, `mismatch` (with the registry's value for each differing field), `not_found`, or `unverifiable` (no identifier; needs a human check).
 
-**How to use it.** Ask the Research Assistant to "verify the references" (optionally naming cite keys), or ask the Reviewer to check claims against evidence — both have the tool. The Research Assistant fixes mismatches with `update_reference` using the reported registry values. Agents are instructed never to call references "verified" unless this check ran clean.
+**How to use it.** Ask the Research Assistant to "verify the references" (optionally naming cite keys), or ask the Reviewer to check claims against evidence — both have the tool. The Research Assistant fixes a mismatch with `update_reference`, which rewrites the entry from the registry record. Every `add_citation`, `add_reference` and `update_reference` result also ends with a verification line for the stored row (checked against the record just fetched, so it costs no extra registry call); a warning there means an existing entry disagrees with its registry. Agents are instructed never to call references "verified" unless this check ran clean.
 
 **Prerequisites.** Network access to the registries. Manually described entries (no PMID, DOI or arXiv id) are always `unverifiable`.
 

@@ -10,7 +10,7 @@ import { StorageError, writeProjectFile } from './storage.js';
 import {
   insertReference, materializeBib, findByPmid, listProjectReferences,
   updateReferenceFields, deleteReference, exportBibtex, rowToBibRecord,
-  DEFAULT_BIB_PATH,
+  getReferenceByKey, findIdentityOwner, DEFAULT_BIB_PATH,
 } from './db/references.js';
 
 // Re-exported from db/references.js (its true home since 012-003, so
@@ -243,26 +243,162 @@ export async function upsertCitation(projectId, pmid, bibPath = DEFAULT_BIB_PATH
   const record = await fetchPubmedRecord(pmid, { projectId });
   if (!record) throw new StorageError('not_found', `No PubMed record for PMID ${pmid}`);
 
-  const ref = pubmedToRef(record);
-  const result = insertReference(projectId, ref);
-  if (result.created) await materializeBib(projectId, bibPath);
-  const bibtex = result.created ? formatBibEntry(ref, result.key) : null;
-  return { key: result.key, created: result.created, bibtex, path: bibPath };
+  return insertAndMaterialize(projectId, pubmedToRef(record), bibPath, `PubMed ${record.pmid}`);
 }
 
 /**
- * Correct fields of a stored reference by cite key and regenerate the derived
- * bibliography (issue #41: the deterministic alternative to hand-editing the
- * .bib). The cite key itself never changes — in-text [@key] citations keep
- * resolving.
- * @returns {Promise<{ key, bibtex, path }>} bibtex is the corrected entry
+ * Correct a stored reference by cite key (issue #41, hardened for #147).
+ *
+ * The deterministic path is a HOOK, not an instruction: an entry that has an
+ * identifier (PMID, DOI, arXiv id) is re-fetched from its registry and every
+ * bibliographic field is replaced from that record — no caller-typed author
+ * list, title, venue or year is ever stored. The caller may pass a corrected
+ * identifier (when the stored one points at the wrong work — the
+ * identifier-hijack failure) or nothing at all (resync a mismatch reported by
+ * verify_references). Only an identifier-less manual entry accepts typed
+ * fields, and then never a person-name author (organization only, as on
+ * addManualReference). Passing an identifier promotes a manual entry.
+ *
+ * The cite key itself never changes — in-text [@key] citations keep resolving.
+ *
+ * @param {object} input - { pmid?, doi?, arxiv_id?, title?, organization?,
+ *   year?, publisher?, url?, entry_type?, source_type? }
+ * @returns {Promise<{ key, bibtex, path, verification, source: 'registry'|'manual' }>}
  */
-export async function updateReference(projectId, citeKey, changes, bibPath = DEFAULT_BIB_PATH) {
-  const row = updateReferenceFields(projectId, citeKey, changes);
+export async function updateReference(projectId, citeKey, input = {}, bibPath = DEFAULT_BIB_PATH) {
+  const row = await getReferenceByKey(projectId, citeKey);
   if (!row) throw new StorageError('not_found', `No reference with cite key "${citeKey}" in this project`);
+
+  const ids = ['pmid', 'doi', 'arxiv_id'].filter((k) => input[k] != null && String(input[k]).trim() !== '');
+  const manualKeys = MANUAL_FIELDS.filter((k) => input[k] !== undefined);
+  if (ids.length > 1) {
+    throw new StorageError('invalid', `Pass one identifier, not ${ids.join(' + ')}`);
+  }
+  if (ids.length === 1 && manualKeys.length > 0) {
+    throw new StorageError('invalid',
+      `Pass either an identifier or manual fields, not both: with ${ids[0]} the whole record is fetched from the registry and ${manualKeys.join(', ')} would be ignored`);
+  }
+
+  const identity = ids.length === 1
+    ? { kind: ids[0], value: String(input[ids[0]]).trim() }
+    : storedIdentity(row);
+
+  if (identity) {
+    if (manualKeys.length > 0) {
+      throw new StorageError('invalid',
+        `"${citeKey}" is identified by ${describeIdentity(identity)}; its fields come from that registry, not from typed values. `
+        + 'Call update_reference with only the cite key to resync it, or with a corrected pmid / doi / arxiv_id if the stored identifier points at the wrong work.');
+    }
+    return resyncFromRegistry(projectId, row, identity, bibPath);
+  }
+
+  if (manualKeys.length === 0) {
+    throw new StorageError('invalid',
+      `"${citeKey}" has no PMID, DOI or arXiv id to resync from. Pass a corrected identifier to promote it, or the manual fields to change (${MANUAL_FIELDS.join(', ')}).`);
+  }
+  return updateManualFields(projectId, row, input, bibPath);
+}
+
+const MANUAL_FIELDS = ['title', 'organization', 'year', 'publisher', 'url', 'entry_type', 'source_type'];
+const MANUAL_SOURCE_TYPES = new Set(['web', 'government', 'manual']);
+
+/** The registry a stored row is identified by: PubMed, else Crossref, else arXiv. */
+function storedIdentity(row) {
+  if (row.pmid) return { kind: 'pmid', value: row.pmid };
+  if (row.doi) return { kind: 'doi', value: row.doi };
+  const arxivId = extractArxivId(row.url);
+  if (arxivId) return { kind: 'arxiv_id', value: arxivId };
+  return null;
+}
+
+const REGISTRY_NAMES = { pmid: 'PubMed', doi: 'Crossref', arxiv_id: 'arXiv' };
+const describeIdentity = (id) => `${REGISTRY_NAMES[id.kind]} ${id.value}`;
+
+/** Fetch the authoritative record for an identity; null when the registry has no such work. */
+async function fetchRegistryRef(projectId, identity) {
+  try {
+    if (identity.kind === 'pmid') {
+      const record = await fetchPubmedRecord(identity.value, { projectId });
+      return record ? pubmedToRef(record) : null;
+    }
+    if (identity.kind === 'doi') {
+      const work = await crossrefFetchByDoi(identity.value);
+      return work ? crossrefToRef(work) : null;
+    }
+    const entry = await arxivFetchById(identity.value);
+    return entry ? arxivToRef(entry) : null;
+  } catch (err) {
+    if (err instanceof UpstreamError) throw err;
+    throw new UpstreamError(err.message);
+  }
+}
+
+/** Every bibliographic column, set from the registry record (absent → cleared). */
+function registryChanges(ref) {
+  return {
+    title: ref.title ?? null,
+    authors: ref.authors ?? [],
+    year: ref.year ?? null,
+    journal: ref.journal ?? null,
+    volume: ref.volume ?? null,
+    issue: ref.issue ?? null,
+    pages: ref.pages ?? null,
+    publisher: ref.publisher ?? null,
+    doi: ref.doi ?? null,
+    pmid: ref.pmid ?? null,
+    url: ref.url ?? null,
+    abstract: ref.abstract ?? null,
+    entryType: ref.entryType ?? 'misc',
+    sourceType: ref.sourceType ?? null,
+  };
+}
+
+async function resyncFromRegistry(projectId, row, identity, bibPath) {
+  const ref = await fetchRegistryRef(projectId, identity);
+  if (!ref) throw new StorageError('not_found', `${describeIdentity(identity)} resolves to no record`);
+  const changes = registryChanges(ref);
+  const owner = await findIdentityOwner(projectId, { doi: changes.doi, pmid: changes.pmid }, row.cite_key);
+  if (owner) {
+    throw new StorageError('conflict',
+      `${describeIdentity(identity)} is already stored as "${owner}"; "${row.cite_key}" would become a duplicate. Cite [@${owner}] and remove_reference "${row.cite_key}" instead.`);
+  }
+  const updated = updateReferenceFields(projectId, row.cite_key, changes);
   await materializeBib(projectId, bibPath);
-  const bibtex = formatBibEntry(rowToBibRecord(row), row.cite_key, row.entry_type || 'article');
-  return { key: row.cite_key, bibtex, path: bibPath };
+  return {
+    key: updated.cite_key,
+    bibtex: formatBibEntry(rowToBibRecord(updated), updated.cite_key, updated.entry_type || 'article'),
+    path: bibPath,
+    source: 'registry',
+    verification: verifyStoredAgainst(updated, ref, describeIdentity(identity)),
+  };
+}
+
+async function updateManualFields(projectId, row, input, bibPath) {
+  const changes = {};
+  if (input.title !== undefined) changes.title = input.title;
+  if (input.organization !== undefined) changes.authors = input.organization ? [`{${input.organization}}`] : [];
+  if (input.year !== undefined) changes.year = input.year != null ? String(input.year) : null;
+  if (input.publisher !== undefined) changes.publisher = input.publisher;
+  if (input.url !== undefined) changes.url = input.url;
+  if (input.entry_type !== undefined) changes.entryType = input.entry_type;
+  if (input.source_type !== undefined) {
+    if (!MANUAL_SOURCE_TYPES.has(input.source_type)) {
+      throw new StorageError('invalid', `source_type for a manual entry must be one of ${[...MANUAL_SOURCE_TYPES].join(', ')}; registry classes are assigned by the fetch path`);
+    }
+    changes.sourceType = input.source_type;
+  }
+  if (changes.url !== undefined && extractArxivId(changes.url)) {
+    throw new StorageError('invalid', 'That URL is an arXiv abstract page — pass it as arxiv_id so the record is fetched from arXiv');
+  }
+  const updated = updateReferenceFields(projectId, row.cite_key, changes);
+  await materializeBib(projectId, bibPath);
+  return {
+    key: updated.cite_key,
+    bibtex: formatBibEntry(rowToBibRecord(updated), updated.cite_key, updated.entry_type || 'misc'),
+    path: bibPath,
+    source: 'manual',
+    verification: { status: 'unverifiable', note: 'No PMID, DOI, or arXiv id — verify by hand against the source URL.' },
+  };
 }
 
 /**
@@ -340,11 +476,21 @@ export function crossrefToRef(work) {
   };
 }
 
-async function insertAndMaterialize(projectId, ref, bibPath) {
+/**
+ * Insert a registry-fetched record and regenerate the bibliography. The
+ * post-write hook (#147): the row that ends up in the store — freshly
+ * inserted, or the existing row the dedupe matched — is diffed against the
+ * record just fetched. A dedupe hit whose stored fields disagree with the
+ * registry is exactly the identifier-hijack case; the result carries a
+ * `mismatch` verification so the caller is told to resync it.
+ */
+async function insertAndMaterialize(projectId, ref, bibPath, checkedAgainst) {
   const result = insertReference(projectId, ref);
   if (result.created) await materializeBib(projectId, bibPath);
   const bibtex = result.created ? formatBibEntry(ref, result.key, ref.entryType) : null;
-  return { key: result.key, created: result.created, bibtex, path: bibPath };
+  const stored = await getReferenceByKey(projectId, result.key);
+  const verification = stored ? verifyStoredAgainst(stored, ref, checkedAgainst) : null;
+  return { key: result.key, created: result.created, bibtex, path: bibPath, verification };
 }
 
 /**
@@ -360,7 +506,7 @@ export async function addArxivReference(projectId, arxivId, bibPath = DEFAULT_BI
     throw new UpstreamError(err.message);
   }
   if (!entry) throw new StorageError('not_found', `No arXiv record for id "${arxivId}"`);
-  return insertAndMaterialize(projectId, arxivToRef(entry), bibPath);
+  return insertAndMaterialize(projectId, arxivToRef(entry), bibPath, `arXiv ${arxivId}`);
 }
 
 /**
@@ -376,7 +522,7 @@ export async function addDoiReference(projectId, doi, bibPath = DEFAULT_BIB_PATH
     throw new UpstreamError(err.message);
   }
   if (!work) throw new StorageError('not_found', `DOI "${doi}" is not registered with Crossref`);
-  return insertAndMaterialize(projectId, crossrefToRef(work), bibPath);
+  return insertAndMaterialize(projectId, crossrefToRef(work), bibPath, `Crossref ${doi}`);
 }
 
 /**
@@ -399,7 +545,7 @@ export async function addManualReference(projectId, input, bibPath = DEFAULT_BIB
     entryType: input.entry_type ?? 'misc',
     sourceType: input.source_type ?? 'web',
   };
-  return insertAndMaterialize(projectId, ref, bibPath);
+  return insertAndMaterialize(projectId, ref, bibPath, null);
 }
 
 // ---- Field-level verification (STH-49) -------------------------------------
@@ -468,13 +614,9 @@ export function extractArxivId(url) {
   return m ? m[1] : null;
 }
 
-/**
- * Verify one stored reference row against its authoritative registry:
- * PubMed (pmid), else Crossref (doi), else arXiv (arxiv.org url). Rows with
- * no identifier are reported unverifiable — those need a human check.
- */
-export async function verifyReferenceRow(row) {
-  const stored = {
+/** The comparable slice of a stored bib_references row. */
+function rowToStored(row) {
+  return {
     title: row.title,
     authors: row.authors ?? [],
     year: row.year,
@@ -484,35 +626,43 @@ export async function verifyReferenceRow(row) {
     pages: row.pages,
     doi: row.doi,
   };
+}
+
+/**
+ * Compare a stored row against a registry record already in hand — the
+ * post-write hook behind add_citation / add_reference / update_reference,
+ * which costs no second registry call. `checkedAgainst` null means the
+ * record was not fetched from a registry (manual entry): unverifiable.
+ * @returns {{ cite_key, title, checked_against?, status, mismatches?, note? }}
+ */
+export function verifyStoredAgainst(row, source, checkedAgainst) {
   const base = { cite_key: row.cite_key, title: row.title };
-  const finish = (checkedAgainst, mismatches) => (mismatches.length === 0
+  if (!checkedAgainst) {
+    return { ...base, status: 'unverifiable', note: 'No PMID, DOI, or arXiv id — verify by hand against the source URL.' };
+  }
+  const mismatches = diffReferenceRecord(rowToStored(row), source);
+  return mismatches.length === 0
     ? { ...base, checked_against: checkedAgainst, status: 'verified' }
-    : { ...base, checked_against: checkedAgainst, status: 'mismatch', mismatches });
+    : { ...base, checked_against: checkedAgainst, status: 'mismatch', mismatches };
+}
+
+/**
+ * Verify one stored reference row against its authoritative registry:
+ * PubMed (pmid), else Crossref (doi), else arXiv (arxiv.org url). Rows with
+ * no identifier are reported unverifiable — those need a human check.
+ */
+export async function verifyReferenceRow(row) {
+  const base = { cite_key: row.cite_key, title: row.title };
+  const identity = storedIdentity(row);
+  if (!identity) return verifyStoredAgainst(row, null, null);
+  const checkedAgainst = describeIdentity(identity);
   try {
-    if (row.pmid) {
-      const rec = await fetchPubmedRecord(row.pmid);
-      if (!rec) return { ...base, checked_against: `PubMed ${row.pmid}`, status: 'not_found' };
-      return finish(`PubMed ${row.pmid}`, diffReferenceRecord(stored, rec));
-    }
-    if (row.doi) {
-      const work = await crossrefFetchByDoi(row.doi);
-      if (!work) return { ...base, checked_against: `Crossref ${row.doi}`, status: 'not_found' };
-      return finish(`Crossref ${row.doi}`, diffReferenceRecord(stored, work));
-    }
-    const arxivId = extractArxivId(row.url);
-    if (arxivId) {
-      const entry = await arxivFetchById(arxivId);
-      if (!entry) return { ...base, checked_against: `arXiv ${arxivId}`, status: 'not_found' };
-      return finish(`arXiv ${arxivId}`, diffReferenceRecord(stored, arxivToRef(entry)));
-    }
+    const ref = await fetchRegistryRef(null, identity);
+    if (!ref) return { ...base, checked_against: checkedAgainst, status: 'not_found' };
+    return verifyStoredAgainst(row, ref, checkedAgainst);
   } catch (err) {
     return { ...base, status: 'error', error: err.message };
   }
-  return {
-    ...base,
-    status: 'unverifiable',
-    note: 'No PMID, DOI, or arXiv id — verify by hand against the source URL.',
-  };
 }
 
 /**

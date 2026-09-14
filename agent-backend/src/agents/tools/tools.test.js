@@ -147,16 +147,36 @@ import { deliverReply } from '../questions.js';
 
 const ALL_GRANTS = [
   'file_read', 'file_list', 'file_move', 'file_write',
-  'add_citation', 'add_reference', 'manage_references',
+  'add_citation', 'add_reference', 'verify_references', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
   'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'list_doc_types', 'web_search',
 ];
 
+// Issue #147: the model-facing contract has no typed-metadata fields for an
+// identified entry — the deterministic path is enforced by the schema, not
+// by a prompt rule.
+describe('update_reference schema (issue #147)', () => {
+  it('exposes identifiers and manual fields only — never authors, title-for-identified, venue', () => {
+    const tool = listTools(makeCtx()).find((t) => t.name === 'update_reference');
+    const props = Object.keys(tool.parameters.properties);
+    for (const gone of ['authors', 'journal', 'volume', 'issue', 'pages', 'abstract', 'pmcid']) {
+      expect(props).not.toContain(gone);
+    }
+    expect(props).toEqual(expect.arrayContaining(['cite_key', 'pmid', 'doi', 'arxiv_id', 'organization', 'source_type']));
+    expect(tool.parameters.properties.source_type.enum).toEqual(['web', 'government', 'manual']);
+  });
+
+  it('verify_references carries a registry effect label (#128 item 3)', () => {
+    const tool = listTools(makeCtx()).find((t) => t.name === 'verify_references');
+    expect(tool.effect).toBe('external-read');
+  });
+});
+
 // Stable domain order as the provider sees it (factory order + web_search).
 const EXPECTED_ORDER = [
   'read_file', 'search_files', 'list_files', 'move_file', 'write_file', 'edit_file',
-  'add_citation', 'add_reference', 'update_reference', 'remove_reference',
+  'add_citation', 'add_reference', 'verify_references', 'update_reference', 'remove_reference',
   'add_comment', 'list_comments', 'reply_comment', 'resolve_comment',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
   'list_scripts', 'list_secrets', 'run_script',
