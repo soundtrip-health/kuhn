@@ -9,6 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
+import { registerRun, unregisterRun } from '../agents/runs.js';
 
 process.env.KUHN_SQLITE_PATH = ':memory:';
 
@@ -274,12 +275,31 @@ describe('PATCH /api/admin/orgs/:id', () => {
     expect(orgs[0].name).toBe('Renamed Lab');
   });
 
-  it('suspends: members 403 via the chokepoint, GET /api/orgs still lists the org', async () => {
+  it('suspends: members 403 via the chokepoint, GET /api/orgs still lists the org, open runs are stopped (issue #118)', async () => {
     const sa = await cookieFor(SA);
     const ownerCookie = await cookieFor(OWNER);
-    const res = await api('PATCH', `/api/admin/orgs/${ORG}`, { cookie: sa, body: { status: 'suspended' } });
+    // Two open jobs of one tree, one finished job, and a live run this
+    // process owns (registered under the root job id).
+    querySync(`INSERT INTO jobs (id, project_id, user_id, role, status, input, root_job_id) VALUES
+      (31, 10, ${OWNER}, 'pm', 'running', 'go', 31), (32, 10, ${OWNER}, 'ra', 'running', 'find', 31),
+      (33, 10, ${EDITOR}, 'pm', 'done', 'old', 33)`);
+    const cancel = vi.fn(async () => true);
+    registerRun({ jobId: 31, projectId: 10, role: 'pm', channel: null, state: {}, consumerAttached: true, cancel });
+    let res;
+    try {
+      res = await api('PATCH', `/api/admin/orgs/${ORG}`, { cookie: sa, body: { status: 'suspended' } });
+    } finally {
+      unregisterRun(31);
+    }
     expect((await res.json()).org.status).toBe('suspended');
     expect(eventTypes()).toEqual(['org.suspended']);
+    expect(querySync('SELECT id, cancel_reason, cancel_requested_at IS NOT NULL AS flagged FROM jobs ORDER BY id').rows).toEqual([
+      { id: 31, cancel_reason: 'suspended', flagged: 1 },
+      { id: 32, cancel_reason: 'suspended', flagged: 1 },
+      { id: 33, cancel_reason: null, flagged: 0 },
+    ]);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith('suspended');
 
     const refused = await api('GET', `/api/orgs/${ORG}/projects`, { cookie: ownerCookie });
     expect(refused.status).toBe(403);

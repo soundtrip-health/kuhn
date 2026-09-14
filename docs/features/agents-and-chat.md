@@ -108,6 +108,20 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 **Gotchas.** Files an agent already wrote stay written. Stopping a seeding pipeline aborts the stream rather than a single job.
 
+## Runs that stop on their own
+
+**What it does.** A run also stops without a Stop click in three cases. Each is honoured at the run's next *control point* — before a provider turn, before any tool that changes something (a file write, a citation, a comment), or when an answered question wakes it — so a run never carries on past the point where it should not.
+
+- **Access revoked.** When a super-admin suspends the organization, or an owner removes you from it, every run you have in flight is stopped. The chat shows "This run was stopped because access to the project was revoked." — the same line in every case.
+- **Time limit.** A run (the agent you addressed plus everything it dispatched) has a wall-clock limit, 2 hours by default (`AGENT_RUN_MAX_MS` on the backend). Past it the run is paused with a hand-off note, like a budget pause: "This run reached its 2-hour time limit and was paused. Your work is saved; say what to do next to continue from here."
+- **Stop from anywhere.** A Stop is recorded on the job before the run is interrupted, so a sub-agent that was still starting stops too.
+
+**How to use it.** Nothing to do: send your next message to continue. After a time limit the conversation resumes where it stopped.
+
+**Prerequisites.** None.
+
+**Gotchas.** The job's stored `cancel_reason` (`user`, `suspended`, `removed`, `deadline`) is visible in the job trace (`GET /api/agent/jobs/:id/trace`) for audit. An org's own token budgets still apply on top of the time limit.
+
 ## Questions from agents
 
 **What it does.** An agent (the PM has the `ask_user` tool) can pause to ask you something. A question card appears — "PM needs a decision" — with the text "Type your answer in the chat box below — take your time."

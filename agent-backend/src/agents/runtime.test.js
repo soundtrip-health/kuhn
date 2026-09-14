@@ -143,6 +143,14 @@ vi.mock('../db/chats.js', () => ({
 vi.mock('../db/jobs.js', () => ({
   createJob: vi.fn(async () => ({ id: 42 })),
   updateJob: vi.fn(async () => ({})),
+  // Issue #118 stage 1: the run gate's persisted flag and the tree columns.
+  getJob: vi.fn(async () => null),
+  requestJobCancel: vi.fn(async () => 0),
+  getCancelRequest: vi.fn(async () => null),
+}));
+// Issue #118 §8: the tenancy gate. Access holds unless a test revokes it.
+vi.mock('../db/orgs.js', () => ({
+  checkOrgAccess: vi.fn(async () => ({ ok: true, role: 'editor' })),
 }));
 vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
@@ -263,7 +271,7 @@ import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-script
 import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
-import { createJob, updateJob } from '../db/jobs.js';
+import { createJob, updateJob, getCancelRequest, requestJobCancel, getJob } from '../db/jobs.js';
 import { recordChatRun, startChatJob } from '../db/chats.js';
 import { resolveRoute } from './model-routing.js';
 import { getProject, updateProjectConfig } from '../db/projects.js';
@@ -271,6 +279,8 @@ import { deliverReply, hasPendingQuestion } from './questions.js';
 import { getRun } from './runs.js';
 import { runAgentTask, reattach, cancelRun } from './runtime.js';
 import { captureBudgetHandoff } from './handoff.js';
+import { checkOrgAccess } from '../db/orgs.js';
+import { config as testConfig } from '../config.js';
 import { resolveBudgets } from '../db/org-budgets.js';
 
 const RA_AGENT = {
@@ -353,7 +363,7 @@ describe('runAgentTask', () => {
     expect(continuation.messages[3]).toMatchObject({ role: 'tool_result', toolCallId: 't2', toolName: 'pubmed_search', isError: true });
 
     // Job lifecycle: running with conversation -> session recorded -> done with usage
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7 });
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', conversationId: 7, workerId: expect.any(String), attempt: 1 });
     expect(updateJob).toHaveBeenCalledWith(42, { sessionId: 'sess-1' });
     expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'done', inputTokens: 100, outputTokens: 50, contextTokens: 10 }));
     // The job terminal stamps the effective runtime identity and the
@@ -531,7 +541,7 @@ describe('runAgentTask', () => {
     // teardown stamped the job and the aborted consumer is the one who
     // stopped the stream.
     expect(events.filter((e) => e.type === 'done' || e.type === 'error')).toEqual([]);
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
     // The persisted conversation audit: assistant(requested call) ->
     // tool(error result), in row order — the assistant row written on the
     // usage event already carries the call the message requested.
@@ -1731,7 +1741,7 @@ describe('PM agent tools (story 012)', () => {
     }
 
     expect(hasPendingQuestion(42)).toBe(false);
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
   });
 
   it('save_project_config updates the project record and writes project.json', async () => {
@@ -1819,7 +1829,7 @@ describe('ask_user reconnect (story 027)', () => {
 
     // The run is left alive and parked — NOT interrupted or cancelled
     expect(sdkState.interrupt).not.toHaveBeenCalled();
-    expect(updateJob).not.toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).not.toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
     expect(hasPendingQuestion(42)).toBe(true);
     const run = getRun(42);
     expect(run).toBeDefined();
@@ -1847,7 +1857,7 @@ describe('ask_user reconnect (story 027)', () => {
 
     expect(hasPendingQuestion(42)).toBe(false);
     expect(sdkState.interrupt).toHaveBeenCalled();
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
     expect(getRun(42)).toBeUndefined();
   });
 
@@ -2550,7 +2560,7 @@ describe('user stop (issue #136)', () => {
     expect(events.find((e) => e.type === 'done')).toBeUndefined();
     expect(events.find((e) => e.type === 'error')).toBeUndefined();
     // The row is marked at the stop request and stamped again at the terminal.
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
     expect(updateJob.mock.calls.at(-1)[1]).toMatchObject({ status: 'cancelled', profile: expect.any(String) });
     expect(getRun(42)).toBeUndefined();
     // Stopping a run that already finished is a no-op.
@@ -2598,8 +2608,8 @@ describe('user stop (issue #136)', () => {
     // Neither job finished; both rows are cancelled; nothing from the child's late turn leaked.
     expect(events.find((e) => e.type === 'done')).toBeUndefined();
     expect(events.find((e) => e.type === 'text' && e.agent === 'ra')).toBeUndefined();
-    expect(updateJob).toHaveBeenCalledWith(43, { status: 'cancelled' });
-    expect(updateJob).toHaveBeenCalledWith(42, { status: 'cancelled' });
+    expect(updateJob).toHaveBeenCalledWith(43, expect.objectContaining({ status: 'cancelled' }));
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
     getAgentWithTools.mockReset();
   });
 
@@ -2628,5 +2638,117 @@ describe('user stop (issue #136)', () => {
     expect(events.find((e) => e.type === 'job')).toMatchObject({ jobId: 43, depth: 1, parentJobId: 42, status: 'done' });
     expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
     getAgentWithTools.mockReset();
+  });
+});
+
+// --- Issue #118 stage 1: the run gate ----------------------------------------
+
+describe('run gate (issue #118 stage 1)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+    getCancelRequest.mockResolvedValue(null);
+    checkOrgAccess.mockResolvedValue({ ok: true, role: 'editor' });
+  });
+
+  it('a persisted cancel flag is honoured before a mutating tool: the tool refuses, the run ends cancelled', async () => {
+    getAgentWithTools.mockResolvedValue({ ...RA_AGENT, slug: 'writer', tools: ['file_write'] });
+    let flagged = null;
+    getCancelRequest.mockImplementation(async () => flagged);
+    let toolResult = null;
+    sdkState.generator = async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-9' };
+      const { tools } = createSdkMcpServer.mock.calls.at(-1)[0];
+      const write = tools.find((t) => t.name === 'write_file');
+      // The flag lands (another process, or POST /cancel) while the turn is
+      // in flight; the next mutating tool is where it must bite.
+      flagged = { requestedAt: '2026-09-14T03:00:00.000Z', reason: 'user' };
+      toolResult = await write.handler({ path: 'research/notes.md', content: 'hello' });
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'after the stop' }], usage: { input_tokens: 1, output_tokens: 1 } } };
+      yield { type: 'result', subtype: 'success', session_id: 'sess-9', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    const events = await collect({ role: 'writer', projectId: 7, input: 'go', detachable: true });
+
+    expect(toolResult.isError).toBe(true);
+    expect(toolResult.content[0].text).toMatch(/Run stopped \(user\); write_file was not executed/);
+    expect(writeProjectFile).not.toHaveBeenCalled();
+    expect(requestJobCancel).toHaveBeenCalledWith(42, 'user');
+    expect(events.at(-1)).toMatchObject({ type: 'cancelled', jobId: 42, sessionId: 'sess-9' });
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled', cancelReason: 'user' }));
+  });
+
+  it('a revoked tenancy stops the run before the next provider turn with a non-leaking access_revoked terminal', async () => {
+    checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'suspended', role: 'editor' });
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    const events = await collect({ role: 'pm', projectId: 7, input: 'go', userId: 5 });
+    expect(checkOrgAccess).toHaveBeenCalledWith(5, 3, 'editor');
+    const terminal = events.at(-1);
+    expect(terminal).toMatchObject({ type: 'error', reason: 'access_revoked', jobId: 42, depth: 0 });
+    expect(terminal.message).not.toMatch(/suspend/i);
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled', cancelReason: 'suspended' }));
+    expect(requestJobCancel).toHaveBeenCalledWith(42, 'suspended');
+  });
+
+  it("membership removal reads as 'removed'; a run with no user is not membership-gated", async () => {
+    checkOrgAccess.mockResolvedValueOnce({ ok: false, reason: 'not-member' });
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    let events = await collect({ role: 'pm', projectId: 7, input: 'go', userId: 5 });
+    expect(events.at(-1)).toMatchObject({ type: 'error', reason: 'access_revoked' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ cancelReason: 'removed' }));
+
+    checkOrgAccess.mockClear();
+    sdkState.messages = [{ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }];
+    events = await collect({ role: 'pm', projectId: 7, input: 'go' });
+    expect(events.at(-1).type).toBe('done');
+    expect(checkOrgAccess).not.toHaveBeenCalled();
+  });
+
+  it('the wall-clock deadline cancels a long turn with reason deadline, a hand-off note and a deadline_exceeded terminal', async () => {
+    const prior = testConfig.agent.runMaxMs;
+    testConfig.agent.runMaxMs = 30;
+    sdkState.generator = async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-d' };
+      await new Promise((r) => setTimeout(r, 90));
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'late' }], usage: { input_tokens: 1, output_tokens: 1 } } };
+      yield { type: 'result', subtype: 'success', session_id: 'sess-d', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    try {
+      const events = await collect({ role: 'pm', projectId: 7, input: 'go', detachable: true });
+      expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ deadlineAt: expect.any(String), rootJobId: null }));
+      const terminal = events.at(-1);
+      expect(terminal).toMatchObject({ type: 'error', reason: 'deadline_exceeded', jobId: 42, sessionId: 'sess-d' });
+      expect(terminal.message).toMatch(/time limit/);
+      expect(terminal).toHaveProperty('handoff');
+      expect(captureBudgetHandoff).toHaveBeenCalledWith(7, 'pm');
+      expect(events.find((e) => e.type === 'done')).toBeUndefined();
+      expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled', cancelReason: 'deadline' }));
+      expect(requestJobCancel).toHaveBeenCalledWith(42, 'deadline');
+    } finally {
+      testConfig.agent.runMaxMs = prior;
+    }
+  });
+
+  it('a sub-job inherits its root and deadline from the parent row and books budget on the root row', async () => {
+    createJob.mockImplementationOnce(async () => ({ id: 42, root_job_id: 42 })).mockImplementationOnce(async () => ({ id: 43, root_job_id: 42 }));
+    getJob.mockResolvedValueOnce({ id: 42, root_job_id: 42, deadline_at: '2030-01-01T00:00:00.000Z' });
+    getAgentWithTools.mockImplementation(async (slug) => (slug === 'ra' ? RA_AGENT : { ...PM_AGENT, tools: ['spawn_agent'] }));
+    sdkState.generator = async function* () {
+      if (createSdkMcpServer.mock.calls.length === 1) {
+        const { tools } = createSdkMcpServer.mock.calls[0][0];
+        const dispatch = tools.find((t) => t.name === 'dispatch_agent');
+        const result = await dispatch.handler({ agent_slug: 'ra', task: 'find papers' });
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: result.content[0].text }], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'child' }], usage: { input_tokens: 5, output_tokens: 5 } } };
+      yield { type: 'result', subtype: 'success', usage: { input_tokens: 5, output_tokens: 5 } };
+    };
+    const events = await collect({ role: 'pm', projectId: 7, input: 'delegate' });
+    expect(events.at(-1).type).toBe('done');
+    expect(createJob).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentJobId: 42, rootJobId: 42, deadlineAt: '2030-01-01T00:00:00.000Z' }));
+    // The child's turn books the tree's spend on the root row, not its own.
+    expect(updateJob).toHaveBeenCalledWith(42, { budgetUsed: expect.any(Number) });
   });
 });

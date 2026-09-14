@@ -13,6 +13,7 @@ import { createInvitation } from '../db/invitations.js';
 import { recordAuthEvent } from '../db/auth-events.js';
 import { requireOrgRole, requireSuperadmin } from './guards.js';
 import { sendInviteLink } from '../mailer.js';
+import { cancelTenantJobs } from '../agents/tenancy.js';
 
 const router = Router();
 
@@ -187,6 +188,11 @@ router.patch('/api/admin/orgs/:id', async (req, res) => {
       actorUserId: req.user.id,
       orgId,
     });
+    if (nextStatus === 'suspended') {
+      // Suspension reaches runs already in flight (issue #118, T-28): every
+      // open job of the org is flagged and the live ones are aborted.
+      await cancelTenantJobs({ orgId }, 'suspended');
+    }
   }
   const { rows: updated } = querySync(
     `SELECT ${ADMIN_ORG_COLUMNS} FROM organizations o WHERE o.id = $1`,

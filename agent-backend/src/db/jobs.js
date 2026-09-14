@@ -31,15 +31,29 @@ function parseJob(row) {
  *   (issue #113); null for sub-agent, compose and seeding runs
  * @returns {Promise<object>} The inserted job row
  */
-export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null, chatId = null }) {
+export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null, chatId = null, rootJobId = null, deadlineAt = null }) {
   const { rows } = await query(
-    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation, chat_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation, chat_id, root_job_id, deadline_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
-    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null, chatId],
+    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null, chatId, rootJobId, deadlineAt],
   );
-  return parseJob(rows[0]);
+  const job = parseJob(rows[0]);
+  if (job && rootJobId == null) {
+    // A top-level job is its own root (issue #118): one row to query the
+    // tree by, one row that carries the tree's budget.
+    const { rows: rooted } = await query(
+      'UPDATE jobs SET root_job_id = id WHERE id = $1 RETURNING *',
+      [job.id],
+    );
+    return parseJob(rooted[0] ?? { ...job, root_job_id: job.id });
+  }
+  return job;
 }
+
+/** Job states that are not terminal (issue #118). */
+export const OPEN_JOB_STATUSES = ['queued', 'running', 'waiting_for_user', 'retry_wait'];
+const OPEN_LIST = OPEN_JOB_STATUSES.map((st) => `'${st}'`).join(', ');
 
 /**
  * Update mutable job fields. Only provided keys are changed.
@@ -61,6 +75,16 @@ export async function createJob({ role, projectId = null, input, context = null,
  * @param {string|null} [fields.endpoint] - the provider endpoint the job egressed to (issue #112)
  * @param {number|null} [fields.difficulty] - the 0..1 difficulty the route was resolved for (issue #107)
  * @param {'org'|'deployment'|null} [fields.routeSource] - what picked the profile: an org route or the deployment default
+ * @param {string|null} [fields.cancelReason] - why the run was (or is being) cancelled (issue #118)
+ * @param {string|null} [fields.cancelRequestedAt] - when the cancel flag was raised
+ * @param {string|null} [fields.workerId] - the process that ran the job
+ * @param {number} [fields.attempt] - how many times the job has been (re)claimed
+ * @param {number} [fields.budgetUsed] - weighted budget consumed by the tree (root row)
+ * @param {string|null} [fields.waitingSince] - set while waiting_for_user
+ * @param {string|null} [fields.wakeAt] - when a retry_wait job retries
+ * @param {string|null} [fields.deadlineAt] - wall-clock bound of the run
+ * @param {string|null} [fields.leaseUntil]
+ * @param {string|null} [fields.heartbeatAt]
  * @returns {Promise<object|undefined>} The updated job row
  */
 export async function updateJob(jobId, fields) {
@@ -81,6 +105,16 @@ export async function updateJob(jobId, fields) {
     endpoint: 'endpoint',
     difficulty: 'difficulty',
     routeSource: 'route_source',
+    cancelReason: 'cancel_reason',
+    cancelRequestedAt: 'cancel_requested_at',
+    workerId: 'worker_id',
+    attempt: 'attempt',
+    budgetUsed: 'budget_used',
+    waitingSince: 'waiting_since',
+    wakeAt: 'wake_at',
+    deadlineAt: 'deadline_at',
+    leaseUntil: 'lease_until',
+    heartbeatAt: 'heartbeat_at',
   };
   const sets = [];
   const params = [];
@@ -163,7 +197,61 @@ async function buildTrace(job, depth) {
 export async function markOrphanedJobsInterrupted() {
   const { rowCount } = await query(
     `UPDATE jobs SET status = 'interrupted', updated_at = ${NOW}
-     WHERE status IN ('pending', 'running')`,
+     WHERE status IN (${OPEN_LIST})`,
   );
   return rowCount;
+}
+
+// ---- Persisted cancellation (issue #118 stage 1) ----------------------------
+//
+// Control is persisted first, signalled second: the flag lands on every open
+// row of the tree, then whoever owns the run in-process aborts it. A run
+// consults the flag at its control points (runtime.js createRunGate), so a
+// cancel that arrives while the process cannot be signalled (another
+// worker, a restart) is still honoured at the next turn or tool call.
+
+/**
+ * Raise the cancel flag on every open job of a tree. The first reason wins.
+ * @param {number} rootJobId
+ * @param {'user'|'suspended'|'removed'|'deleted'|'deadline'|'parent'|'disconnect'|'shutdown'} reason
+ * @returns {Promise<number>} rows flagged
+ */
+export async function requestJobCancel(rootJobId, reason) {
+  const { rowCount } = await query(
+    `UPDATE jobs SET cancel_requested_at = ${NOW}, cancel_reason = COALESCE(cancel_reason, $2), updated_at = ${NOW}
+     WHERE (root_job_id = $1 OR id = $1) AND status IN (${OPEN_LIST}) AND cancel_requested_at IS NULL`,
+    [rootJobId, reason],
+  );
+  return rowCount;
+}
+
+/**
+ * Raise the cancel flag on a tenant's open jobs: every job of an org, or of
+ * one member within it (membership removal). Returns the affected rows so
+ * the caller can abort the ones this process owns (agents/tenancy.js).
+ * @param {{ orgId: number, userId?: number|null, projectId?: number|null }} where
+ * @param {'suspended'|'removed'|'deleted'} reason
+ * @returns {Promise<Array<{ id: number, root_job_id: number|null, project_id: number|null }>>}
+ */
+export async function cancelJobsWhere({ orgId, userId = null, projectId = null }, reason) {
+  const { rows } = await query(
+    `UPDATE jobs SET cancel_requested_at = ${NOW}, cancel_reason = COALESCE(cancel_reason, $1), updated_at = ${NOW}
+     WHERE status IN (${OPEN_LIST}) AND cancel_requested_at IS NULL
+       AND project_id IN (SELECT id FROM projects WHERE org_id = $2 AND ($4 IS NULL OR id = $4))
+       AND ($3 IS NULL OR user_id = $3)
+     RETURNING id, root_job_id, project_id`,
+    [reason, orgId, userId, projectId],
+  );
+  return rows;
+}
+
+/**
+ * The persisted cancel flag of a job, for the run's control points.
+ * @returns {Promise<{ requestedAt: string, reason: string|null } | null>}
+ */
+export async function getCancelRequest(jobId) {
+  const { rows } = await query('SELECT cancel_requested_at, cancel_reason FROM jobs WHERE id = $1', [jobId]);
+  const row = rows[0];
+  if (!row?.cancel_requested_at) return null;
+  return { requestedAt: row.cancel_requested_at, reason: row.cancel_reason ?? null };
 }

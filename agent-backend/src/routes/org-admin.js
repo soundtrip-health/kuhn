@@ -30,6 +30,7 @@ import {
 import { recordAuthEvent } from '../db/auth-events.js';
 import { resolvePendingRequestsFor } from '../db/access-requests.js';
 import { sendInviteLink } from '../mailer.js';
+import { cancelTenantJobs } from '../agents/tenancy.js';
 
 const router = Router();
 
@@ -115,6 +116,8 @@ router.delete('/api/orgs/:orgId/members/:userId', async (req, res) => {
       orgId: ctx.orgId,
       meta: { userId },
     });
+    // The removed member's runs in this org stop too (issue #118, T-28).
+    await cancelTenantJobs({ orgId: ctx.orgId, userId }, 'removed');
     res.json({ ok: true });
   } catch (err) {
     if (err instanceof LastOwnerError) {

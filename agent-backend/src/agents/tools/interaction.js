@@ -68,6 +68,10 @@ export function createInteractionTools(ctx) {
     execute: async (_id, { question }) => {
       ctx.channel.push({ type: 'question', agent: agentSlug, jobId, content: question });
       const reply = await waitForReply(jobId, config.agent.questionTimeoutMs, { question, agent: agentSlug });
+      // Control point 4 (issue #118 §5): a cancel, suspension or deadline
+      // that landed while the run was parked is honoured as it wakes.
+      const stopped = reply != null && ctx.gate ? await ctx.gate('wake', 'ask_user') : null;
+      if (stopped) return toolError(`Run stopped (${stopped}) while waiting for the reply.`);
       if (reply == null) {
         // Tell the webapp the question is no longer answerable (story 020);
         // on task teardown the channel is already closed and this is a no-op.

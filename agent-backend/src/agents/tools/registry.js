@@ -45,6 +45,7 @@ import { createSlideTools } from './slides.js';
 import { createTemplateTools } from './templates.js';
 import { createGuideTools } from './guide.js';
 import { createDocTypeTools } from './doc-types.js';
+import { toolError } from './envelope.js';
 
 // Domain order is the stable enumeration order (deterministic for tests and
 // for the tool list a provider sees).
@@ -109,6 +110,11 @@ export const WEB_SEARCH_TOOL = {
  * @property {AbortSignal|null} signal - the owning run's abort signal (issue
  *   #136): fires when the run is stopped (user, disconnect, budget), so a
  *   dispatched sub-agent is torn down with its parent
+ * @property {((where: string, tool?: string) => Promise<string|null>)|null} gate
+ *   - the run's control point (issue #118): consulted before every tool
+ *   with product-side effects and when a parked question wakes. Resolves
+ *   null to proceed, or the cancel reason when the run has been stopped
+ *   (the gate itself aborts the run; the tool just refuses)
  */
 
 /**
@@ -118,7 +124,7 @@ export const WEB_SEARCH_TOOL = {
  */
 export function createToolContext({
   agent, projectId, depth, budget, parentJob, channel,
-  userId = null, seeding = false, context = null, dispatch, signal = null,
+  userId = null, seeding = false, context = null, dispatch, signal = null, gate = null,
 }) {
   if (!agent || !Array.isArray(agent.tools)) throw new Error('createToolContext: agent row with tool grants is required');
   if (typeof dispatch !== 'function') {
@@ -136,6 +142,27 @@ export function createToolContext({
     context,
     dispatch,
     signal,
+    gate,
+  };
+}
+
+/**
+ * Control point before a mutating tool (issue #118 §5 point 3): a persisted
+ * cancel, a revoked tenancy or an expired deadline is honoured here, before
+ * the effect — the deterministic version of "stop at the next tool call".
+ * Read-only tools pass straight through. Wrapped once per task in listTools
+ * so both provider adapters get it.
+ */
+function gated(ctx, tool) {
+  if (tool.readOnly || typeof tool.execute !== 'function' || !ctx.gate) return tool;
+  const { execute } = tool;
+  return {
+    ...tool,
+    execute: async (toolCallId, args, ...rest) => {
+      const stopped = await ctx.gate('tool', tool.name);
+      if (stopped) return toolError(`Run stopped (${stopped}); ${tool.name} was not executed.`);
+      return execute(toolCallId, args, ...rest);
+    },
   };
 }
 
@@ -159,7 +186,7 @@ export function listTools(ctx) {
     for (const tool of factory(ctx)) {
       if (!granted(ctx, tool)) continue;
       if (tool.visible && !tool.visible(ctx)) continue;
-      tools.push(tool);
+      tools.push(gated(ctx, tool));
     }
   }
   if (ctx.agent.tools.includes(WEB_SEARCH_TOOL.grants[0])) {

@@ -173,6 +173,38 @@ describe('update_reference schema (issue #147)', () => {
   });
 });
 
+// Issue #118 stage 1: the run gate wraps every tool with product-side
+// effects; read-only tools never consult it.
+describe('run gate on mutating tools (issue #118)', () => {
+  it('refuses a mutating tool when the gate reports the run stopped, without touching storage', async () => {
+    const gate = vi.fn(async () => 'suspended');
+    const ctx = makeCtx({ gate });
+    const write = listTools(ctx).find((t) => t.name === 'write_file');
+    const result = await run(write, { path: 'research/notes.md', content: 'hello' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Run stopped \(suspended\); write_file was not executed/);
+    expect(gate).toHaveBeenCalledWith('tool', 'write_file');
+    expect(writeProjectFile).not.toHaveBeenCalled();
+  });
+
+  it('lets a mutating tool through when the gate is clear, and never consults it for read-only tools', async () => {
+    const gate = vi.fn(async () => null);
+    const ctx = makeCtx({ gate });
+    const tools = listTools(ctx);
+    await run(tools.find((t) => t.name === 'write_file'), { path: 'research/notes.md', content: 'hello' });
+    expect(writeProjectFile).toHaveBeenCalled();
+    expect(gate).toHaveBeenCalledTimes(1);
+    await run(tools.find((t) => t.name === 'list_files'), {});
+    expect(gate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a context without a gate is unwrapped (check scripts, older callers)', async () => {
+    const write = listTools(makeCtx()).find((t) => t.name === 'write_file');
+    const result = await run(write, { path: 'research/notes.md', content: 'hello' });
+    expect(result.isError).toBeUndefined();
+  });
+});
+
 // Stable domain order as the provider sees it (factory order + web_search).
 const EXPECTED_ORDER = [
   'read_file', 'search_files', 'list_files', 'move_file', 'write_file', 'edit_file',

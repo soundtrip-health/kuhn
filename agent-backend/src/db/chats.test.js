@@ -70,11 +70,11 @@ describe('updateChat / getChat', () => {
 });
 
 describe('status projection (read-time, from current_job_id)', () => {
-  it('is running while the current job is pending/running, paused on a budget pause, else idle', async () => {
+  it('is running while the current job is queued/running, paused on a budget pause, else idle', async () => {
     const { id } = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'pm', userId: 1 });
     expect((await chats.getChat(id)).status).toBe('idle');
 
-    insertJob(10, { status: 'pending', chatId: id });
+    insertJob(10, { status: 'queued', chatId: id });
     await chats.startChatJob(id, 10);
     let chat = await chats.getChat(id);
     expect(chat.status).toBe('running');
