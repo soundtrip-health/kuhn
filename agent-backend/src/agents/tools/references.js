@@ -13,6 +13,11 @@
  * an identifier out of search results. The manual path (identifier-less
  * web/government sources) takes an organization as corporate author —
  * person-name author fields no longer exist on this tool.
+ *
+ * Issue #147 closed the last typed-metadata path: update_reference no
+ * longer takes authors/title/venue fields for identified entries — it
+ * re-fetches the registry record — and every add/update result carries the
+ * post-write verification of the stored row (a hook, not a prompt rule).
  */
 
 import {
@@ -45,6 +50,22 @@ export function createReferenceTools(ctx) {
     }
   };
 
+  /**
+   * One line the model cannot misread: what the stored row was checked
+   * against and whether it matched. A dedupe hit that disagrees with the
+   * registry is the identifier-hijack case (#147) — the line tells the
+   * model to resync, not to retype.
+   */
+  const describeVerification = (v) => {
+    if (!v) return '';
+    if (v.status === 'verified') return ` Verified against ${v.checked_against}: every stored field matches the registry.`;
+    if (v.status === 'mismatch') {
+      const fields = v.mismatches.map((m) => m.field).join(', ');
+      return ` WARNING: the stored entry differs from ${v.checked_against} on ${fields}. Call update_reference with cite_key "${v.cite_key}" (no other fields) to resync it from the registry.`;
+    }
+    return ' No identifier — unverifiable; flag the citation [TODO: verify] for human review.';
+  };
+
   const tools = [];
 
   tools.push({
@@ -65,12 +86,13 @@ export function createReferenceTools(ctx) {
     },
     execute: async (_id, { pmid, path }) => {
       try {
-        const { key, created, bibtex } = await upsertCitation(projectId, pmid, path);
+        const { key, created, bibtex, verification } = await upsertCitation(projectId, pmid, path);
         emitCitation({ key, bibtex, path, created });
         return toolOk(
-          created
+          (created
             ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
-            : `Already in ${path} as "${key}". Cite it as [@${key}].`,
+            : `Already in ${path} as "${key}". Cite it as [@${key}].`)
+          + describeVerification(verification),
         );
       } catch (err) {
         return toolError(`add_citation failed: ${err.message}`);
@@ -116,12 +138,13 @@ export function createReferenceTools(ctx) {
             'add_reference failed: pass arxiv_id or doi for any indexed work (the record is then fetched from the registry). A manual entry is only for identifier-less sources and requires title and url.',
           );
         }
-        const { key, created, bibtex } = result;
+        const { key, created, bibtex, verification } = result;
         emitCitation({ key, bibtex, path, created });
         return toolOk(
-          created
+          (created
             ? `Added to ${path} with key "${key}". Cite it as [@${key}].`
-            : `Already in ${path} as "${key}". Cite it as [@${key}].`,
+            : `Already in ${path} as "${key}". Cite it as [@${key}].`)
+          + describeVerification(verification),
         );
       } catch (err) {
         return toolError(`add_reference failed: ${err.message}`);
@@ -136,9 +159,9 @@ export function createReferenceTools(ctx) {
     name: 'verify_references',
     grants: ['verify_references'],
     readOnly: true,
-    effect: 'none',
+    effect: 'external-read',
     description:
-      'Verify stored bibliography entries field-by-field (authors, title, year, DOI, volume/issue/pages, venue) against their authoritative registries: PubMed by PMID, Crossref by DOI, arXiv by id. Reports verified / mismatch (with the registry value for each differing field) / unverifiable (no identifier — needs human review). Run this before stating that references are verified, and fix mismatches with update_reference using the reported registry values.',
+      'Verify stored bibliography entries field-by-field (authors, title, year, DOI, volume/issue/pages, venue) against their authoritative registries: PubMed by PMID, Crossref by DOI, arXiv by id. Reports verified / mismatch (with the registry value for each differing field) / unverifiable (no identifier — needs human review). Run this before stating that references are verified, and fix a mismatch by calling update_reference with just its cite key (the entry is resynced from the registry).',
     parameters: {
       type: 'object',
       properties: {
@@ -155,53 +178,43 @@ export function createReferenceTools(ctx) {
     },
   });
 
-  // Deterministic corrections to the reference store (issue #41): the RA's
-  // alternative to hand-editing the derived .bib, which the file tools
-  // refuse. Both regenerate the bibliography file after changing the store.
+  // Deterministic corrections to the reference store (issue #41, hardened
+  // in #147): identified entries are resynced from their registry — the
+  // model cannot type an author list, title, venue or year into the store.
   tools.push({
     name: 'update_reference',
     grants: ['manage_references'],
     readOnly: false,
     effect: 'write',
     description:
-      'Correct fields of an existing bibliography entry by its cite key (metadata fixes: title, authors, year, journal, DOI, pages, ...). '
-      + 'Only the fields you pass change; the cite key never changes, so in-text [@key] citations keep working. The bibliography file is regenerated automatically. '
-      + 'Never fabricate metadata — only apply corrections you verified against the source.',
+      'Correct an existing bibliography entry by cite key; the key never changes, so in-text [@key] citations keep working, and the bibliography file is regenerated. '
+      + 'For any entry with an identifier (PMID, DOI, arXiv id) the record is re-fetched from its registry and every field is replaced from it: call with ONLY the cite key to resync a mismatch reported by verify_references, or pass a corrected pmid / doi / arxiv_id when the stored identifier points at the wrong work. '
+      + 'Author lists, titles, venues and years cannot be typed — they only ever come from a registry. '
+      + 'Only an identifier-less manual entry (web page, government guidance) accepts title, organization, year, publisher, url, entry_type, source_type; passing an identifier promotes it to a registry-backed entry.',
     parameters: {
       type: 'object',
       properties: {
         cite_key: { type: 'string', description: 'Cite key of the entry to correct (as returned by add_citation/add_reference)' },
-        title: { type: 'string', description: 'Corrected title' },
-        authors: { type: 'array', items: { type: 'string' }, description: 'Corrected author list, e.g. "Smith, Jane"' },
-        year: { type: 'integer', description: 'Corrected publication year' },
-        journal: { type: 'string', description: 'Corrected journal or venue' },
-        volume: { type: 'string', description: 'Corrected volume' },
-        issue: { type: 'string', description: 'Corrected issue' },
-        pages: { type: 'string', description: 'Corrected page range' },
-        publisher: { type: 'string', description: 'Corrected publisher' },
-        doi: { type: 'string', description: 'Corrected DOI' },
-        pmid: { type: 'string', description: 'Corrected PubMed ID' },
-        url: { type: 'string', description: 'Corrected URL' },
-        entry_type: { type: 'string', description: 'Corrected BibTeX entry type (article, misc, techreport, ...)' },
-        source_type: {
-          type: 'string',
-          enum: ['pubmed', 'preprint', 'crossref', 'web', 'manual', 'government'],
-          description: 'Corrected source authority class',
-        },
-        abstract: { type: 'string', description: 'Corrected abstract' },
+        pmid: { type: 'string', description: 'Corrected PubMed ID; the entry is rewritten from the PubMed record' },
+        doi: { type: 'string', description: 'Corrected DOI; the entry is rewritten from the Crossref record' },
+        arxiv_id: { type: 'string', description: 'Corrected arXiv id (as returned by arxiv_search); the entry is rewritten from the arXiv record' },
+        title: { type: 'string', description: 'Manual entries only: corrected title' },
+        organization: { type: 'string', description: 'Manual entries only: issuing organization as corporate author (person names are not accepted)' },
+        year: { type: 'integer', description: 'Manual entries only: corrected year' },
+        publisher: { type: 'string', description: 'Manual entries only: corrected publisher or issuing body' },
+        url: { type: 'string', description: 'Manual entries only: corrected URL' },
+        entry_type: { type: 'string', description: 'Manual entries only: BibTeX entry type (misc, techreport, ...)' },
+        source_type: { type: 'string', enum: ['web', 'government', 'manual'], description: 'Manual entries only: source authority class' },
         path: { type: 'string', default: DEFAULT_BIB_PATH, description: 'Workspace-relative .bib file path' },
       },
       required: ['cite_key'],
     },
-    execute: async (_id, { cite_key, path, entry_type, source_type, ...rest }) => {
+    execute: async (_id, { cite_key, path, ...input }) => {
       try {
-        const changes = { ...rest };
-        if (entry_type !== undefined) changes.entryType = entry_type;
-        if (source_type !== undefined) changes.sourceType = source_type;
-        const { key, bibtex } = await updateReference(projectId, cite_key, changes, path);
+        const { key, bibtex, verification } = await updateReference(projectId, cite_key, input, path);
         ctx.channel.push({ type: 'citation', agent: agentSlug, key, bibtex, path });
         ctx.channel.push({ type: 'file_change', agent: agentSlug, path, kind: 'update' });
-        return toolOk(`Updated reference "${key}" and regenerated ${path}. Corrected entry:\n${bibtex}`);
+        return toolOk(`Updated reference "${key}" and regenerated ${path}.${describeVerification(verification)}\nCorrected entry:\n${bibtex}`);
       } catch (err) {
         return toolError(`update_reference failed: ${err.message}`);
       }

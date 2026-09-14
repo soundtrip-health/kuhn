@@ -1125,16 +1125,17 @@ describe('manage_references tools (issue #41)', () => {
     expect(names).not.toContain('remove_reference');
   });
 
-  it('update_reference maps snake_case params, emits citation + file_change, returns the entry', async () => {
-    const { update } = await refTools();
-    const result = await update.handler({
-      cite_key: 'k', year: 2024, entry_type: 'misc', source_type: 'preprint', path: 'draft/references.bib',
+  it('update_reference passes the raw input through (registry resync, #147), emits citation + file_change, returns the entry', async () => {
+    updateReference.mockResolvedValueOnce({
+      key: 'k', bibtex: '@article{k, year = {2024}}', path: 'draft/references.bib',
+      source: 'registry', verification: { cite_key: 'k', status: 'verified', checked_against: 'Crossref 10.1/x' },
     });
-    expect(updateReference).toHaveBeenCalledWith(
-      7, 'k', { year: 2024, entryType: 'misc', sourceType: 'preprint' }, 'draft/references.bib',
-    );
+    const { update } = await refTools();
+    const result = await update.handler({ cite_key: 'k', doi: '10.1/x', path: 'draft/references.bib' });
+    expect(updateReference).toHaveBeenCalledWith(7, 'k', { doi: '10.1/x' }, 'draft/references.bib');
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toMatch(/Updated reference "k"/);
+    expect(result.content[0].text).toMatch(/Verified against Crossref 10.1\/x/);
     expect(result.content[0].text).toContain('@article{k, year = {2024}}');
   });
 

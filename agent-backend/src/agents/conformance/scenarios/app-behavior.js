@@ -224,7 +224,8 @@ export const directVsProposed = {
 /** 6 — Citations and references against the fixture literature (STH-49
  * contract: PubMed via add_citation; identifier-bearing sources are fetched
  * from their registry by code; only identifier-less sources take the manual
- * path, with an organization as corporate author). */
+ * path, with an organization as corporate author; #147: an identified entry
+ * is corrected only by registry resync — typed metadata is refused). */
 export const citationsReferences = {
   id: 'citations-references',
   title: 'PubMed citation, registry-fetched arXiv reference, and a manual entry land in the .bib store',
@@ -255,7 +256,7 @@ export const citationsReferences = {
   },
   tasks: [{
     role: 'ra',
-    input: 'Cite the metformin review, add the arXiv preprint by id, add a manual web reference, and correct the preprint title.',
+    input: 'Cite the metformin review, add the arXiv preprint by id, add a manual web reference, then try to retitle the preprint and resync it.',
     model: {
       attempts: [{
         turns: [
@@ -272,7 +273,11 @@ export const citationsReferences = {
               source_type: 'web',
             },
           }] },
+          // #147: a typed "correction" on an identified entry is refused by
+          // the tool (no registry-fetched field is ever overwritten by the
+          // model); the supported fix is a resync by cite key.
           { toolCalls: [{ tool: 'update_reference', args: { cite_key: 'roe2024', title: 'Deep learning for metabolic disease risk prediction (updated)' } }] },
+          { toolCalls: [{ tool: 'update_reference', args: { cite_key: 'roe2024' } }] },
           { text: 'Bibliography updated.', usage: { input: 12, output: 6 } },
         ],
       }],
@@ -287,8 +292,8 @@ export const citationsReferences = {
       && pmRef.year === 2024 && pmRef.source_type === 'pubmed' && pmRef.identity_status === 'strong',
       JSON.stringify(pmRef));
     const arxivRef = refs.find((r) => r.cite_key === 'roe2024');
-    ctx.check('arXiv reference fetched from the registry with corrected title',
-      arxivRef?.source_type === 'preprint' && arxivRef.title.includes('(updated)')
+    ctx.check('arXiv reference fetched from the registry; the typed retitle was refused and the resync kept the registry title (#147)',
+      arxivRef?.source_type === 'preprint' && arxivRef.title === 'Deep learning for metabolic disease risk prediction'
       && JSON.parse(arxivRef.authors_json ?? '[]')?.[0] === 'Roe, Rita' && arxivRef.year === 2024
       && arxivRef.url === 'http://arxiv.org/abs/2401.01234v1',
       JSON.stringify(arxivRef));
@@ -301,7 +306,7 @@ export const citationsReferences = {
     ctx.check('bib file materialized with all three entries',
       bib != null && bib.includes('smith2024') && bib.includes('roe2024') && bib.includes('nationalheartinstitute2023'), bib);
     const citationEvents = ctx.eventsOf('citation');
-    ctx.check('live citation events emitted for each bibliography change',
+    ctx.check('live citation events emitted for each bibliography change (none for the refused update)',
       citationEvents.length === 4
       && citationEvents.map((e) => e.key).join(',') === 'smith2024,roe2024,nationalheartinstitute2023,roe2024',
       JSON.stringify(citationEvents.map((e) => e.key)));
