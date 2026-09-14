@@ -18,6 +18,9 @@ export const AGENTS = [
   { slug: 'advisor', name: 'Domain Expert (Advisor)', description: 'Domain Expert (Advisor)', model: 'claude-sonnet-4-6' },
   { slug: 'reviewer', name: 'Critical Reviewer', description: 'Critical Scientific Reviewer', model: 'claude-sonnet-4-6' },
   { slug: 'analyst', name: 'Analyst', description: 'Analyst', model: 'claude-sonnet-4-6' },
+  // Issue #170: answers "how do I…" questions about Kuhn itself from the
+  // indexed feature guide (docs/features/). Cheap model, one read-only tool.
+  { slug: 'help', name: 'Kuhn Help', description: 'Answers questions about using Kuhn', model: 'claude-haiku-4-5' },
 ];
 
 export const TOOLS = [
@@ -115,6 +118,12 @@ export const TOOLS = [
     slug: 'list_typst_templates', name: 'List Typst Templates', description: 'List the Typst page-layout templates available to this project (Kuhn catalog, organization uploads) for the `template:` front matter',
     parameterSchema: { type: 'object', properties: {} },
   },
+  {
+    // Issue #170: the help agent's grounding — full-text search over the
+    // indexed feature guide (docs/features/), platform-scoped and read-only.
+    slug: 'search_kuhn_guide', name: 'Search Kuhn Guide', description: 'Search the Kuhn feature guide (docs/features/) for how a feature works and how to use it; returns matching sections with page and heading provenance (read-only)',
+    parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Keywords describing the feature or question' }, limit: { type: 'integer', description: 'Maximum sections to return', default: 4 } }, required: ['query'] },
+  },
 ];
 
 // [agentSlug, toolSlug] pairs — the agent→tool matrix.
@@ -157,4 +166,6 @@ export const ASSIGNMENTS = [
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],
+  // Kuhn help (issue #170): the guide is its only tool — no project access.
+  ['help', 'search_kuhn_guide'],
 ];

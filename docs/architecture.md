@@ -14,7 +14,7 @@ three surfaces:
 
 1. **Editor** — a browser-based WYSIWYG markdown editor (Milkdown) with citations, math,
    cross-references, and slash commands
-2. **Agent chat** — conversational interface to the six agents (PM interview, project seeding,
+2. **Agent chat** — conversational interface to the seven agents (PM interview, project seeding,
    review cycles)
 3. **File manager** — project tree, uploads, previews
 

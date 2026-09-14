@@ -7,6 +7,7 @@ import { catalogFileExists, loadCatalogManifest } from './knowledge-catalog.js';
 import { scriptFileExists, loadScriptManifest } from './script-catalog.js';
 import { themeFileExists, loadThemeManifest } from './slide-themes.js';
 import { templateFileExists, loadTemplateManifest } from './typst-templates.js';
+import { seedFeatureGuide } from './guide.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -84,8 +85,9 @@ export async function seed() {
   await seedScriptCatalog();
   await seedSlideThemeCatalog();
   await seedTypstTemplateCatalog();
+  await seedFeatureGuide();
 
-  console.log('[seed] Applied default tenant, agents, tools, assignments, and catalogs.');
+  console.log('[seed] Applied default tenant, agents, tools, assignments, catalogs, and the feature guide.');
 }
 
 /**

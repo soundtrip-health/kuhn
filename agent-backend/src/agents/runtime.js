@@ -1060,9 +1060,15 @@ function buildSystemPrompt(agent, projectDir, orgAddition = null) {
     '## Runtime environment',
     `You are running as the "${agent.slug}" agent inside the Kuhn writing tool.`,
     `Your project workspace is ${projectDir}.`,
-    'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
-    'file access; they take paths relative to the workspace root and cannot reach outside it.',
   ];
+  // Agents without file grants (the help agent, issue #170) get no file-tool
+  // instructions — naming tools they do not have only invites hallucinated calls.
+  if (!Array.isArray(agent.tools) || agent.tools.includes('file_read')) {
+    parts.push(
+      'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
+      'file access; they take paths relative to the workspace root and cannot reach outside it.',
+    );
+  }
   // Issue #67: org-owner guardrails go AFTER the runtime block so they can
   // never shadow the tool contract, and are framed as policy on top of the
   // role — they may restrict, never expand, what the agent can do.

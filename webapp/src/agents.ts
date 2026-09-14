@@ -21,6 +21,8 @@ const AGENTS: Record<string, AgentIdentity> = {
   advisor: { slug: 'advisor', label: 'Advisor', initials: 'Ad', colorVar: '--advisor' },
   reviewer: { slug: 'reviewer', label: 'Reviewer', initials: 'Rv', colorVar: '--reviewer' },
   analyst: { slug: 'analyst', label: 'Analyst', initials: 'An', colorVar: '--analyst' },
+  // Issue #170: answers questions about Kuhn itself from the feature guide.
+  help: { slug: 'help', label: 'Help', initials: 'He', colorVar: '--help' },
 };
 
 const FALLBACK: AgentIdentity = { slug: '', label: '', initials: '··', colorVar: '--ink-3' };

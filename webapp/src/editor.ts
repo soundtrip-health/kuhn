@@ -68,6 +68,7 @@ import * as workspace from './workspace';
 import { startWrite } from './write-suggestion';
 import { clearPageMap } from './page-breaks';
 import { pageBreakSchema } from './page-break-chip';
+import { SLASH_COMMANDS } from './slash-commands';
 import { commandsCtx } from '@milkdown/kit/core';
 import { addBlockTypeCommand, clearTextInCurrentBlockCommand, paragraphSchema } from '@milkdown/kit/preset/commonmark';
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state';
@@ -300,19 +301,10 @@ interface AgentCommand {
 }
 
 function agentCommands(): AgentCommand[] {
-  const routed = (label: string, agent: string, description: string): AgentCommand => ({
-    label,
-    agent,
-    description,
-    run: () => toast(`Routed to ${agentIdentity(agent).label}`),
-  });
-
-  return [
-    {
-      label: 'Cite',
-      agent: 'ra',
-      description: 'Search PubMed & insert a citation',
-      run: (view) => {
+  // The list itself lives in slash-commands.ts (issue #170); this attaches the
+  // editor-side behaviour. Commands without a runner only announce the routing.
+  const runners: Record<string, AgentCommand['run']> = {
+    cite: (view) => {
         const coords = view.coordsAtPos(view.state.selection.from);
         openCitePicker({
           projectId: currentProjectId,
@@ -328,30 +320,26 @@ function agentCommands(): AgentCommand[] {
           },
           onClose: () => view.focus(),
         });
-      },
     },
-    {
-      label: 'Write',
-      agent: 'writer',
-      description: 'Writer drafts text right here',
-      run: (view) =>
-        startWrite(view, {
-          projectId: currentProjectId,
-          path: currentPath,
-          // Parse the accepted markdown with the live parser (decision 2).
-          toSlice: (markdown) => docHandle!.crepe.editor.action(markdownToSlice(markdown)),
-          getSession: () => writerSession,
-          setSession: (id) => {
-            writerSession = id;
-          },
-        }),
-    },
-    routed('Research', 'ra', 'Ask Research a question'),
-    routed('Figure', 'analyst', 'Analyst makes a figure or table'),
-    routed('Review', 'reviewer', 'Reviewer critiques this section'),
-    routed('Ask', 'pm', 'Ask any agent inline'),
-    routed('Status', 'pm', 'What is the team doing?'),
-  ];
+    write: (view) =>
+      startWrite(view, {
+        projectId: currentProjectId,
+        path: currentPath,
+        // Parse the accepted markdown with the live parser (decision 2).
+        toSlice: (markdown) => docHandle!.crepe.editor.action(markdownToSlice(markdown)),
+        getSession: () => writerSession,
+        setSession: (id) => {
+          writerSession = id;
+        },
+      }),
+  };
+
+  return SLASH_COMMANDS.map((c) => ({
+    label: c.label,
+    agent: c.agent,
+    description: c.description,
+    run: runners[c.name] ?? (() => toast(`Routed to ${agentIdentity(c.agent).label}`)),
+  }));
 }
 
 /** The registry's user-facing metadata (name as typed, owning agent,

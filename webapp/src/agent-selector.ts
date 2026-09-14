@@ -6,6 +6,17 @@
 import { agentIdentity, selectableAgents, type AgentIdentity } from './agents';
 import { icon } from './icons';
 
+let pick: ((slug: string) => void) | null = null;
+
+/** Programmatically address an agent (the "?" menu's "Ask about Kuhn", issue #170). */
+export function selectAgent(slug: string): void {
+  if (pick) pick(slug);
+  else {
+    const select = document.getElementById('chat-role') as HTMLSelectElement | null;
+    if (select) { select.value = slug; select.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+}
+
 export function initAgentSelector(): void {
   const select = document.getElementById('chat-role') as HTMLSelectElement | null;
   const button = document.getElementById('agent-selector-btn');
@@ -41,6 +52,7 @@ export function initAgentSelector(): void {
     if (!menu.hidden && !button.contains(e.target as Node) && !menu.contains(e.target as Node)) close();
   });
 
+  pick = setValue;
   renderButton(button, agentIdentity(select.value));
 }
 

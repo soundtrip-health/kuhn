@@ -31,6 +31,13 @@ export const EXPORT_FORMATS = {
 };
 
 /**
+ * Every front-matter key Kuhn itself interprets (the rest passes through to
+ * Pandoc/Marp untouched). The feature guide must document each one —
+ * db/guide.test.js enforces it (issue #170). Add here when a parser is added.
+ */
+export const FRONT_MATTER_KEYS = ['marp', 'theme', 'template', 'page_limits'];
+
+/**
  * STH-57: a document opts into slide rendering with `marp: true` in its YAML
  * front matter (the standard Marp toggle). Only the leading front-matter
  * block is consulted, so prose mentioning marp does not opt in.

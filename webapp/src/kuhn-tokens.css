@@ -47,6 +47,7 @@
   --advisor:  #B07D2E;  --advisor-soft:  #F4E9D2;
   --reviewer: #B0524E;  --reviewer-soft: #F4E0DD;
   --analyst:  #3E8A5B;  --analyst-soft:  #DEEEE3;
+  --help:     #6B6F7A;  --help-soft:     #ECEDF0;   /* Kuhn Help (issue #170): neutral, it is not a co-author */
 
   /* ---- Semantic ------------------------------------------------------- */
   --good: #2E7A55;  --good-soft: #DDEADC;
