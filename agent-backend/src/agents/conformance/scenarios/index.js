@@ -20,6 +20,7 @@ import {
   subagentDispatch,
   dispatchDepthLimit,
   sharedBudget,
+  memoryCarriesOver,
 } from './app-behavior.js';
 import {
   askUserFlow,
@@ -48,6 +49,7 @@ export const SCENARIOS = [
   subagentDispatch,
   dispatchDepthLimit,
   sharedBudget,
+  memoryCarriesOver,
   // Interaction and lifecycle
   askUserFlow,
   detachReconnect,

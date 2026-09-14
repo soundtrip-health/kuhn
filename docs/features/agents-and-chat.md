@@ -1,7 +1,7 @@
 ---
 title: Agents and chat
 area: agents
-keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands
+keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions
 ---
 
 # Agents and chat
@@ -171,6 +171,16 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 **Prerequisites.** None beyond the editor role.
 
 **Gotchas.** Sub-agent conversations are not resumable from the chat and do not count on the context meter.
+
+## Project memory
+
+**What it does.** Every project has a shared memory that all of its agents read at the start of every run and can search. It holds short dated entries of five kinds: facts about the project or its data, decisions and their rationale, the state a task was left in, open issues, and notes. Agents write to it with `remember`, search it with `recall` and retire entries with `forget`; the runtime also records, without being asked, the result of every dispatched sub-agent, the final text of every run that changed something (a file, a reference, a comment, a dispatch), your answers to agent questions, and the hand-off note written at a budget or deadline pause. So what one agent learned or did is known to the next run of any agent without the PM relaying it, and a task you give the Research Assistant starts with what the Writer's run left behind.
+
+**How to use it.** Nothing to switch on. Each run's task carries a "Project memory" digest: the newest decisions and open issues, the most recent task outcomes, and the entries whose words match the task, as one-line headlines that name the entry (`#12`) so the agent can fetch the full entry with `recall`. Ask any agent what it remembers about a topic, or tell it to remember a decision. A continued chat receives only the entries added since its previous turn. To inspect a project's memory yourself, request `/api/projects/<id>/memory` while signed in (optional `q=`, `kind=`, `retired=all`); a Memory tab in the project browser is not available yet.
+
+**Prerequisites.** None. The Kuhn Help agent has no project and no memory tools.
+
+**Gotchas.** Memory is a summary layer: entries are at most 2 KB and the reference store, the files and the transcript stay the source of truth, so agents are told to verify a state claim before acting on it. An entry recorded from your own answer to a question cannot be overwritten or retired by an agent: an agent that disagrees with it must ask you or record an issue that names it. Retired entries stay in the audit trail. Above 2 000 live entries the oldest runtime-written outcomes are retired first.
 
 ## Run activity in the status bar
 

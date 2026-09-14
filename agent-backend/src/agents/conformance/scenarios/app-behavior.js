@@ -700,3 +700,108 @@ export const sharedBudget = {
     ctx.check('driver recorded the interruption', obs?.interrupted === true);
   },
 };
+
+/**
+ * 14 — Shared project memory (issue #150): the incident as a conformance
+ * scenario. RA run 1 finishes a clean-up and reports it to the PM; RA run 2,
+ * dispatched later by a fresh PM run with a related task, starts KNOWING the
+ * clean-up happened — its prompt carries the run-1 outcome, and a recall
+ * for the topic returns it first. Neither RA run shares a session with the
+ * other: nothing but the task text and the memory crosses the boundary.
+ */
+export const memoryCarriesOver = {
+  id: 'memory-carries-over',
+  title: 'A dispatched run starts knowing what an earlier run of any agent did (project memory)',
+  tasks: [
+    {
+      role: 'pm',
+      input: 'Clean up the corrupted arXiv references.',
+      model: {
+        attempts: [{
+          turns: [
+            { toolCalls: [{ tool: 'dispatch_agent', args: { agent_slug: 'ra', task: 'Remove the 13 corrupted arXiv keys from the reference store and audit what remains.' } }] },
+            { text: 'The clean-up is done.', usage: { input: 10, output: 5 } },
+          ],
+        }],
+      },
+    },
+    {
+      role: 'ra',
+      input: 'Remove the 13 corrupted arXiv keys from the reference store and audit what remains.',
+      dispatchedBy: 0,
+      model: {
+        attempts: [{
+          turns: [
+            { toolCalls: [{ tool: 'remember', args: { kind: 'fact', key: 'reference-store-audit', body: 'Reference store audited: the 13 corrupted arXiv keys are gone; 0 mismatches remain.', tags: ['references', 'arxiv'] } }] },
+            { text: 'Removed the 13 corrupted arXiv keys. Full store audit: 0 mismatches.', usage: { input: 9, output: 4 } },
+          ],
+        }],
+      },
+    },
+    {
+      role: 'pm',
+      input: 'Now double-check the arXiv references.',
+      model: {
+        attempts: [{
+          turns: [
+            { toolCalls: [{ tool: 'dispatch_agent', args: { agent_slug: 'ra', task: 'Audit the arXiv references in the reference store for corrupted keys.' } }] },
+            { text: 'Audit complete.', usage: { input: 10, output: 5 } },
+          ],
+        }],
+      },
+    },
+    {
+      role: 'ra',
+      input: 'Audit the arXiv references in the reference store for corrupted keys.',
+      dispatchedBy: 2,
+      model: {
+        attempts: [{
+          turns: [
+            { toolCalls: [{ tool: 'recall', args: { query: 'corrupted arXiv keys' } }] },
+            { text: 'Memory shows the corrupted keys were already removed; nothing to redo.', usage: { input: 9, output: 4 } },
+          ],
+        }],
+      },
+    },
+  ],
+  assert: async (ctx) => {
+    const jobs = ctx.jobs();
+    const raJobs = jobs.filter((j) => j.role === 'ra');
+    const pmJobs = jobs.filter((j) => j.role === 'pm');
+    ctx.check('two RA runs and two PM runs', raJobs.length === 2 && pmJobs.length === 2, JSON.stringify(jobs.map((j) => j.role)));
+    const memory = ctx.rows('SELECT * FROM project_memory ORDER BY id');
+    const outcome = memory.find((m) => m.key === `task:${raJobs[0]?.id}`);
+    ctx.check('dispatch outcome recorded as an auto task_state keyed by the child job',
+      outcome?.kind === 'task_state' && outcome.auto === 1 && outcome.source_agent === 'ra'
+      && /Removed the 13 corrupted arXiv keys/.test(outcome.body), JSON.stringify(memory));
+    const fact = memory.find((m) => m.key === 'reference-store-audit');
+    ctx.check('the RA\'s own remember landed with provenance',
+      fact?.kind === 'fact' && fact.source_agent === 'ra' && fact.job_id === raJobs[0]?.id && fact.auto === 0);
+    ctx.check('every PM run that dispatched left a run outcome',
+      pmJobs.every((j) => memory.some((m) => m.key === `run:${j.id}`)), JSON.stringify(memory.map((m) => m.key)));
+    ctx.check('a run that only called recall left no run outcome',
+      !memory.some((m) => m.key === `run:${raJobs[1]?.id}`));
+    // The PM was told where the outcome lives, so it can point instead of paste.
+    const pmTool = ctx.toolMessages(pmJobs[0]?.conversation_id);
+    ctx.check('dispatcher tool result names the recorded entry',
+      pmTool.some((m) => new RegExp(`Recorded as memory #${outcome?.id}\\b`).test(m.content ?? '')),
+      JSON.stringify(pmTool.map((m) => m.content)));
+    // The second RA run's prompt carried the memory before it did anything.
+    const ra2 = ctx.driver.observations.find((o) => o.role === 'ra' && o.prompt?.includes('Audit the arXiv references'));
+    ctx.check('RA run 2 prompt carries the Project memory section', ra2?.prompt?.includes('## Project memory'), ra2?.prompt);
+    ctx.check('RA run 2 prompt headlines run 1\'s outcome',
+      ra2?.prompt?.includes(`#${outcome?.id} task_state task:${raJobs[0]?.id}, ra,`), ra2?.prompt);
+    ctx.check('RA run 2 prompt surfaces the audit fact by vocabulary',
+      ra2?.prompt?.includes(`#${fact?.id} fact reference-store-audit, ra,`), ra2?.prompt);
+    ctx.check('the memory section is bounded', (ra2?.prompt?.length ?? 0) < 4096);
+    const ra1 = ctx.driver.observations.find((o) => o.role === 'ra' && o.prompt?.includes('Remove the 13'));
+    ctx.check('RA run 1 (empty memory) got no section', !(ra1?.prompt ?? '').includes('## Project memory'));
+    ctx.check('system prompt tells the agent about memory', ra2?.systemPrompt?.includes('## Project memory'));
+    // recall ranks the run-1 outcome or the audit fact first.
+    const ra2Tool = ctx.toolMessages(raJobs[1]?.conversation_id);
+    const recallResult = ra2Tool.find((m) => /^#\d+ \[/.test(m.content ?? ''));
+    const firstId = parseInt((recallResult?.content ?? '').match(/^#(\d+)/)?.[1]);
+    ctx.check('recall returns the clean-up first',
+      firstId === outcome?.id || firstId === fact?.id, recallResult?.content);
+  },
+};

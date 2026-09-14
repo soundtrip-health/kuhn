@@ -18,6 +18,7 @@ import { basename, extname, resolve } from 'node:path';
 import { config } from '../config.js';
 import { querySync, transaction } from '../db.js';
 import { chunkText } from '../ingest.js';
+import { sanitizeFtsTerms, stemTerm as stem } from './fts-terms.js';
 
 /** Files in the guide directory that are not pages. */
 const NON_PAGES = new Set(['README.md']);
@@ -152,26 +153,6 @@ export function listGuidePages() {
 }
 
 /**
- * Question words carry no signal and, with the OR fallback, would match every
- * section ("how do I export to word" must rank on export/word). Dropped only
- * when a content word remains.
- */
-const STOPWORDS = new Set((
-  'a an and are as at be but by can do does for from how i in is it its my not of on or that the '
-  + 'this to what when where which who why with you your'
-).split(' '));
-
-/** FTS5 has its own operator syntax; quote every term so input is literal words. */
-function sanitizeFtsTerms(query) {
-  const terms = String(query)
-    .split(/\s+/)
-    .map((term) => term.replace(/["*:^(){}?,.!;]/g, ''))
-    .filter(Boolean);
-  const content = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()));
-  return (content.length ? content : terms).map((term) => `"${term}"`);
-}
-
-/**
  * Section search in three tiers. (1) Every term, any column — the precise
  * hit. (2) Any term in the HEADING tier (heading path, page title, keywords):
  * a question about "page lines" must land on the section named that even
@@ -199,12 +180,6 @@ export function searchGuide(query, limit = 4) {
 }
 
 const sectionKey = (r) => `${r.file}#${r.seq}`;
-
-/** Stem-ish prefix for coverage counting (porter does the real stemming in FTS). */
-const stem = (term) => {
-  const t = term.replace(/"/g, '').toLowerCase();
-  return t.length > 5 ? t.slice(0, Math.max(4, t.length - 2)) : t.replace(/s$/, '');
-};
 
 /** Sort by covered query terms (heading hits ×2), then BM25. */
 function rerank(rows, terms) {

@@ -16,7 +16,9 @@
 import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
-import { createJob, updateJob, getJob, requestJobCancel, getCancelRequest } from '../db/jobs.js';
+import { createJob, updateJob, getJob, requestJobCancel, getCancelRequest, getPriorRunStartedAt } from '../db/jobs.js';
+import { remember as rememberMemory } from '../db/memory.js';
+import { buildMemorySection } from './memory-context.js';
 import { recordChatRun, startChatJob } from '../db/chats.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
@@ -138,6 +140,11 @@ export async function* runAgentTask(task, internal = {}) {
     // Seeded from the caller for follow-up tasks (STH-47): a prior run's
     // provider-neutral record the adapters resume instead of starting cold.
     continuation: task.continuation ?? null,
+    // Issue #150: tools with product-side effects this run executed (the
+    // gate sees every one) and the run's final assistant text — a run that
+    // changed something leaves a task_state entry in the project memory.
+    mutations: 0,
+    lastText: null,
     // 'budget' when the budget cutoff aborts the in-flight turn; 'disconnect'
     // when the consumer dropped; 'user' when the user pressed Stop (issue
     // #136); null while the run is healthy.
@@ -322,7 +329,10 @@ function createRunGate({ state, job, projectId, userId, depth, agent, deadlineAt
       log.warn('run_gate_failed', { jobId: job.id, agent: agent.slug, depth, where, tool, err });
       return null;
     }
-    if (!reason) return null;
+    if (!reason) {
+      if (where === 'tool') state.mutations = (state.mutations ?? 0) + 1;
+      return null;
+    }
     log.warn('run_gate_tripped', { jobId: job.id, agent: agent.slug, depth, where, tool, reason });
     await cancelRun(state, { reason });
     return state.cancelReason ?? reason;
@@ -615,7 +625,9 @@ async function runTask(task, internal, channel, state) {
   });
 
   const systemPrompt = buildSystemPrompt(agent, projectDir, orgAddition, docType);
-  const prompt = buildPrompt(input, taskContext);
+  const prompt = await withProjectMemory(buildPrompt(input, taskContext), {
+    agent, projectId, job, input, chatId, sessionId, continuation: state.continuation, seeding,
+  });
 
   // Product-side usage in effective (budget/job) terms; the runtime's
   // canonical usage is disjoint-component and is converted per turn.
@@ -765,6 +777,7 @@ async function runTask(task, internal, channel, state) {
         continuation: state.continuation ?? null,
       });
       await syncChat();
+      recordRunOutcome({ job, agent, projectId, userId, depth, state });
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'done',
         contextTokens: lastContextTokens, inputTokens: productUsage.inputTokens,
@@ -977,6 +990,7 @@ async function runTask(task, internal, channel, state) {
           // 'text' event (the chat UI replaces accumulated deltas with it).
           if (!turnLog.open) turnLog.open = true;
           turnLog.text = event.content;
+          state.lastText = event.content;
           channel.push({ type: 'text', agent: agent.slug, content: event.content });
           break;
         case 'tool_call': {
@@ -1206,6 +1220,7 @@ async function writeBudgetHandoff(job, agent, projectId) {
     ]);
     if (handoff) await updateJob(job.id, { handoff });
     log.info('budget_handoff', { jobId: job.id, agent: agent.slug, captured: Boolean(handoff), chars: handoff?.length ?? 0 });
+    if (handoff) recordHandoffMemory({ job, agent, projectId, handoff });
     return handoff ?? null;
   } catch (err) {
     log.warn('budget_handoff_failed', { jobId: job.id, agent: agent.slug, err });
@@ -1243,6 +1258,60 @@ function effectiveInputTokens(usage) {
     + (usage?.cacheWriteTokens ?? 0);
 }
 
+/**
+ * Append the project-memory section to a run's prompt (issue #150, spec §6).
+ * Agents without the grant (help) and seeding runs (fixed prompts, empty
+ * memory) get the prompt untouched. A run that resumes a session gets only
+ * the entries created since the chat's previous run started. Never fails
+ * the run: a memory error degrades to no section.
+ */
+async function withProjectMemory(prompt, { agent, projectId, job, input, chatId, sessionId, continuation, seeding }) {
+  if (seeding || !Array.isArray(agent.tools) || !agent.tools.includes('project_memory')) return prompt;
+  try {
+    const resumed = Boolean(sessionId || continuation);
+    const since = resumed ? await getPriorRunStartedAt({ jobId: job.id, chatId, sessionId }) : null;
+    const section = buildMemorySection(projectId, { taskText: input, since, agent: agent.slug, jobId: job.id });
+    log.info('memory_inject', {
+      jobId: job.id, agent: agent.slug, projectId: Number(projectId), delta: resumed, since,
+      chars: section?.length ?? 0,
+    });
+    return section ? `${prompt}\n\n${section}` : prompt;
+  } catch (err) {
+    log.warn('memory_inject_failed', { jobId: job.id, agent: agent.slug, err });
+    return prompt;
+  }
+}
+
+/**
+ * Deterministic write 2 (issue #150, spec §5): a top-level run that executed
+ * at least one tool with product-side effects leaves its final text as a
+ * task_state entry. Read-only turns leave nothing. Dispatched children are
+ * recorded by the dispatcher (tools/interaction.js), with the child's job.
+ */
+function recordRunOutcome({ job, agent, projectId, userId, depth, state }) {
+  if (depth !== 0 || !(state.mutations > 0) || !state.lastText?.trim()) return;
+  try {
+    rememberMemory(projectId, {
+      kind: 'task_state', key: `run:${job.id}`, body: state.lastText, tags: [agent.slug, 'run'],
+      sourceAgent: agent.slug, userId, jobId: job.id, auto: true, truncate: true,
+    });
+  } catch (err) {
+    log.warn('memory_write_failed', { jobId: job.id, agent: agent.slug, where: 'run_outcome', err });
+  }
+}
+
+/** Deterministic write 5 (issue #150, spec §5): the pause hand-off, findable by any agent that resumes the project. */
+function recordHandoffMemory({ job, agent, projectId, handoff }) {
+  try {
+    rememberMemory(projectId, {
+      kind: 'task_state', key: `handoff:${job.id}`, body: handoff, tags: [agent.slug, 'handoff'],
+      sourceAgent: agent.slug, userId: job.user_id ?? null, jobId: job.id, auto: true, truncate: true,
+    });
+  } catch (err) {
+    log.warn('memory_write_failed', { jobId: job.id, agent: agent.slug, where: 'handoff', err });
+  }
+}
+
 function buildSystemPrompt(agent, projectDir, orgAddition = null, docType = null) {
   const parts = [
     agent.system_prompt,
@@ -1257,6 +1326,23 @@ function buildSystemPrompt(agent, projectDir, orgAddition = null, docType = null
     parts.push(
       'Use the file tools (read_file, write_file, edit_file, list_files, search_files) for all',
       'file access; they take paths relative to the workspace root and cannot reach outside it.',
+    );
+  }
+  // Issue #150: the shared project memory, for every agent that holds the
+  // grant. Role prompts say what each role should remember (stage 2); this
+  // says what memory is and the one rule that is not the model's to bend.
+  if (Array.isArray(agent.tools) && agent.tools.includes('project_memory')) {
+    parts.push(
+      '',
+      '## Project memory',
+      'This project has a shared memory that every agent reads at the start of a run (the "Project memory"',
+      'section of your task) and can search with `recall`. It carries decisions, facts, task outcomes and',
+      'open issues across runs and across agents, so nothing depends on one chat remembering. Before doing',
+      'work another run may already have done or decided, `recall` it. When you finish something the next',
+      'run of any agent should know — a decision and why, a fact about the data, where a task was left —',
+      '`remember` it, short, with a stable key if it will be updated later. Entries the user wrote are not',
+      'yours to overwrite or retire: challenge them when the evidence warrants it (ask, or record an issue',
+      'naming the entry), never silently.',
     );
   }
   // Issue #106: the project's document type, from the org's effective

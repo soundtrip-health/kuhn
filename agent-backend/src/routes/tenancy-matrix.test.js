@@ -124,7 +124,7 @@ beforeAll(async () => {
   // The full post-session() tenant surface, in index.js mount order.
   for (const mod of [
     './agent.js', './agent-prompts.js', './chats.js', './citations.js', './comments.js', './files.js',
-    './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
+    './history.js', './memory.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
     './org-secrets.js', './org-budgets.js', './doc-types.js']) {
@@ -183,6 +183,7 @@ const ROUTES = [
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/file`, req: () => ({ query: { path: 'draft/main.md' } }), ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/history`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/history/file`, ok: { status: 400 } },
+  { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/memory`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/pending-edits`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'POST', path: `/api/projects/${PROJECT_A}/render`, req: () => ({ json: {} }), ok: { status: 400 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/export`, ok: { status: 400 } },

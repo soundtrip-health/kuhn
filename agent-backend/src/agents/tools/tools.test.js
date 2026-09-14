@@ -64,6 +64,19 @@ vi.mock('../search.js', () => ({
   arxivSearch: vi.fn(async () => []),
 }));
 vi.mock('../../db/file-activity.js', () => ({ recordFileEvent: vi.fn() }));
+// Issue #150: project memory — the SQL substance lives in db/memory.test.js.
+vi.mock('../../db/memory.js', () => {
+  class MemoryError extends Error { constructor(code, message) { super(message); this.code = code; } }
+  return {
+    MEMORY_KINDS: ['fact', 'decision', 'task_state', 'issue', 'note'],
+    MEMORY_LIMITS: { body: 2048, tags: 8 },
+    MemoryError,
+    remember: vi.fn((_p, entry) => ({ entry: { id: 42, kind: entry.kind, key: entry.key ?? null }, superseded: null, capRetired: 0 })),
+    recall: vi.fn(() => []),
+    forget: vi.fn((_p, id) => ({ id, kind: 'note', key: null })),
+  };
+});
+vi.mock('../../logger.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 vi.mock('../../db/move-paths.js', () => ({
   applyMove: vi.fn((_p, from, to) => ({ from, to })),
   findPendingEditConflicts: vi.fn(() => []),
@@ -132,6 +145,7 @@ vi.mock('../../project-events.js', () => ({ publishProjectEvent: vi.fn() }));
 vi.mock('../project-config.js', () => ({ applyProjectConfig: vi.fn(async () => ({})) }));
 
 import { createToolContext, listTools, findTool } from './registry.js';
+import { remember as rememberMemory } from '../../db/memory.js';
 import { toolOk, toolError, toolResult } from './envelope.js';
 import { validateArgs } from './validate.js';
 import { readProjectFile, writeProjectFile } from '../../storage.js';
@@ -150,7 +164,8 @@ const ALL_GRANTS = [
   'add_citation', 'add_reference', 'verify_references', 'manage_references',
   'add_comment', 'manage_comments',
   'pubmed_search', 'arxiv_search', 'search_org_knowledge',
-  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'list_doc_types', 'web_search',
+  'run_script', 'ask_user', 'spawn_agent', 'project_config', 'list_slide_themes', 'list_typst_templates', 'search_kuhn_guide', 'list_doc_types',
+  'project_memory', 'web_search',
 ];
 
 // Issue #147: the model-facing contract has no typed-metadata fields for an
@@ -218,6 +233,7 @@ const EXPECTED_ORDER = [
   'list_typst_templates',
   'search_kuhn_guide',
   'list_doc_types',
+  'remember', 'recall', 'forget',
   'web_search',
 ];
 
@@ -427,7 +443,12 @@ describe('server-derived identity (STH-1)', () => {
     });
     const result = await run(findTool(ctx, 'dispatch_agent'), { agent_slug: 'writer', task: 'write the intro' });
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('child result');
+    // Issue #150 write 1: the child's reply is recorded as a task_state
+    // entry and the dispatcher is told where, so it can point instead of paste.
+    expect(result.content[0].text).toBe('child result\n\n[Recorded as memory #42.]');
+    expect(rememberMemory).toHaveBeenCalledWith(1, expect.objectContaining({
+      kind: 'task_state', body: 'child result', sourceAgent: 'writer', auto: true, tags: ['writer', 'dispatch'],
+    }));
     expect(dispatchCalls).toHaveLength(1);
     const { task, internal } = dispatchCalls[0];
     expect(task).toMatchObject({ role: 'writer', projectId: 1, userId: 3, seeding: false });

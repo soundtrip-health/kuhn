@@ -54,6 +54,23 @@ export async function createJob({ role, projectId = null, input, context = null,
   return job;
 }
 
+/**
+ * When the run before this one on the same chat (or provider session)
+ * started — the "since" of a resumed run's project-memory delta (issue #150
+ * spec §6): entries created after it are new to the conversation.
+ * @returns {Promise<string|null>} ISO timestamp, or null when there is no prior run
+ */
+export async function getPriorRunStartedAt({ jobId, chatId = null, sessionId = null }) {
+  if (chatId == null && !sessionId) return null;
+  const { rows } = await query(
+    `SELECT created_at FROM jobs
+     WHERE id < $1 AND ((chat_id IS NOT NULL AND chat_id = $2) OR (session_id IS NOT NULL AND session_id = $3))
+     ORDER BY id DESC LIMIT 1`,
+    [jobId, chatId, sessionId],
+  );
+  return rows[0]?.created_at ?? null;
+}
+
 /** Job states that are not terminal (issue #118). */
 export const OPEN_JOB_STATUSES = ['queued', 'running', 'waiting_for_user', 'retry_wait'];
 const OPEN_LIST = OPEN_JOB_STATUSES.map((st) => `'${st}'`).join(', ');
