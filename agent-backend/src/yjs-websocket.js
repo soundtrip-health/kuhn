@@ -280,6 +280,11 @@ export function evictRoomsUnder(prefix, opts = {}) {
 }
 
 /** Test hook: does a room currently exist in memory? */
+/** Test hook: live connections in a room (0 when the room does not exist). */
+export function roomConnectionCount(name) {
+  return docs.get(name)?.conns.size ?? 0;
+}
+
 export function hasRoom(name) {
   return docs.has(name);
 }
@@ -309,6 +314,57 @@ function ensureSweep() {
     void sweepMemberConnections();
   }, SWEEP_MS);
   sweepTimer.unref?.();
+}
+
+/**
+ * Liveness (Canopy-R01 follow-up). A browser that vanishes without a close
+ * frame — a closed laptop lid, a dropped tunnel, a killed tab behind a
+ * proxy — leaves a socket the server still counts as a room member. Such a
+ * zombie keeps its room alive past the 30 s idle expiry indefinitely, and a
+ * room that outlives every real client is a stale copy waiting to win over
+ * storage (story 038's hazard, with no one there to reconcile it). It also
+ * blocks the "room is empty" premise everything else relies on. Standard ws
+ * pattern: ping every connection on an interval; one that did not pong since
+ * the previous round is terminated, which fires its 'close' like any other
+ * departure (leave logged, room count corrected, 30 s expiry armed).
+ */
+const LIVENESS_MS = 30_000;
+let livenessTimer = null;
+const liveConns = new Set();
+
+function trackLiveness(ws) {
+  ws.kuhnAlive = true;
+  ws.on('pong', () => { ws.kuhnAlive = true; });
+  liveConns.add(ws);
+  if (livenessTimer) return;
+  livenessTimer = setInterval(sweepLiveness, LIVENESS_MS);
+  livenessTimer.unref?.();
+}
+
+export function sweepLiveness() {
+  for (const ws of [...liveConns]) {
+    if (ws.readyState !== 1) {
+      liveConns.delete(ws);
+      continue;
+    }
+    if (ws.kuhnAlive === false) {
+      liveConns.delete(ws);
+      log.warn('ws_zombie_terminated', { room: ws.kuhnRoom ?? null, principal: ws.kuhnPrincipal?.kind ?? null });
+      try {
+        if (typeof ws.terminate === 'function') ws.terminate();
+        else ws.close(1001, 'No pong');
+      } catch {
+        // a dying socket must not block the sweep
+      }
+      continue;
+    }
+    ws.kuhnAlive = false;
+    try {
+      ws.ping?.();
+    } catch {
+      // ping on a half-dead socket: the next round terminates it
+    }
+  }
 }
 
 /** Close one reviewer socket with the verdict for a non-live link state. */
@@ -613,6 +669,8 @@ export function handleYjsConnection(ws, req) {
 
   const entry = getOrCreateDoc(roomName);
   entry.conns.add(ws);
+  ws.kuhnRoom = roomName;
+  trackLiveness(ws);
   const joinedAt = Date.now();
   const who = reviewer
     ? { principal: 'reviewer', linkId: reviewer.linkId }
@@ -693,6 +751,7 @@ export function handleYjsConnection(ws, req) {
   ws.on('close', (code, reasonBuf) => {
     entry.conns.delete(ws);
     memberConns.delete(ws);
+    liveConns.delete(ws);
     log.info('ws_room_leave', {
       room: roomName, code, reason: reasonBuf?.toString?.() || undefined,
       conns: entry.conns.size, seconds: Math.round((Date.now() - joinedAt) / 1000), ...who,

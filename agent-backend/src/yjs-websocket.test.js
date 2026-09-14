@@ -21,7 +21,7 @@ import * as decoding from 'lib0/decoding';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-let handleYjsConnection; let evictRoom; let evictRoomsUnder; let hasRoom;
+let handleYjsConnection; let evictRoom; let evictRoomsUnder; let hasRoom; let sweepLiveness; let roomConnectionCount;
 let closeReviewerConnections; let closeReviewerOnlyRoom; let sweepReviewerConnections;
 let sweepMemberConnections;
 let publishProjectEvent;
@@ -35,7 +35,7 @@ beforeAll(async () => {
   ({ exec, querySync } = await import('./db.js'));
   exec(readFileSync(resolve(__dirname, 'db/schema.sql'), 'utf-8'));
   ({
-    handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom,
+    handleYjsConnection, evictRoom, evictRoomsUnder, hasRoom, sweepLiveness, roomConnectionCount,
     closeReviewerConnections, closeReviewerOnlyRoom, sweepReviewerConnections,
     sweepMemberConnections,
   } = await import('./yjs-websocket.js'));
@@ -85,6 +85,15 @@ function fakeWs() {
     },
     /** Simulate the client going away without a server-initiated close. */
     disconnect() {
+      handlers.get('close')?.();
+    },
+    // Liveness (ws ping/pong). A fake that never pongs models a zombie.
+    pings: 0,
+    ping() { this.pings += 1; },
+    pong() { handlers.get('pong')?.(); },
+    terminate() {
+      this.closed = { code: 'terminated' };
+      this.readyState = 3;
       handlers.get('close')?.();
     },
   };
@@ -249,6 +258,22 @@ describe('collab room eviction (story 038)', () => {
     evictRoom(room);
     const third = connect(room);
     expect(decodeGrant(third.sent[0])).toBe(1);
+  });
+
+  it('terminates a socket that stops answering pings, so a vanished tab cannot keep its room alive', () => {
+    const room = 'project-909/draft/zombie.md';
+    const live = connect(room);
+    const zombie = connect(room);
+    sweepLiveness(); // round 1: everyone is pinged
+    expect(live.pings).toBe(1);
+    expect(zombie.pings).toBe(1);
+    live.pong();
+    sweepLiveness(); // round 2: the live socket answered, the zombie did not
+    expect(live.closed).toBe(null);
+    expect(zombie.closed).toEqual({ code: 'terminated' });
+    expect(roomConnectionCount(room)).toBe(1);
+    live.disconnect();
+    expect(roomConnectionCount(room)).toBe(0);
   });
 
   it('stamps every grant with the room generation, which changes when the room is rebuilt', () => {
