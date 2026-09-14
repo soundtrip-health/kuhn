@@ -172,20 +172,55 @@ function sanitizeFtsTerms(query) {
 }
 
 /**
- * BM25-ranked section search. Headings, page titles and keywords outrank body
- * text (a question about "page limits" should land on the section named
- * that, not on every page that mentions pages). All-terms first, OR fallback
- * so one absent word does not zero the result — the same shape as
- * searchOrgKnowledge.
+ * Section search in three tiers. (1) Every term, any column — the precise
+ * hit. (2) Any term in the HEADING tier (heading path, page title, keywords):
+ * a question about "page lines" must land on the section named that even
+ * when the model padded the query with synonyms. (3) Any term in the body.
+ * Tiers 2–3 are re-ranked by how many query terms a section covers (heading
+ * hits count double) before BM25, because with OR semantics BM25 lets one
+ * rare stray word ("ruler", "settings") outrank a section matching the two
+ * words that matter — the failure that made the help agent deny a documented
+ * feature on its first production question.
  * @returns {Array<{ file, title, area, headingPath, seq, text, snippet, rank }>}
  */
 export function searchGuide(query, limit = 4) {
   const terms = sanitizeFtsTerms(query);
   if (terms.length === 0) return [];
   const cap = Math.min(Math.max(parseInt(limit) || 4, 1), 10);
-  const rows = ftsQuery(terms.join(' '), cap);
-  if (rows.length > 0 || terms.length < 2) return rows;
-  return ftsQuery(terms.join(' OR '), cap);
+  const exact = ftsQuery(terms.join(' '), cap);
+  if (exact.length >= cap || terms.length < 2) return exact;
+
+  const seen = new Set(exact.map(sectionKey));
+  const take = (rows) => rows.filter((r) => !seen.has(sectionKey(r)) && seen.add(sectionKey(r)));
+  const any = terms.join(' OR ');
+  const headings = take(rerank(ftsQuery(`{heading_path title keywords} : (${any})`, cap * 4), terms));
+  const body = take(rerank(ftsQuery(any, cap * 4), terms));
+  return [...exact, ...headings, ...body].slice(0, cap);
+}
+
+const sectionKey = (r) => `${r.file}#${r.seq}`;
+
+/** Stem-ish prefix for coverage counting (porter does the real stemming in FTS). */
+const stem = (term) => {
+  const t = term.replace(/"/g, '').toLowerCase();
+  return t.length > 5 ? t.slice(0, Math.max(4, t.length - 2)) : t.replace(/s$/, '');
+};
+
+/** Sort by covered query terms (heading hits ×2), then BM25. */
+function rerank(rows, terms) {
+  const stems = terms.map(stem);
+  const scored = rows.map((r) => {
+    const head = `${r.headingPath ?? ''} ${r.title ?? ''}`.toLowerCase();
+    const text = r.text.toLowerCase();
+    let score = 0;
+    for (const st of stems) {
+      if (head.includes(st)) score += 2;
+      else if (text.includes(st)) score += 1;
+    }
+    return { r, score };
+  });
+  scored.sort((a, b) => b.score - a.score || a.r.rank - b.r.rank);
+  return scored.map((x) => x.r);
 }
 
 function ftsQuery(match, cap) {
