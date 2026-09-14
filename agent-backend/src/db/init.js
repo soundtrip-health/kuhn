@@ -69,6 +69,20 @@ export const COLUMN_MIGRATIONS = [
   // ALTER: chats is created by schema.sql before this runs, and SQLite only
   // checks the reference on writes.
   { table: 'jobs', column: 'chat_id', ddl: 'INTEGER REFERENCES chats(id) ON DELETE SET NULL' },
+  // Issue #118 stage 1: durable job lifecycle columns. All nullable or
+  // defaulted; pre-migration rows carry NULL root_job_id (a self-reference
+  // backfill follows in applyJobsStatusMigration).
+  { table: 'jobs', column: 'root_job_id', ddl: 'INTEGER REFERENCES jobs(id) ON DELETE SET NULL' },
+  { table: 'jobs', column: 'worker_id', ddl: 'TEXT' },
+  { table: 'jobs', column: 'lease_until', ddl: 'TEXT' },
+  { table: 'jobs', column: 'heartbeat_at', ddl: 'TEXT' },
+  { table: 'jobs', column: 'attempt', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'jobs', column: 'cancel_requested_at', ddl: 'TEXT' },
+  { table: 'jobs', column: 'cancel_reason', ddl: 'TEXT' },
+  { table: 'jobs', column: 'waiting_since', ddl: 'TEXT' },
+  { table: 'jobs', column: 'wake_at', ddl: 'TEXT' },
+  { table: 'jobs', column: 'deadline_at', ddl: 'TEXT' },
+  { table: 'jobs', column: 'budget_used', ddl: 'INTEGER NOT NULL DEFAULT 0' },
 ];
 
 // Story 012-002: file_events.kind gained 'moved'. SQLite cannot ALTER a CHECK
@@ -346,6 +360,124 @@ export function applyProjectTypeCheckMigration() {
   }
 }
 
+// Issue #118 stage 1: jobs.status gained queued / waiting_for_user /
+// retry_wait and retired 'pending'. CHECK constraints cannot be ALTERed, so
+// an existing database gets the same table rebuild as above. Keep this DDL
+// byte-compatible with jobs in schema.sql (every COLUMN_MIGRATIONS column
+// included — the rebuild runs after applyColumnMigrations).
+const JOBS_NEW_DDL = `
+  CREATE TABLE jobs_new (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    conversation_id  INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    parent_job_id    INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    role             TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+                       'queued', 'running', 'waiting_for_user', 'retry_wait',
+                       'done', 'error', 'interrupted', 'cancelled'
+                     )),
+    input            TEXT NOT NULL,
+    context          TEXT,
+    session_id       TEXT,
+    provider         TEXT,
+    model            TEXT,
+    continuation     TEXT,
+    error            TEXT,
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    context_tokens   INTEGER NOT NULL DEFAULT 0,
+    handoff          TEXT,
+    weighted_tokens  INTEGER NOT NULL DEFAULT 0,
+    profile          TEXT,
+    endpoint         TEXT,
+    difficulty       REAL,
+    route_source     TEXT,
+    chat_id          INTEGER REFERENCES chats(id) ON DELETE SET NULL,
+    root_job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    worker_id        TEXT,
+    lease_until      TEXT,
+    heartbeat_at     TEXT,
+    attempt          INTEGER NOT NULL DEFAULT 0,
+    cancel_requested_at TEXT,
+    cancel_reason    TEXT,
+    waiting_since    TEXT,
+    wake_at          TEXT,
+    deadline_at      TEXT,
+    budget_used      INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`;
+
+const JOBS_COLUMNS = [
+  'id', 'project_id', 'conversation_id', 'parent_job_id', 'user_id', 'role', 'status', 'input',
+  'context', 'session_id', 'provider', 'model', 'continuation', 'error', 'input_tokens',
+  'output_tokens', 'context_tokens', 'handoff', 'weighted_tokens', 'profile', 'endpoint',
+  'difficulty', 'route_source', 'chat_id', 'root_job_id', 'worker_id', 'lease_until',
+  'heartbeat_at', 'attempt', 'cancel_requested_at', 'cancel_reason', 'waiting_since', 'wake_at',
+  'deadline_at', 'budget_used', 'created_at', 'updated_at',
+];
+
+/** The job states the current schema's CHECK must carry (issue #118). */
+export const JOB_STATUSES = ['queued', 'running', 'waiting_for_user', 'retry_wait', 'done', 'error', 'interrupted', 'cancelled'];
+
+/**
+ * Rebuild jobs so its status CHECK carries the #118 lifecycle states,
+ * mapping the retired 'pending' to 'queued', and backfill root_job_id for
+ * pre-migration rows (a top-level job is its own root; a sub-job takes its
+ * parent's root, walking up to the dispatch depth limit). Idempotent: runs
+ * only when the live DDL lacks a state. Same 12-step discipline as above.
+ */
+export function applyJobsStatusMigration() {
+  const { rows } = querySync("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'");
+  const currentDdl = rows[0]?.sql;
+  if (!currentDdl) return;
+  const present = new Set(querySync("SELECT name FROM pragma_table_info('jobs')").rows.map((r) => r.name));
+  if (!present.has('root_job_id')) return; // partial-stub test databases
+  if (!JOB_STATUSES.every((st) => currentDdl.includes(`'${st}'`))) {
+    const [{ foreign_keys: fkEnabled }] = db.pragma('foreign_keys');
+    db.pragma('foreign_keys = OFF');
+    try {
+      transaction(() => {
+        const cols = JOBS_COLUMNS.filter((c) => present.has(c));
+        const select = cols.map((c) => (c === 'status' ? "CASE status WHEN 'pending' THEN 'queued' ELSE status END AS status" : c)).join(', ');
+        querySync(JOBS_NEW_DDL);
+        querySync(`INSERT INTO jobs_new (${cols.join(', ')}) SELECT ${select} FROM jobs`);
+        querySync('DROP TABLE jobs');
+        querySync('ALTER TABLE jobs_new RENAME TO jobs');
+        // schema.sql's own jobs indexes went with the dropped table; the
+        // migrated-column ones are recreated by applyJobsIndexMigration.
+        querySync('CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id, created_at DESC)');
+        querySync('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)');
+      });
+      const violations = db.pragma('foreign_key_check');
+      if (violations.length) {
+        throw new Error(`jobs rebuild left ${violations.length} foreign key violation(s)`);
+      }
+      console.log(`[db] Migrated: jobs rebuilt for statuses ${JOB_STATUSES.join(', ')} (issue #118).`);
+    } finally {
+      db.pragma(`foreign_keys = ${fkEnabled ? 'ON' : 'OFF'}`);
+    }
+  }
+  // root_job_id backfill: top-level rows first, then descend one level per
+  // pass until no open-ended child remains (bounded by the dispatch depth).
+  const { rowCount: roots } = querySync('UPDATE jobs SET root_job_id = id WHERE root_job_id IS NULL AND parent_job_id IS NULL');
+  let filled = roots;
+  for (let pass = 0; pass < 8; pass++) {
+    const { rowCount } = querySync(
+      `UPDATE jobs SET root_job_id = (SELECT p.root_job_id FROM jobs p WHERE p.id = jobs.parent_job_id)
+        WHERE root_job_id IS NULL AND parent_job_id IS NOT NULL
+          AND (SELECT p.root_job_id FROM jobs p WHERE p.id = jobs.parent_job_id) IS NOT NULL`,
+    );
+    filled += rowCount;
+    if (rowCount === 0) break;
+  }
+  // Orphans whose parent row is gone (ON DELETE SET NULL) are their own root.
+  const { rowCount: orphans } = querySync('UPDATE jobs SET root_job_id = id WHERE root_job_id IS NULL');
+  filled += orphans;
+  if (filled > 0) console.log(`[db] Migrated: root_job_id backfilled on ${filled} job row(s) (issue #118).`);
+}
+
 /**
  * Issue #65: partial unique index over migrated columns. schema.sql cannot
  * carry it — on an existing database exec(schemaSql) runs BEFORE
@@ -359,7 +491,7 @@ export function applyKnowledgeIndexMigration() {
 }
 
 /**
- * Indexes over migrated jobs columns (issue #110 user_id, issue #113 chat_id):
+ * Indexes over migrated jobs columns (issue #110 user_id, issue #113 chat_id, issue #118 root_job_id):
  * they cannot live in schema.sql, which runs BEFORE applyColumnMigrations on
  * an upgrade — a CREATE INDEX over a column that does not exist yet aborts the
  * boot (that is how #113 broke `npm run db:seed` on a pre-#113 database).
@@ -370,6 +502,7 @@ export function applyJobsIndexMigration() {
   if (!have.has('created_at')) return; // partial-stub test databases
   if (have.has('user_id')) exec('CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at)');
   if (have.has('chat_id')) exec('CREATE INDEX IF NOT EXISTS idx_jobs_chat ON jobs(chat_id, created_at DESC)');
+  if (have.has('root_job_id')) exec('CREATE INDEX IF NOT EXISTS idx_jobs_root ON jobs(root_job_id)');
 }
 
 /** Add any COLUMN_MIGRATIONS entries missing from an existing database. */
@@ -396,6 +529,7 @@ export async function initDb() {
   applyMembershipsRoleMigration();
   applyModelProfilesProviderMigration();
   applyProjectTypeCheckMigration();
+  applyJobsStatusMigration();
   applyKnowledgeIndexMigration();
   applyJobsIndexMigration();
   console.log('[db] Schema applied.');

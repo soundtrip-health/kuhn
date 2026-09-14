@@ -165,6 +165,10 @@ export const config = {
     questionTimeoutMs: process.env.AGENT_QUESTION_TIMEOUT_MS
       ? parseInt(process.env.AGENT_QUESTION_TIMEOUT_MS)
       : null,
+    // Wall-clock bound for a whole run (the top-level job and everything it
+    // dispatches; issue #118 stage 1, threat T-29). Past it the run is
+    // cancelled with a hand-off note so the user can continue. 2 h default.
+    runMaxMs: parseInt(process.env.AGENT_RUN_MAX_MS || String(2 * 60 * 60 * 1000)),
     // Global fallback model, used only when an agent's model is NULL. Per-agent
     // models (agents.model, story 021) win and are set in db/seed.sql.
     model: process.env.AGENT_MODEL || undefined,

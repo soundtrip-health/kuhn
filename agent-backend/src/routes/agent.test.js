@@ -520,6 +520,11 @@ describe('POST /api/agent/jobs/:id/cancel (issue #136)', () => {
         expect(await parked).toBeNull(); // the ask_user wait was released without an answer
         const marked = query.mock.calls.find(([sql, params]) => /UPDATE jobs SET status/.test(sql) && params?.[0] === 'cancelled');
         expect(marked).toBeDefined();
+        // Persisted first (issue #118): the flag is raised on the tree before the abort.
+        const flagged = query.mock.calls.find(([sql]) => /SET cancel_requested_at/.test(sql));
+        expect(flagged).toBeDefined();
+        expect(flagged[1]).toEqual([82, 'user']);
+        expect(query.mock.calls.indexOf(flagged)).toBeLessThan(query.mock.calls.indexOf(marked));
       } finally {
         unregisterRun(82);
       }

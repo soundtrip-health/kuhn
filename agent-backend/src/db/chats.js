@@ -6,11 +6,11 @@
 // client merely names the chat (or the project + agent, which resolves to
 // one). One row per (project, agent, user); created on first use.
 //
-// Status is NOT stored. Only stage 0 of #118 has landed (jobs.status is
-// still pending|running|done|error|interrupted|cancelled), so `status` is a
-// read-time projection of current_job_id's job row — see chatStatus().
-// `waiting_for_user` is deferred to #118 stage 1, where a parked ask_user
-// becomes a persisted job state instead of in-memory runtime state.
+// Status is NOT stored: `status` is a read-time projection of
+// current_job_id's job row — see chatStatus(). #118 stage 1 widened the job
+// states (queued | running | waiting_for_user | retry_wait are all open);
+// a distinct 'waiting' chat status arrives with stage 2, when a parked
+// ask_user becomes a persisted job state instead of in-memory runtime state.
 
 import { query } from '../db.js';
 import { isBudgetPaused } from '../agents/budget-pause.js';
@@ -25,16 +25,17 @@ const SELECT = `
 
 /**
  * Project a chat's status from its current job (see the module note):
- * 'running' while that job is pending/running, 'paused' when the token
- * budget paused it (the budget-pause convention: status 'error' with the
- * BUDGET_EXCEEDED_ERROR text), else 'idle'. 'waiting_for_user' waits for
- * #118 stage 1.
+ * 'running' while that job is open (queued, running, parked on a question
+ * or in a retry wait), 'paused' when the token budget paused it (the
+ * budget-pause convention: status 'error' with the BUDGET_EXCEEDED_ERROR
+ * text), else 'idle'.
  * @param {{ status?: string, error?: string|null } | null | undefined} job
  * @returns {'idle'|'running'|'paused'}
  */
+const OPEN = new Set(['queued', 'running', 'waiting_for_user', 'retry_wait']);
 export function chatStatus(job) {
   if (!job) return 'idle';
-  if (job.status === 'pending' || job.status === 'running') return 'running';
+  if (OPEN.has(job.status)) return 'running';
   if (isBudgetPaused(job)) return 'paused';
   return 'idle';
 }

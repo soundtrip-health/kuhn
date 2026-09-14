@@ -14,7 +14,7 @@ import { routeOptions } from '../agents/model-routing.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { getChat, getOrCreateChat, setPinnedProfile } from '../db/chats.js';
 import { getRun, listLiveRuns } from '../agents/runs.js';
-import { getJob, getJobTrace, listJobs } from '../db/jobs.js';
+import { getJob, getJobTrace, listJobs, requestJobCancel } from '../db/jobs.js';
 import { requireProjectRole } from './guards.js';
 import { streamEvents } from './sse.js';
 import { assertContinuation } from '../agents/provider-runtime/continuation.js';
@@ -325,6 +325,10 @@ router.post('/api/agent/jobs/:id/cancel', async (req, res) => {
     res.status(409).json({ error: 'job is not running', status: job.status });
     return;
   }
+  // Persisted first, signalled second (issue #118 §5): the flag reaches every
+  // open row of the tree before the in-process abort, so nothing is lost if
+  // the abort races a sub-agent that is still starting.
+  await requestJobCancel(job.root_job_id ?? job.id, 'user');
   const stopped = await cancelRun(run.state, { reason: 'user' });
   if (!stopped) {
     res.status(409).json({ error: 'job is not running', status: 'finished' });

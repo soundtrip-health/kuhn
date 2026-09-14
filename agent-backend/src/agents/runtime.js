@@ -16,7 +16,7 @@
 import { config } from '../config.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
-import { createJob, updateJob } from '../db/jobs.js';
+import { createJob, updateJob, getJob, requestJobCancel, getCancelRequest } from '../db/jobs.js';
 import { recordChatRun, startChatJob } from '../db/chats.js';
 import { getProject } from '../db/projects.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
@@ -24,9 +24,10 @@ import { resolveDocType } from '../db/doc-types.js';
 import { resolveProjectDir } from '../storage.js';
 import { publishProjectEvent } from '../project-events.js';
 import { log } from '../logger.js';
+import { checkOrgAccess } from '../db/orgs.js';
 import { EventChannel } from './events.js';
 import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
-import { registerRun, unregisterRun } from './runs.js';
+import { registerRun, unregisterRun, WORKER_ID } from './runs.js';
 import { createToolContext, listTools } from './tools/index.js';
 import { createAgentRuntime } from './provider-runtime/factory.js';
 import { PROVIDER_ERROR_CODES, normalizeProviderError, toolResultText } from './provider-runtime/contract.js';
@@ -166,6 +167,7 @@ export async function* runAgentTask(task, internal = {}) {
     })
     .finally(() => {
       state.finished = true;
+      if (state.deadlineTimer) clearTimeout(state.deadlineTimer);
       channel.end();
       unregisterRun(state.job?.id);
     });
@@ -260,9 +262,71 @@ export async function cancelRun(state, { reason = 'user' } = {}) {
   state.controller?.abort(); // the adapter interrupts the provider query
   if (jobId != null) {
     log.info('job_cancel', { jobId, agent: state.job?.role ?? null, reason: state.cancelReason });
-    await updateJob(jobId, { status: 'cancelled' }).catch(() => {});
+    // Persisted first (issue #118): the flag lands on every open row of the
+    // tree so a sub-job this process cannot signal still stops at its next
+    // control point, and the reason survives for the audit trail.
+    await requestJobCancel(state.rootJobId ?? jobId, state.cancelReason).catch(() => {});
+    await updateJob(jobId, { status: 'cancelled', cancelReason: state.cancelReason }).catch(() => {});
   }
   return true;
+}
+
+// How long a run gate's tenancy verdict is trusted before re-checking
+// (issue #118 §8): a suspended tenant's run stops within this of the
+// suspension plus one control point, not at its natural end.
+const RUN_GATE_TTL_MS = 5000;
+const ACCESS_REVOKED_REASONS = new Set(['suspended', 'removed', 'deleted']);
+// Deliberately non-leaking: the same line whether the org was suspended,
+// the member removed, or the project deleted.
+const ACCESS_REVOKED_MESSAGE = 'This run was stopped because access to the project was revoked.';
+
+/**
+ * The run's control point (issue #118 §5, §8): consulted before each provider
+ * turn, before every mutating tool (tools/registry.js) and when a parked
+ * question wakes (ask_user). Checks, in order, the persisted cancel flag,
+ * the wall-clock deadline, and — memoized for RUN_GATE_TTL_MS — the tenancy
+ * gate: the project still exists and the requesting user still holds the
+ * editor role in a non-suspended org (system runs with no user check the
+ * project only). A tripped gate stops the run through cancelRun and
+ * resolves the reason; a healthy one resolves null. A gate that cannot be
+ * evaluated (DB error) logs and lets the run continue — a transient outage
+ * must not cancel every run in flight.
+ */
+function createRunGate({ state, job, projectId, userId, depth, agent, deadlineAt }) {
+  const deadline = deadlineAt ? Date.parse(deadlineAt) : NaN;
+  let checkedAt = 0;
+  let verdict = null;
+  const tenancy = async () => {
+    const now = Date.now();
+    if (now - checkedAt < RUN_GATE_TTL_MS) return verdict;
+    checkedAt = now;
+    verdict = null;
+    const live = await getProject(projectId);
+    if (!live) {
+      verdict = 'deleted';
+    } else if (live.org_id != null && userId != null) {
+      const access = await checkOrgAccess(userId, live.org_id, 'editor');
+      if (!access.ok) verdict = access.reason === 'suspended' ? 'suspended' : 'removed';
+    }
+    return verdict;
+  };
+  return async function gate(where, tool = null) {
+    if (state.controller?.signal.aborted) return state.cancelReason ?? 'cancelled';
+    let reason = null;
+    try {
+      const flag = await getCancelRequest(job.id);
+      if (flag) reason = flag.reason ?? 'user';
+      if (!reason && Number.isFinite(deadline) && Date.now() > deadline) reason = 'deadline';
+      if (!reason) reason = await tenancy();
+    } catch (err) {
+      log.warn('run_gate_failed', { jobId: job.id, agent: agent.slug, depth, where, tool, err });
+      return null;
+    }
+    if (!reason) return null;
+    log.warn('run_gate_tripped', { jobId: job.id, agent: agent.slug, depth, where, tool, reason });
+    await cancelRun(state, { reason });
+    return state.cancelReason ?? reason;
+  };
 }
 
 /**
@@ -386,8 +450,30 @@ async function runTask(task, internal, channel, state) {
     }
   }
 
-  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId, chatId });
+  // Tree identity and wall-clock bound (issue #118 stage 1): a top-level job
+  // is its own root and gets the deadline; a sub-job inherits both from its
+  // parent row, so the whole tree shares one deadline and one budget row.
+  let rootJobId = null;
+  let deadlineAt = null;
+  if (depth === 0) {
+    const runMaxMs = config.agent.runMaxMs;
+    deadlineAt = Number.isFinite(runMaxMs) && runMaxMs > 0 ? new Date(Date.now() + runMaxMs).toISOString() : null;
+  } else if (parentJobId != null) {
+    const parentRow = await getJob(parentJobId).catch(() => null);
+    rootJobId = parentRow?.root_job_id ?? parentJobId;
+    deadlineAt = parentRow?.deadline_at ?? null;
+  }
+  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId, chatId, rootJobId, deadlineAt });
   state.job = job;
+  state.rootJobId = job.root_job_id ?? rootJobId ?? job.id;
+  if (depth === 0 && deadlineAt) {
+    // Belt and braces with the gate's own deadline check: a long provider
+    // turn with no tool calls is still cut at the deadline.
+    state.deadlineTimer = setTimeout(() => {
+      cancelRun(state, { reason: 'deadline' }).catch(() => {});
+    }, Math.max(0, Date.parse(deadlineAt) - Date.now()));
+    state.deadlineTimer.unref?.();
+  }
   if (chatId != null) {
     // The chat's current job follows the run (and its status projection
     // with it); the spliced hand-off note counts as delivered from here.
@@ -410,13 +496,17 @@ async function runTask(task, internal, channel, state) {
   // Register detachable runs (the chat task path) so a reconnect can find the
   // live channel if the browser drops while parked on a question (story 027).
   if (state.detachable) {
-    const handle = { jobId: job.id, projectId, role: agent.slug, channel, state, consumerAttached: true };
+    const handle = {
+      jobId: job.id, projectId, role: agent.slug, channel, state, consumerAttached: true,
+      // Tenancy hooks stop a live run through this without importing the runtime (issue #118).
+      cancel: (reason) => cancelRun(state, { reason }),
+    };
     registerRun(handle);
     state.runHandle = handle;
   }
 
   const conversation = await createConversation(agent.slug, projectId, userId);
-  await updateJob(job.id, { status: 'running', conversationId: conversation.id });
+  await updateJob(job.id, { status: 'running', conversationId: conversation.id, workerId: WORKER_ID, attempt: 1 });
   await logMessage({ conversationId: conversation.id, role: 'user', content: input, userId });
 
   const projectDir = await resolveProjectDir(projectId);
@@ -447,12 +537,16 @@ async function runTask(task, internal, channel, state) {
   // server-side from the role's DB grants and the task context. The Claude
   // adapter below projects it into MCP form; no Claude name or type leaks
   // past provider-runtime/.
+  // The run's control point (issue #118): before each provider turn (below),
+  // before every mutating tool (registry.js) and on a question's wake.
+  const gate = createRunGate({ state, job, projectId, userId, depth, agent, deadlineAt });
   const toolContext = createToolContext({
     agent, projectId, depth, budget, parentJob: job, channel, userId, seeding,
     context: taskContext,
     dispatch: (t, i) => runAgentTask(t, i),
     // Stopping this run stops what it dispatched (issue #136).
     signal: state.controller.signal,
+    gate,
   });
   const neutralTools = listTools(toolContext);
 
@@ -551,10 +645,11 @@ async function runTask(task, internal, channel, state) {
       contextTokens: lastContextTokens,
       continuation: state.continuation ?? null,
     };
-    if (state.cancelReason === 'user') {
+    const reason = state.cancelReason;
+    if (reason === 'user') {
       // The stop request already marked the row; this stamps the identity
       // and usage on it (status again, in case a retry landed 'running').
-      await updateJob(job.id, { status: 'cancelled', ...fields, ...jobIdentity() }).catch(() => {});
+      await updateJob(job.id, { status: 'cancelled', cancelReason: 'user', ...fields, ...jobIdentity() }).catch(() => {});
       await syncChat();
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason: 'user',
@@ -570,11 +665,37 @@ async function runTask(task, internal, channel, state) {
       });
       return;
     }
-    await updateJob(job.id, fields).catch(() => {});
+    if (ACCESS_REVOKED_REASONS.has(reason) || reason === 'deadline') {
+      // Stopped by the run gate (issue #118): the row carries the reason,
+      // the client gets a terminal it can render, and a deadline — like a
+      // budget pause — leaves a hand-off note so the user can continue.
+      await updateJob(job.id, { status: 'cancelled', cancelReason: reason, ...fields, ...jobIdentity() }).catch(() => {});
+      await syncChat();
+      log.info('job_end', {
+        jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason,
+        contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
+        outputTokens: jobTokens.outputTokens, budgetUsed: Math.round(budget.used),
+      });
+      if (reason === 'deadline') {
+        const handoff = depth === 0 ? await writeBudgetHandoff(job, agent, projectId) : null;
+        channel.push({
+          type: 'error', agent: agent.slug, jobId: job.id, depth, reason: 'deadline_exceeded',
+          sessionId: state.sessionId, handoff, continuation: state.continuation ?? null,
+          message: deadlineExceededMessage(), budget: budgetSnapshot(budget),
+        });
+      } else {
+        channel.push({
+          type: 'error', agent: agent.slug, jobId: job.id, depth, reason: 'access_revoked',
+          message: ACCESS_REVOKED_MESSAGE, budget: budgetSnapshot(budget),
+        });
+      }
+      return;
+    }
+    await updateJob(job.id, { ...fields, ...(reason && reason !== 'budget' ? { cancelReason: reason } : {}) }).catch(() => {});
     await syncChat();
     log.info('job_end', {
-      jobId: job.id, agent: agent.slug, depth, status: state.cancelReason === 'budget' ? 'error' : 'cancelled',
-      reason: state.cancelReason ?? 'cancelled', contextTokens: lastContextTokens,
+      jobId: job.id, agent: agent.slug, depth, status: reason === 'budget' ? 'error' : 'cancelled',
+      reason: reason ?? 'cancelled', contextTokens: lastContextTokens,
       inputTokens: jobTokens.inputTokens, outputTokens: jobTokens.outputTokens, budgetUsed: Math.round(budget.used),
     });
   };
@@ -597,6 +718,12 @@ async function runTask(task, internal, channel, state) {
   // session to lose, so a second session_not_found is a real failure.
   let sessionRecovered = false;
   for (;;) {
+    // Control point 1 (issue #118 §5): a cancel, revocation or deadline that
+    // landed between attempts is honoured before the next provider call.
+    if (await gate('turn')) {
+      await finishCancelled(null);
+      return;
+    }
     const outcome = await runTurnLoop(runtime, {
       input: turnInput,
       systemPrompt,
@@ -607,7 +734,7 @@ async function runTask(task, internal, channel, state) {
       // first retry the same logical request over the failed attempt's
       // canonical record — the adapters must not re-append its input.
       retry: retries > 0,
-    }, { agent, job, conversation, channel, budget, costRatio, usage, userId, state });
+    }, { agent, job, conversation, channel, budget, costRatio, usage, userId, state, gate });
 
     if (outcome.kind === 'done') {
       if (outcome.continuation) state.continuation = outcome.continuation;
@@ -884,7 +1011,12 @@ async function runTask(task, internal, channel, state) {
           // run by the same user sees this one's spend, and a crash keeps it.
           await updateJob(job.id, {
             inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, weightedTokens: weightedTokens(),
+            // The tree's budget lives on the root row (issue #118 §10).
+            ...(depth === 0 ? { budgetUsed: Math.round(budget.used) } : {}),
           });
+          if (depth > 0 && state.rootJobId != null) {
+            await updateJob(state.rootJobId, { budgetUsed: Math.round(budget.used) }).catch(() => {});
+          }
           // Per-agent context-window state (STH-51): what the model context
           // carried into this turn (the turn's effective input tokens) —
           // the same figure the UI meter receives on the channel below.
@@ -952,6 +1084,10 @@ async function runTask(task, internal, channel, state) {
               ...(budget.scope && budget.scope !== 'task' ? { period: budget.period, resetsAt: budget.resetsAt } : {}),
             });
           }
+          // Control point 2 (issue #118 §5): each provider turn boundary. A
+          // tripped gate aborts the controller; the adapter then closes the
+          // turn with its cancelled terminal and finishCancelled reports it.
+          if (!state.controller.signal.aborted) await refs.gate('turn');
           break;
         }
         case 'tool_result':
@@ -1026,6 +1162,12 @@ function budgetExceededMessage(budget) {
   const owner = scope === 'user' ? 'Your' : 'This project\'s';
   const { used, limit } = budgetSnapshot(budget);
   return `${owner} ${PERIOD_ADJECTIVE[budget.period] ?? budget.period} token budget is used up (${used} of the remaining ${limit} tokens); task paused. It resets ${resetPhrase(budget.resetsAt)}, or an organization owner can reset it.`;
+}
+
+function deadlineExceededMessage() {
+  const hours = config.agent.runMaxMs / 3600000;
+  const bound = Number.isFinite(hours) ? `${Number.isInteger(hours) ? hours : hours.toFixed(1)}-hour` : 'wall-clock';
+  return `This run reached its ${bound} time limit and was paused. Your work is saved; say what to do next to continue from here.`;
 }
 
 function budgetExhaustedMessage(bound, period) {

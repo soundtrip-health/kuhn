@@ -212,7 +212,7 @@ answer, and see the run finish.
 | Stage | Scope | Depends on |
 |---|---|---|
 | 0 ✅ | `cancelRun`, `cancelled` terminal, tree stop via parent signal, `job` markers (#136/#137, PR #140) | — |
-| 1 | States + columns + `status` rebuild migration; persisted cancel flag honoured at control points; tenancy gate (§8); wall-clock deadline; `root_job_id` + budget on the root row | PR #140 |
+| 1 ✅ | States + columns + `status` rebuild migration; persisted cancel flag honoured at control points; tenancy gate (§8); wall-clock deadline; `root_job_id` + budget on the root row. *Landed: `queued` replaces `pending`; the flag is raised by `POST /jobs/:id/cancel`, org suspension, membership removal (`agents/tenancy.js`) and the deadline; control points 1, 3 and 4 of §5 (turn boundary, mutating tool via `tools/registry.js`, question wake) plus a deadline timer — the heartbeat control point (2) arrives with the stage-4 lease loop. `job_events` / `pending_questions` / `tool_effects` tables belong to stages 3 / 2 / 5.* | PR #140 |
 | 2 | `ask_user` as a turn boundary; `pending_questions`/`job_replies`; `reply` = enqueue next turn; `pending`/`reconnect` from the DB | 1 |
 | 3 | `job_events` + cursor replay for chat, reconnect, and project feed; in-process fast path | 1 |
 | 4 | Claim loop with leases/heartbeat; enqueue everywhere (chat, dispatch, seeding, resume); reclaim on expired lease; graceful shutdown (SIGTERM → release leases, T-33); worker as a separate process (ADR 002 §2) | 2, 3 |

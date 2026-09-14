@@ -177,14 +177,23 @@ describe('member management (story 010-003)', () => {
     expect(eventTypes()).toEqual([]);
   });
 
-  it('removes a member (and 404s an unknown one)', async () => {
+  it('removes a member (and 404s an unknown one); the member\'s open runs in the org are stopped (issue #118)', async () => {
     const cookie = await cookieFor(OWNER);
+    querySync(`INSERT INTO projects (id, name, project_type, org_id) VALUES (10, 'Doc', 'manuscript', ${ORG})`);
+    querySync(`INSERT INTO jobs (id, project_id, user_id, role, status, input, root_job_id) VALUES
+      (41, 10, ${VIEWER}, 'pm', 'running', 'go', 41), (42, 10, ${EDITOR}, 'pm', 'running', 'go', 42)`);
     const res = await api('DELETE', `/api/orgs/${ORG}/members/${VIEWER}`, { cookie });
     expect(res.status).toBe(200);
     expect(querySync(
       `SELECT COUNT(*) AS n FROM memberships WHERE user_id = ${VIEWER}`,
     ).rows[0].n).toBe(0);
     expect(eventTypes()).toEqual(['member.removed']);
+    expect(querySync('SELECT id, cancel_reason FROM jobs ORDER BY id').rows).toEqual([
+      { id: 41, cancel_reason: 'removed' },
+      { id: 42, cancel_reason: null },
+    ]);
+    querySync('DELETE FROM jobs');
+    querySync('DELETE FROM projects');
 
     expect((await api('DELETE', `/api/orgs/${ORG}/members/999`, { cookie })).status).toBe(404);
     expect((await api('PATCH', `/api/orgs/${ORG}/members/999`, {

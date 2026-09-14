@@ -7,6 +7,7 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 let db; let exec; let querySync;
 let applyColumnMigrations; let applyFileEventsKindMigration; let applyMembershipsRoleMigration;
 let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration; let applyJobsIndexMigration;
+let applyJobsStatusMigration;
 
 const columns = (table) =>
   querySync(`SELECT name FROM pragma_table_info('${table}')`).rows.map((r) => r.name);
@@ -14,7 +15,7 @@ const columns = (table) =>
 beforeAll(async () => {
   ({ db, exec, querySync } = await import('../db.js'));
   ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration,
-    applyProjectTypeCheckMigration, applyJobsIndexMigration } = await import('./init.js'));
+    applyProjectTypeCheckMigration, applyJobsIndexMigration, applyJobsStatusMigration } = await import('./init.js'));
   // Pre-007-001 shapes: the tables exist (so schema.sql's CREATE IF NOT EXISTS
   // skips them on a real upgrade) but lack the user_id column. `projects` is
   // stubbed too: file_events' outbound FK targets are what the 012-002 rebuild
@@ -304,5 +305,63 @@ describe('applyProjectTypeCheckMigration (issue #106)', () => {
     expect(() => applyProjectTypeCheckMigration()).not.toThrow();
     expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(before);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
+});
+
+describe('applyJobsStatusMigration (issue #118 stage 1)', () => {
+  it("rebuilds a legacy jobs table: 'pending' → 'queued', new states accepted, root_job_id backfilled, indexes recreated", () => {
+    // A pre-#118 jobs table (the stage-0 CHECK) with a small dispatch tree
+    // and an orphan, plus the FK targets the rebuild re-validates.
+    exec(`
+      DROP TABLE jobs;
+      CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY);
+      CREATE TABLE jobs (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        conversation_id  INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+        parent_job_id    INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+        user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        role             TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                           'pending', 'running', 'done', 'error', 'interrupted', 'cancelled'
+                         )),
+        input            TEXT NOT NULL,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX idx_jobs_status ON jobs(status);
+      INSERT INTO jobs (id, project_id, role, status, input, parent_job_id) VALUES
+        (1, 1, 'pm', 'pending', 'go', NULL),
+        (2, 1, 'ra', 'running', 'find', 1),
+        (3, 1, 'writer', 'done', 'write', 2),
+        (4, 1, 'pm', 'done', 'old', NULL);
+    `);
+    applyColumnMigrations();
+    expect(() => querySync("INSERT INTO jobs (project_id, role, status, input) VALUES (1, 'pm', 'waiting_for_user', 'x')"))
+      .toThrow(/CHECK constraint failed/);
+
+    applyJobsStatusMigration();
+    applyJobsIndexMigration();
+
+    expect(querySync('SELECT id, status, root_job_id, attempt, budget_used FROM jobs ORDER BY id').rows).toEqual([
+      { id: 1, status: 'queued', root_job_id: 1, attempt: 0, budget_used: 0 },
+      { id: 2, status: 'running', root_job_id: 1, attempt: 0, budget_used: 0 },
+      { id: 3, status: 'done', root_job_id: 1, attempt: 0, budget_used: 0 },
+      { id: 4, status: 'done', root_job_id: 4, attempt: 0, budget_used: 0 },
+    ]);
+    for (const st of ['queued', 'waiting_for_user', 'retry_wait']) {
+      querySync("INSERT INTO jobs (project_id, role, status, input) VALUES (1, 'pm', $1, 'x')", [st]);
+    }
+    expect(() => querySync("INSERT INTO jobs (project_id, role, status, input) VALUES (1, 'pm', 'pending', 'x')"))
+      .toThrow(/CHECK constraint failed/);
+    const indexes = querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'jobs'").rows.map((r) => r.name).sort();
+    expect(indexes).toEqual(expect.arrayContaining(['idx_jobs_project', 'idx_jobs_status', 'idx_jobs_root', 'idx_jobs_user_created', 'idx_jobs_chat']));
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
+
+  it('is a no-op on a second run', () => {
+    const before = querySync('SELECT COUNT(*) AS n FROM jobs').rows[0].n;
+    expect(() => applyJobsStatusMigration()).not.toThrow();
+    expect(querySync('SELECT COUNT(*) AS n FROM jobs').rows[0].n).toBe(before);
   });
 });

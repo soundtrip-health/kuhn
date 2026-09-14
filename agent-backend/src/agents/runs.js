@@ -17,7 +17,18 @@
  * @property {Promise<void>|null} pump   - the detached run promise
  * @property {object} state              - runtime task state (sdkQuery, finished, job)
  * @property {boolean} consumerAttached  - guards against double-consume of the channel
+ * @property {(reason: string) => Promise<boolean>} [cancel] - stop the run
+ *   (issue #118): set by the runtime so tenancy hooks can abort a live run
+ *   without importing the runtime module
  */
+
+import { hostname } from 'node:os';
+
+/**
+ * This process's worker identity (issue #118): stamped on every job it
+ * runs, so a row's owner is attributable after a restart or across workers.
+ */
+export const WORKER_ID = `${hostname()}:${process.pid}:${new Date().toISOString()}`;
 
 const runs = new Map(); // jobId -> RunHandle
 

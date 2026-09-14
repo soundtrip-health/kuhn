@@ -185,8 +185,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- Whose request ran this job (story 007-001); sub-jobs inherit the parent's.
   user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
   role             TEXT NOT NULL,
-  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
-                     'pending', 'running', 'done', 'error', 'interrupted', 'cancelled'
+  -- Job lifecycle (issue #118 stage 1). Open states: queued (created, not
+  -- yet running), running, waiting_for_user (parked on ask_user — stage 2
+  -- makes it durable), retry_wait (persisted provider backoff — stage 5).
+  -- Terminal: done, error, cancelled, interrupted (process died and the job
+  -- is not resumable). 'pending' was the pre-#118 name for queued; the
+  -- init.js rebuild maps it. Mirrored in init.js JOBS_NEW_DDL.
+  status           TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+                     'queued', 'running', 'waiting_for_user', 'retry_wait',
+                     'done', 'error', 'interrupted', 'cancelled'
                    )),
   input            TEXT NOT NULL,
   context          TEXT,  -- JSON
@@ -232,6 +239,32 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- sub-agent jobs, compose-mode (/write) runs, seeding stages, and
   -- pre-migration rows. Mirrored in init.js COLUMN_MIGRATIONS.
   chat_id          INTEGER REFERENCES chats(id) ON DELETE SET NULL,
+  -- Durable job lifecycle (issue #118 stage 1; all mirrored in init.js
+  -- COLUMN_MIGRATIONS). root_job_id ties a dispatch tree to its top-level
+  -- job (self for depth 0): one query for the tree, one budget row.
+  root_job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  -- `${hostname}:${pid}:${startedAt}` of the process that ran/owns the job;
+  -- lease_until / heartbeat_at are claimed by the stage-4 worker loop and
+  -- stay NULL until then.
+  worker_id        TEXT,
+  lease_until      TEXT,
+  heartbeat_at     TEXT,
+  attempt          INTEGER NOT NULL DEFAULT 0,
+  -- The persisted cancel flag: set on every open row of the tree by
+  -- POST /jobs/:id/cancel, org suspension, membership removal or the
+  -- deadline, and honoured at the run's next control point (before a
+  -- provider turn, before a mutating tool, when a question is answered).
+  -- cancel_reason: user | suspended | removed | deleted | deadline |
+  -- parent | disconnect | shutdown.
+  cancel_requested_at TEXT,
+  cancel_reason    TEXT,
+  waiting_since    TEXT,
+  wake_at          TEXT,
+  -- Wall-clock bound for the whole tree (AGENT_RUN_MAX_MS); set on the root
+  -- row and inherited by sub-jobs.
+  deadline_at      TEXT,
+  -- Weighted budget consumed by the tree so far, kept on the root row.
+  budget_used      INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -241,8 +274,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project
 CREATE INDEX IF NOT EXISTS idx_jobs_status
   ON jobs(status);
 -- idx_jobs_user_created (user_id, created_at — org budget ledger reads,
--- issue #110) and idx_jobs_chat (chat_id, created_at DESC — issue #113) are
--- NOT declared here: both columns are COLUMN_MIGRATIONS, and on an existing
+-- issue #110), idx_jobs_chat (chat_id, created_at DESC — issue #113) and
+-- idx_jobs_root (root_job_id — issue #118) are
+-- NOT declared here: all three columns are COLUMN_MIGRATIONS, and on an existing
 -- database this script runs BEFORE init.js adds them — a CREATE INDEX over a
 -- missing column aborts the whole boot. init.js applyJobsIndexMigration()
 -- creates them once the columns exist (the same ordering rule as
