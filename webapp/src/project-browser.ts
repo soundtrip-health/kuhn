@@ -7,7 +7,7 @@
 
 import { trapFocus } from './a11y';
 import { icon } from './icons';
-import { PROJECT_TYPES, TYPE_LABEL } from './project-types';
+import { typeLabel, typeOptions } from './project-types';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
 
@@ -163,7 +163,7 @@ function render(): void {
       meta.className = 'pb-card-meta';
       const typePill = document.createElement('span');
       typePill.className = 'pb-type-pill';
-      typePill.textContent = TYPE_LABEL[project.project_type] ?? project.project_type;
+      typePill.textContent = typeLabel(project.project_type);
       meta.append(typePill);
       if (project.id === activeId) {
         const open = document.createElement('span');
@@ -222,9 +222,11 @@ function render(): void {
   nameInput.className = 'pb-input';
   nameInput.placeholder = 'New project name…';
   nameInput.required = true;
+  // Document types come from the org's effective catalog (issue #106).
   const typeSelect = document.createElement('select');
   typeSelect.className = 'pb-select';
-  for (const t of PROJECT_TYPES) {
+  typeSelect.setAttribute('aria-label', 'Document type');
+  for (const t of typeOptions()) {
     const opt = document.createElement('option');
     opt.value = t.value;
     opt.textContent = t.label;

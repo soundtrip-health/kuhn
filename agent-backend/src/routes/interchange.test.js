@@ -72,10 +72,12 @@ afterAll(async () => {
 beforeEach(() => {
   roomState.memberConns.clear();
   vi.mocked(evictRoom).mockClear();
-  for (const t of ['comments', 'file_events', 'bib_references', 'projects', 'memberships', 'users', 'organizations']) {
+  for (const t of ['comments', 'file_events', 'bib_references', 'projects', 'memberships', 'users', 'org_doc_types', 'organizations', 'catalog_doc_types']) {
     querySync(`DELETE FROM ${t}`);
   }
   querySync("INSERT INTO organizations (id, name, slug) VALUES (1, 'Org A', 'a'), (2, 'Org B', 'b')");
+  // Issue #106: create validates the manifest's project_type against the target org's catalog.
+  querySync("INSERT INTO catalog_doc_types (slug, title) VALUES ('manuscript', 'Manuscript')");
   const mk = (key, email, orgId, role) => {
     const { rows } = querySync('INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id, email, display_name, is_superadmin', [email, key]);
     USERS[key] = rows[0];
@@ -208,6 +210,20 @@ describe('POST /api/projects/import (create)', () => {
     expect((await post('/api/projects/import', null)).status).toBe(400);
     expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(0);
     expect(querySync('SELECT COUNT(*) AS n FROM bib_references').rows[0].n).toBe(0);
+  });
+
+  it('a document type the target org lacks is refused, naming the org\'s types; an org type is accepted (issue #106)', async () => {
+    const m = fixtureManifest();
+    m.project.project_type = 'white-paper';
+    const refused = await create(bundle({ 'manifest.json': m }));
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual({ code: 'invalid_bundle', error: 'projectType must be one of: manuscript' });
+    expect(querySync('SELECT COUNT(*) AS n FROM projects').rows[0].n).toBe(0);
+
+    querySync("INSERT INTO org_doc_types (org_id, slug, title) VALUES (1, 'white-paper', 'White paper')");
+    const { status, body } = await create(bundle({ 'manifest.json': m }));
+    expect(status).toBe(201);
+    expect(body.project).toMatchObject({ project_type: 'white-paper', org_id: 1 });
   });
 
   it('refuses a bundle over the entry cap with 413', async () => {

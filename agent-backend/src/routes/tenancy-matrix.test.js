@@ -100,6 +100,8 @@ beforeAll(async () => {
   querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES (2, ${ORG_A}, 'editor')`);
   querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES (3, ${ORG_A}, 'viewer')`);
   querySync(`INSERT INTO memberships (user_id, org_id, role) VALUES (5, ${ORG_B}, 'owner')`);
+  // Issue #106: POST /api/projects validates the type against the catalog.
+  querySync("INSERT INTO catalog_doc_types (slug, title) VALUES ('manuscript', 'Manuscript')");
   querySync(`INSERT INTO projects (id, org_id, name, project_type) VALUES (${PROJECT_A}, ${ORG_A}, 'Alpha', 'manuscript')`);
   querySync(`INSERT INTO projects (id, org_id, name, project_type) VALUES (${PROJECT_B}, ${ORG_B}, 'Beta', 'manuscript')`);
   querySync(`INSERT INTO jobs (id, project_id, user_id, role, status, input)
@@ -122,7 +124,7 @@ beforeAll(async () => {
     './history.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
-    './org-secrets.js', './org-budgets.js']) {
+    './org-secrets.js', './org-budgets.js', './doc-types.js']) {
     app.use((await import(mod)).default);
   }
   await new Promise((ok) => { server = app.listen(0, ok); });
@@ -241,6 +243,8 @@ const ROUTES = [
   // Issue #68: every member may browse the org script library.
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/scripts`, ok: { status: 200 } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/scripts/999`, ok: { status: 404, error: 'script not found' } },
+  // Issue #106: document-type library.
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/doc-types`, ok: { status: 200 } },
 
   // -- org-scoped (editor writes) --------------------------------------------
   { scope: 'org', minRole: 'editor', method: 'POST', path: `/api/orgs/${ORG_A}/library/upload`, req: () => ({ form: smallUpload }), ok: { status: 201 } },
@@ -280,6 +284,9 @@ const ROUTES = [
   { scope: 'org', minRole: 'owner', method: 'GET', path: `/api/orgs/${ORG_A}/script-promotions/999`, ok: { status: 404, error: 'script promotion not found' } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/script-promotions/999/approve`, req: () => ({ json: { expected_sha256: 'x' } }), ok: { status: 404, error: 'script promotion not found' } },
   { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/script-promotions/999/reject`, req: () => ({ json: {} }), ok: { status: 404, error: 'script promotion not found' } },
+  // Issue #106: the 400 is the route's own slug validation, past the guard.
+  { scope: 'org', minRole: 'owner', method: 'POST', path: `/api/orgs/${ORG_A}/doc-types`, req: () => ({ json: {} }), ok: { status: 400 } },
+  { scope: 'org', minRole: 'owner', method: 'PATCH', path: `/api/orgs/${ORG_A}/doc-types/ghost`, req: () => ({ json: { status: 'disabled' } }), ok: { status: 404, error: 'document type not found' } },
 ];
 
 const RANK = { viewer: 1, editor: 2, owner: 3 };

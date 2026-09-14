@@ -6,6 +6,7 @@
 // budget (story 020) instead of sharing one dispatch-tree budget.
 
 import { getProject } from '../db/projects.js';
+import { resolveDocType } from '../db/doc-types.js';
 import { writeProjectFile } from '../storage.js';
 import { EventChannel } from './events.js';
 import { runAgentTask } from './runtime.js';
@@ -32,7 +33,13 @@ export async function* runSeedPipeline(projectId, { runTask = runAgentTask, user
   const outcomes = {}; // stage/agent → 'ok' | error message
 
   const project = await getProject(projectId);
-  const config = project?.config ?? {};
+  const projectConfig = project?.config ?? {};
+  // Issue #106: name the type in the briefs by title as well as slug (the
+  // full per-type guidance reaches each stage through its system prompt).
+  const docType = projectConfig.project_type
+    ? resolveDocType(project?.org_id ?? null, projectConfig.project_type)
+    : null;
+  const config = docType ? { ...projectConfig, project_type_title: docType.title } : projectConfig;
   // Intake now comes from the setup wizard; guard an unconfigured project so the
   // research/skeleton stages never run on an empty config.
   if (!config.title || !config.research_question) {
@@ -171,7 +178,7 @@ async function writeStatusFile(projectId, config, outcomes) {
 // ---------------------------------------------------------------------------
 
 const describeProject = (config) => [
-  `Project: ${config.title} (${config.project_type})`,
+  `Project: ${config.title} (${config.project_type_title ? `${config.project_type_title} — ${config.project_type}` : config.project_type})`,
   `Research question: ${config.research_question}`,
   config.deliverables?.length ? `Deliverables: ${config.deliverables.join('; ')}` : null,
   config.source_materials?.length ? `Source materials on hand: ${config.source_materials.join('; ')}` : null,

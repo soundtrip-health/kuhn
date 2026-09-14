@@ -286,8 +286,11 @@ task dispatches. There is no per-project override.
 
 ## Document types
 
-Today the document type of a project (`manuscript`, `grant`, `rwe-protocol`,
-`rct-protocol`, `sop`) is chosen from a fixed list in the setup wizard's "Document type"
-select (see `projects.md`); the list cannot be changed from the admin overlay. A
-"Document types" tab that lets owners add their organization's own types is being added
-and is not available yet.
+**What it does.** Defines what a project can be: the Kuhn catalog types (Manuscript, RWE protocol, RCT protocol, Grant, SOP) plus your organization's own. Each type carries a title, a one-line description, the page-layout template the setup wizard preselects, the "what to upload" hints the wizard shows, and guidance text that every agent working on a project of that type receives in its system prompt.
+
+**How to use it.** Open Org admin and choose the "Document types" tab. "Kuhn document types" lists the catalog; "Organization document types" lists yours, each with "Edit" and "Enable" or "Disable". Owners add or change a type with the form below the lists: slug (lowercase letters, digits and hyphens, 2 to 40 characters), title, description, default layout (a page-layout template or "No default layout"), wizard hints (one per line) and guidance (Markdown), then "Save document type"; "Clear" empties the form. Reusing a Kuhn slug shadows that catalog type for your organization. A saved type appears at once in the "New project" form, in the wizard's "Document type" select and in the PM's `list_doc_types` tool.
+
+**Prerequisites.** The owner role to add, edit, enable or disable a type; members can view the tab.
+
+**Gotchas.** Disabling is not deleting: existing projects keep their type, and its label falls back to the slug wherever the type no longer resolves. Saving an existing slug replaces it and re-enables it. Guidance is capped at 16 KB.
+

@@ -3,7 +3,10 @@
  * from the Claude SDK construction in runtime.js — provider-neutral.
  */
 
+import { effectiveDocTypes, resolveDocType } from '../../db/doc-types.js';
+import { getProject } from '../../db/projects.js';
 import { applyProjectConfig } from '../project-config.js';
+import { formatDocTypeLines } from './doc-types.js';
 import { toolOk, toolError } from './envelope.js';
 
 /**
@@ -28,8 +31,7 @@ export function createProjectTools(ctx) {
         title: { type: 'string', description: 'Project title' },
         project_type: {
           type: 'string',
-          enum: ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'],
-          description: 'Document type; pick the closest match for "other" projects',
+          description: 'Document type slug — one of the slugs list_doc_types returns for this organization (e.g. manuscript, grant). Pick the closest match, or ask the user; an unknown slug is refused with the valid list.',
         },
         research_question: { type: 'string', description: 'The central research question or document purpose' },
         deliverables: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Key deliverables' },
@@ -42,6 +44,17 @@ export function createProjectTools(ctx) {
     },
     execute: async (_id, input) => {
       try {
+        // Issue #106: the type must resolve for the project's org — the
+        // catalog is extensible, so the schema no longer enumerates it.
+        const project = await getProject(projectId);
+        const orgId = project?.org_id ?? null;
+        if (!resolveDocType(orgId, input.project_type)) {
+          return toolError([
+            `Unknown document type "${input.project_type}". Use one of these slugs as project_type:`,
+            ...formatDocTypeLines(effectiveDocTypes(orgId)),
+            'If none fits, ask the user which is closest — an organization owner can add types under Org admin → Document types.',
+          ].join('\n'));
+        }
         const projectConfig = {
           title: input.title,
           project_type: input.project_type,

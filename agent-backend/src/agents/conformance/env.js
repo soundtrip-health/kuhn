@@ -17,6 +17,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let cached = null;
 
@@ -69,6 +70,13 @@ export function getConformanceConfig() {
       catalogRoot: join(dataDir, 'typst-templates-catalog'),
       maxTemplateBytes: 256 * 1024,
       maxDocxBytes: 4 * 1024 * 1024,
+    },
+    // Issue #106: the document-type catalog is read-only JSON (no files it
+    // points at, nothing written), and save_project_config validates against
+    // it — so the scenarios run against the real shipped manifest.
+    docTypes: {
+      catalogRoot: fileURLToPath(new URL('../../../../doc-types', import.meta.url)),
+      maxGuidanceBytes: 16 * 1024,
     },
     auth: { superadminEmails: [] },
     // Runtime selector (STH-47): 'claude' by default; the Pi conformance

@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db/projects.js', () => ({ getProject: vi.fn() }));
 vi.mock('../storage.js', () => ({ writeProjectFile: vi.fn(async () => ({ created: true })) }));
+// Issue #106: the briefs name the type by title as well as slug.
+vi.mock('../db/doc-types.js', () => ({
+  resolveDocType: vi.fn((_org, slug) => (slug === 'rwe-protocol' ? { slug, title: 'RWE protocol', guidance: 'g' } : null)),
+}));
 
 import { getProject } from '../db/projects.js';
 import { writeProjectFile } from '../storage.js';
@@ -52,6 +56,8 @@ describe('runSeedPipeline', () => {
     expect(calls.map((t) => t.role)).toEqual(['ra', 'advisor', 'writer']);
     for (const task of calls) {
       expect(task.input).toContain(CONFIG.research_question);
+      // Issue #106: the brief names the type by title and slug.
+      expect(task.input).toContain('(RWE protocol — rwe-protocol)');
       expect(task.projectId).toBe(1);
       // Every stage bypasses suggestion mode (story 008-001): the pipeline
       // writes the first draft directly — there is nothing to protect yet.

@@ -18,7 +18,7 @@ import {
   refreshLibraryHint,
 } from './org-library';
 import { openProjectBrowser } from './project-browser';
-import { TYPE_LABEL } from './project-types';
+import { typeLabel } from './project-types';
 import * as workspace from './workspace';
 
 let orgMenuOpen = false;
@@ -58,7 +58,7 @@ function render(): void {
   if (project) {
     const pill = document.createElement('span');
     pill.className = 'phase-pill';
-    pill.textContent = TYPE_LABEL[project.project_type] ?? project.project_type;
+    pill.textContent = typeLabel(project.project_type);
     children.push(pill);
   }
 

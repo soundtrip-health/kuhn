@@ -142,9 +142,10 @@ CREATE TABLE IF NOT EXISTS projects (
   owner_id      TEXT NOT NULL DEFAULT 'default',
   org_id        INTEGER REFERENCES organizations(id) ON DELETE RESTRICT,
   name          TEXT NOT NULL,
-  project_type  TEXT NOT NULL CHECK (project_type IN (
-                  'rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'
-                )),
+  -- A document-type slug (issue #106). Validated against the effective
+  -- doc-type catalog for the project's org (db/doc-types.js) at the API
+  -- boundary, not by a CHECK: types are extensible per organization.
+  project_type  TEXT NOT NULL,
   config        TEXT NOT NULL DEFAULT '{}',  -- JSON
   root_path     TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -804,6 +805,41 @@ CREATE TABLE IF NOT EXISTS org_typst_templates (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   UNIQUE (org_id, name)
+);
+
+-- ============================================================
+-- Document types (issue #106): what a project IS — manuscript, grant,
+-- protocol, SOP, … Same shape as the slide-theme tables: catalog_doc_types
+-- is seeded from doc-types/catalog.json (dropped entries go available = 0);
+-- org_doc_types holds organization-defined types, and an ACTIVE org type
+-- shadows a catalog one of the same slug. Disable ≠ delete. `guidance` is
+-- markdown injected into the agents' system prompts for projects of the type.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS catalog_doc_types (
+  slug             TEXT PRIMARY KEY,        -- projects.project_type value
+  title            TEXT NOT NULL,
+  description      TEXT,
+  default_template TEXT,                    -- Typst template name the wizard preselects
+  wizard_hints     TEXT NOT NULL DEFAULT '[]', -- JSON array of strings
+  guidance         TEXT NOT NULL DEFAULT '',
+  sort_order       INTEGER NOT NULL DEFAULT 0,
+  available        INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS org_doc_types (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id           INTEGER NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  slug             TEXT NOT NULL,
+  title            TEXT NOT NULL,
+  description      TEXT,
+  default_template TEXT,
+  wizard_hints     TEXT NOT NULL DEFAULT '[]',
+  guidance         TEXT NOT NULL DEFAULT '',
+  status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (org_id, slug)
 );
 
 -- ============================================================

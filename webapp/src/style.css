@@ -2091,3 +2091,7 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .theme-row .theme-meta { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
 .theme-upload { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 4px; }
 .theme-controls { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+/* Document-types admin tab (issue #106): the owner form reuses the theme-upload column. */
+.doctype-form { width: 100%; max-width: 640px; }
+.doctype-form .admin-field { width: 100%; }
+.doctype-form .theme-controls { justify-content: flex-start; }

@@ -142,6 +142,14 @@ vi.mock('../db/projects.js', () => ({
   updateProjectConfig: vi.fn(async () => ({})),
   getProject: vi.fn(async (id) => ({ id, org_id: 3 })),
 }));
+// Issue #106: per-type prompt guidance + save_project_config validation. By
+// default every slug resolves (a bare catalog row); the default project row
+// carries no project_type, so no "Document type" section appears unless a
+// test says so.
+vi.mock('../db/doc-types.js', () => ({
+  resolveDocType: vi.fn((_org, slug) => (slug ? { slug, title: slug, description: null, guidance: '', source: 'catalog' } : null)),
+  effectiveDocTypes: vi.fn(() => [{ slug: 'manuscript', title: 'Manuscript', description: null, source: 'catalog' }]),
+}));
 vi.mock('../db/typst-templates.js', () => ({
   listCatalogTemplates: vi.fn(() => []),
   listOrgTemplates: vi.fn(() => []),
@@ -244,6 +252,7 @@ import { listThreads, addReply, setResolved } from '../db/comments.js';
 import { subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
+import { resolveDocType } from '../db/doc-types.js';
 import { getOrgScript, getScriptVersion, listOrgScripts } from '../db/org-scripts.js';
 import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
@@ -573,6 +582,27 @@ describe('runAgentTask', () => {
     // Guardrails must not shadow the tool contract: runtime block comes first
     expect(prompt.indexOf('## Runtime environment'))
       .toBeLessThan(prompt.indexOf('## Organization guardrails'));
+    getOrgAgentPrompt.mockReturnValue(null);
+  });
+
+  it('appends the document-type guidance between the runtime block and the org guardrails (issue #106)', async () => {
+    getProject.mockResolvedValueOnce({ id: 1, org_id: 3, project_type: 'grant' });
+    resolveDocType.mockReturnValueOnce({
+      slug: 'grant', title: 'Grant', description: 'A funding application', guidance: 'Aims must be independent.', source: 'catalog',
+    });
+    getOrgAgentPrompt.mockReturnValue({ addition: 'Never query the phi schema.' });
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'ra', projectId: 1, input: 'go' });
+
+    expect(resolveDocType).toHaveBeenCalledWith(3, 'grant'); // org + type from the project row
+    const prompt = sdkQuery.mock.calls[0][0].options.systemPrompt;
+    expect(prompt).toContain('## Document type: Grant');
+    expect(prompt).toContain('This project\'s document type is "grant" — A funding application.');
+    expect(prompt).toContain('Aims must be independent.');
+    expect(prompt.indexOf('## Runtime environment')).toBeLessThan(prompt.indexOf('## Document type: Grant'));
+    expect(prompt.indexOf('## Document type: Grant')).toBeLessThan(prompt.indexOf('## Organization guardrails'));
     getOrgAgentPrompt.mockReturnValue(null);
   });
 

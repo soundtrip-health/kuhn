@@ -10,7 +10,7 @@ import { saveProjectConfig, uploadFiles, type WizardAnswers,
   getTypstTemplateCatalog,
 } from './api';
 import { icon } from './icons';
-import { PROJECT_TYPES } from './project-types';
+import { docType, docTypes, typeLabel, typeOptions } from './project-types';
 import * as workspace from './workspace';
 import { startSeeding } from './chat';
 
@@ -21,47 +21,20 @@ interface Step {
   guidance: () => string; // HTML for the "What helps here?" disclosure
 }
 
-// Per-project-type seed-material guidance (used by the uploads step + the thin
-// note on review). Keys mirror PROJECT_TYPES values.
-const SEED_GUIDANCE: Record<string, string[]> = {
-  manuscript: [
-    'Key papers you are building on or citing',
-    'Your dataset, results tables, or figures',
-    'Any draft, outline, or abstract you already have',
-    'Target journal + author guidelines',
-  ],
-  'rwe-protocol': [
-    'Prior or template protocols',
-    'A statistical analysis plan (SAP), if drafted',
-    'Data dictionary / cohort definitions',
-    'Relevant FDA guidance you must follow',
-  ],
-  'rct-protocol': [
-    'Precedent trial protocols',
-    'Draft endpoints or statistical plan',
-    'Investigator brochure / product background',
-    'Applicable ICH, CONSORT, or SPIRIT guidance',
-  ],
-  grant: [
-    'The funder RFA / PA / solicitation',
-    'Preliminary data and figures',
-    'An aims page or prior application drafts',
-    'Biosketches / team background',
-  ],
-  sop: [
-    'Existing SOPs or templates',
-    'Applicable regulatory standards (ISO / GxP)',
-    'Process notes or validation data',
-    'Related work instructions',
-  ],
-};
+// Per-type seed-material hints (the uploads step + the thin note on review)
+// come from the org's document-type catalog (issue #106): `wizard_hints`.
+const GENERIC_HINTS = [
+  'Any background documents you are working from',
+  'Prior drafts, data, or key references',
+];
+
+function seedHints(projectType: string): string[] {
+  const hints = docType(projectType)?.wizard_hints ?? [];
+  return hints.length ? hints : GENERIC_HINTS;
+}
 
 function seedListHtml(projectType: string): string {
-  const items = SEED_GUIDANCE[projectType] ?? [
-    'Any background documents you are working from',
-    'Prior drafts, data, or key references',
-  ];
-  return `<ul>${items.map((i) => `<li>${escape(i)}</li>`).join('')}</ul>`;
+  return `<ul>${seedHints(projectType).map((i) => `<li>${escape(i)}</li>`).join('')}</ul>`;
 }
 
 // ---- Module state (one wizard at a time) ----
@@ -74,8 +47,8 @@ let saving = false;
 // Page-layout templates for the type step (loaded once per open; '' = Pandoc default).
 let templateOptions: { value: string; label: string }[] = [{ value: '', label: 'No project default (documents choose their own)' }];
 
-/** The layout a document type usually needs — preselected when the wizard has no prior answer. */
-const TEMPLATE_BY_TYPE: Record<string, string> = { grant: 'nih-grant', manuscript: 'manuscript' };
+/** The layout a document type usually needs (catalog `default_template`) — preselected when the wizard has no prior answer. */
+const templateForType = (projectType: string): string => docType(projectType)?.default_template ?? '';
 
 async function loadTemplateOptions(): Promise<void> {
   try {
@@ -92,7 +65,7 @@ async function loadTemplateOptions(): Promise<void> {
 
 function blankAnswers(): WizardAnswers {
   return {
-    title: '', projectType: PROJECT_TYPES[0]?.value ?? 'manuscript',
+    title: '', projectType: docTypes()[0]?.slug ?? 'manuscript',
     researchQuestion: '', deliverables: [], timeline: '', sourceMaterials: [],
   };
 }
@@ -106,7 +79,7 @@ export function openSetupWizard(pid: number, opts: { auto?: boolean } = {}): voi
   answers = { ...blankAnswers(), ...(saved as Partial<WizardAnswers> | undefined) };
   // Seed the type from the creation-time choice when the wizard has no prior answer.
   if (!saved?.projectType && project?.project_type) answers.projectType = project.project_type;
-  if (answers.template == null) answers.template = TEMPLATE_BY_TYPE[answers.projectType] ?? '';
+  if (answers.template == null) answers.template = templateForType(answers.projectType);
   void loadTemplateOptions();
 
   ensureOverlay();
@@ -164,11 +137,11 @@ function steps(): Step[] {
         `RA gathers, which conventions the Writer follows). You can change it later.</p>`,
       render: (body) => {
         const select = fieldSelect('Document type', answers.projectType,
-          PROJECT_TYPES.map((t) => ({ value: t.value, label: t.label })),
+          typeOptions(answers.projectType),
           (v) => {
             answers.projectType = v;
             // Follow the type's usual layout unless the user picked one deliberately.
-            answers.template = TEMPLATE_BY_TYPE[v] ?? '';
+            answers.template = templateForType(v);
             render();
           });
         const title = fieldText('Project title', answers.title,
@@ -331,9 +304,8 @@ async function advance(isLast: boolean): Promise<void> {
 function buildReview(): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'wz-review';
-  const typeLabel = PROJECT_TYPES.find((t) => t.value === answers.projectType)?.label ?? answers.projectType;
   const rows: [string, string][] = [
-    ['Type', typeLabel],
+    ['Type', typeLabel(answers.projectType)],
     ['Title', answers.title || '—'],
     ['Focus', answers.researchQuestion || '—'],
     ['Deliverables', answers.deliverables.length ? answers.deliverables.join('; ') : '—'],
@@ -356,7 +328,7 @@ function buildReview(): HTMLElement {
     note.innerHTML =
       `${icon('sparkle', { size: 14, stroke: 1.8 })} No materials added yet. The team will ` +
       `work from public literature — adding your own materials (e.g. ${escape(
-        (SEED_GUIDANCE[answers.projectType] ?? ['prior drafts, data, or key references'])[0],
+        seedHints(answers.projectType)[0],
       )}) usually gives a much stronger first draft. You can add them now or later.`;
     wrap.append(note);
   }

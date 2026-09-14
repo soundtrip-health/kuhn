@@ -80,7 +80,10 @@ describe('parseBundle', () => {
     expectInvalid(zip({ 'manifest.json': '{oops', 'files/draft/main.md': 'x' }), /not valid JSON/);
     expectInvalid(base({ 'manifest.json': { ...MANIFEST, schema_version: '2' } }), /schema_version/);
     expectInvalid(base({ 'manifest.json': { ...MANIFEST, docs: [] } }), /docs must be a non-empty/);
-    expectInvalid(base({ 'manifest.json': { ...MANIFEST, project: { name: 'P', project_type: 'poem' } } }), /project_type/);
+    // Issue #106: only the slug shape is a bundle-level fact; whether a slug
+    // exists is checked against the target org at import time.
+    expectInvalid(base({ 'manifest.json': { ...MANIFEST, project: { name: 'P', project_type: 'Not A Slug' } } }), /project_type/);
+    expect(parseBundle(base({ 'manifest.json': { ...MANIFEST, project: { name: 'P', project_type: 'poem' } } })).manifest.project.project_type).toBe('poem');
   });
 
   it('refuses a doc the bundle does not carry, and unexpected root entries', () => {

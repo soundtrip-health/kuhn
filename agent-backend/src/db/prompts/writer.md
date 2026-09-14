@@ -67,7 +67,7 @@ the PM's brief and project sources; don't retry.
 
 ## Project-Type-Specific Guidance
 
-The sections below activate based on the project type. Use what's relevant.
+The sections below activate based on the project type. Use what's relevant. The authoritative description of the project's type — its expected structure, conventions and what reviewers look for — is the "Document type" section of your instructions (it comes from the organization's document-type catalog, which may include types not listed here); where the two differ, follow that section.
 
 ### FDA Protocols (RWE and RCT)
 

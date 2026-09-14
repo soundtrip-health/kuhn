@@ -17,7 +17,10 @@ import { config } from '../config.js';
 import { CITE_KEY_RE } from '../db/references.js';
 
 export const SCHEMA_VERSION = '1';
-export const PROJECT_TYPES = ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'];
+// Issue #106: document types are an extensible catalog (db/doc-types.js).
+// The bundle checks only the slug SHAPE here — whether the slug resolves is
+// an org-scoped question the import route answers against the target org.
+const PROJECT_TYPE_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const RESERVED_ROOT_FILES = new Set(['manifest.json', 'references.json', 'comments.json']);
 const MAX_NAME_LENGTH = 200;
 const MAX_KEY_LENGTH = 100;
@@ -186,8 +189,8 @@ function validateManifest(m) {
     if (!isPlainObject(m.project)) throw invalid('manifest.project must be an object');
     const name = optionalString(m.project.name, 'manifest.project.name');
     const projectType = optionalString(m.project.project_type, 'manifest.project.project_type');
-    if (projectType && !PROJECT_TYPES.includes(projectType)) {
-      throw invalid(`manifest.project.project_type must be one of ${PROJECT_TYPES.join(', ')}`);
+    if (projectType && !PROJECT_TYPE_RE.test(projectType)) {
+      throw invalid('manifest.project.project_type must be a document-type slug (lowercase letters, digits, hyphens)');
     }
     let orgId = null;
     if (m.project.org_id != null) {

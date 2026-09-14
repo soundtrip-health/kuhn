@@ -19,6 +19,7 @@ import {
   setProjectTemplate,
 } from '../db/projects.js';
 import { TemplateError, resolveTemplateSource } from '../db/typst-templates.js';
+import { docTypeResolves, effectiveDocTypes } from '../db/doc-types.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
 import { getOrgSettings } from '../db/org-settings.js';
 import { createPromotionRequest } from '../db/promotions.js';
@@ -39,7 +40,14 @@ import { streamEvents } from './sse.js';
 
 const router = Router();
 
-const PROJECT_TYPES = ['rwe-protocol', 'rct-protocol', 'grant', 'manuscript', 'sop'];
+/**
+ * The validation message for an unknown document type (issue #106): the
+ * effective catalog for THIS org — Kuhn types plus the org's own — so a
+ * client (or an agent reading the error) learns the real choices.
+ */
+export function projectTypeError(orgId) {
+  return `projectType must be one of: ${effectiveDocTypes(orgId).map((t) => t.slug).join(', ')}`;
+}
 
 /** GET /api/projects — the session user's projects across their orgs, oldest
  *  first. Projects of suspended orgs are excluded (story 011-001): the
@@ -68,8 +76,8 @@ router.post('/api/projects', async (req, res) => {
     res.status(400).json({ error: 'name is required' });
     return;
   }
-  if (!PROJECT_TYPES.includes(projectType)) {
-    res.status(400).json({ error: `projectType must be one of: ${PROJECT_TYPES.join(', ')}` });
+  if (typeof projectType !== 'string') {
+    res.status(400).json({ error: 'projectType must be a string' });
     return;
   }
 
@@ -80,6 +88,12 @@ router.post('/api/projects', async (req, res) => {
   }
   const ctx = await requireOrgRole(req, res, targetOrg, 'editor');
   if (!ctx) return;
+  // The type must resolve for the org the project lands in (an org type may
+  // exist only there), so the check follows the org guard.
+  if (!docTypeResolves(ctx.orgId, projectType)) {
+    res.status(400).json({ error: projectTypeError(ctx.orgId) });
+    return;
+  }
 
   const project = await createProject({ name, projectType, orgId: ctx.orgId });
   res.status(201).json({ project });
@@ -140,8 +154,8 @@ router.put('/api/projects/:id/config', async (req, res) => {
 
   const errors = [];
   if (!answers.title.trim()) errors.push('title is required');
-  if (!PROJECT_TYPES.includes(answers.projectType)) {
-    errors.push(`projectType must be one of: ${PROJECT_TYPES.join(', ')}`);
+  if (!docTypeResolves(project.org_id ?? null, answers.projectType)) {
+    errors.push(projectTypeError(project.org_id ?? null));
   }
   if (!answers.researchQuestion.trim()) errors.push('research question is required');
   if (answers.template && !(await templateResolves(project.org_id ?? null, answers.template))) {
