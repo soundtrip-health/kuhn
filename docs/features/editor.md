@@ -127,7 +127,7 @@ A section runs from its heading to the next heading of the same or a higher leve
 
 **Prerequisites.** A live WebSocket connection to the backend. Viewers join read-only.
 
-**Gotchas.** Only rich mode is collaborative; source mode and non-Markdown files are single-writer. A room lives 30 seconds after its last participant leaves; the next opener seeds it from the saved file. A tab that was asleep or frozen while its room was rebuilt (a backend restart, or everyone else left and someone reopened the document later) reloads the document when it reconnects instead of merging its old copy into the new room; any edit it still had unsaved is written first. If your role is lowered while you are connected your editor reopens read-only within about a minute.
+**Gotchas.** Only rich mode is collaborative; source mode and non-Markdown files are single-writer. A room lives 30 seconds after its last participant leaves; the next opener seeds it from the saved file. A tab that was asleep or frozen while its room was rebuilt (a backend restart, or everyone else left and someone reopened the document later) reloads the document when it reconnects instead of merging its old copy into the new room; any edit it still had unsaved is written first. A tab that stops answering the server (a closed laptop, a dropped connection) is dropped from the room within a minute, so it cannot keep a room alive on its own. If your role is lowered while you are connected your editor reopens read-only within about a minute.
 
 ## Agent suggestions and word-level diffs
 
