@@ -247,10 +247,15 @@ export async function seedScriptCatalog() {
   console.log(`[seed] Script catalog v${manifest.catalog_version}: ${rows.length} scripts${note}.`);
 }
 
-// Allow standalone execution: node src/db/seed.js
+// Allow standalone execution: node src/db/seed.js (npm run db:seed). Runs the
+// SAME startup sequence as the server — schema.sql, column/table migrations,
+// then seed — so it works on a database the new code has not booted against
+// yet (a bare seed() failed with "no such table" whenever a release added a
+// table, e.g. guide_pages in #170). Dynamic import: init.js imports this file.
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 if (isMain) {
-  seed()
+  import('./init.js')
+    .then(({ initDb }) => initDb())
     .then(() => { console.log('[seed] Done.'); process.exit(0); })
     .catch((err) => { console.error('[seed] Failed:', err); process.exit(1); });
 }

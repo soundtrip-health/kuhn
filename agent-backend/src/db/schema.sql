@@ -240,12 +240,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project
   ON jobs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status
   ON jobs(status);
--- Org budget ledger reads (issue #110): a user's / a project's spend since a
--- point in time.
-CREATE INDEX IF NOT EXISTS idx_jobs_user_created
-  ON jobs(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_chat
-  ON jobs(chat_id, created_at DESC);
+-- idx_jobs_user_created (user_id, created_at — org budget ledger reads,
+-- issue #110) and idx_jobs_chat (chat_id, created_at DESC — issue #113) are
+-- NOT declared here: both columns are COLUMN_MIGRATIONS, and on an existing
+-- database this script runs BEFORE init.js adds them — a CREATE INDEX over a
+-- missing column aborts the whole boot. init.js applyJobsIndexMigration()
+-- creates them once the columns exist (the same ordering rule as
+-- idx_knowledge_items_catalog, issue #65; db/init.test.js enforces it).
 
 -- ============================================================
 -- Chats (issue #113 item 1): one durable thread between a user and one

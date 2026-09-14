@@ -6,7 +6,7 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 
 let db; let exec; let querySync;
 let applyColumnMigrations; let applyFileEventsKindMigration; let applyMembershipsRoleMigration;
-let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration; let applyChatIndexMigration;
+let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration; let applyJobsIndexMigration;
 
 const columns = (table) =>
   querySync(`SELECT name FROM pragma_table_info('${table}')`).rows.map((r) => r.name);
@@ -14,7 +14,7 @@ const columns = (table) =>
 beforeAll(async () => {
   ({ db, exec, querySync } = await import('../db.js'));
   ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration,
-    applyProjectTypeCheckMigration, applyChatIndexMigration } = await import('./init.js'));
+    applyProjectTypeCheckMigration, applyJobsIndexMigration } = await import('./init.js'));
   // Pre-007-001 shapes: the tables exist (so schema.sql's CREATE IF NOT EXISTS
   // skips them on a real upgrade) but lack the user_id column. `projects` is
   // stubbed too: file_events' outbound FK targets are what the 012-002 rebuild
@@ -127,20 +127,48 @@ describe('applyColumnMigrations (story 007-001)', () => {
     expect(columns('jobs').filter((c) => c === 'user_id')).toHaveLength(1);
   });
 
+  it('schema.sql never indexes a column that COLUMN_MIGRATIONS adds (upgrade ordering)', async () => {
+    // initDb runs schema.sql BEFORE applyColumnMigrations. On an existing
+    // database a CREATE INDEX over a migrated column therefore fails with
+    // "no such column" and aborts the boot — which is how #113's idx_jobs_chat
+    // broke `npm run db:seed` against a pre-#113 production database. Such
+    // indexes belong in an init.js helper that runs after the column exists.
+    const { COLUMN_MIGRATIONS } = await import('./init.js');
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const schema = readFileSync(resolve(import.meta.dirname, 'schema.sql'), 'utf-8');
+    const migrated = new Map();
+    for (const { table, column } of COLUMN_MIGRATIONS) {
+      if (!migrated.has(table)) migrated.set(table, new Set());
+      migrated.get(table).add(column);
+    }
+    const offenders = [];
+    for (const m of schema.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s*\(([^)]*)\)/gi)) {
+      const [, index, table, cols] = m;
+      for (const raw of cols.split(',')) {
+        const col = raw.trim().split(/\s+/)[0];
+        if (migrated.get(table)?.has(col)) offenders.push(`${index} ON ${table}(${col})`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('adds jobs.chat_id (issue #113) and its index over the migrated column', () => {
     applyColumnMigrations();
     expect(columns('jobs')).toContain('chat_id');
     // The index cannot live in schema.sql alone (the column is added after
     // the schema script ran on an upgrade); idempotent either way.
-    expect(() => applyChatIndexMigration()).not.toThrow();
-    expect(() => applyChatIndexMigration()).not.toThrow();
+    expect(() => applyJobsIndexMigration()).not.toThrow();
+    expect(() => applyJobsIndexMigration()).not.toThrow();
     // The stub jobs table has no created_at, so the helper skips it until the
-    // column exists (a real jobs table has both; schema.sql covers fresh DBs).
+    // column exists (a real jobs table has both — fresh and upgraded alike).
     const { rows } = querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_chat'");
     expect(rows).toEqual([]);
     querySync('ALTER TABLE jobs ADD COLUMN created_at TEXT');
-    applyChatIndexMigration();
+    applyJobsIndexMigration();
     expect(querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_chat'").rows).toEqual([{ name: 'idx_jobs_chat' }]);
+    // The older migrated column gets its ledger index from the same helper (issue #110).
+    expect(querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_user_created'").rows).toEqual([{ name: 'idx_jobs_user_created' }]);
     // Pre-migration rows stay unlinked.
     expect(querySync('SELECT chat_id FROM jobs').rows.every((r) => r.chat_id === null)).toBe(true);
   });

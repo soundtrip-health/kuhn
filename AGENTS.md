@@ -48,7 +48,7 @@ the DB file, applies the schema, and seeds agents/tools. Health:
 http://localhost:3002/health
 
 - `npm test` / `npm run test:watch` — vitest
-- `npm run db:seed` — re-seed agents & tools (run after editing prompts/seed data)
+- `npm run db:seed` — apply `schema.sql` + migrations, then re-seed agents, tools and catalogs (run after editing prompts/seed data, or after pulling a release that adds tables, without restarting the server)
 - `npm run smoke` — research smoke test (uses real model quota)
 
 The backend also serves `webapp/dist` at `/` whenever that build exists
