@@ -23,6 +23,8 @@
 
 import { config } from '../../config.js';
 import { waitForReply } from '../questions.js';
+import { remember } from '../../db/memory.js';
+import { log } from '../../logger.js';
 import { toolOk, toolError } from './envelope.js';
 
 /**
@@ -51,6 +53,17 @@ export function createInteractionTools(ctx) {
   const { id: jobId } = ctx.parentJob;
 
   const tools = [];
+  // Deterministic memory writes (issue #150, spec §5): best effort — a
+  // memory failure never fails the tool that triggered it.
+  let questionSeq = 0;
+  const writeMemory = (where, entry) => {
+    try {
+      return remember(projectId, entry);
+    } catch (err) {
+      log.warn('memory_write_failed', { jobId, agent: agentSlug, where, err });
+      return null;
+    }
+  };
 
   tools.push({
     name: 'ask_user',
@@ -80,6 +93,15 @@ export function createInteractionTools(ctx) {
           '[No reply received. Do not wait further: continue with sensible defaults and clearly note any assumptions you make.]',
         );
       }
+      // Write 4: the user's answer is a decision the next run of ANY agent
+      // can find — today it would vanish into this agent's session. Human
+      // authored (no source agent), so no agent can overwrite it.
+      questionSeq += 1;
+      writeMemory('question', {
+        kind: 'decision', key: `question:${jobId}:${questionSeq}`,
+        body: `Q (${agentSlug}): ${question}\nA (user): ${reply}`,
+        tags: [agentSlug, 'question'], sourceAgent: null, userId, jobId, truncate: true,
+      });
       return toolOk(reply);
     },
   });
@@ -149,7 +171,19 @@ export function createInteractionTools(ctx) {
       if (stopped) {
         return toolError('Sub-agent was stopped before it finished');
       }
-      return toolOk(finalText || '(sub-agent produced no output)');
+      // Write 1: the child's final reply becomes a task_state entry keyed by
+      // its job, so the next run of any agent starts knowing what this one
+      // did — the record the #150 incident lacked. The dispatcher can point
+      // at it instead of pasting it.
+      const recorded = finalText
+        ? writeMemory('dispatch', {
+            kind: 'task_state', key: childJobId != null ? `task:${childJobId}` : null, body: finalText,
+            tags: [agent_slug, 'dispatch'], sourceAgent: agent_slug, userId, jobId: childJobId ?? jobId,
+            auto: true, truncate: true,
+          })
+        : null;
+      const suffix = recorded ? `\n\n[Recorded as memory #${recorded.entry.id}.]` : '';
+      return toolOk(finalText ? `${finalText}${suffix}` : '(sub-agent produced no output)');
     },
   });
 

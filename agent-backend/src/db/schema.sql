@@ -1059,3 +1059,52 @@ CREATE TRIGGER IF NOT EXISTS guide_sections_ad AFTER DELETE ON guide_sections BE
   INSERT INTO guide_fts(guide_fts, rowid, text, heading_path, title, keywords)
   VALUES ('delete', old.id, old.text, old.heading_path, old.title, old.keywords);
 END;
+
+-- ============================================================
+-- Shared project memory (issue #150, docs/specs/150-project-memory.md).
+-- The distilled, addressable layer every agent on a project reads and
+-- writes directly, so coordination no longer routes through the PM's
+-- context window. Rows are immutable: a keyed write inserts a new row and
+-- retires the previous live row for that key (supersedes_id points back);
+-- retiring is the only mutation. Bounded (2 KB bodies, a per-project cap
+-- enforced in db/memory.js). FTS5 shadow over body/tags/key — the same
+-- external-content + trigger pattern as guide_fts; retired rows are
+-- filtered at query time.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS project_memory (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL CHECK (kind IN ('fact', 'decision', 'task_state', 'issue', 'note')),
+  key           TEXT,                        -- optional stable slug; one LIVE row per (project, key)
+  body          TEXT NOT NULL,               -- markdown, <= 2 KB
+  tags          TEXT NOT NULL DEFAULT '[]',  -- JSON array of short strings
+  source_agent  TEXT,                        -- agent slug; NULL for a human write (protected from agent overwrite)
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,   -- attribution: the acting user
+  job_id        INTEGER REFERENCES jobs(id) ON DELETE SET NULL,    -- provenance; root_job_id reachable through it
+  auto          INTEGER NOT NULL DEFAULT 0,  -- 1 = written by the runtime (dispatch/run outcome, hand-off); retired first at the cap
+  supersedes_id INTEGER REFERENCES project_memory(id) ON DELETE SET NULL,
+  retired_at    TEXT,
+  retired_by    TEXT,                        -- agent slug, 'user:<id>', 'supersede' or 'cap'
+  retire_reason TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, retired_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_live_key
+  ON project_memory(project_id, key) WHERE key IS NOT NULL AND retired_at IS NULL;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS project_memory_fts USING fts5(
+  body, tags, key,
+  content='project_memory',
+  content_rowid='id',
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS project_memory_ai AFTER INSERT ON project_memory BEGIN
+  INSERT INTO project_memory_fts(rowid, body, tags, key)
+  VALUES (new.id, new.body, new.tags, new.key);
+END;
+
+CREATE TRIGGER IF NOT EXISTS project_memory_ad AFTER DELETE ON project_memory BEGIN
+  INSERT INTO project_memory_fts(project_memory_fts, rowid, body, tags, key)
+  VALUES ('delete', old.id, old.body, old.tags, old.key);
+END;

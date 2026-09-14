@@ -83,9 +83,10 @@ retires the previous live row for that key with `retired_by = 'supersede'`, the 
 and delete triggers, and an audit reads as a chain. (The one mutable column set is the
 retire triple.)
 
-**PI-authored entries are protected.** A live entry whose `user_id` is set (a PI decision
-recorded from `ask_user`, or a human write from the UI / `/remember`) cannot be superseded or
-retired by an agent write. The tool returns an error naming the entry and telling the agent
+**PI-authored entries are protected.** A live entry written by a human — `source_agent` NULL:
+a PI answer recorded from `ask_user`, or a human write from the UI / `/remember` (agent writes
+carry the acting user in `user_id` for attribution, so that column does not distinguish them)
+— cannot be superseded or retired by an agent write. The tool returns an error naming the entry and telling the agent
 to raise the disagreement with the user — `ask_user` where it has it, otherwise an `issue`
 entry or a note in its reply — rather than overwrite. Agents should challenge the PI when the
 evidence warrants it; they must never do so silently.

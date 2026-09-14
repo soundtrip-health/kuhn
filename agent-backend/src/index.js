@@ -21,6 +21,7 @@ import citationsRouter from './routes/citations.js';
 import commentsRouter from './routes/comments.js';
 import filesRouter from './routes/files.js';
 import historyRouter from './routes/history.js';
+import memoryRouter from './routes/memory.js';
 import interchangeRouter from './routes/interchange.js';
 import knowledgeRouter from './routes/knowledge.js';
 import orgsRouter from './routes/orgs.js';
@@ -105,6 +106,7 @@ app.use(citationsRouter);
 app.use(commentsRouter);
 app.use(filesRouter);
 app.use(historyRouter);
+app.use(memoryRouter); // read-only view of the shared project memory (issue #150)
 app.use(interchangeRouter); // interchange bundle import/export (issues #153/#154) — before projectsRouter so /api/projects/import is not read as an id; shares the export URL with renderRouter and yields to it for document formats
 app.use(knowledgeRouter); // Kuhn knowledge catalog + per-org selections (issue #65)
 app.use(orgsRouter);

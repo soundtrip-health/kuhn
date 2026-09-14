@@ -93,7 +93,7 @@ Token-free check scripts (drive the app without spending model quota):
 - `index.js` — server entry (Express + ws); `config.js` — env/config
 - `routes/` — REST handlers; `session.js` — agent chat sessions
 - `agents/` — agent **runtime** (the `runAgentTask` boundary, Claude Agent SDK, tool dispatch, project seeding pipeline)
-- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export), `org-secrets.js` (encrypted org secrets store — values write-only, resolved server-side)
+- `db/` + `db.js` — SQLite access (better-sqlite3; `db.js` keeps a `$1`-placeholder, `{rows}`-returning shim): `schema.sql` (DDL), `prompts/*.md` + `seed-data.js` (agent/tool/reference seed data), `seed.js` (applies it), `init.js` (startup: schema → seed), `references.js` (per-project reference store + .bib export), `memory.js` (shared project memory, issue #150: immutable keyed entries + FTS recall; `agents/memory-context.js` renders the prompt digest, `agents/tools/memory.js` the remember/recall/forget tools), `org-secrets.js` (encrypted org secrets store — values write-only, resolved server-side)
 - `storage.js` — project-scoped file API (**enforces the project root — all file access goes through here**)
 - `sandbox.js` — sandboxed subprocess execution; `render.js` — markdown → Typst → PDF, Pandoc export
 - `yjs-websocket.js` / `yjs-signaling.js` — real-time collab servers

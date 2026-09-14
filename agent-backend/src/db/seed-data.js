@@ -125,6 +125,12 @@ export const TOOLS = [
     parameterSchema: { type: 'object', properties: { query: { type: 'string', description: 'Keywords describing the feature or question' }, limit: { type: 'integer', description: 'Maximum sections to return', default: 4 } }, required: ['query'] },
   },
   {
+    // Issue #150: shared project memory — grants the remember, recall and
+    // forget runtime tools. Every project agent; not the help agent.
+    slug: 'project_memory', name: 'Project Memory', description: 'Read and write the shared, project-scoped memory every agent starts a run with (decisions, facts, task outcomes, open issues)',
+    parameterSchema: { type: 'object', properties: { kind: { type: 'string', description: 'fact, decision, task_state, issue or note' }, body: { type: 'string', description: 'The entry (markdown, max 2 KB)' }, key: { type: 'string', description: 'Optional stable slug; a later write supersedes' }, query: { type: 'string', description: 'recall: keywords to match' } } },
+  },
+  {
     // Issue #106: document-type discovery — the project_type enum became an
     // org-extensible catalog.
     slug: 'list_doc_types', name: 'List Document Types', description: 'List the document types a project in this organization can be (Kuhn catalog plus organization-defined types), with a one-line description of each',
@@ -175,6 +181,10 @@ export const ASSIGNMENTS = [
   // Sandboxed script execution (issue #68b): analyst only — the role that
   // produces tables/figures. Expands deliberately, not by default.
   ['analyst', 'run_script'],
+  // Shared project memory (issue #150): every agent that works on a project
+  // reads it at run start and can write to it. The help agent has no project.
+  ['pm', 'project_memory'], ['writer', 'project_memory'], ['ra', 'project_memory'],
+  ['advisor', 'project_memory'], ['reviewer', 'project_memory'], ['analyst', 'project_memory'],
   // Kuhn help (issue #170): the guide is its only tool — no project access.
   ['help', 'search_kuhn_guide'],
 ];
