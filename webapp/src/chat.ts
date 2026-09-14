@@ -13,24 +13,28 @@
 
 import {
   cancelAgentJob,
-  captureHandoff,
   getConversations,
+  getOrCreateChat,
   getPendingQuestions,
   listJobs,
+  listProjectChats,
+  patchChat,
   reconnectAgent,
   replyToAgent,
+  resetChat,
   resumeJob,
   runAgentTask,
   seedProject,
   type AgentEvent,
   type AgentTaskParams,
+  type Chat,
   type Job,
 } from './api';
 import { agentIdentity } from './agents';
 import type { FileChange } from './files';
 import { icon } from './icons';
 import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
-import { clearPinnedProfile, initModelPicker, pinnedProfile, refreshModelPicker, resetModelPicker } from './model-picker';
+import { clearPinnedProfile, initModelPicker, pinnedProfile, primeChatPins, refreshModelPicker, resetModelPicker } from './model-picker';
 import { QuestionCard } from './question-card';
 import { RunTracker } from './run-tracker';
 import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
@@ -41,16 +45,18 @@ import * as workspace from './workspace';
 const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor role';
 
-// SDK session per agent slug, so follow-up messages continue the conversation
-const sessions = new Map<string, string>();
-// Canonical continuation per agent slug (STH-47): the provider-neutral record
-// of the last run, handed back with the next message so agents routed to a
-// provider without server-side sessions carry the conversation forward too —
-// including after a Stop (issue #136). Cleared with the session.
-const continuations = new Map<string, unknown>();
-// STH-55: hand-off notes captured at "start fresh", delivered with the next
-// message to that agent so the fresh session picks up where the old one left.
-const pendingHandoffs = new Map<string, string>();
+// The user's chats in the active project, by agent slug (issue #113): the
+// durable server-side thread. The provider session, the canonical
+// continuation (STH-47), the model pin (issue #134) and the fresh-start
+// hand-off note (STH-55) all live on the row, so a follow-up from any tab
+// or device continues the same conversation. This map is a per-tab mirror —
+// loaded on project switch, refreshed after each run; the server is
+// authoritative and the app only names the chat when it sends a message.
+const chats = new Map<string, Chat>();
+// Agents whose fresh start is still being applied server-side (the reset
+// includes the hand-off scan): a message sent meanwhile would resume the
+// old session, so sends wait for it.
+const resetting = new Set<string>();
 // jobs.error of a run the token budget paused (issue #110) — the durable
 // signal the pause card is rebuilt from after a reload. Mirrors
 // agent-backend/src/agents/budget-pause.js.
@@ -226,14 +232,13 @@ export function initChat(
 
   // Reset per-project conversation state so switching projects (story 006)
   // doesn't carry a previous project's transcript or agent sessions over.
-  sessions.clear();
-  continuations.clear();
+  chats.clear();
+  resetting.clear();
   contextTokens.clear();
   contextSuggested.clear();
   running = false;
   pendingQuestionJobId = null;
   activeQuestionCard = null;
-  pendingHandoffs.clear(); // per-project reset (STH-55)
   document.getElementById('chat-log')!.replaceChildren();
   setStickToBottom(true);
   const seedingPanel = document.getElementById('seeding-panel');
@@ -478,10 +483,12 @@ function dismissContextNotices(agent: string): void {
 }
 
 /**
- * Drop an agent's SDK session so its next message starts a fresh conversation.
- * The transcript stays on screen (server history is untouched); a divider marks
- * the break so the context boundary is visible in the log. Returns whether the
- * context was actually cleared (false when refused or cancelled).
+ * Start a fresh conversation with an agent: the chat is reset server-side
+ * (issue #113) so its next message starts a new provider session — from this
+ * tab or any other. The transcript stays on screen (server history is
+ * untouched); a divider marks the break so the context boundary is visible in
+ * the log. Returns whether the reset was started (false when refused or
+ * cancelled).
  */
 function clearConversation(agent: string, opts: { confirm: boolean; handoff?: boolean }): boolean {
   const label = agentLabel(agent);
@@ -489,7 +496,9 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
     notify(`${label} is still working — wait for the task to finish before clearing`);
     return false;
   }
-  if (!sessions.has(agent) && !contextTokens.has(agent)) {
+  if (resetting.has(agent)) return false;
+  const chat = chats.get(agent);
+  if (!chat?.session_id && !chat?.continuation && !contextTokens.has(agent)) {
     notify(`No conversation context with ${label} to clear`);
     return false;
   }
@@ -497,12 +506,11 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
   if (opts.confirm && !window.confirm(
     `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.\nKuhn will scan the recent chat for open action items and carry a short hand-off note forward.`,
   )) return false;
-  sessions.delete(agent);
-  continuations.delete(agent);
-  pendingHandoffs.delete(agent); // a stale note must not outlive two clears
   contextTokens.delete(agent);
   contextSuggested.delete(agent);
   dismissContextNotices(agent);
+  // A stale note card must not outlive two clears; the server drops its note too.
+  document.querySelectorAll(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
   const divider = document.createElement('div');
   divider.className = 'chat-divider';
   divider.textContent = `fresh conversation with ${label} — earlier chat context cleared`;
@@ -510,31 +518,47 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
   document.getElementById('chat-log')!.append(divider);
   updateContextIndicator();
   scrollLog(true);
-  if (opts.handoff !== false) void captureAndShowHandoff(agent);
+  void resetChatOnServer(agent, opts.handoff !== false);
   return true;
 }
 
 /**
- * STH-55: after a fresh start, scan the recorded conversation tail for a
- * clear hand-off (open question, agreed next step, hard-won guidance) and
- * park it as a note delivered with the user's next message to that agent.
+ * The server side of a fresh start (issue #113): reset the chat row — and,
+ * unless the user opted out, have the server scan the recorded conversation
+ * tail for a clear hand-off (STH-55: open question, agreed next step,
+ * hard-won guidance) and park it as a note delivered with the next message.
  * "No hand-off" is a normal outcome and reads as starting clean; a failed
- * scan degrades to exactly the pre-STH-55 behavior.
+ * scan still resets the chat (the pre-STH-55 behaviour).
  */
-async function captureAndShowHandoff(agent: string): Promise<void> {
-  appendSystemLine(`scanning the previous conversation with ${agentLabel(agent)} for open action items…`);
-  let note: string | null = null;
+async function resetChatOnServer(agent: string, handoff: boolean): Promise<void> {
+  resetting.add(agent);
+  if (handoff) appendSystemLine(`scanning the previous conversation with ${agentLabel(agent)} for open action items…`);
   try {
-    note = await captureHandoff(activeProjectId, agent);
+    const chat = chats.get(agent) ?? await getOrCreateChat(activeProjectId, agent);
+    const result = await resetChat(chat.id, { handoff });
+    chats.set(agent, result.chat);
+    if (result.handoff_error) {
+      appendSystemLine(`hand-off scan failed: ${result.handoff_error} — starting clean`, 'error');
+    } else if (handoff && !result.handoff) {
+      appendSystemLine('no open hand-off found — starting clean');
+    } else if (result.handoff) {
+      showHandoffCard(agent, result.handoff);
+    }
   } catch (err) {
-    appendSystemLine(`hand-off scan failed: ${(err as Error).message} — starting clean`, 'error');
-    return;
+    appendSystemLine(`could not start a fresh conversation with ${agentLabel(agent)}: ${(err as Error).message}`, 'error');
+  } finally {
+    resetting.delete(agent);
   }
-  if (!note) {
-    appendSystemLine('no open hand-off found — starting clean');
-    return;
-  }
-  pendingHandoffs.set(agent, note);
+}
+
+/**
+ * The hand-off card: the note parked on the chat, shown until the next
+ * message to that agent carries it (the server splices it in) or the user
+ * discards it. Rendered after a fresh start and again on load while a note
+ * is still pending — including one parked from another tab.
+ */
+function showHandoffCard(agent: string, note: string): void {
+  document.querySelectorAll(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-handoff';
   tagConversation(card, agent);
@@ -549,8 +573,13 @@ async function captureAndShowHandoff(agent: string): Promise<void> {
   discard.className = 'btn btn-quiet btn-sm notice-action';
   discard.textContent = 'Discard note';
   discard.addEventListener('click', () => {
-    pendingHandoffs.delete(agent);
     card.remove();
+    const chat = chats.get(agent);
+    if (!chat) return;
+    chat.pending_handoff = null;
+    void patchChat(chat.id, { pending_handoff: null }).catch((err: Error) => {
+      notify(`Could not discard the hand-off note: ${err.message}`);
+    });
   });
   card.append(discard);
   document.getElementById('chat-log')!.append(card);
@@ -558,27 +587,35 @@ async function captureAndShowHandoff(agent: string): Promise<void> {
 }
 
 // Restore prior state on page load (story 020): render the recent transcript
-// from the conversation log, and seed the per-agent session map from recorded
-// jobs so each agent continues its prior SDK session instead of starting fresh.
+// from the conversation log, load the user's chats (issue #113: the server
+// holds each agent's session, pin and parked hand-off), and seed the context
+// meter from recorded jobs.
 async function restore(): Promise<void> {
   try {
     await restoreTranscript();
     applyChatFilter(); // restored messages carry mixed conversation tags
-    const jobs = await listJobs(activeProjectId);
+    const [jobs, chatRows] = await Promise.all([listJobs(activeProjectId), listProjectChats(activeProjectId)]);
+    for (const c of chatRows) chats.set(c.agent_slug, c);
+    primeChatPins(activeProjectId, chatRows);
+    void refreshModelPicker(); // the pill now knows the pins
+    const seen = new Set<string>();
     for (const job of jobs) {
-      // Jobs are newest first; keep the most recent session per role.
-      // Sub-agent dispatch jobs are skipped (STH-52): resuming one would
-      // silently continue a dispatched sub-task's context in a direct
-      // chat, and its token count describes that context, not this
+      // Jobs are newest first; the most recent per role speaks for the
+      // conversation. Sub-agent dispatch jobs are skipped (STH-52): their
+      // token counts describe a dispatched sub-task's context, not this
       // conversation's.
       if (job.parent_job_id != null) continue;
-      if (job.session_id && !sessions.has(job.role)) {
-        sessions.set(job.role, job.session_id);
+      if (!seen.has(job.role)) {
+        seen.add(job.role);
         // context_tokens is the context that session carried into its last
-        // reply — seed the meter so it survives a reload (STH-52). Older job
-        // rows predate the column; leave the meter unseeded rather than fall
-        // back to cumulative input_tokens, which overstates context.
-        if (job.context_tokens > 0) contextTokens.set(job.role, job.context_tokens);
+        // reply — seed the meter so it survives a reload (STH-52), but only
+        // while that session is still the chat's (a fresh start cleared it).
+        // Chats predating #113 have no row: fall back to the job's session.
+        // Older job rows predate the column; leave the meter unseeded rather
+        // than fall back to cumulative input_tokens, which overstates context.
+        const chat = chats.get(job.role);
+        const live = chat ? chat.current_job_id === job.id : Boolean(job.session_id);
+        if (live && job.context_tokens > 0) contextTokens.set(job.role, job.context_tokens);
       }
       // Newest job per role also says where it ran and why (issue #107), so
       // the chip survives a reload. Rows older than the columns show model
@@ -594,6 +631,9 @@ async function restore(): Promise<void> {
     updateContextIndicator();
     updateModelIndicator();
     restorePausedRuns(jobs);
+    // A note parked by a fresh start — here or in another tab — still awaits
+    // the next message to that agent.
+    for (const c of chatRows) if (c.pending_handoff) showHandoffCard(c.agent_slug, c.pending_handoff);
     await reconnectPendingQuestion();
   } catch (err) {
     // A fresh project restores an *empty* transcript without erroring, so a
@@ -826,11 +866,9 @@ function createEventHandler(): (event: AgentEvent) => void {
         break;
       }
       case 'cancelled': {
-        // The user stopped the run (issue #136). Keep the session so the next
-        // message picks up exactly where the agent stopped.
+        // The user stopped the run (issue #136). The chat row keeps the
+        // session, so the next message picks up exactly where the agent stopped.
         finalize();
-        if (event.sessionId) sessions.set(event.agent, event.sessionId);
-        if (event.continuation && !event.depth) continuations.set(event.agent, event.continuation);
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
         tracker.end(event.jobId);
         if (!event.depth) appendStopped(event.agent);
@@ -851,8 +889,6 @@ function createEventHandler(): (event: AgentEvent) => void {
         break;
       }
       case 'done': {
-        if (event.sessionId) sessions.set(event.agent, event.sessionId);
-        if (event.continuation && !event.depth) continuations.set(event.agent, event.continuation);
         if (event.usage) addTokenUsage(event.usage);
         // The done event fires for the addressed role's job (issue #43).
         // Assess on the LAST TURN's context (what the session actually
@@ -880,8 +916,7 @@ function createEventHandler(): (event: AgentEvent) => void {
           updateRunActivity();
         }
         if (event.reason === 'budget_exceeded') {
-          // Keep the session so a follow-up resumes this exact conversation.
-          if (event.sessionId) sessions.set(event.agent, event.sessionId);
+          // The chat row keeps the session, so a follow-up resumes this exact conversation.
           // The pause card belongs to the user's own run. A dispatched
           // sub-agent's cutoff (forwarded under the child's slug) is a
           // line — the parent's own cutoff, with the hand-off note, follows.
@@ -899,9 +934,8 @@ function createEventHandler(): (event: AgentEvent) => void {
           appendBudgetExhaustedNotice(event);
         } else if (event.reason === 'provider_overloaded') {
           // Transient upstream failure that outlasted the runtime's retries —
-          // keep the session so a chat "Try again" resumes it, and offer a
-          // one-click retry of the original action (story 029).
-          if (event.sessionId) sessions.set(event.agent, event.sessionId);
+          // the chat row keeps the session so a chat "Try again" resumes it;
+          // offer a one-click retry of the original action (story 029).
           appendOverloadNotice();
         } else if (event.reason === 'route_invalid') {
           // The pinned model is no longer on this agent's route (issue #134)
@@ -960,23 +994,24 @@ async function send(): Promise<void> {
   }
 
   if (running) return;
+  if (resetting.has(role)) {
+    notify(`${agentLabel(role)}'s fresh start is still being set up — one moment`);
+    return;
+  }
   input.value = '';
   autoGrow(input);
 
   appendUserMessage(text, role);
-  // STH-55: deliver a parked hand-off note with this first message, so the
-  // fresh session starts with the previous conversation's action items.
-  const note = pendingHandoffs.get(role);
-  const outgoing = note
-    ? `[Hand-off note carried from your previous conversation with this user]\n${note}\n\n---\n\n${text}`
-    : text;
-  if (note) {
-    pendingHandoffs.delete(role);
-    // The note is delivered — retire the card's discard button.
+  // STH-55: a parked hand-off note goes out with this message — the server
+  // splices it ahead of the input (issue #113) — so retire the card's
+  // discard button here.
+  const chat = chats.get(role);
+  if (chat?.pending_handoff) {
+    chat.pending_handoff = null;
     document.querySelector(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(role)}"] .notice-action`)?.remove();
   }
-  retryAction = () => dispatchTask(role, outgoing);
-  await dispatchTask(role, outgoing);
+  retryAction = () => dispatchTask(role, text);
+  await dispatchTask(role, text);
 }
 
 /**
@@ -1017,7 +1052,8 @@ function taskContext(): AgentTaskParams['context'] {
 /**
  * Run a single chat turn. Separated from send() so the user message is appended
  * once but the run itself can be re-invoked by "Try again" after a transient
- * overload (story 029) — resuming the agent's session if one was recorded.
+ * overload (story 029). The server resolves the chat from role + project and
+ * resumes the session recorded on it (issue #113).
  */
 async function dispatchTask(role: string, text: string): Promise<void> {
   if (running) return;
@@ -1039,8 +1075,6 @@ async function dispatchTask(role: string, text: string): Promise<void> {
         role,
         projectId: activeProjectId,
         input: text,
-        sessionId: sessions.get(role),
-        continuation: continuations.get(role),
         context: taskContext(),
         // The user's pick for this agent (issue #134); absent → the route decides.
         profile: pinnedProfile(activeProjectId, role) ?? undefined,
@@ -1135,6 +1169,7 @@ function finishRun(): void {
   stopping = false;
   runAbort = null;
   conversationAgent = null;
+  void refreshChats();
   // The task is over — an unanswered question can no longer be replied to
   if (pendingQuestionJobId != null) {
     activeQuestionCard?.markExpired();
@@ -1155,6 +1190,21 @@ function exitAnswerMode(): void {
 }
 
 // ---- Rendering ------------------------------------------------------------
+
+/** Re-read the project's chat rows (after a run: the server created or
+ * advanced the addressed agent's chat). Failures are silent — the mirror only
+ * gates the fresh-start button and names chat ids; the server stays right. */
+async function refreshChats(): Promise<void> {
+  const projectId = activeProjectId;
+  try {
+    const rows = await listProjectChats(projectId);
+    if (projectId !== activeProjectId) return; // the project switched under us
+    for (const c of rows) chats.set(c.agent_slug, c);
+    primeChatPins(projectId, rows);
+  } catch {
+    // see above
+  }
+}
 
 function agentLabel(slug: string): string {
   return agentIdentity(slug).label || slug;

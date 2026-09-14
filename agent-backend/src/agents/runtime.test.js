@@ -134,6 +134,12 @@ vi.mock('../db/conversation.js', () => ({
   logMessage: vi.fn(async () => ({})),
   getSessionTranscript: vi.fn(async () => ({ messages: [], job: null })),
 }));
+// Issue #113: the chat store's SQL is covered in db/chats.test.js; here the
+// runtime's calls into it are the contract.
+vi.mock('../db/chats.js', () => ({
+  startChatJob: vi.fn(async () => {}),
+  recordChatRun: vi.fn(async () => {}),
+}));
 vi.mock('../db/jobs.js', () => ({
   createJob: vi.fn(async () => ({ id: 42 })),
   updateJob: vi.fn(async () => ({})),
@@ -258,6 +264,7 @@ import { recordScriptRun } from '../db/script-runs.js';
 import { SandboxError, runScriptSandboxed } from '../sandbox.js';
 import { createConversation, logMessage, getSessionTranscript } from '../db/conversation.js';
 import { createJob, updateJob } from '../db/jobs.js';
+import { recordChatRun, startChatJob } from '../db/chats.js';
 import { resolveRoute } from './model-routing.js';
 import { getProject, updateProjectConfig } from '../db/projects.js';
 import { deliverReply, hasPendingQuestion } from './questions.js';
@@ -2404,6 +2411,103 @@ describe('user-pinned profile (issue #134)', () => {
     } finally {
       routeState.profile = null;
     }
+  });
+});
+
+// --- Issue #113 item 1: durable chats -------------------------------------------
+
+describe('durable chats (issue #113)', () => {
+  const okRun = () => {
+    sdkState.messages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }], usage: { input_tokens: 10, output_tokens: 5 } } },
+      { type: 'result', subtype: 'success', session_id: 'sess-1', usage: { input_tokens: 10, output_tokens: 5 } },
+    ];
+  };
+
+  it('a top-level run with a chatId stamps the job, moves the chat\'s current job, and records the session at done', async () => {
+    okRun();
+    const events = await collect({ role: 'ra', projectId: 1, input: 'hi', chatId: 9 });
+    expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 'sess-1' });
+    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: 9 }));
+    expect(startChatJob).toHaveBeenCalledWith(9, 42);
+    // Recorded when the provider session initialised, and again at the terminal with the record.
+    expect(recordChatRun).toHaveBeenCalledWith(9, 42, { sessionId: 'sess-1', continuation: null });
+    expect(recordChatRun).toHaveBeenLastCalledWith(9, 42, {
+      sessionId: 'sess-1', continuation: expect.objectContaining({ version: 1 }),
+    });
+    // The event payloads are unchanged: old clients still get their session id.
+    expect(events.at(-1).continuation).toEqual(recordChatRun.mock.calls.at(-1)[2].continuation);
+  });
+
+  it('without a chatId nothing touches a chat, and a sub-agent run never does', async () => {
+    okRun();
+    await collect({ role: 'ra', projectId: 1, input: 'hi' });
+    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: null }));
+    expect(startChatJob).not.toHaveBeenCalled();
+    expect(recordChatRun).not.toHaveBeenCalled();
+
+    okRun();
+    await collect({ role: 'ra', projectId: 1, input: 'hi', chatId: 9 }, { depth: 1, parentJobId: 41 });
+    expect(createJob).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: null, parentJobId: 41 }));
+    expect(startChatJob).not.toHaveBeenCalled();
+    expect(recordChatRun).not.toHaveBeenCalled();
+  });
+
+  it('records the partial session at an error terminal, and a chat-sync failure never fails the run', async () => {
+    sdkState.messages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-err' },
+      { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'], usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    recordChatRun.mockRejectedValueOnce(new Error('db locked'));
+    const events = await collect({ role: 'ra', projectId: 1, input: 'hi', chatId: 9 });
+    expect(events.at(-1)).toMatchObject({ type: 'error' });
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'error' }));
+    expect(recordChatRun).toHaveBeenLastCalledWith(9, 42, expect.objectContaining({ sessionId: 'sess-err' }));
+  });
+
+  it('a dead session leaves the chat too before the fresh-session fallback continues', async () => {
+    getSessionTranscript.mockResolvedValueOnce({ job: { id: 41 }, messages: [{ role: 'user', content: 'earlier' }] });
+    let calls = 0;
+    sdkState.generator = () => (async function* () {
+      calls += 1;
+      if (calls === 1) {
+        yield { type: 'system', subtype: 'init', session_id: 'dead' };
+        yield { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['No conversation found with session ID: dead'], usage: { input_tokens: 0, output_tokens: 0 } };
+        return;
+      }
+      yield { type: 'system', subtype: 'init', session_id: 'fresh' };
+      yield { type: 'result', subtype: 'success', session_id: 'fresh', usage: { input_tokens: 1, output_tokens: 1 } };
+    })();
+    const events = await collect({ role: 'ra', projectId: 1, input: 'keep going', sessionId: 'dead', chatId: 9 });
+    expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 'fresh' });
+    const sessions = recordChatRun.mock.calls.map((c) => c[2].sessionId);
+    expect(sessions).toContain(null); // the dead id was cleared for every tab
+    expect(sessions.at(-1)).toBe('fresh');
+  });
+
+  it('a user stop records the session the next message resumes', async () => {
+    let interrupted = false;
+    sdkState.interrupt = vi.fn(async () => { interrupted = true; });
+    sdkState.generator = () => (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-stop' };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Working…' }], usage: { input_tokens: 5, output_tokens: 2 } } };
+      // Park until the stop lands, then end like the SDK does after interrupt().
+      while (!interrupted) await new Promise((r) => setTimeout(r, 5));
+      yield { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['interrupted'], usage: { input_tokens: 5, output_tokens: 2 } };
+    })();
+    const events = [];
+    const it = runAgentTask({ role: 'ra', projectId: 1, input: 'hi', chatId: 9, detachable: true });
+    for await (const ev of it) {
+      events.push(ev);
+      if (ev.type === 'text') {
+        const run = getRun(42);
+        expect(run).toBeTruthy();
+        await cancelRun(run.state, { reason: 'user' });
+      }
+    }
+    expect(events.at(-1)).toMatchObject({ type: 'cancelled', sessionId: 'sess-stop' });
+    expect(recordChatRun).toHaveBeenLastCalledWith(9, 42, expect.objectContaining({ sessionId: 'sess-stop' }));
   });
 });
 

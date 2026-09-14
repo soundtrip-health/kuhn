@@ -80,7 +80,7 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 ## The chat panel
 
-**What it does.** One transcript per project, tagged by agent; each agent keeps its own conversation context. Transcripts are restored on reload ("session restored").
+**What it does.** One transcript per project, tagged by agent; each agent keeps its own conversation context. That context is a server-side chat per agent, project and user, so the same conversation continues from another tab or device instead of forking. Transcripts are restored on reload ("session restored").
 
 **How to use it.** Toggle the panel with "Chat" in the top bar. Type in the box ("Ask an agent, or describe an edit…") and press Enter or the send button ("Send (Enter)"); Shift+Enter inserts a newline. The message goes to the agent shown in the pill at the bottom-left of the composer ("Choose which agent to address"). The bar above the log says "Showing PM only" (or the current agent); its button "All agents" shows the full tagged history, and "PM only" switches back. The choice persists across reloads. Your open document, selection and cursor are sent with every message, so "this document" means the one in the editor.
 
@@ -92,7 +92,7 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 **What it does.** Which model runs an agent is decided at dispatch time from the organization's route for that agent — a ranked list of model profiles, each trusted up to a task difficulty from 0 to 1. Sub-tasks the PM dispatches carry a difficulty; no difficulty means the strongest model. Without a route, the agent's default model above applies.
 
-**How to use it.** When an agent has more than one routed model, a model pill appears beside the agent pill ("Pick which model powers this agent"). Its menu offers "Route default" plus each profile; picking one pins it for that agent in this project (stored in your browser). The status bar shows the model of the job that is running, e.g. "PM · opus-4-8 · d=1", with a tooltip listing "Models this run:". Owners configure profiles and routes (see `org-admin.md`).
+**How to use it.** When an agent has more than one routed model, a model pill appears beside the agent pill ("Pick which model powers this agent"). Its menu offers "Route default" plus each profile; picking one pins it for that agent in this project; the pin is stored on your chat with that agent on the server, so it follows you to other tabs and devices. The status bar shows the model of the job that is running, e.g. "PM · opus-4-8 · d=1", with a tooltip listing "Models this run:". Owners configure profiles and routes (see `org-admin.md`).
 
 **Prerequisites.** Pinning needs at least two routed models for the agent.
 
@@ -142,11 +142,11 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 **What it does.** The meter at the bottom of the composer shows how much context the selected agent carries into its next reply, e.g. "120k / 200k". Past 100k tokens a card says "This conversation is getting long" and offers "Start fresh conversation". A fresh start drops the agent's conversation context; your files and drafts are untouched.
 
-**How to use it.** Click the refresh-style button beside the send button ("Start a fresh conversation with the selected agent (clears its chat context)") and confirm, or use the card's button. A divider marks the break ("fresh conversation with PM — earlier chat context cleared"). Kuhn then scans the recent chat for open action items; if it finds any, a card "Hand-off note — goes out with your next message to PM" shows the note, which is prepended to your next message. "Discard note" drops it. On the long-conversation card, untick "Carry a short hand-off note (open action items) into the fresh conversation" to skip the scan.
+**How to use it.** Click the refresh-style button beside the send button ("Start a fresh conversation with the selected agent (clears its chat context)") and confirm, or use the card's button. A divider marks the break ("fresh conversation with PM — earlier chat context cleared"). The reset happens on the server: the chat's context is cleared and Kuhn scans the recent chat for open action items; if it finds any, the note is parked on the chat and a card "Hand-off note — goes out with your next message to PM" shows it. The note is prepended to your next message to that agent from any tab. "Discard note" drops it. On the long-conversation card, untick "Carry a short hand-off note (open action items) into the fresh conversation" to skip the scan.
 
 **Prerequisites.** The agent must be idle ("PM is still working — wait for the task to finish before clearing").
 
-**Gotchas.** The transcript stays on screen; only the agent's memory resets. "no open hand-off found — starting clean" is a normal outcome.
+**Gotchas.** The transcript stays on screen; only the agent's memory resets. "no open hand-off found — starting clean" is a normal outcome. A message sent while the reset is still running waits for it, so it cannot resume the old conversation by accident.
 
 ## Sub-agents and dispatch
 

@@ -2295,6 +2295,11 @@ export interface AgentTaskParams {
   role: string;
   projectId: number;
   input: string;
+  /** The chat to continue (issue #113); absent → the caller's chat with
+   *  `role` in `projectId`, created on first use. The chat row carries the
+   *  provider session and continuation, so the app no longer sends them. */
+  chatId?: number;
+  /** Legacy (pre-#113): honoured only when the chat has no session yet. */
   sessionId?: string;
   /** `dir` (story 012-001) is the folder the user has selected in the file
    *  panel, sent ONLY when it is inside draft/ — see chat.ts for why. */
@@ -2309,9 +2314,8 @@ export interface AgentTaskParams {
   };
   /** Compose mode (story 017): writer returns text only, no file writes. */
   compose?: boolean;
-  /** Canonical continuation from the agent's last run (STH-47): how runtimes
-   *  without provider-side sessions (non-Anthropic profiles) carry the
-   *  conversation forward — including after a Stop (issue #136). */
+  /** Legacy (pre-#113): the canonical continuation from the agent's last run
+   *  (STH-47). The chat row holds it now; honoured only when the chat has none. */
   continuation?: unknown;
   /** Profile slug the user pinned for this agent (issue #134); must be on the
    *  agent's route list or the server refuses the task (route_invalid). */
@@ -2388,9 +2392,85 @@ export async function resumeJob(
 }
 
 /**
+ * A durable chat (issue #113 item 1): the caller's thread with one agent in
+ * one project. The provider session, the canonical continuation, the model
+ * pin and the fresh-start hand-off note live on this row server-side, so a
+ * conversation continues from any tab or device instead of forking.
+ */
+export interface Chat {
+  id: number;
+  project_id: number;
+  agent_slug: string;
+  user_id: number;
+  title: string | null;
+  session_id: string | null;
+  continuation: unknown;
+  /** The model profile pinned for this agent (issue #134), or null for the route's choice. */
+  pinned_profile: string | null;
+  /** STH-55 note parked by the last fresh start; goes out with the next message. */
+  pending_handoff: string | null;
+  current_job_id: number | null;
+  last_message_at: string | null;
+  /** Projected from the current job; 'waiting_for_user' arrives with #118 stage 1. */
+  status: 'idle' | 'running' | 'paused';
+}
+
+/** The caller's chats in a project, most recently active first. */
+export async function listProjectChats(projectId: number): Promise<Chat[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/chats`));
+  return ((await res.json()) as { chats: Chat[] }).chats;
+}
+
+/** The caller's chat with an agent in a project, created on first use (idempotent). */
+export async function getOrCreateChat(projectId: number, agent: string): Promise<Chat> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}/chats/${encodeURIComponent(agent)}`, { method: 'PUT' }),
+  );
+  return ((await res.json()) as { chat: Chat }).chat;
+}
+
+/** Pin/unpin the chat's model, or discard its parked hand-off note (`pending_handoff: null`). */
+export async function patchChat(
+  id: number,
+  body: { pinned_profile?: string | null; pending_handoff?: null },
+): Promise<Chat> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/chats/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
+  return ((await res.json()) as { chat: Chat }).chat;
+}
+
+/**
+ * Fresh start (STH-55, server-side since #113): forget the chat's session
+ * and continuation and — unless `handoff` is false — scan the recent
+ * conversation for a clear hand-off, which is parked on the chat and goes
+ * out with the next message. `handoff_error` reports a failed scan (the
+ * chat is reset regardless). 409 while the chat's run is in progress.
+ */
+export async function resetChat(
+  id: number,
+  { handoff = true }: { handoff?: boolean } = {},
+): Promise<{ chat: Chat; handoff: string | null; handoff_error?: string }> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/chats/${id}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handoff }),
+    }),
+  );
+  return (await res.json()) as { chat: Chat; handoff: string | null; handoff_error?: string };
+}
+
+/**
  * STH-55: scan the recent recorded conversation with an agent for a clear
  * hand-off (open action items, pending decisions) and return a short note,
- * or null when the conversation ended clean.
+ * or null when the conversation ended clean. Superseded by resetChat (issue
+ * #113), which captures and parks the note server-side; kept for callers
+ * that only want the scan.
  */
 export async function captureHandoff(projectId: number, role: string): Promise<string | null> {
   const res = await expectOk(

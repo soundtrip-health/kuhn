@@ -41,6 +41,15 @@ for (const slug of ['pick-a', 'pick-b']) {
 }
 check((await put(`${orgApi}/model-routes/pm`, { routes: [{ profile_slug: 'pick-a', difficulty: 0.5 }, { profile_slug: 'pick-b', difficulty: 1 }] })).status === 200, 'PM routed to A (≤0.5) and B (≤1)');
 check((await put(`${orgApi}/model-routes/ra`, { routes: [] })).status === 200, 'RA left on its single default');
+// Pins live on the chat row (issue #113): start from an unpinned PM chat.
+const chatsApi = `${BACKEND}/api/projects/${project.id}/chats`;
+const pmChat = (await json(await put(`${chatsApi}/pm`))).chat;
+await fetch(`${BACKEND}/api/chats/${pmChat.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned_profile: null }) });
+const pmPin = async () => (await json(await fetch(chatsApi))).chats.find((c) => c.agent_slug === 'pm')?.pinned_profile ?? null;
+const waitForPin = async (want) => {
+  for (let i = 0; i < 30; i++) { if ((await pmPin()) === want) return true; await new Promise((r) => setTimeout(r, 100)); }
+  return false;
+};
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
@@ -49,7 +58,6 @@ await page.goto(WEBAPP);
 await page.waitForSelector('#chat-input', { timeout: 15000 });
 await page.waitForTimeout(800);
 await page.keyboard.press('Escape');
-await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('kuhn-model-pick')) localStorage.removeItem(k); });
 await page.reload();
 await page.waitForSelector('#chat-input', { timeout: 15000 });
 await page.waitForTimeout(800);
@@ -82,6 +90,7 @@ const optionTexts = await page.$$eval('#model-picker .model-option', (els) => el
 check(optionTexts.length === 3 && /Route default/.test(optionTexts[0]) && /Pick A/.test(optionTexts[1]) && /Pick B/.test(optionTexts[2]), `menu lists Route default + the two profiles (${optionTexts.length})`);
 await page.click('#model-picker .model-option:has-text("Pick A")');
 check((await pillText()) === 'pick-a' && (await pinned()), 'pill shows A and is marked pinned');
+check(await waitForPin('pick-a'), `the pin lives on the chat row (${await pmPin()})`);
 await send('Hello with A.');
 check(fake.requests.at(-1)?.model === 'pick-a', `the turn ran on A (${fake.requests.at(-1)?.model})`);
 await page.waitForSelector('.chat-agent .chat-body:has-text("A here.")', { timeout: 5000 }).catch(() => fail('A\'s reply rendered'));
@@ -116,7 +125,7 @@ const before = fake.requests.length;
 await send('Hello with a stale pin.');
 await page.waitForSelector('.chat-system.chat-system-error:has-text("not one of the models configured")', { timeout: 8000 }).catch(() => fail('route_invalid line shown for the stale pin'));
 check(fake.requests.length === before, 'no model request was made for the refused pin');
-check((await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('kuhn-model-pick')).length)) === 0, 'the stale pin was cleared');
+check(await waitForPin(null), `the stale pin was cleared on the chat row (${await pmPin()})`);
 await page.waitForFunction(() => document.getElementById('model-picker')?.hidden, null, { timeout: 8000 }).catch(() => fail('pill hides once only one model is routed'));
 
 await page.screenshot({ path: '/tmp/kuhn-model-pick.png' });

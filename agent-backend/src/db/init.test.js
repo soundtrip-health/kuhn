@@ -6,7 +6,7 @@ process.env.KUHN_SQLITE_PATH = ':memory:';
 
 let db; let exec; let querySync;
 let applyColumnMigrations; let applyFileEventsKindMigration; let applyMembershipsRoleMigration;
-let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration;
+let applyModelProfilesProviderMigration; let applyProjectTypeCheckMigration; let applyChatIndexMigration;
 
 const columns = (table) =>
   querySync(`SELECT name FROM pragma_table_info('${table}')`).rows.map((r) => r.name);
@@ -14,7 +14,7 @@ const columns = (table) =>
 beforeAll(async () => {
   ({ db, exec, querySync } = await import('../db.js'));
   ({ applyColumnMigrations, applyFileEventsKindMigration, applyMembershipsRoleMigration, applyModelProfilesProviderMigration,
-    applyProjectTypeCheckMigration } = await import('./init.js'));
+    applyProjectTypeCheckMigration, applyChatIndexMigration } = await import('./init.js'));
   // Pre-007-001 shapes: the tables exist (so schema.sql's CREATE IF NOT EXISTS
   // skips them on a real upgrade) but lack the user_id column. `projects` is
   // stubbed too: file_events' outbound FK targets are what the 012-002 rebuild
@@ -125,6 +125,24 @@ describe('applyColumnMigrations (story 007-001)', () => {
     // Second run: nothing to add, no duplicate-column error.
     expect(() => applyColumnMigrations()).not.toThrow();
     expect(columns('jobs').filter((c) => c === 'user_id')).toHaveLength(1);
+  });
+
+  it('adds jobs.chat_id (issue #113) and its index over the migrated column', () => {
+    applyColumnMigrations();
+    expect(columns('jobs')).toContain('chat_id');
+    // The index cannot live in schema.sql alone (the column is added after
+    // the schema script ran on an upgrade); idempotent either way.
+    expect(() => applyChatIndexMigration()).not.toThrow();
+    expect(() => applyChatIndexMigration()).not.toThrow();
+    // The stub jobs table has no created_at, so the helper skips it until the
+    // column exists (a real jobs table has both; schema.sql covers fresh DBs).
+    const { rows } = querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_chat'");
+    expect(rows).toEqual([]);
+    querySync('ALTER TABLE jobs ADD COLUMN created_at TEXT');
+    applyChatIndexMigration();
+    expect(querySync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_chat'").rows).toEqual([{ name: 'idx_jobs_chat' }]);
+    // Pre-migration rows stay unlinked.
+    expect(querySync('SELECT chat_id FROM jobs').rows.every((r) => r.chat_id === null)).toBe(true);
   });
 
   it('adds the epic 013 reviewer-attribution columns', () => {
