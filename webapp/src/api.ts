@@ -863,11 +863,13 @@ export async function writeTextFile(
   projectId: number,
   path: string,
   content: string,
-  opts: { checkpoint?: boolean } = {},
+  opts: { checkpoint?: boolean; bodyOnly?: boolean } = {},
 ): Promise<void> {
   // checkpoint=1 marks an explicit user save: the backend commits a history
   // version immediately instead of coalescing it (story 008-002).
-  const url = fileUrl(projectId, path) + (opts.checkpoint ? '&checkpoint=1' : '');
+  // body=1 says `content` is the document body without its front matter (the
+  // rich editor never holds the block): the server re-attaches the stored one.
+  const url = fileUrl(projectId, path) + (opts.checkpoint ? '&checkpoint=1' : '') + (opts.bodyOnly ? '&body=1' : '');
   await expectOk(
     await apiFetch(url, {
       method: 'PUT',

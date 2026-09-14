@@ -122,9 +122,15 @@ export async function getFile(): Promise<string | null> {
 }
 
 /** PUT /api/review/file[?checkpoint=1] — edit mode only (others 403). */
-export async function putFile(content: string, opts: { checkpoint?: boolean } = {}): Promise<void> {
+export async function putFile(content: string, opts: { checkpoint?: boolean; bodyOnly?: boolean } = {}): Promise<void> {
+  const params = new URLSearchParams();
+  if (opts.checkpoint) params.set('checkpoint', '1');
+  // The reviewer's rich editor edits the body only; the server re-attaches the
+  // stored front matter (template, page limits) — see front-matter.ts.
+  if (opts.bodyOnly) params.set('body', '1');
+  const qs = params.toString();
   await expectOk(
-    await reviewFetch(`/api/review/file${opts.checkpoint ? '?checkpoint=1' : ''}`, {
+    await reviewFetch(`/api/review/file${qs ? `?${qs}` : ''}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
       body: content,

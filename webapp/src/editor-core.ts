@@ -36,6 +36,7 @@ import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import * as decoding from 'lib0/decoding';
 import { Doc as YDoc } from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import { stripFrontMatter } from './front-matter';
 
 import '@milkdown/crepe/theme/common/style.css';
 import 'katex/dist/katex.min.css';
@@ -126,12 +127,15 @@ export interface DocFeatures {
  *  drive the same editor through different REST namespaces. */
 export interface DocTransport {
   readFile: (projectId: number, path: string) => Promise<string | null>;
-  /** Absent = this surface can never persist (view/comment reviewer modes). */
+  /** Absent = this surface can never persist (view/comment reviewer modes).
+   *  The core always writes the document BODY (front matter stripped on the
+   *  way in) and passes `bodyOnly: true`, which the transport must forward
+   *  (`body=1`) so the server re-attaches the stored front matter. */
   writeFile?: (
     projectId: number,
     path: string,
     content: string,
-    opts?: { checkpoint?: boolean },
+    opts?: { checkpoint?: boolean; bodyOnly?: boolean },
   ) => Promise<void>;
   commentsApi: CommentsTransport;
   /** WS origin (no path), e.g. api.ts BACKEND_WS_URL; the provider connects
@@ -186,6 +190,13 @@ export interface OpenDocOptions {
   beforeSave?: () => boolean;
   /** First provider sync; `empty` = the shared fragment had no content. */
   onSynced?: (info: { empty: boolean }) => void;
+  /** The provider reconnected into a REBUILT room (the server's room
+   *  generation changed while this client was away: idle expiry with the tab
+   *  frozen, a server restart, an eviction). The core has already
+   *  disconnected the provider so this client's Yjs history is NOT merged
+   *  into the room's fresh seed — that merge is what duplicated documents.
+   *  The caller must re-open the document (a new handle, a new Y.Doc). */
+  onStale?: (info: { previous: string; current: string }) => void;
   /** After create + collab wiring, before comments attach — the member
    *  wrapper attaches suggestions here. */
   onReady?: (view: EditorView) => void;
@@ -300,8 +311,12 @@ export async function openDoc(options: OpenDocOptions): Promise<DocHandle> {
   const collabEnabled = options.collab ?? true;
   const onSaveState = options.onSaveState ?? ((): void => {});
 
-  const stored =
-    options.stored !== undefined ? options.stored : await transport.readFile(projectId, path);
+  // The rich editor never sees front matter (front-matter.ts): a caller that
+  // pre-read `stored` has stripped it already; a transport read is stripped
+  // here, so a reviewer seeding a cold room never puts the block in the room.
+  const stored = stripFrontMatter(
+    options.stored !== undefined ? options.stored : await transport.readFile(projectId, path),
+  );
   const template = options.template ?? stored ?? DEFAULT_TEMPLATE;
 
   let destroyed = false;
@@ -311,7 +326,7 @@ export async function openDoc(options: OpenDocOptions): Promise<DocHandle> {
   const engine = createSaveEngine({
     // `path` is read at write time so a racing autosave lands on the
     // retargeted path (setPath runs before the flush — move-follow rule 1).
-    write: (content, o) => transport.writeFile!(projectId, path, content, o),
+    write: (content, o) => transport.writeFile!(projectId, path, content, { ...o, bodyOnly: true }),
     onState: onSaveState,
     beforeSave: options.beforeSave,
   });
@@ -424,8 +439,25 @@ export async function openDoc(options: OpenDocOptions): Promise<DocHandle> {
       // server only grants write-capable connections; the editable gates
       // below are the client half of the same invariant.
       let seedGranted = false;
+      // The room generation this client first synced with. A later grant
+      // frame (y-websocket reconnects transparently) naming a different
+      // generation means the room was rebuilt while we were away — see
+      // onStale. The frame precedes the sync frames, so disconnecting here
+      // stops the browser from delivering them: our history never reaches
+      // the new room and its seed never reaches our doc.
+      let roomGeneration: string | null = null;
       boundProvider.messageHandlers[MSG_SEED_GRANT] = (_encoder, decoder) => {
         seedGranted = decoding.readVarUint(decoder) === 1;
+        const generation = decoding.hasContent(decoder) ? decoding.readVarString(decoder) : null;
+        if (generation == null || destroyed || provider !== boundProvider) return;
+        if (roomGeneration != null && generation !== roomGeneration) {
+          const previous = roomGeneration;
+          boundProvider.disconnect();
+          console.warn(`[collab] room rebuilt while away (generation ${previous} → ${generation}); reopening ${path} instead of merging local history`);
+          options.onStale?.({ previous, current: generation });
+          return;
+        }
+        roomGeneration = generation;
       };
       boundProvider.messageHandlers[MSG_REVIEWERS] = (_encoder, decoder) => {
         const payload = decoding.readVarString(decoder);

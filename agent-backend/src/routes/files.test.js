@@ -105,6 +105,34 @@ describe('file routes', () => {
     expect(await read.text()).toBe('fresh content');
   });
 
+  it('re-attaches the stored front matter to a body-only write (?body=1)', async () => {
+    const fm = '---\ntemplate: nih-grant\npage_limits:\n  Specific Aims: 1\n---\n';
+    await fetch(url('/api/projects/1/file', { path: 'draft/aims.md' }), {
+      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: `${fm}# Aims\n\nOld body.\n`,
+    });
+    // The rich editor (member or reviewer) writes the body it edits.
+    const res = await fetch(url('/api/projects/1/file', { path: 'draft/aims.md', body: '1' }), {
+      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: '# Aims\n\nNew body.\n',
+    });
+    expect(res.status).toBe(200);
+    const read = await fetch(url('/api/projects/1/file', { path: 'draft/aims.md' }));
+    expect(await read.text()).toBe(`${fm}# Aims\n\nNew body.\n`);
+    // A full write (source mode, agents, imports) replaces the block as before.
+    await fetch(url('/api/projects/1/file', { path: 'draft/aims.md' }), {
+      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: '# Aims\n\nNo block now.\n',
+    });
+    expect(await (await fetch(url('/api/projects/1/file', { path: 'draft/aims.md' }))).text()).toBe('# Aims\n\nNo block now.\n');
+    // Body-only into a file that has no block, or does not exist, is the body.
+    await fetch(url('/api/projects/1/file', { path: 'draft/aims.md', body: '1' }), {
+      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: 'plain',
+    });
+    expect(await (await fetch(url('/api/projects/1/file', { path: 'draft/aims.md' }))).text()).toBe('plain');
+    const fresh = await fetch(url('/api/projects/1/file', { path: 'draft/brand-new.md', body: '1' }), {
+      method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: 'first bytes',
+    });
+    expect(fresh.status).toBe(201);
+  });
+
   const move = (body) => fetch(url('/api/projects/1/files/move'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

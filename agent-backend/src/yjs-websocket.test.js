@@ -117,11 +117,19 @@ const memberCollab = (id, access = 'write') => ({ principal: { kind: 'member', u
 const msgType = (m) => decoding.readVarUint(decoding.createDecoder(new Uint8Array(m)));
 const messagesOfType = (ws, type) => ws.sent.filter((m) => msgType(m) === type);
 
-/** Decode a seed-grant message (varUint type 64, varUint 0|1). */
+/** Decode a seed-grant message (varUint type 64, varUint 0|1, varString generation). */
 function decodeGrant(message) {
   const dec = decoding.createDecoder(new Uint8Array(message));
   expect(decoding.readVarUint(dec)).toBe(64);
   return decoding.readVarUint(dec);
+}
+
+/** The room generation carried by a seed-grant message. */
+function decodeGeneration(message) {
+  const dec = decoding.createDecoder(new Uint8Array(message));
+  expect(decoding.readVarUint(dec)).toBe(64);
+  decoding.readVarUint(dec);
+  return decoding.readVarString(dec);
 }
 
 /** Decode a MSG_REVIEWERS message (varUint type 65, varString JSON). */
@@ -241,6 +249,23 @@ describe('collab room eviction (story 038)', () => {
     evictRoom(room);
     const third = connect(room);
     expect(decodeGrant(third.sent[0])).toBe(1);
+  });
+
+  it('stamps every grant with the room generation, which changes when the room is rebuilt', () => {
+    const room = 'project-908/draft/generation.md';
+    const first = connect(room);
+    const second = connect(room);
+    const g1 = decodeGeneration(first.sent[0]);
+    expect(g1).toMatch(/^[0-9a-f]{8}$/);
+    // Same room instance → same generation for every connection into it.
+    expect(decodeGeneration(second.sent[0])).toBe(g1);
+    first.disconnect();
+    second.disconnect();
+    evictRoom(room);
+    // Rebuilt room → a new generation: a client that synced with g1 and
+    // reconnects here must re-open, not merge its history into the new seed.
+    const third = connect(room);
+    expect(decodeGeneration(third.sent[0])).not.toBe(g1);
   });
 
   it('closes with the caller\'s code and reason when a move redirects the room (story 012-002)', () => {

@@ -28,7 +28,8 @@
     "tree-check": "node scripts/tree-check.mjs",
     "phantom-check": "node scripts/phantom-check.mjs",
     "stop-check": "node scripts/stop-check.mjs",
-    "model-pick-check": "node scripts/model-pick-check.mjs"
+    "model-pick-check": "node scripts/model-pick-check.mjs",
+    "stale-room-check": "node scripts/stale-room-check.mjs"
   },
   "devDependencies": {
     "jsdom": "^30.0.1",

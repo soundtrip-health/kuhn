@@ -93,7 +93,7 @@ A section runs from its heading to the next heading of the same or a higher leve
 
 **What it does.** A YAML block between `---` fences at the very top of the file. Kuhn reads `template:`, `page_limits:`, `marp:` and `theme:` from it; everything else passes through to Pandoc as document metadata.
 
-**How to use it.** The rich editor hides the front matter entirely (it is stripped before the document reaches the editor and re-attached on every save, so it cannot be mangled). To read or change it, click "Source" in the editor sub-header and edit the block at the top of the raw Markdown, then "Rich text" to return. Agents can also change it when you ask, since they edit the file directly.
+**How to use it.** The rich editor hides the front matter entirely: it is stripped before the document reaches the editor, and every rich-mode save writes the body only, with the backend re-attaching the block the stored file carries. That holds for external reviewers editing through a share link too, so a reviewer's save keeps your `template:` and `page_limits:`. To read or change the block, click "Source" in the editor sub-header and edit it at the top of the raw Markdown, then "Rich text" to return. Agents can also change it when you ask, since they edit the file directly.
 
 **Prerequisites.** Editor role for changes.
 
@@ -127,7 +127,7 @@ A section runs from its heading to the next heading of the same or a higher leve
 
 **Prerequisites.** A live WebSocket connection to the backend. Viewers join read-only.
 
-**Gotchas.** Only rich mode is collaborative; source mode and non-Markdown files are single-writer. A room lives 30 seconds after its last participant leaves; the next opener seeds it from the saved file. If your role is lowered while you are connected your editor reopens read-only within about a minute.
+**Gotchas.** Only rich mode is collaborative; source mode and non-Markdown files are single-writer. A room lives 30 seconds after its last participant leaves; the next opener seeds it from the saved file. A tab that was asleep or frozen while its room was rebuilt (a backend restart, or everyone else left and someone reopened the document later) reloads the document when it reconnects instead of merging its old copy into the new room; any edit it still had unsaved is written first. If your role is lowered while you are connected your editor reopens read-only within about a minute.
 
 ## Agent suggestions and word-level diffs
 

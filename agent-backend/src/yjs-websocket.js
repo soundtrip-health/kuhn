@@ -8,6 +8,7 @@
  * added later by listening to doc updates.
  */
 
+import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
@@ -25,6 +26,17 @@ const MSG_AWARENESS = 1;
 // template. Kills the race where two clients both observe an empty room and
 // both seed it. y-websocket reserves 0-3; 64 leaves headroom for upstream.
 const MSG_SEED_GRANT = 64;
+// Payload since the Canopy-R01 duplication fix: varUint granted (0|1), then
+// varString ROOM GENERATION — a random id minted when this room instance was
+// created. A client that reconnects and sees a different generation than the
+// one it first synced with knows the room was torn down and rebuilt while it
+// was away (30 s idle expiry with the tab frozen, a server restart, an
+// eviction) and that the current room may already hold a fresh seed from
+// storage. Merging its own Yjs history into that room would concatenate two
+// independent copies of the document (the CRDT has no shared origin to
+// reconcile them by) — the 2× / 4× duplication seen in production. So the
+// client must re-open instead of merging. Older clients ignore the extra
+// bytes.
 /**
  * Kuhn extension (epic 013): server-attributed external presence. Broadcast to
  * every connection in a room on any reviewer join/leave (and sent once to each
@@ -194,8 +206,9 @@ function getOrCreateDoc(name) {
     }
   });
 
-  const entry = { doc, awareness, conns: new Set() };
+  const entry = { doc, awareness, conns: new Set(), generation: randomUUID().slice(0, 8) };
   docs.set(name, entry);
+  log.info('ws_room_created', { room: name, generation: entry.generation });
   return entry;
 }
 
@@ -604,7 +617,7 @@ export function handleYjsConnection(ws, req) {
   const who = reviewer
     ? { principal: 'reviewer', linkId: reviewer.linkId }
     : { principal: ws.kuhnPrincipal ? 'member' : null, userId: ws.kuhnPrincipal?.user?.id ?? null };
-  log.info('ws_room_join', { room: roomName, access: ws.kuhnAccess, conns: entry.conns.size, ...who });
+  log.info('ws_room_join', { room: roomName, access: ws.kuhnAccess, conns: entry.conns.size, generation: entry.generation, ...who });
 
   if (reviewer) {
     let set = reviewerConns.get(reviewer.linkId);
@@ -734,6 +747,7 @@ export function handleYjsConnection(ws, req) {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MSG_SEED_GRANT);
     encoding.writeVarUint(encoder, granted ? 1 : 0);
+    encoding.writeVarString(encoder, entry.generation);
     ws.send(encoding.toUint8Array(encoder));
   }
 
