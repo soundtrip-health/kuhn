@@ -1,42 +1,96 @@
 # Kuhn
 
-A web-based scientific and technical writing tool with integrated AI assistance.
+An AI-assisted workspace for scientific research and writing: manuscripts, grant proposals,
+protocols, SOPs and slide decks, drafted in a WYSIWYG markdown editor with a team of
+specialized agents working alongside you.
 
-Kuhn pairs a WYSIWYG markdown editor with AI agents that assist in real time as you write
-manuscripts, protocols, and grant applications. You author in plain markdown with BibTeX;
-the toolchain renders to PDF via Typst and exports to Word/LaTeX via Pandoc — LaTeX is an
-export target, never a prerequisite.
+Kuhn is built for the whole arc of a scientific project. A team of agents interviews you
+about the work, builds the bibliography, drafts a skeleton, answers margin comments, reviews
+the argument, and turns the draft into a submission-ready PDF, Word file, LaTeX source or
+slide deck. When the project has data behind it, the same team runs the analysis: an Analyst
+agent executes reviewed scripts in a sandbox, against files you upload or a private database
+you connect, and hands tables and figures with provenance to the Writer. Use the writing
+side on its own for a grant or a review article, or the full loop from raw data to a results
+manuscript.
 
 ![The Kuhn editor: agent chat, WYSIWYG manuscript editing, and project files side by side](docs/images/kuhn-editor.png)
 
-Current capabilities:
+## What Kuhn does
 
-- **Agent-integrated editing** — six specialized agents (PM, Writer, Research Assistant,
-  Advisor, Reviewer, Analyst) embedded in the editor, with token-streaming chat, mid-task
-  questions, and transcript restore on reload.
-- **Milkdown editor** — WYSIWYG markdown with Yjs real-time collaboration, anchored margin
-  comments that agents can answer and resolve, and a `/cite` slash command that inserts
-  grounded references.
-- **One-click project seeding** — a deterministic pipeline runs a PM interview → parallel
-  research (Research Assistant + Advisor) → Writer skeleton draft.
-- **Live preview & export** — PDF preview pane (markdown → Typst → PDF with citeproc citations)
-  plus one-click docx/LaTeX export, all sandboxed. A `\newpage` line forces a page break in
-  every output (the Pandoc/R Markdown convention), and `template: nih-grant` (or
-  `manuscript`) in a document's front matter — or as the project's default, picked in the
-  setup wizard — renders it with that page layout — NIH's 0.5 in margins and Arial 11 pt, so
-  the preview's page count is the one that matters. The Word export carries the same layout
-  through the template's reference `.docx`.
-  After each render the editor draws dashed **page-break lines** where the PDF's pages
-  actually turn (positions come from Typst, not an estimate) and the status bar shows the
-  page count; the lines dim when the document is edited until the next render. Declare hard
-  limits in the front matter (`page_limits: {Specific Aims: 1, Research Strategy: 12}`) and
-  each of those headings gets a badge — `1.07 / 1 pages`, red when over.
-- **Multi-tenant by design** — organizations with role-based membership and invitation-only
-  sign-in, project-scoped storage, sandboxed execution, and per-tenant knowledge bases over
-  a shared curated guidance corpus.
-- **Interchange with other writing tools** — push a draft, its references and figures in as
+- **A team of agents, not a chatbot.** Seven agents with distinct roles — Project Manager,
+  Writer, Research Assistant, Advisor (domain expert), Reviewer, Analyst, and an in-app Help
+  agent that answers questions about Kuhn itself. Chat streams token by token, agents ask
+  you questions mid-task, the PM and Writer dispatch sub-agents, and a shared **project
+  memory** carries facts, decisions and task outcomes between runs so no agent depends on
+  the PM's context window. Each agent's chat is a durable server-side conversation that
+  follows you across tabs and devices.
+- **Project setup and seeding.** A setup wizard captures the document type, research
+  question, deliverables and source materials, then a fixed pipeline runs parallel research
+  (Research Assistant + Advisor) and writes a section skeleton with intent sentences and
+  initial citations. Document types ship for manuscripts, grants, RWE and RCT protocols and
+  SOPs; organizations can define their own, each with its own agent guidance and default
+  page layout.
+- **Grounded research and citations.** The Research Assistant searches PubMed, arXiv and
+  the web and adds references through a registry-verified reference store (PubMed, Crossref,
+  arXiv), which keeps `draft/references.bib` in sync and can re-verify every entry field by
+  field. A `/cite` slash command inserts citations in the editor; the render resolves them
+  with citeproc in PDF, Word and LaTeX.
+- **A real editor.** Milkdown WYSIWYG markdown with Yjs real-time collaboration, anchored
+  margin comments that agents can file, answer and resolve, agent edits presented as
+  word-level suggestions you accept or reject hunk by hunk, and a source mode when you want
+  the raw markdown.
+- **Data analysis in the loop.** The Analyst runs R scripts in a network-isolated Docker
+  sandbox: shared, versioned org scripts (promoted from projects through an owner review)
+  or project scripts while iterating. Credentials from the **org secrets store** are
+  injected into a run without ever reaching the model, and a run that carries a secret
+  joins an internal Docker network, so the Analyst can query a private data warehouse
+  under a least-privilege database role with no route to the internet. Tables land in
+  `draft/tables/` and figures in `draft/figures/` with sibling provenance files, every run
+  is logged, and the Writer and Reviewer are held to numbers that trace to those artifacts.
+  See [Two end-to-end projects](#two-end-to-end-projects) below for a worked example.
+- **Live preview and export.** The preview pane renders markdown → Typst → PDF; one click
+  exports Word or LaTeX via Pandoc, all sandboxed. Page-layout templates (`nih-grant`,
+  `manuscript`, or your organization's own Typst templates) give the preview the funder's
+  margins and fonts so its page count is the one that matters, and the Word export carries
+  the same layout through a reference `.docx`. After each render the editor draws
+  **page-break lines** where the PDF's pages actually turn, and `page_limits:` in the front
+  matter puts a live page-count badge on each capped section (`1.07 / 1 pages`, red when
+  over). A `\newpage` line forces a page break in every output.
+- **Slide decks.** A document with `marp: true` renders as Marp slides — PDF preview and an
+  editable PowerPoint export — with Kuhn's built-in themes or CSS themes your organization
+  uploads.
+- **Organizations and administration.** Multi-tenant by design: organizations with
+  viewer/editor/owner roles, invitation-only magic-link sign-in, project-scoped storage and
+  a super-admin platform console. Owners manage token **budgets** per member and project,
+  **model profiles and routing** (Anthropic, OpenAI, Google Gemini, OpenRouter, or any
+  OpenAI-compatible endpoint, ranked per agent by task difficulty), a **knowledge library**
+  built from a curated guidance catalog (reporting standards, regulatory guidance, style
+  references) plus their own uploaded documents, the script library, secrets, slide themes,
+  page-layout templates and document types.
+- **Interchange with other writing tools.** Push a draft, its references and figures in as
   a bundle, collect anchored comments and edits in Kuhn, pull them back out; personal API
   tokens for scripts. See [docs/specs/interchange-bundle.md](docs/specs/interchange-bundle.md).
+
+The in-app feature guide, [docs/features/](docs/features/), documents every panel, command
+and front-matter key; the Help agent answers from it.
+
+## Two end-to-end projects
+
+[`test-projects/`](test-projects/) holds two complete projects you can recreate through the
+UI — wizard answers, seed materials and an ordered set of chat prompts — that double as the
+best tour of what Kuhn does. Both spend real model quota.
+
+1. [**A manuscript about Kuhn itself**](test-projects/01-kuhn-manuscript/) — the core
+   writing loop: wizard intake with seed-document uploads, the seeding pipeline, every agent
+   in chat, `/cite`, a Reviewer pass, a slide deck, and PDF, Word and LaTeX output.
+2. [**NSDUH psychedelics**](test-projects/02-nsduh-psychedelics/) — the data-analysis loop:
+   a real Postgres database (the 2023 National Survey on Drug Use and Health public-use
+   file, 56,705 respondents) on the internal sandbox network, a write-only database
+   credential in the org secrets store, the Analyst querying it through `run_script` with
+   survey-weighted statistics, generated tables and figures with provenance, and a results
+   manuscript whose every number traces to an artifact. Its README is also the **admin's
+   guide** to wiring a deployment to a private data warehouse with a least-privilege
+   database role.
 
 ## Quick start
 
@@ -45,8 +99,10 @@ Current capabilities:
 - Node.js 22.19+ — **use an LTS release** (e.g. 24). The provider-runtime spike's current Pi
   packages require 22.19, and Node 26 currently fails to build the native
   `better-sqlite3` dependency.
-- Docker (for sandboxed rendering/export only — the database is in-process SQLite).
-- An `ANTHROPIC_API_KEY` (or Claude Code login credentials on a dev machine).
+- Docker (for sandboxed rendering, export and Analyst script runs — the database is
+  in-process SQLite).
+- An `ANTHROPIC_API_KEY` (or Claude Code login credentials on a dev machine). Other
+  providers are added per organization in Org admin → Models.
 
 ### Run it
 
@@ -66,9 +122,10 @@ npm run dev
 The root `package.json` is a dev-only orchestrator: its `postinstall` installs both packages,
 so a single root `npm install` bootstraps the whole repository.
 
-Open **http://localhost:5174**. On first run with an empty database, Kuhn creates a
-"Demo Manuscript" project — click **Seed project** to run the full seeding pipeline (PM
-interview → research → skeleton draft). Note that agent runs use real model quota.
+Open **http://localhost:5174**, create an organization and a project, and the setup wizard
+opens; "Finish & launch" runs the seeding pipeline (research → skeleton draft). Agent runs
+use real model quota. For a guided first session, follow one of the
+[end-to-end projects](#two-end-to-end-projects).
 
 The backend serves at **http://localhost:3002** (health check: `/health`). On startup it
 creates the SQLite database, applies the schema, and seeds agents, tools, and assignments —
@@ -127,25 +184,27 @@ variables, Cloudflare Tunnel configuration, inviting users, and running as a ser
 
 ### Additional prerequisites
 
-- Pandoc + Poppler sandbox images for export and org-library PDF ingestion
-  (one-time: `docker pull pandoc/core:latest minidocks/poppler:latest`), and
-  the Kuhn-built Typst renderer with the fonts the page-layout templates need
-  (`docker build -t kuhn/typst:latest docker/typst`)
-- The Marp slide renderer, built locally like the R runtime (STH-61 — adds
-  LibreOffice so pptx exports are editable):
-  `docker build -t kuhn/marp:latest docker/marp`
-- The analyst's R runtime image, built locally (issue #68b — the sandbox has no
-  network, so packages are baked in): `docker build -t kuhn/r-analysis:latest
-  docker/r-analysis` (see `docker/r-analysis/README.md`)
+Render, export, org-library PDF ingestion and Analyst script runs all execute inside Docker
+images (no host Python, R, Typst or Pandoc required):
+
+- `docker pull pandoc/core:latest minidocks/poppler:latest` — Word/LaTeX export and
+  organization-library PDF ingestion
+- `docker build -t kuhn/typst:latest docker/typst` — the PDF renderer with the fonts the
+  page-layout templates need (the stock Typst image works, but page counts drift)
+- `docker build -t kuhn/marp:latest docker/marp` — slide decks, with LibreOffice for
+  editable `.pptx` export
+- `docker build -t kuhn/r-analysis:latest docker/r-analysis` — the Analyst's R runtime; the
+  sandbox has no network, so packages are baked in (see `docker/r-analysis/README.md`)
+- `docker network create --internal kuhn-data` — only if Analyst runs need to reach a
+  database (see test project 2)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-Render/export and analyst script execution (`run_script`) run inside sandboxed Docker
-images (no host Python/R environment required). Re-seed agents/tools after editing
-prompts or seed data with `npm run db:seed` (from `agent-backend/`).
+Re-seed agents, tools and catalogs after editing prompts or seed data with
+`npm run db:seed` (from `agent-backend/`). [TESTING.md](TESTING.md) describes the test
+suites and the token-free check scripts.
 
 See [CLAUDE.md](CLAUDE.md) for contributor guidance (repository layout, where things live,
-agent prompts, conventions). The repository is also configured so Claude Code can run common
-read-only and build commands without prompting.
+agent prompts, conventions).
 
 ### Architecture
 
