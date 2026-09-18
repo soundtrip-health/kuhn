@@ -8,7 +8,13 @@ vi.mock('../db/projects.js', () => ({
   createProject: vi.fn(),
   setActiveDocument: vi.fn(async () => ({})),
   updateProjectConfig: vi.fn(async (id, fields) => ({ id, ...fields })),
+  softDeleteProject: vi.fn(async (id) => ({ id, deleted_at: '2026-09-18T00:00:00.000Z' })),
 }));
+// Soft delete (issue #190): the side effects are seams here — the room
+// eviction, run cancellation and audit row each have their own suites.
+vi.mock('../yjs-websocket.js', () => ({ evictRoomsUnder: vi.fn(() => 2) }));
+vi.mock('../agents/tenancy.js', () => ({ cancelTenantJobs: vi.fn(async () => ({ flagged: 1, aborted: 1 })) }));
+vi.mock('../db/auth-events.js', () => ({ recordAuthEvent: vi.fn() }));
 vi.mock('../agents/project-config.js', () => ({
   applyProjectConfig: vi.fn(async (id) => ({ project: { id, config: { setup: { status: 'complete' } } }, created: true })),
 }));
@@ -63,8 +69,12 @@ import {
   listProjectsForUser,
   createProject,
   setActiveDocument,
+  softDeleteProject,
   updateProjectConfig,
 } from '../db/projects.js';
+import { recordAuthEvent } from '../db/auth-events.js';
+import { cancelTenantJobs } from '../agents/tenancy.js';
+import { evictRoomsUnder } from '../yjs-websocket.js';
 import { applyProjectConfig } from '../agents/project-config.js';
 import { getOrgSettings } from '../db/org-settings.js';
 import { createPromotionRequest } from '../db/promotions.js';
@@ -73,7 +83,7 @@ import { readProjectFile } from '../storage.js';
 import projectsRouter from './projects.js';
 import { config } from '../config.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
-import { publishProjectEvent, projectSubscriberCount } from '../project-events.js';
+import { publishProjectEvent, projectSubscriberCount, subscribeOrgEvents } from '../project-events.js';
 
 let server;
 let base;
@@ -563,5 +573,48 @@ describe('role tightening (story 010-003)', () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: 'organization suspended' });
     }
+  });
+});
+
+describe('DELETE /api/projects/:id (issue #190 soft delete)', () => {
+  it('soft-deletes for an editor: evicts rooms, cancels runs, audits, feeds the org', async () => {
+    grantRole('editor');
+    getProject.mockResolvedValue({ id: 3, org_id: 7, name: 'Doomed' });
+    const orgEvents = [];
+    const unsubscribe = subscribeOrgEvents(7, (e) => orgEvents.push(e));
+    try {
+      const res = await fetch(`${base}/api/projects/3`, { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ project: { id: 3, deleted_at: '2026-09-18T00:00:00.000Z' } });
+    } finally {
+      unsubscribe();
+    }
+    expect(softDeleteProject).toHaveBeenCalledWith(3, { userId: 1 });
+    expect(evictRoomsUnder).toHaveBeenCalledWith('project-3', expect.objectContaining({ closeConnections: true }));
+    expect(cancelTenantJobs).toHaveBeenCalledWith({ orgId: 7, projectId: 3 }, 'deleted');
+    expect(recordAuthEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'project.deleted', actorUserId: 1, orgId: 7, meta: { projectId: 3, name: 'Doomed' },
+    }));
+    expect(orgEvents).toEqual([expect.objectContaining({ type: 'project', action: 'deleted', projectId: 3, name: 'Doomed' })]);
+  });
+
+  it('403s a viewer and 404s non-members without touching anything', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7, name: 'Doomed' });
+    grantRole('viewer');
+    const viewer = await fetch(`${base}/api/projects/3`, { method: 'DELETE' });
+    expect(viewer.status).toBe(403);
+    denyAccess('not-member');
+    const stranger = await fetch(`${base}/api/projects/3`, { method: 'DELETE' });
+    expect(stranger.status).toBe(404);
+    expect(softDeleteProject).not.toHaveBeenCalled();
+    expect(evictRoomsUnder).not.toHaveBeenCalled();
+  });
+
+  it('404s when the row vanished between the guard and the stamp', async () => {
+    getProject.mockResolvedValue({ id: 3, org_id: 7, name: 'Doomed' });
+    softDeleteProject.mockResolvedValueOnce(undefined);
+    const res = await fetch(`${base}/api/projects/3`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(evictRoomsUnder).not.toHaveBeenCalled();
   });
 });

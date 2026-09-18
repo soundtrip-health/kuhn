@@ -12,8 +12,10 @@ vi.mock('./db.js', () => ({
 }));
 
 import { config } from './config.js';
+import { query as dbQuery } from './db.js';
 import {
   StorageError,
+  deleteProjectDir,
   resolveProjectDir,
   createProjectDir,
   readProjectFile,
@@ -297,5 +299,36 @@ describe('resolveProjectDir', () => {
 
   it('throws not_found for unknown projects', async () => {
     await expectStorageError(resolveProjectDir(99), 'not_found');
+  });
+});
+
+describe('deleteProjectDir (issue #190 purge)', () => {
+  it('removes the whole workspace directory of a project under the projects root', async () => {
+    const result = await deleteProjectDir(1);
+    expect(result.removed).toBe(true);
+    await expect(readFile(join(root, '1', 'draft', 'main.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(root, '2', 'secret.md'), 'utf-8')).resolves.toBe('project two secret\n');
+    await expect(readFile(join(root, 'outside.txt'), 'utf-8')).resolves.toBe('outside any project\n');
+  });
+
+  it('throws not_found for a project row that does not exist', async () => {
+    await expectStorageError(deleteProjectDir(99), 'not_found');
+  });
+
+  it('leaves a directory outside the projects root alone', async () => {
+    const elsewhere = await mkdtemp(join(tmpdir(), 'kuhn-elsewhere-'));
+    await writeFile(join(elsewhere, 'keep.md'), 'keep\n');
+    dbQuery.mockImplementationOnce(async () => ({ rows: [{ root_path: elsewhere }] }));
+    const result = await deleteProjectDir(1);
+    expect(result.removed).toBe(false);
+    await expect(readFile(join(elsewhere, 'keep.md'), 'utf-8')).resolves.toBe('keep\n');
+    await rm(elsewhere, { recursive: true, force: true });
+  });
+
+  it('never removes the projects root itself', async () => {
+    dbQuery.mockImplementationOnce(async () => ({ rows: [{ root_path: root }] }));
+    const result = await deleteProjectDir(1);
+    expect(result.removed).toBe(false);
+    await expect(readFile(join(root, 'outside.txt'), 'utf-8')).resolves.toBe('outside any project\n');
   });
 });

@@ -10,8 +10,23 @@ function parseProject(row) {
   return row;
 }
 
-/** @returns {Promise<object|undefined>} */
+/**
+ * A LIVE project by id — soft-deleted rows (issue #190) are invisible here,
+ * which is what makes a deleted project vanish from every member route
+ * (routes/guards.js), the collab upgrade (collab-auth.js), render
+ * (render.js) and the agent run gate (agents/runtime.js) without each of
+ * them checking. Owner restore/purge use getProjectAny.
+ * @returns {Promise<object|undefined>}
+ */
 export async function getProject(projectId) {
+  const { rows } = await query(
+    'SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL', [projectId],
+  );
+  return parseProject(rows[0]);
+}
+
+/** Any project by id, deleted or not (owner restore/purge paths only). */
+export async function getProjectAny(projectId) {
   const { rows } = await query('SELECT * FROM projects WHERE id = $1', [projectId]);
   return parseProject(rows[0]);
 }
@@ -26,6 +41,7 @@ export async function listProjectsForUser(userId) {
     `SELECT ${LIST_COLUMNS}
      FROM projects
      WHERE org_id IN (SELECT org_id FROM memberships WHERE user_id = $1)
+       AND deleted_at IS NULL
      ORDER BY id`,
     [userId],
   );
@@ -35,10 +51,83 @@ export async function listProjectsForUser(userId) {
 /** Projects in a single org, oldest first. Caller verifies membership. */
 export async function listOrgProjects(orgId) {
   const { rows } = await query(
-    `SELECT ${LIST_COLUMNS} FROM projects WHERE org_id = $1 ORDER BY id`,
+    `SELECT ${LIST_COLUMNS} FROM projects WHERE org_id = $1 AND deleted_at IS NULL ORDER BY id`,
     [orgId],
   );
   return rows.map(parseProject);
+}
+
+/**
+ * An org's soft-deleted projects, newest deletion first, each with who
+ * deleted it (issue #190; the Org admin "Deleted projects" tab).
+ * @returns {Promise<object[]>} rows carry deleted_at and
+ *   deleted_by: { id, display_name, email } | null
+ */
+export async function listDeletedOrgProjects(orgId) {
+  const { rows } = await query(
+    `SELECT p.${LIST_COLUMNS.split(', ').join(', p.')}, p.deleted_at,
+            u.id AS deleter_id, u.display_name AS deleter_name, u.email AS deleter_email
+     FROM projects p
+     LEFT JOIN users u ON u.id = p.deleted_by
+     WHERE p.org_id = $1 AND p.deleted_at IS NOT NULL
+     ORDER BY p.deleted_at DESC, p.id DESC`,
+    [orgId],
+  );
+  return rows.map(({ deleter_id, deleter_name, deleter_email, ...row }) => ({
+    ...parseProject(row),
+    deleted_by: deleter_id == null
+      ? null
+      : { id: deleter_id, display_name: deleter_name, email: deleter_email },
+  }));
+}
+
+/**
+ * Soft-delete a live project (issue #190). Stamps deleted_at/deleted_by;
+ * files, history, comments and jobs stay in place for restore.
+ * @returns {Promise<object|undefined>} the row, or undefined if no LIVE
+ *   project has that id (already deleted counts as missing)
+ */
+export async function softDeleteProject(projectId, { userId = null } = {}) {
+  const { rows } = await query(
+    `UPDATE projects
+     SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), deleted_by = $2,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = $1 AND deleted_at IS NULL
+     RETURNING *`,
+    [projectId, userId],
+  );
+  return parseProject(rows[0]);
+}
+
+/**
+ * Bring a soft-deleted project back. Review links, comments and history were
+ * never touched, so they come back with it.
+ * @returns {Promise<object|undefined>} the row, or undefined if no DELETED
+ *   project has that id
+ */
+export async function restoreProject(projectId) {
+  const { rows } = await query(
+    `UPDATE projects
+     SET deleted_at = NULL, deleted_by = NULL,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = $1 AND deleted_at IS NOT NULL
+     RETURNING *`,
+    [projectId],
+  );
+  return parseProject(rows[0]);
+}
+
+/**
+ * Permanently delete the project row. Child rows (conversations, jobs,
+ * comments, review links, file events, references, memory, …) cascade per
+ * schema.sql. The workspace directory is the caller's job
+ * (storage.js deleteProjectDir) — it must go BEFORE this, while the row
+ * still resolves the directory.
+ * @returns {Promise<boolean>} whether a row was deleted
+ */
+export async function purgeProject(projectId) {
+  const { rows } = await query('DELETE FROM projects WHERE id = $1 RETURNING id', [projectId]);
+  return rows.length > 0;
 }
 
 /** Create a project owned by an org (story 005). */
