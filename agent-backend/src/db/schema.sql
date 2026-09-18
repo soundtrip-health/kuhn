@@ -148,6 +148,11 @@ CREATE TABLE IF NOT EXISTS projects (
   project_type  TEXT NOT NULL,
   config        TEXT NOT NULL DEFAULT '{}',  -- JSON
   root_path     TEXT,
+  -- Issue #190: soft delete. NULL = live. A deleted project is invisible to
+  -- every member/guest path (db/projects.js getProject filters it); an org
+  -- owner restores it or purges it (row + workspace directory) from Org admin.
+  deleted_at    TEXT,
+  deleted_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

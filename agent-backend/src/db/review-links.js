@@ -104,11 +104,21 @@ export function createReviewLink({ projectId, path, mode, createdBy, ttlMs = DEF
  */
 export function lookupReviewLink(token) {
   if (typeof token !== 'string' || token.length === 0) return null;
+  // Issue #190: a link whose project was soft-deleted reads as revoked — the
+  // document is gone from the reviewer's point of view. Nothing is written,
+  // so restoring the project brings the link back untouched.
   const { rows } = querySync(
-    'SELECT * FROM review_links WHERE token_hash = $1', [sha256(token)],
+    `SELECT l.*, p.deleted_at AS project_deleted_at
+     FROM review_links l JOIN projects p ON p.id = l.project_id
+     WHERE l.token_hash = $1`,
+    [sha256(token)],
   );
   if (rows.length === 0) return null;
-  return { state: linkState(rows[0]), link: shapeLink(rows[0]) };
+  const { project_deleted_at: projectDeletedAt, ...row } = rows[0];
+  return {
+    state: projectDeletedAt != null ? 'revoked' : linkState(row),
+    link: shapeLink(row),
+  };
 }
 
 /**
@@ -170,8 +180,10 @@ export function getReviewerSession(cookieValue) {
     `SELECT l.id, l.project_id, l.path, l.mode, l.reviewer_name, l.expires_at
      FROM review_sessions s
      JOIN review_links l ON l.id = s.link_id
+     JOIN projects p ON p.id = l.project_id
      WHERE s.token_hash = $1 AND s.expires_at >= ${NOW}
-       AND l.revoked_at IS NULL AND l.claimed_at IS NOT NULL AND l.expires_at >= ${NOW}`,
+       AND l.revoked_at IS NULL AND l.claimed_at IS NOT NULL AND l.expires_at >= ${NOW}
+       AND p.deleted_at IS NULL`,
     [sha256(token)],
   );
   const row = rows[0];

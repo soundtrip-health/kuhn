@@ -15,9 +15,14 @@ import {
   createProject,
   listProjectsForUser,
   setActiveDocument,
+  softDeleteProject,
   updateProjectConfig,
   setProjectTemplate,
 } from '../db/projects.js';
+import { recordAuthEvent } from '../db/auth-events.js';
+import { cancelTenantJobs } from '../agents/tenancy.js';
+import { log } from '../logger.js';
+import { evictRoomsUnder } from '../yjs-websocket.js';
 import { TemplateError, resolveTemplateSource } from '../db/typst-templates.js';
 import { docTypeResolves, effectiveDocTypes } from '../db/doc-types.js';
 import { markSeen, listFileActivity } from '../db/file-activity.js';
@@ -124,6 +129,43 @@ router.patch('/api/projects/:id', async (req, res) => {
   }
   const updated = await updateProjectConfig(project.id, { name });
   res.json({ project: updated });
+});
+
+/**
+ * DELETE /api/projects/:id — soft delete (issue #190). Editor role, like
+ * every other project mutation. The row is stamped, not removed: files,
+ * history, comments, review links and jobs stay for an owner to restore
+ * (or purge) from Org admin. Everything live on the project ends now: collab
+ * rooms close (4001 — members and reviewers alike), open runs are cancelled,
+ * and from the next request on every member/guest path 404s because
+ * getProject no longer returns the row.
+ */
+router.delete('/api/projects/:id', async (req, res) => {
+  const project = await authorizeProject(req, res, 'editor');
+  if (!project) return;
+  const deleted = await softDeleteProject(project.id, { userId: req.user.id });
+  if (!deleted) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  const evicted = evictRoomsUnder(`project-${project.id}`, {
+    closeConnections: true, closeReason: 'Project deleted',
+  });
+  const jobs = await cancelTenantJobs({ orgId: project.org_id, projectId: project.id }, 'deleted');
+  recordAuthEvent({
+    type: 'project.deleted',
+    actorUserId: req.user.id,
+    orgId: project.org_id,
+    meta: { projectId: project.id, name: project.name },
+  });
+  publishOrgEvent(project.org_id, {
+    type: 'project', action: 'deleted', projectId: project.id, name: project.name, userId: req.user.id,
+  });
+  log.info('project_deleted', {
+    projectId: project.id, orgId: project.org_id, name: project.name, userId: req.user.id,
+    roomsEvicted: evicted, jobsFlagged: jobs.flagged, jobsAborted: jobs.aborted,
+  });
+  res.json({ project: deleted });
 });
 
 /**

@@ -1,7 +1,7 @@
 ---
 title: Projects
 area: projects
-keywords: project, new project, project browser, setup wizard, seeding, project type, manuscript, grant, protocol, SOP, project.json, rename, switch project, event feed, delete project
+keywords: project, new project, project browser, setup wizard, seeding, project type, manuscript, grant, protocol, SOP, project.json, rename, switch project, event feed, delete project, restore project, permanently delete, trash
 ---
 
 # Projects
@@ -20,11 +20,11 @@ A project is one document effort — a manuscript, a grant, a protocol, an SOP �
 
 ## Project browser
 
-**What it does.** The "Projects" overlay is the dashboard for the active organization: one card per project with a type pill, "Open" on the current one, and per-card rename and setup controls.
+**What it does.** The "Projects" overlay is the dashboard for the active organization: one card per project with a type pill, "Open" on the current one, and per-card rename, setup and delete controls.
 
 **How to use it.** Click a card to switch to it. The pencil button ("Rename project") turns the name into an inline editor — Enter or clicking away commits, Escape cancels. The sparkle button reads "Set up" for an untouched project, "Resume setup" when a wizard draft exists, and "Edit setup" once setup is complete; it opens the wizard prefilled with the saved answers. Escape or a backdrop click closes the overlay; a failed load shows "Could not load projects: …" with "Retry".
 
-**Prerequisites.** Rename and setup need the editor role; anyone can browse and switch.
+**Prerequisites.** Rename, setup and delete need the editor role; anyone can browse and switch.
 
 **Gotchas.** Renaming (`PATCH /api/projects/:id`) changes only the record — the workspace directory is keyed by project id, so no files move. The project name and the document title entered in the wizard (`config.title`) are separate fields.
 
@@ -98,10 +98,10 @@ The footer offers "Skip for now" on the first step and "Save & close" afterwards
 
 ## Deleting a project
 
-**What it does.** Deleting a project is not available yet: there is no delete control in the app and no delete route on the backend.
+**What it does.** Removes a project from the organization for everyone. It is a *soft* delete: the record is marked deleted and hidden, but its files, version history, comments, chats and review links stay on the server until an organization owner either restores it or deletes it permanently from Org admin (see `org-admin.md`).
 
-**How to use it.** Not applicable. You can delete a project's files from the file manager (see `files.md`); the project entry itself stays in the browser.
+**How to use it.** Open the project browser and hover a card; the trash button ("Delete project") sits left of the setup and rename buttons. Confirm the prompt `Delete "<name>"? It disappears for everyone in <organization>. An organization owner can restore it or delete it permanently from Org admin.` The card vanishes and the toast `Deleted "<name>"` confirms it; if the open project was deleted, the app switches to the first remaining project, or shows the project browser when none is left. The underlying route is `DELETE /api/projects/:id`.
 
-**Prerequisites.** None.
+**Prerequisites.** The editor or owner role (viewers see no trash button and the server refuses with `requires editor role`).
 
-**Gotchas.** Project files live under the server's data directory in a folder named by project id; a rename never touches it.
+**Gotchas.** Deleting takes effect immediately for everyone: collaborators' open editors on that project stop syncing and their next save fails with `project not found`, running agent jobs on it are cancelled, and external reviewers are shown that the document was removed (their links read as revoked until the project is restored). The project's files are not touched by the soft delete — only "Delete permanently" in Org admin removes them. Project files live under the server's data directory in a folder named by project id; a rename never touches it.

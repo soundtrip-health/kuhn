@@ -29,8 +29,18 @@ import {
 } from '../db/org-settings.js';
 import { recordAuthEvent } from '../db/auth-events.js';
 import { resolvePendingRequestsFor } from '../db/access-requests.js';
+import {
+  getProjectAny,
+  listDeletedOrgProjects,
+  purgeProject,
+  restoreProject,
+} from '../db/projects.js';
 import { sendInviteLink } from '../mailer.js';
 import { cancelTenantJobs } from '../agents/tenancy.js';
+import { log } from '../logger.js';
+import { publishOrgEvent } from '../project-events.js';
+import { StorageError, deleteProjectDir } from '../storage.js';
+import { evictRoomsUnder } from '../yjs-websocket.js';
 
 const router = Router();
 
@@ -126,6 +136,111 @@ router.delete('/api/orgs/:orgId/members/:userId', async (req, res) => {
     }
     throw err;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Deleted projects (issue #190): restore or purge what an editor soft-deleted
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve :id as a project of THIS org, deleted or not. The org comes from
+ * the guard, never the client; a project of another org (or none) is a
+ * non-leaking 404.
+ * @returns {Promise<object|null>} the row, or null after responding
+ */
+async function orgProjectAny(req, res, orgId) {
+  const projectId = Number(req.params.id);
+  if (!Number.isInteger(projectId)) {
+    res.status(400).json({ error: 'invalid project id' });
+    return null;
+  }
+  const project = await getProjectAny(projectId);
+  if (!project || project.org_id !== orgId) {
+    res.status(404).json({ error: 'project not found' });
+    return null;
+  }
+  return project;
+}
+
+/** GET /api/orgs/:orgId/projects/deleted — soft-deleted projects, newest deletion first. */
+router.get('/api/orgs/:orgId/projects/deleted', async (req, res) => {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
+  if (!ctx) return;
+  res.json({ projects: await listDeletedOrgProjects(ctx.orgId) });
+});
+
+/**
+ * POST /api/orgs/:orgId/projects/:id/restore — undo a soft delete. Nothing
+ * else was touched by the delete, so the project comes back whole: files,
+ * history, comments, review links.
+ */
+router.post('/api/orgs/:orgId/projects/:id/restore', async (req, res) => {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
+  if (!ctx) return;
+  const project = await orgProjectAny(req, res, ctx.orgId);
+  if (!project) return;
+  const restored = await restoreProject(project.id);
+  if (!restored) {
+    res.status(404).json({ error: 'project not found' }); // live, not deleted
+    return;
+  }
+  recordAuthEvent({
+    type: 'project.restored',
+    actorUserId: req.user.id,
+    orgId: ctx.orgId,
+    meta: { projectId: project.id, name: project.name },
+  });
+  publishOrgEvent(ctx.orgId, {
+    type: 'project', action: 'restored', projectId: project.id, name: project.name, userId: req.user.id,
+  });
+  log.info('project_restored', { projectId: project.id, orgId: ctx.orgId, name: project.name, userId: req.user.id });
+  res.json({ project: restored });
+});
+
+/**
+ * DELETE /api/orgs/:orgId/projects/:id — permanent delete. Only a project
+ * that is already soft-deleted (409 otherwise: the two-step is the safety).
+ * The workspace directory goes first, while the row still resolves it, then
+ * the row — child rows cascade per schema.sql. Irreversible.
+ */
+router.delete('/api/orgs/:orgId/projects/:id', async (req, res) => {
+  const ctx = await requireOrgRole(req, res, req.params.orgId, 'owner');
+  if (!ctx) return;
+  const project = await orgProjectAny(req, res, ctx.orgId);
+  if (!project) return;
+  if (project.deleted_at == null) {
+    res.status(409).json({
+      error: 'project must be deleted before it can be permanently deleted',
+      code: 'not_deleted',
+    });
+    return;
+  }
+  // Belt and braces: the soft delete already closed the rooms and cancelled
+  // the runs; anything that slipped in since must not outlive the files.
+  evictRoomsUnder(`project-${project.id}`, { closeConnections: true, closeReason: 'Project deleted' });
+  await cancelTenantJobs({ orgId: ctx.orgId, projectId: project.id }, 'deleted');
+  let dir;
+  try {
+    dir = await deleteProjectDir(project.id);
+  } catch (err) {
+    if (!(err instanceof StorageError)) throw err;
+    dir = { removed: false, dir: null }; // no directory to remove
+  }
+  const removed = await purgeProject(project.id);
+  recordAuthEvent({
+    type: 'project.purged',
+    actorUserId: req.user.id,
+    orgId: ctx.orgId,
+    meta: { projectId: project.id, name: project.name, dirRemoved: dir.removed },
+  });
+  publishOrgEvent(ctx.orgId, {
+    type: 'project', action: 'purged', projectId: project.id, name: project.name, userId: req.user.id,
+  });
+  log.info('project_purged', {
+    projectId: project.id, orgId: ctx.orgId, name: project.name, userId: req.user.id,
+    rowRemoved: removed, dirRemoved: dir.removed, dir: dir.dir,
+  });
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

@@ -784,6 +784,43 @@ export async function renameProject(projectId: number, name: string): Promise<Pr
   return ((await res.json()) as { project: Project }).project;
 }
 
+// ---- Project deletion (issue #190) ----
+
+/** A soft-deleted project as the Org admin "Deleted projects" tab lists it. */
+export interface DeletedProject extends Project {
+  deleted_at: string;
+  deleted_by: { id: number; display_name: string | null; email: string } | null;
+}
+
+/** Soft-delete a project (editor role). Owners restore or purge it from Org admin. */
+export async function deleteProject(projectId: number): Promise<Project> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/projects/${projectId}`, { method: 'DELETE' }),
+  );
+  return ((await res.json()) as { project: Project }).project;
+}
+
+/** An org's soft-deleted projects, newest deletion first (owner-only). */
+export async function listDeletedOrgProjects(orgId: number): Promise<DeletedProject[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/projects/deleted`));
+  return ((await res.json()) as { projects: DeletedProject[] }).projects;
+}
+
+/** Undo a soft delete (owner-only). */
+export async function restoreOrgProject(orgId: number, projectId: number): Promise<Project> {
+  const res = await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/projects/${projectId}/restore`, { method: 'POST' }),
+  );
+  return ((await res.json()) as { project: Project }).project;
+}
+
+/** Permanently delete a soft-deleted project and its files (owner-only; 409 while still live). */
+export async function purgeOrgProject(orgId: number, projectId: number): Promise<void> {
+  await expectOk(
+    await apiFetch(`${BACKEND_URL}/api/orgs/${orgId}/projects/${projectId}`, { method: 'DELETE' }),
+  );
+}
+
 /**
  * Save project setup from the wizard (token-free intake). draft=true persists a
  * resumable draft; draft=false is the final save (writes project.json, marks
@@ -1381,8 +1418,20 @@ export interface OrgDocStatusEvent {
   statusDetail?: string;
 }
 
+/** Project lifecycle on the org feed (issue #190): another tab deleted, restored or purged one. */
+export interface OrgProjectEvent {
+  type: 'project';
+  action: 'deleted' | 'restored' | 'purged';
+  projectId: number;
+  name: string;
+  userId?: number;
+}
+
+/** The org feed frames the client types (others — promotion requests — pass through untyped, as before). */
+export type OrgFeedEvent = OrgDocStatusEvent | OrgProjectEvent;
+
 export interface OrgFeedHandlers {
-  onEvent: (event: OrgDocStatusEvent) => void;
+  onEvent: (event: OrgFeedEvent) => void;
   onOpen?: () => void;
   onError?: () => void;
 }
@@ -1397,7 +1446,7 @@ export function subscribeOrgEvents(orgId: number, handlers: OrgFeedHandlers): ()
   source.onerror = () => handlers.onError?.();
   source.onmessage = (msg) => {
     try {
-      handlers.onEvent(JSON.parse(msg.data) as OrgDocStatusEvent);
+      handlers.onEvent(JSON.parse(msg.data) as OrgFeedEvent);
     } catch {
       // Malformed frame — skip; the stream itself is still healthy.
     }

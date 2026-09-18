@@ -57,6 +57,9 @@ export const COLUMN_MIGRATIONS = [
   { table: 'jobs', column: 'pause', ddl: 'TEXT' },
   // Issue #110: spend ledger for org budgets. Pre-migration rows count 0.
   { table: 'jobs', column: 'weighted_tokens', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  // Issue #190: project soft delete. Nullable — every existing project is live.
+  { table: 'projects', column: 'deleted_at', ddl: 'TEXT' },
+  { table: 'projects', column: 'deleted_by', ddl: 'INTEGER REFERENCES users(id) ON DELETE SET NULL' },
   // Issue #107/#112: model-routing diagnostics on the job row.
   { table: 'jobs', column: 'profile', ddl: 'TEXT' },
   { table: 'jobs', column: 'endpoint', ddl: 'TEXT' },
@@ -310,12 +313,15 @@ const PROJECTS_NEW_DDL = `
     project_type  TEXT NOT NULL,
     config        TEXT NOT NULL DEFAULT '{}',
     root_path     TEXT,
+    deleted_at    TEXT,
+    deleted_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   )`;
 
 const PROJECTS_COLUMNS = [
-  'id', 'owner_id', 'org_id', 'name', 'project_type', 'config', 'root_path', 'created_at', 'updated_at',
+  'id', 'owner_id', 'org_id', 'name', 'project_type', 'config', 'root_path',
+  'deleted_at', 'deleted_by', 'created_at', 'updated_at',
 ];
 
 const PROJECTS_INDEXES = [

@@ -194,7 +194,7 @@ export async function authorizeRoom(principal, room) {
  */
 export function reviewerLinkState(linkId) {
   const { rows } = querySync(
-    `SELECT l.revoked_at, l.expires_at, o.status AS org_status
+    `SELECT l.revoked_at, l.expires_at, p.deleted_at AS project_deleted_at, o.status AS org_status
      FROM review_links l
      JOIN projects p ON p.id = l.project_id
      LEFT JOIN organizations o ON o.id = p.org_id
@@ -203,7 +203,9 @@ export function reviewerLinkState(linkId) {
   );
   const row = rows[0];
   if (!row) return 'missing';
-  if (row.revoked_at != null) return 'revoked';
+  // Issue #190: a soft-deleted project ends its reviewers' sockets like a
+  // revocation (the REST side already 401s — getReviewerSession filters).
+  if (row.revoked_at != null || row.project_deleted_at != null) return 'revoked';
   if (row.expires_at < new Date().toISOString()) return 'expired';
   if (row.org_status === 'suspended') return 'suspended';
   return 'live';

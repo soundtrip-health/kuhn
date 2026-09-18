@@ -5,7 +5,9 @@
 // door, end to end.
 
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
@@ -29,11 +31,16 @@ let config; let exec; let querySync;
 let sendInviteLink;
 let createSession;
 let server; let base;
+let projectsRoot; let savedProjectsRoot;
 
 beforeAll(async () => {
   ({ config } = await import('../config.js'));
   config.auth.mode = 'magic-link';
   config.auth.sessionSecret = 'test-secret';
+  // Purge (issue #190) removes real directories: give it a throwaway root.
+  savedProjectsRoot = config.agent.projectsRoot;
+  projectsRoot = await mkdtemp(join(tmpdir(), 'kuhn-org-admin-'));
+  config.agent.projectsRoot = projectsRoot;
 
   ({ exec, querySync } = await import('../db.js'));
   ({ sendInviteLink } = await import('../mailer.js'));
@@ -57,12 +64,14 @@ beforeAll(async () => {
 afterAll(async () => {
   config.auth.mode = 'dev';
   config.auth.sessionSecret = '';
+  config.agent.projectsRoot = savedProjectsRoot;
+  await rm(projectsRoot, { recursive: true, force: true });
   await new Promise((ok) => server.close(ok));
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  for (const table of ['auth_events', 'invitations', 'sessions', 'memberships', 'users', 'organizations']) {
+  for (const table of ['auth_events', 'invitations', 'sessions', 'comments', 'projects', 'memberships', 'users', 'organizations']) {
     querySync(`DELETE FROM ${table}`);
   }
   querySync(`INSERT INTO organizations (id, name, slug) VALUES (${ORG}, 'Lab', 'lab')`);
@@ -103,6 +112,9 @@ describe('guard discipline (010-003 / 011-002 AC2)', () => {
     ['DELETE', `/api/orgs/${ORG}/invitations/1`],
     ['GET', `/api/orgs/${ORG}/settings`],
     ['PATCH', `/api/orgs/${ORG}/settings`, { promotion_policy: 'direct' }],
+    ['GET', `/api/orgs/${ORG}/projects/deleted`],
+    ['POST', `/api/orgs/${ORG}/projects/1/restore`],
+    ['DELETE', `/api/orgs/${ORG}/projects/1`],
   ];
 
   it('an editor gets 403 requires owner role on every org-admin route', async () => {
@@ -392,5 +404,84 @@ describe('org settings (story 011-003)', () => {
     });
     expect(name.status).toBe(400);
     expect(await name.json()).toEqual({ error: 'name must be a non-empty string', field: 'name' });
+  });
+});
+
+describe('deleted projects (issue #190)', () => {
+  const insertProject = (name, { orgId = ORG, deleted = false } = {}) => querySync(
+    `INSERT INTO projects (org_id, name, project_type, deleted_at, deleted_by)
+     VALUES ($1, $2, 'manuscript', $3, $4) RETURNING id`,
+    [orgId, name, deleted ? '2026-09-18T10:00:00.000Z' : null, deleted ? EDITOR : null],
+  ).rows[0].id;
+
+  it('lists only this org\'s soft-deleted projects, with the deleter', async () => {
+    insertProject('Live');
+    const gone = insertProject('Gone', { deleted: true });
+    querySync("INSERT INTO organizations (id, name, slug) VALUES (2, 'Other', 'other')");
+    insertProject('Other org', { orgId: 2, deleted: true });
+    const res = await api('GET', `/api/orgs/${ORG}/projects/deleted`, { cookie: await cookieFor(OWNER) });
+    expect(res.status).toBe(200);
+    const { projects } = await res.json();
+    expect(projects.map((p) => p.id)).toEqual([gone]);
+    expect(projects[0]).toMatchObject({
+      name: 'Gone',
+      deleted_at: '2026-09-18T10:00:00.000Z',
+      deleted_by: { id: EDITOR, display_name: null, email: 'editor@lab.org' },
+    });
+  });
+
+  it('restores a deleted project; a live one or another org\'s is 404', async () => {
+    const gone = insertProject('Gone', { deleted: true });
+    const live = insertProject('Live');
+    querySync("INSERT INTO organizations (id, name, slug) VALUES (2, 'Other', 'other')");
+    const foreign = insertProject('Foreign', { orgId: 2, deleted: true });
+    const cookie = await cookieFor(OWNER);
+
+    const res = await api('POST', `/api/orgs/${ORG}/projects/${gone}/restore`, { cookie });
+    expect(res.status).toBe(200);
+    expect((await res.json()).project).toMatchObject({ id: gone, deleted_at: null, deleted_by: null });
+    expect(querySync('SELECT deleted_at FROM projects WHERE id = $1', [gone]).rows[0].deleted_at).toBeNull();
+
+    expect((await api('POST', `/api/orgs/${ORG}/projects/${live}/restore`, { cookie })).status).toBe(404);
+    expect((await api('POST', `/api/orgs/${ORG}/projects/${foreign}/restore`, { cookie })).status).toBe(404);
+    expect((await api('POST', `/api/orgs/${ORG}/projects/abc/restore`, { cookie })).status).toBe(400);
+    expect(eventTypes()).toEqual(['project.restored']);
+  });
+
+  it('purges a deleted project: directory and row (children cascade); refuses a live one with 409', async () => {
+    const gone = insertProject('Gone', { deleted: true });
+    const live = insertProject('Live');
+    querySync("INSERT INTO comments (project_id, path, body) VALUES ($1, 'draft/main.md', 'note')", [gone]);
+    await mkdir(join(projectsRoot, String(gone), 'draft'), { recursive: true });
+    await writeFile(join(projectsRoot, String(gone), 'draft', 'main.md'), '# Gone\n');
+    await mkdir(join(projectsRoot, String(live)), { recursive: true });
+    await writeFile(join(projectsRoot, String(live), 'keep.md'), 'keep\n');
+    const cookie = await cookieFor(OWNER);
+
+    const refused = await api('DELETE', `/api/orgs/${ORG}/projects/${live}`, { cookie });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({
+      error: 'project must be deleted before it can be permanently deleted', code: 'not_deleted',
+    });
+
+    const res = await api('DELETE', `/api/orgs/${ORG}/projects/${gone}`, { cookie });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(querySync('SELECT id FROM projects WHERE id = $1', [gone]).rows).toEqual([]);
+    expect(querySync('SELECT id FROM comments WHERE project_id = $1', [gone]).rows).toEqual([]);
+    await expect(readFile(join(projectsRoot, String(gone), 'draft', 'main.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(projectsRoot, String(live), 'keep.md'), 'utf-8')).resolves.toBe('keep\n');
+    expect(eventTypes()).toEqual(['project.purged']);
+
+    // Gone for good: a second purge and a restore both 404.
+    expect((await api('DELETE', `/api/orgs/${ORG}/projects/${gone}`, { cookie })).status).toBe(404);
+    expect((await api('POST', `/api/orgs/${ORG}/projects/${gone}/restore`, { cookie })).status).toBe(404);
+  });
+
+  it('purges a deleted project that never had a directory', async () => {
+    const gone = insertProject('Never opened', { deleted: true });
+    const res = await api('DELETE', `/api/orgs/${ORG}/projects/${gone}`, { cookie: await cookieFor(OWNER) });
+    expect(res.status).toBe(200);
+    expect(querySync('SELECT id FROM projects WHERE id = $1', [gone]).rows).toEqual([]);
   });
 });

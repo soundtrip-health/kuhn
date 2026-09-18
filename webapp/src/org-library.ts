@@ -14,7 +14,7 @@ import {
   subscribeOrgEvents,
   uploadOrgDocuments,
   type KnowledgePackage,
-  type OrgDocStatusEvent,
+  type OrgFeedEvent,
   type OrgDocument,
 } from './api';
 import { trapFocus } from './a11y';
@@ -26,7 +26,7 @@ import * as workspace from './workspace';
 // ---- Shared org feed (SSE with poll-while-open fallback) ---------------------
 
 /** A live ingestion event, or a poll tick while the SSE feed is down. */
-type FeedEvent = OrgDocStatusEvent | { type: 'poll' };
+type FeedEvent = OrgFeedEvent | { type: 'poll' };
 type FeedListener = (event: FeedEvent) => void;
 
 const POLL_MS = 4000;
@@ -213,6 +213,7 @@ export function openOrgLibrary(): void {
       void reloadDocs();
       return;
     }
+    if (event.type !== 'doc_status') return; // project lifecycle etc. — not this panel's
     const doc = panelDocs.find((d) => d.id === event.docId);
     if (!doc) {
       void reloadDocs(); // a document we don't know yet (e.g. promoted elsewhere)

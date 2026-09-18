@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'no
 
 import { config } from './config.js';
 import { query as dbQuery } from './db.js';
+import { log } from './logger.js';
 
 export class StorageError extends Error {
   constructor(code, message) {
@@ -202,6 +203,31 @@ export async function deleteProjectEntry(projectId, relPath) {
     throw new StorageError('not_found', `No such file: ${relPath}`);
   }
   await rm(abs, { recursive: true });
+}
+
+/**
+ * Remove a project's whole workspace directory (issue #190: the owner's
+ * permanent delete). Only a directory strictly INSIDE the configured
+ * projects root is removed — a legacy `root_path` pointing elsewhere (or at
+ * the root itself) is left alone and logged, because `rm -rf` of an
+ * operator-chosen path is not this function's call to make.
+ * @returns {Promise<{ removed: boolean, dir: string }>}
+ */
+export async function deleteProjectDir(projectId) {
+  const dir = await resolveProjectDir(projectId); // not_found when the row is gone
+  let root;
+  try {
+    root = await realpath(config.agent.projectsRoot);
+  } catch {
+    root = resolve(config.agent.projectsRoot);
+  }
+  const inside = dir !== root && dir.startsWith(root + sep);
+  if (!inside) {
+    log.warn('project_purge_dir_skipped', { projectId, dir, projectsRoot: root });
+    return { removed: false, dir };
+  }
+  await rm(dir, { recursive: true, force: true });
+  return { removed: true, dir };
 }
 
 /**
