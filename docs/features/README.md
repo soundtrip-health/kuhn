@@ -23,7 +23,7 @@ so a new command or key fails CI until it is documented.
 | `comments.md` | margin comments: filing, threads, replying, resolving, agent comments, orphaned anchors |
 | `agents-and-chat.md` | the agents and what each does, the agent selector, models and pins, Stop, questions, hand-off / fresh start, budget pause, reconnecting, slash commands |
 | `files.md` | the file manager, project folders, uploads, moving and renaming, the active document |
-| `org-admin.md` | organizations, members and roles, settings, budgets, models, promotions, knowledge library, scripts, secrets, slide themes, page-layout templates, agent prompt additions |
+| `org-admin.md` | organizations, members and roles, settings, deleted projects (restore / permanent delete), budgets, models, promotions, knowledge library, scripts, secrets, slide themes, page-layout templates, agent prompt additions |
 | `interchange.md` | personal API tokens, exporting and importing interchange bundles, working with sciwriter |
 | `accounts.md` | signing in (magic link), sessions, switching organizations, super-admin |
 

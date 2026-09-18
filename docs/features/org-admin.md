@@ -1,7 +1,7 @@
 ---
 title: Organization admin
 area: org-admin
-keywords: organization, org admin, members, roles, viewer, editor, owner, invite, invitation, suspended, settings, budgets, token budget, models, model profiles, routing, difficulty, credentials, promotions, knowledge, knowledge library, org library, scripts, run_script, secrets, themes, slide themes, templates, page layout, agent prompts, prompt additions, document types
+keywords: deleted projects, restore project, purge, permanently delete, organization, org admin, members, roles, viewer, editor, owner, invite, invitation, suspended, settings, budgets, token budget, models, model profiles, routing, difficulty, credentials, promotions, knowledge, knowledge library, org library, scripts, run_script, secrets, themes, slide themes, templates, page layout, agent prompts, prompt additions, document types
 ---
 
 # Organization admin
@@ -63,6 +63,16 @@ shows its error under the control.
 **Gotchas.** Owners always promote directly regardless of the promotion policy. Budget
 figures are weighted by model cost (an Opus token counts 1, cheaper models less), so a
 budget approximates spend, not raw tokens.
+
+## Deleted projects
+
+**What it does.** Lists the organization's soft-deleted projects (members delete from the project browser, see `projects.md`) and lets an owner bring one back or remove it for good.
+
+**How to use it.** Open Org admin and choose the "Deleted projects" tab. The table has columns "Project", "Type", "Deleted" and "By". "Restore" returns the project to the project browser at once, complete with its files, history, comments and review links (toast `Restored "<name>"`). "Delete permanently" asks `Permanently delete "<name>" and all its files? This cannot be undone.` and then removes the project's workspace folder from the server and every record that belongs to it — chats, jobs, comments, references, review links, memory and history (toast `Permanently deleted "<name>"`). The empty state reads "No deleted projects." The routes are `GET /api/orgs/:id/projects/deleted`, `POST /api/orgs/:id/projects/:projectId/restore` and `DELETE /api/orgs/:id/projects/:projectId`.
+
+**Prerequisites.** Owner role. A project must be deleted first: the permanent delete refuses a live project with `project must be deleted before it can be permanently deleted`.
+
+**Gotchas.** Permanent deletion cannot be undone — there is no backup on the Kuhn side. The tab refreshes live when another tab deletes, restores or purges a project. A restored project's external review links work again without being re-issued. Files a project promoted into the organization library are copies and stay in the library.
 
 ## Budgets
 
