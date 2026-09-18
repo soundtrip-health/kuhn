@@ -9,6 +9,7 @@
 import {
   createOrg as apiCreateOrg,
   createProject as apiCreateProject,
+  deleteProject as apiDeleteProject,
   listOrgProjects,
   listOrgs,
   renameProject as apiRenameProject,
@@ -296,6 +297,23 @@ export async function renameProject(projectId: number, name: string): Promise<Pr
   emit('projects');
   if (projectId === state.activeProjectId) emit('project'); // breadcrumb tracks the name
   return updated;
+}
+
+/**
+ * Soft-delete a project (issue #190) and drop it from the store. Fires
+ * 'projects'; when it was the active project, the first remaining one (or
+ * none) becomes active and 'project' fires so main.ts switches — an empty
+ * org reopens the project browser, as after an org switch.
+ */
+export async function deleteProject(projectId: number): Promise<void> {
+  await apiDeleteProject(projectId);
+  state.projects = state.projects.filter((p) => p.id !== projectId);
+  emit('projects');
+  if (projectId === state.activeProjectId) {
+    state.activeProjectId = state.projects[0]?.id ?? null;
+    state.activeDocPath = activeProject()?.config?.activeDocument ?? '';
+    emit('project');
+  }
 }
 
 /** Merge an updated project row into the store (fires 'projects', and 'project' when active). */

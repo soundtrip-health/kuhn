@@ -8,6 +8,7 @@
 import { trapFocus } from './a11y';
 import { icon } from './icons';
 import { typeLabel, typeOptions } from './project-types';
+import { toast } from './toast';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
 
@@ -211,6 +212,34 @@ function render(): void {
       });
 
       wrap.append(card, renameBtn, setupBtn);
+
+      // Delete control (issue #190) — a soft delete; owners restore or purge
+      // from Org admin. Editors and owners only (the server refuses viewers).
+      if (workspace.canEdit()) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'pb-card-delete';
+        deleteBtn.title = 'Delete project';
+        deleteBtn.setAttribute('aria-label', `Delete ${project.name}`);
+        deleteBtn.innerHTML = icon('trash', { size: 14, stroke: 1.8 });
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // Documented exception (story 005-004): native confirm() for deletes.
+          const orgName = org?.name ?? 'the organization';
+          if (!window.confirm(
+            `Delete "${project.name}"? It disappears for everyone in ${orgName}. `
+            + 'An organization owner can restore it or delete it permanently from Org admin.',
+          )) return;
+          deleteBtn.disabled = true;
+          void workspace.deleteProject(project.id)
+            .then(() => toast(`Deleted "${project.name}"`))
+            .catch((err: Error) => {
+              deleteBtn.disabled = false;
+              toast(`Could not delete "${project.name}": ${err.message}`);
+            });
+        });
+        wrap.append(deleteBtn);
+      }
       grid.append(wrap);
     }
   }

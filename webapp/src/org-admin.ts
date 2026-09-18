@@ -28,9 +28,12 @@ import {
   getOrgSettings,
   getScriptPromotion,
   importCatalogScripts,
+  listDeletedOrgProjects,
   listInvitations,
   listOrgMembers,
   listPromotions,
+  purgeOrgProject,
+  restoreOrgProject,
   listScriptPromotions,
   putKnowledgeSelections,
   putOrgAgentPrompt,
@@ -68,6 +71,7 @@ import {
   type ScriptPromotion,
   type ScriptVersionInfo,
   type Role,
+  type DeletedProject,
   listOrgSecrets,
   putOrgSecret,
   deleteOrgSecret,
@@ -79,15 +83,15 @@ import { icon } from './icons';
 import { renderMarkdown } from './markdown';
 import { addOrgFeedListener, refreshLibraryHint } from './org-library';
 import { modelsTab, reloadModels, resetModelsTab } from './org-models';
-import { emptyRow, inlineError, sectionTitle } from './admin-ui';
-import { loadDocTypes } from './project-types';
+import { emptyRow, hint, inlineError, sectionTitle } from './admin-ui';
+import { loadDocTypes, typeLabel } from './project-types';
 import { toast } from './toast';
 import * as workspace from './workspace';
 
-type Tab = 'members' | 'settings' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'templates' | 'doctypes' | 'agents';
+type Tab = 'members' | 'settings' | 'projects' | 'budgets' | 'models' | 'promotions' | 'knowledge' | 'scripts' | 'secrets' | 'themes' | 'templates' | 'doctypes' | 'agents';
 
 /** Owner-only tabs; non-owner members get the read-only Knowledge/Scripts/Agents tabs. */
-const OWNER_TABS: Tab[] = ['members', 'settings', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'templates', 'doctypes', 'agents'];
+const OWNER_TABS: Tab[] = ['members', 'settings', 'projects', 'budgets', 'models', 'promotions', 'knowledge', 'scripts', 'secrets', 'themes', 'templates', 'doctypes', 'agents'];
 const MEMBER_TABS: Tab[] = ['knowledge', 'scripts', 'secrets', 'themes', 'templates', 'doctypes', 'agents'];
 
 const ROLE_OPTIONS: Role[] = ['viewer', 'editor', 'owner'];
@@ -108,6 +112,10 @@ let settings: OrgSettings | null = null;
 let membersLoading = false;
 let promotionsLoading = false;
 let settingsLoading = false;
+// Deleted projects tab (issue #190): the org's soft-deleted projects.
+let deletedProjects: DeletedProject[] | null = null;
+let deletedProjectsError: string | null = null;
+let deletedProjectsBusy = false;
 // Budgets tab (issue #110): the owner's usage report + in-flight row edits.
 let budgets: OrgBudgetReport | null = null;
 let budgetsError: string | null = null;
@@ -245,6 +253,9 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
   settings = null;
   budgets = null;
   budgetsError = null;
+  deletedProjects = null;
+  deletedProjectsError = null;
+  deletedProjectsBusy = false;
   membersError = null;
   inviteError = null;
   promotionsError = null;
@@ -289,6 +300,7 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
     void reloadInvitations();
     void reloadSettings();
     void reloadBudgets();
+    void reloadDeletedProjects();
     void reloadModels(modelsCtx());
     void reloadPromotions(); // eager: the tab badge counts pending requests
   }
@@ -315,6 +327,14 @@ export function openOrgAdmin(initialTab: Tab = 'members'): void {
       void reloadKnowledge();
       return;
     }
+    if (event.type === 'project') {
+      // Another tab deleted, restored or purged a project (issue #190): the
+      // Deleted projects tab and the workspace's project list both move.
+      if (workspace.isOwner()) void reloadDeletedProjects();
+      void workspace.reloadProjects();
+      return;
+    }
+    if (event.type !== 'doc_status') return;
     const item = knowledge.flatMap((p) => p.items).find((i) => i.doc_id === event.docId);
     if (!item) {
       if (foreignDocIds.has(event.docId)) return;
@@ -395,6 +415,130 @@ async function reloadBudgets(): Promise<void> {
     budgetsLoading = false;
   }
   render();
+}
+
+async function reloadDeletedProjects(): Promise<void> {
+  const orgId = adminOrgId;
+  try {
+    const rows = await listDeletedOrgProjects(orgId);
+    if (orgId !== adminOrgId) return;
+    deletedProjects = rows;
+    deletedProjectsError = null;
+  } catch (err) {
+    deletedProjectsError = (err as Error).message;
+  }
+  render();
+}
+
+/** "Restore" on the Deleted projects tab: the project returns to the browser at once. */
+async function restoreDeletedProject(project: DeletedProject): Promise<void> {
+  if (deletedProjectsBusy) return;
+  deletedProjectsBusy = true;
+  deletedProjectsError = null;
+  render();
+  try {
+    await restoreOrgProject(adminOrgId, project.id);
+    deletedProjects = (deletedProjects ?? []).filter((p) => p.id !== project.id);
+    toast(`Restored "${project.name}"`);
+    if (workspace.activeOrg()?.id === adminOrgId) void workspace.reloadProjects();
+  } catch (err) {
+    deletedProjectsError = (err as Error).message;
+  } finally {
+    deletedProjectsBusy = false;
+  }
+  render();
+}
+
+/** "Delete permanently": files and every record go; nothing brings it back. */
+async function purgeDeletedProject(project: DeletedProject): Promise<void> {
+  if (deletedProjectsBusy) return;
+  // Documented exception (story 005-004): native confirm() for deletes.
+  if (!window.confirm(`Permanently delete "${project.name}" and all its files? This cannot be undone.`)) return;
+  deletedProjectsBusy = true;
+  deletedProjectsError = null;
+  render();
+  try {
+    await purgeOrgProject(adminOrgId, project.id);
+    deletedProjects = (deletedProjects ?? []).filter((p) => p.id !== project.id);
+    toast(`Permanently deleted "${project.name}"`);
+  } catch (err) {
+    deletedProjectsError = (err as Error).message;
+  } finally {
+    deletedProjectsBusy = false;
+  }
+  render();
+}
+
+function deletedProjectsTable(rows: DeletedProject[]): HTMLElement {
+  const table = document.createElement('table');
+  table.className = 'admin-table';
+  table.innerHTML =
+    '<thead><tr><th scope="col">Project</th><th scope="col">Type</th>' +
+    '<th scope="col">Deleted</th><th scope="col">By</th><th></th></tr></thead>';
+  const body = document.createElement('tbody');
+  for (const project of rows) {
+    const tr = document.createElement('tr');
+
+    const name = document.createElement('td');
+    const label = document.createElement('div');
+    label.className = 'admin-member-name';
+    label.textContent = project.name;
+    name.append(label);
+
+    const type = document.createElement('td');
+    type.textContent = typeLabel(project.project_type);
+
+    const when = document.createElement('td');
+    when.className = 'admin-member-email';
+    when.textContent = formatDate(project.deleted_at);
+    when.title = project.deleted_at;
+
+    const who = document.createElement('td');
+    who.className = 'admin-member-email';
+    who.textContent = project.deleted_by
+      ? (project.deleted_by.display_name || project.deleted_by.email)
+      : '—';
+
+    const actions = document.createElement('td');
+    actions.className = 'admin-row-actions';
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'btn btn-quiet btn-sm';
+    restore.textContent = 'Restore';
+    restore.disabled = deletedProjectsBusy;
+    restore.setAttribute('aria-label', `Restore ${project.name}`);
+    restore.addEventListener('click', () => void restoreDeletedProject(project));
+    const purge = document.createElement('button');
+    purge.type = 'button';
+    purge.className = 'btn btn-quiet btn-sm';
+    purge.textContent = 'Delete permanently';
+    purge.disabled = deletedProjectsBusy;
+    purge.setAttribute('aria-label', `Permanently delete ${project.name}`);
+    purge.addEventListener('click', () => void purgeDeletedProject(project));
+    actions.append(restore, purge);
+
+    tr.append(name, type, when, who, actions);
+    body.append(tr);
+  }
+  table.append(body);
+  return table;
+}
+
+function deletedProjectsTab(): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  parts.push(hint(
+    'Projects members deleted from the project browser. Restore brings one back whole — files, history, comments and review links. '
+    + 'Delete permanently removes the project and every file in its workspace; there is no undo.',
+  ));
+  if (deletedProjectsError) parts.push(inlineError(deletedProjectsError));
+  if (deletedProjects === null) {
+    parts.push(emptyRow('Loading deleted projects…'));
+  } else if (deletedProjects.length === 0) {
+    parts.push(emptyRow('No deleted projects.'));
+  } else {
+    parts.push(deletedProjectsTable(deletedProjects));
+  }
+  return parts;
 }
 
 async function reloadSettings(): Promise<void> {
@@ -2603,6 +2747,7 @@ function budgetsTab(): HTMLElement[] {
 const TAB_LABEL: Record<Tab, string> = {
   members: 'Members',
   settings: 'Settings',
+  projects: 'Deleted projects',
   budgets: 'Budgets',
   models: 'Models',
   promotions: 'Promotions',
@@ -2693,6 +2838,7 @@ function render(): void {
   const parts =
     activeTab === 'members' ? membersTab()
     : activeTab === 'settings' ? settingsTab()
+    : activeTab === 'projects' ? deletedProjectsTab()
     : activeTab === 'budgets' ? budgetsTab()
     : activeTab === 'models' ? modelsTab(modelsCtx())
     : activeTab === 'promotions' ? promotionsTab()
