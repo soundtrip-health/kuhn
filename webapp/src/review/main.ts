@@ -36,12 +36,17 @@ import {
   type DocTransport,
   type SaveStateName,
 } from '../editor-core';
+import { clearPageMap } from '../page-breaks';
+import { createPreviewPane, type PreviewPane } from '../preview-pane';
 import {
   claimLink,
+  exportUrl,
+  fetchPageMap,
   getContext,
   getFile,
   lookupLink,
   putFile,
+  renderPdf,
   reviewCommentsApi,
   ReviewApiError,
   type ReviewContext,
@@ -94,6 +99,8 @@ let watcher: { provider: WebsocketProvider; ydoc: YDoc } | null = null;
 let ended = false;
 let refreshing = false;
 let probing = false;
+/** The floating PDF preview (issue #172) — hosted over /api/review/*. */
+let preview: PreviewPane | null = null;
 
 // ---- Chrome -----------------------------------------------------------------
 
@@ -189,6 +196,9 @@ async function teardown(): Promise<void> {
   const h = handle;
   handle = null;
   if (h) await h.destroy();
+  // Page lines die with the old view; the status-bar page count must not
+  // outlive them (the next render repaints both).
+  clearPageMap(null);
 }
 
 function transportFor(editable: boolean): DocTransport {
@@ -428,7 +438,35 @@ async function endWith(kind: RefusalKind): Promise<void> {
   seq += 1;
   setNotice('');
   showRefusal(kind, { docTitle: ctx?.docTitle });
+  preview?.reset(); // the rendered PDF leaves the screen with the session
   await teardown();
+}
+
+// ---- PDF preview (issue #172) -----------------------------------------------
+// The member pane over the reviewer's transport: no path or project ever
+// leaves this page — the server renders the link's own document. Edit-mode
+// reviewers get their unsaved text saved first (as members do); read-only
+// modes render what is stored.
+
+function wirePreview(): void {
+  const liveView = (): EditorView | null => {
+    if (!handle) return null;
+    try {
+      return handle.view();
+    } catch {
+      return null; // mid-teardown
+    }
+  };
+  preview = createPreviewPane({
+    currentPath: () => (ctx && !ended ? ctx.path : null),
+    flushSave: async () => {
+      if (ctx?.mode === 'edit' && handle && !ended) await handle.flushSave();
+    },
+    editorView: liveView,
+    renderPdf: () => renderPdf(),
+    fetchPageMap: () => fetchPageMap(),
+    exportUrl: (_path, format) => exportUrl(format),
+  });
 }
 
 // ---- Comment affordance for the non-editable comment mode -------------------
@@ -536,6 +574,7 @@ async function boot(): Promise<void> {
     }
   });
   wireFloatingComment();
+  wirePreview();
 
   const match = location.pathname.match(/^\/review\/([^/]+)\/?$/);
   token = match ? decodeURIComponent(match[1]) : null;
