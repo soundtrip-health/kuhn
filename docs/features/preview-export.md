@@ -1,7 +1,7 @@
 ---
 title: Preview and export
 area: preview
-keywords: preview, PDF, render, page map, export, Word, docx, LaTeX, tex, pptx, slides, marp, theme, reference document, template, Docker, typst, pandoc, render error, timeout
+keywords: preview, PDF, render, page map, export, Word, docx, LaTeX, tex, pptx, slides, marp, theme, reference document, template, Docker, typst, pandoc, render error, timeout, reviewer, external reviewer, review link
 ---
 
 # Preview and export
@@ -17,6 +17,16 @@ Markdown is the canonical format; everything else is produced from it on demand.
 **Prerequisites.** A document open in the editor ("No document open" otherwise), and the Docker images below.
 
 **Gotchas.** A render always saves the editor first, so it shows what you see, not the last autosave. Pages are painted as canvases, which is why the preview works on phones and in in-app browsers that have no built-in PDF viewer; use "Download" if you need the browser's own viewer.
+
+## Preview for external reviewers
+
+**What it does.** People invited through a review link get the same PDF preview as members: the review page's top bar has a "Preview PDF" button that opens the floating pane, renders the linked document, and draws the "Page N" lines and `page_limits:` badges in their editor, with the page count ("12 pages (last 40% full)") in the status bar. This works on every link mode — view, comment and edit.
+
+**How to use it.** Click "Preview PDF" in the review page's top bar. The pane has the same "Render", "Download" and close controls as the member pane and is moved and resized the same way. "Download" saves the rendered PDF. The routes are `POST /api/review/render`, `POST /api/review/page-map` and `GET /api/review/export?format=pdf|docx|tex|pptx|html`; none takes a path — the review link decides which document renders.
+
+**Prerequisites.** A claimed, unexpired review link and the same Docker images the member preview needs. The document renders with its `template:` or the project default, exactly as for members.
+
+**Gotchas.** A reviewer on an edit link has their unsaved text saved before the render, like a member; view and comment links render what is stored. Render errors appear verbatim in the pane's status line, as for members. The lines and badges disappear when the document reloads under the reviewer (a move, a refresh after an external change); "Render" brings them back. A suspended organization refuses reviewer renders with "organization suspended".
 
 ## Render pipeline
 

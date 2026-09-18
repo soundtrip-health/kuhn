@@ -9,8 +9,9 @@
 // right end-of-session screen no matter which call hit the wall (the review
 // analogue of api.ts's `kuhn:unauthorized`).
 
-import { BACKEND_URL, type Comment, type CommentThread } from '../api';
+import { BACKEND_URL, type Comment, type CommentThread, type ExportFormat } from '../api';
 import type { CommentsTransport } from '../comments';
+import type { PageMap } from '../page-breaks';
 
 export type ReviewMode = 'view' | 'comment' | 'edit';
 
@@ -136,6 +137,28 @@ export async function putFile(content: string, opts: { checkpoint?: boolean; bod
       body: content,
     }),
   );
+}
+
+// ---- Render / export (issue #172) -------------------------------------------
+// The linked document only — no path parameter exists on these routes.
+
+/** POST /api/review/render — the linked document as PDF; rejects with the
+ *  backend's readable error (the same bodies members see). */
+export async function renderPdf(): Promise<Blob> {
+  const res = await expectOk(await reviewFetch('/api/review/render', json({})));
+  return res.blob();
+}
+
+/** POST /api/review/page-map — the page map of the last render (null for
+ *  slide decks / a failed page query) — see page-breaks.ts. */
+export async function fetchPageMap(): Promise<PageMap | null> {
+  const res = await expectOk(await reviewFetch('/api/review/page-map', json({})));
+  return ((await res.json()) as { pageMap: PageMap | null }).pageMap;
+}
+
+/** GET /api/review/export?format= — attachment download of the linked document. */
+export function exportUrl(format: ExportFormat): string {
+  return `${BACKEND_URL}/api/review/export?format=${encodeURIComponent(format)}`;
 }
 
 // ---- Comments transport -----------------------------------------------------

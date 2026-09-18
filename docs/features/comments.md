@@ -42,7 +42,7 @@ Margin comments are threads anchored to a passage of a document. People and agen
 
 **What it does.** Comment permissions follow project roles. Members with the editor role (or above) create, reply, resolve, reopen and delete; members with the viewer role read threads only (their panel says "No comments on this document yet." and offers no composer). External reviewers invited through a review link act according to the link's mode.
 
-**How to use it.** Organization owners assign roles (see `org-admin.md`). For people outside the organization, "Share" in the document header creates a review link: a "comment" or "edit" link lets them file, reply, resolve, reopen and delete their own comments; a "view" link is read-only.
+**How to use it.** Organization owners assign roles (see `org-admin.md`). For people outside the organization, "Share" in the document header creates a review link: a "comment" or "edit" link lets them file, reply, resolve, reopen and delete their own comments; a "view" link is read-only. Reviewers on any link can render the document with "Preview PDF" to see its page layout, page lines and page budgets (see `preview-export.md`).
 
 **Prerequisites.** Membership in the project's organization, or a review link.
 
