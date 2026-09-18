@@ -28,6 +28,31 @@ const SANDBOX_STATUS = {
   output_too_large: 413,
 };
 
+/**
+ * Map a render/export failure to the response the UI shows verbatim, and log
+ * it. Shared by the member routes below and the reviewer routes
+ * (routes/review.js) so the two surfaces can never drift: expected failures
+ * (storage, sandbox, an unresolvable `template:`) become readable 4xx JSON
+ * bodies; anything else is a logged 500. `ctx` is whatever identifies the
+ * request in the log (projectId, path, format, userId or reviewLinkId, ms).
+ */
+export function sendRenderError(err, res, ctx = {}) {
+  if (err instanceof StorageError) {
+    log.warn('render_failed', { ...ctx, code: err.code, message: err.message });
+    res.status(STORAGE_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
+  } else if (err instanceof SandboxError) {
+    log.warn('render_failed', { ...ctx, code: err.code, message: err.message });
+    res.status(SANDBOX_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
+  } else if (err instanceof TemplateError) {
+    // A `template:` name that resolves to nothing — the author's to fix.
+    log.warn('render_failed', { ...ctx, code: `template_${err.code}`, message: err.message });
+    res.status(422).json({ error: err.message, code: `template_${err.code}` });
+  } else {
+    log.error('render_failed', { ...ctx, error: err });
+    res.status(500).json({ error: 'Internal error' });
+  }
+}
+
 function handle(minRole, fn) {
   return async (req, res) => {
     const started = Date.now();
@@ -39,27 +64,13 @@ function handle(minRole, fn) {
       // Expected failures reach the UI as readable 4xx bodies — and the log,
       // so a "render does nothing" report can be matched to what the sandbox
       // actually said.
-      const ctx = {
+      sendRenderError(err, res, {
         projectId: req.params.projectId,
         path: req.body?.path ?? req.query?.path,
         format: req.query?.format,
         userId: req.user?.id ?? null,
         ms: Date.now() - started,
-      };
-      if (err instanceof StorageError) {
-        log.warn('render_failed', { ...ctx, code: err.code, message: err.message });
-        res.status(STORAGE_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
-      } else if (err instanceof SandboxError) {
-        log.warn('render_failed', { ...ctx, code: err.code, message: err.message });
-        res.status(SANDBOX_STATUS[err.code] ?? 500).json({ error: err.message, code: err.code });
-      } else if (err instanceof TemplateError) {
-        // A `template:` name that resolves to nothing — the author's to fix.
-        log.warn('render_failed', { ...ctx, code: `template_${err.code}`, message: err.message });
-        res.status(422).json({ error: err.message, code: `template_${err.code}` });
-      } else {
-        log.error('render_failed', { ...ctx, error: err });
-        res.status(500).json({ error: 'Internal error' });
-      }
+      });
     }
   };
 }

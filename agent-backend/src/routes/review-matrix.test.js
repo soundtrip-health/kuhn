@@ -45,6 +45,19 @@ vi.mock('../history.js', () => ({
   listHistory: vi.fn(async () => []),
 }));
 
+// Issue #172: the reviewer render routes go through the real render.js
+// pipeline in production; here the sandbox call is the seam (Docker is
+// render.test.js's business) — everything else (EXPORT_FORMATS, the error
+// classes the shared sendRenderError maps) stays real.
+vi.mock('../render.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    renderPdf: vi.fn(),
+    exportDocument: vi.fn(),
+  };
+});
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MODES = ['view', 'comment', 'edit'];
@@ -453,11 +466,75 @@ describe('deny sweep: every other route family 401s for guests', () => {
   });
 
   it('the door swings both ways: a member session is not a review session', async () => {
-    for (const path of ['/api/review/context', '/api/review/file', '/api/review/comments']) {
+    for (const path of ['/api/review/context', '/api/review/file', '/api/review/comments', '/api/review/export?format=pdf']) {
       const res = await req('GET', path, { headers: member() });
       expect(res.status, path).toBe(401);
       expect((await res.json()).code).toBe('review_session_invalid');
     }
+    for (const path of ['/api/review/render', '/api/review/page-map']) {
+      const res = await req('POST', path, { headers: member(), body: {} });
+      expect(res.status, path).toBe(401);
+      expect((await res.json()).code).toBe('review_session_invalid');
+    }
+  });
+});
+
+// ---- Render / export (issue #172) --------------------------------------------
+
+describe('reviewer render surface (issue #172)', () => {
+  let render;
+  beforeAll(async () => {
+    render = await import('../render.js');
+  });
+
+  it('render, page-map and export succeed in every mode, pinned to the linked doc', async () => {
+    const pageMap = { pages: 2, pageHeight: 792, blocks: [{ key: 'draft', page: 1, y: 72 }], end: { page: 2, y: 100 } };
+    for (const mode of MODES) {
+      render.renderPdf.mockResolvedValue({ pdf: Buffer.from('%PDF-review'), pageMap, cached: mode === 'edit' });
+      render.exportDocument.mockResolvedValue({
+        output: Buffer.from('DOCX'), contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: 'main.docx',
+      });
+
+      const pdf = await req('POST', '/api/review/render', { headers: guest(mode), body: {} });
+      expect(pdf.status, `${mode} render`).toBe(200);
+      expect(pdf.headers.get('content-type')).toContain('application/pdf');
+      expect(pdf.headers.get('x-render-cache')).toBe(mode === 'edit' ? 'hit' : 'miss');
+      expect(Buffer.from(await pdf.arrayBuffer()).toString()).toBe('%PDF-review');
+      // No path parameter exists: the link row decides what renders.
+      expect(render.renderPdf).toHaveBeenLastCalledWith(PID, 'draft/main.md');
+
+      const map = await req('POST', '/api/review/page-map', { headers: guest(mode), body: { path: 'draft/other.md' } });
+      expect(map.status, `${mode} page-map`).toBe(200);
+      expect(await map.json()).toEqual({ pageMap });
+      expect(render.renderPdf).toHaveBeenLastCalledWith(PID, 'draft/main.md');
+
+      const exp = await req('GET', '/api/review/export?format=docx', { headers: guest(mode) });
+      expect(exp.status, `${mode} export`).toBe(200);
+      expect(exp.headers.get('content-disposition')).toBe('attachment; filename="main.docx"');
+      expect(await exp.text()).toBe('DOCX');
+      expect(render.exportDocument).toHaveBeenLastCalledWith(PID, 'draft/main.md', 'docx');
+    }
+  });
+
+  it('refuses an unknown export format with the member route\'s 400', async () => {
+    const res = await req('GET', '/api/review/export?format=exe', { headers: guest('view') });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/^format must be one of: /);
+    expect(render.exportDocument).not.toHaveBeenCalled();
+  });
+
+  it('a failed render reaches the reviewer verbatim, as it reaches a member', async () => {
+    const { SandboxError } = await import('../sandbox.js');
+    render.renderPdf.mockRejectedValueOnce(new SandboxError('failed', 'Render failed (exit 1): typst: unknown font'));
+    const res = await req('POST', '/api/review/render', { headers: guest('comment'), body: {} });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'Render failed (exit 1): typst: unknown font', code: 'failed' });
+  });
+
+  it('no session → 401 with the stable code; the room stays shut without a cookie', async () => {
+    const res = await req('POST', '/api/review/render', { body: {} });
+    expect(res.status).toBe(401);
+    expect((await res.json()).code).toBe('review_session_invalid');
   });
 });
 
@@ -580,6 +657,12 @@ describe('suspension covers the reviewer surface (MA2)', () => {
         headers: guest('comment'), body: { body: 'sneaky' },
       });
       expect(comment.status).toBe(403);
+      // The render surface (issue #172) sits behind the same gate.
+      for (const path of ['/api/review/render', '/api/review/page-map']) {
+        const res = await req('POST', path, { headers: guest('view'), body: {} });
+        expect(res.status, `POST ${path}`).toBe(403);
+      }
+      expect((await req('GET', '/api/review/export?format=pdf', { headers: guest('view') })).status).toBe(403);
       // The member surface refuses through the tenancy chokepoint too.
       const member403 = await req('GET', `/api/projects/${PID}/files`, { headers: member() });
       expect(member403.status).toBe(403);

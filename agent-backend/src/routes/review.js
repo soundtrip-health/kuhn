@@ -29,11 +29,14 @@ import {
   recordReviewerEditEvent,
 } from '../db/review-links.js';
 import { commitNow, scheduleCommit } from '../history.js';
+import { log } from '../logger.js';
 import { publishProjectEvent } from '../project-events.js';
 import { sendRawFile } from '../raw-content.js';
+import { EXPORT_FORMATS, exportDocument, renderPdf } from '../render.js';
 import { REVIEW_COOKIE, reviewerPrincipal, reviewerSession } from '../review-auth.js';
 import { StorageError, readProjectFile, writeProjectFile } from '../storage.js';
 import { bodyWithStoredFrontMatter } from './files.js';
+import { sendRenderError } from './render.js';
 
 const router = Router();
 
@@ -301,6 +304,78 @@ router.put('/api/review/file', reviewerAccess, requireMode('edit'), rawBody,
     }
     res.status(created ? 201 : 200).json({ path, created });
   }));
+
+// ---- Render / export (issue #172) -------------------------------------------
+// The reviewer's copy of routes/render.js: same pipeline, same error bodies
+// (sendRenderError is shared, so the two surfaces cannot drift), no path or
+// project parameter — the link row pins both. Every mode may render: the PDF
+// is a re-encoding of bytes GET /api/review/file already hands out, and the
+// page lines / `page_limits:` badges it feeds are what a reviewer is asked to
+// judge. Log lines carry reviewLinkId where the member routes carry userId.
+
+/** Wrap a render-family handler: sandbox/storage/template failures reach
+ *  the reviewer's pane verbatim, exactly as they reach a member's. */
+function handleRender(fn) {
+  return async (req, res) => {
+    const started = Date.now();
+    try {
+      await fn(req, res);
+    } catch (err) {
+      sendRenderError(err, res, {
+        projectId: req.reviewer.projectId,
+        path: req.reviewer.path,
+        format: req.query?.format,
+        reviewLinkId: req.reviewer.linkId,
+        ms: Date.now() - started,
+      });
+    }
+  };
+}
+
+/** POST /api/review/render — the linked document as PDF bytes. All modes. */
+router.post('/api/review/render', reviewerAccess, handleRender(async (req, res) => {
+  const { projectId, path, linkId } = req.reviewer;
+  const started = Date.now();
+  const { pdf, cached } = await renderPdf(projectId, path);
+  log.info('render', {
+    projectId, path, cached, bytes: pdf.length, ms: Date.now() - started, reviewLinkId: linkId,
+  });
+  res.set('Content-Type', 'application/pdf');
+  res.set('X-Render-Cache', cached ? 'hit' : 'miss');
+  res.send(pdf);
+}));
+
+/** POST /api/review/page-map — the page map of the rendered PDF (null for
+ *  slide decks / a failed page query), for the reviewer's page lines. */
+router.post('/api/review/page-map', reviewerAccess, handleRender(async (req, res) => {
+  const { projectId, path, linkId } = req.reviewer;
+  const started = Date.now();
+  const { pageMap, cached } = await renderPdf(projectId, path);
+  log.info('page_map', {
+    projectId, path, cached, pages: pageMap?.pages ?? null, blocks: pageMap?.blocks.length ?? 0,
+    ms: Date.now() - started, reviewLinkId: linkId,
+  });
+  res.json({ pageMap });
+}));
+
+/** GET /api/review/export?format=pdf|docx|tex|pptx|html — the linked
+ *  document exported, served as an attachment (the pane's Download button). */
+router.get('/api/review/export', reviewerAccess, handleRender(async (req, res) => {
+  const { projectId, path, linkId } = req.reviewer;
+  const format = req.query.format;
+  if (typeof format !== 'string' || !Object.hasOwn(EXPORT_FORMATS, format)) {
+    res.status(400).json({ error: `format must be one of: ${Object.keys(EXPORT_FORMATS).join(', ')}` });
+    return;
+  }
+  const started = Date.now();
+  const { output, contentType, filename } = await exportDocument(projectId, path, format);
+  log.info('export', {
+    projectId, path, format, bytes: output.length, ms: Date.now() - started, reviewLinkId: linkId,
+  });
+  res.set('Content-Type', contentType);
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(output);
+}));
 
 /** GET /api/review/comments — the linked document's threads. All modes
  *  (view included, per story 001). */
