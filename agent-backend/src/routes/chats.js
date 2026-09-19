@@ -35,8 +35,8 @@ async function requireOwnChat(req, res, minRole) {
 
 /**
  * GET /api/projects/:id/chats → { chats } — the caller's chats in the
- * project with their projected `status` ('idle' | 'running' | 'paused';
- * 'waiting_for_user' arrives with #118 stage 1). The webapp reads its
+ * project with their projected `status` ('idle' | 'running' |
+ * 'waiting_for_user' | 'paused'). The webapp reads its
  * per-agent state (pin, parked hand-off note, chat id) from here on load.
  */
 router.get('/api/projects/:id/chats', async (req, res) => {
@@ -102,7 +102,7 @@ router.patch('/api/chats/:id', async (req, res) => {
 router.post('/api/chats/:id/reset', async (req, res) => {
   const chat = await requireOwnChat(req, res, 'editor');
   if (!chat) return;
-  if (chat.status === 'running') {
+  if (chat.status === 'running' || chat.status === 'waiting_for_user') {
     res.status(409).json({ error: 'chat has a run in progress' });
     return;
   }

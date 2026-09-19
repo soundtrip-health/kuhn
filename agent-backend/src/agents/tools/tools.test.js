@@ -157,7 +157,7 @@ import { applyProjectConfig } from '../project-config.js';
 import { getSecretValueForProject, listSecretNamesForProject } from '../../db/org-secrets.js';
 import { runScriptSandboxed } from '../../sandbox.js';
 import { pubmedSearch } from '../search.js';
-import { deliverReply } from '../questions.js';
+import { cancelQuestion, deliverReply } from '../questions.js';
 
 const ALL_GRANTS = [
   'file_read', 'file_list', 'file_move', 'file_write',
@@ -479,6 +479,30 @@ describe('server-derived identity (STH-1)', () => {
     const result = await promise;
     expect(result).toMatchObject({ content: [{ type: 'text', text: 'warm' }] });
     expect(pushed.some((e) => e.type === 'question_expired')).toBe(false);
+  });
+
+  it('ask_user reports the park and the wake through ctx.waiting (issue #113 item 3)', async () => {
+    const waiting = vi.fn(async () => {});
+    const ctx = makeCtx({ agent: agent(['ask_user']), waiting });
+    const promise = run(findTool(ctx, 'ask_user'), { question: 'Which tone?' });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(waiting).toHaveBeenCalledWith('Which tone?');
+    deliverReply(42, 'warm');
+    await promise;
+    expect(waiting).toHaveBeenLastCalledWith(null);
+    expect(waiting).toHaveBeenCalledTimes(2);
+  });
+
+  it('ask_user does not report a wake when the run was stopped while parked', async () => {
+    const waiting = vi.fn(async () => {});
+    const ac = new AbortController();
+    const ctx = makeCtx({ agent: agent(['ask_user']), waiting, signal: ac.signal });
+    const promise = run(findTool(ctx, 'ask_user'), { question: 'Which tone?' });
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort();
+    cancelQuestion(42);
+    await promise;
+    expect(waiting).toHaveBeenCalledTimes(1);
   });
 
   it('add_comment threads carry server-derived attribution, anchored to the quote', async () => {

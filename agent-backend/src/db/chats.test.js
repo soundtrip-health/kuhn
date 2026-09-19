@@ -99,6 +99,61 @@ describe('status projection (read-time, from current_job_id)', () => {
     expect(chats.chatStatus({ status: 'interrupted' })).toBe('idle');
   });
 
+  it('is waiting_for_user while the current job — or a sub-agent job of its tree — is parked on a question (issue #113 item 3)', async () => {
+    const { id } = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'pm', userId: 1 });
+    insertJob(20, { status: 'running', chatId: id });
+    querySync('UPDATE jobs SET root_job_id = 20 WHERE id = 20');
+    await chats.startChatJob(id, 20);
+    expect((await chats.getChat(id)).status).toBe('running');
+
+    querySync("UPDATE jobs SET status = 'waiting_for_user' WHERE id = 20");
+    expect((await chats.getChat(id)).status).toBe('waiting_for_user');
+    expect((await chats.listProjectChats(5, 1))[0].status).toBe('waiting_for_user');
+
+    // The root keeps running while a dispatched RA asks the question.
+    querySync("UPDATE jobs SET status = 'running' WHERE id = 20");
+    querySync("INSERT INTO jobs (id, project_id, user_id, role, status, input, parent_job_id, root_job_id) VALUES (21, 5, 1, 'ra', 'waiting_for_user', 'find', 20, 20)");
+    expect((await chats.getChat(id)).status).toBe('waiting_for_user');
+    querySync("UPDATE jobs SET status = 'done' WHERE id = 21");
+    expect((await chats.getChat(id)).status).toBe('running');
+    // A parked sub-job of a FINISHED root does not resurrect the chat.
+    querySync("UPDATE jobs SET status = 'done' WHERE id = 20");
+    querySync("UPDATE jobs SET status = 'waiting_for_user' WHERE id = 21");
+    expect((await chats.getChat(id)).status).toBe('idle');
+
+    expect(chats.chatStatus({ status: 'waiting_for_user' })).toBe('waiting_for_user');
+    expect(chats.chatStatus({ status: 'running', waitingJobId: 7 })).toBe('waiting_for_user');
+    expect(chats.chatStatus({ status: 'done', waitingJobId: 7 })).toBe('idle');
+  });
+});
+
+describe('listChatActivity (issue #113 item 3)', () => {
+  it('lists the non-idle chats of an org — own only, or everyone for owners — with the parked job', async () => {
+    const mine = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'pm', userId: 1 });
+    const mineIdle = await chats.getOrCreateChat({ projectId: 6, agentSlug: 'writer', userId: 1 });
+    const theirs = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'pm', userId: 2 });
+    insertJob(30, { status: 'running', chatId: mine.id });
+    querySync('UPDATE jobs SET root_job_id = 30 WHERE id = 30');
+    querySync("INSERT INTO jobs (id, project_id, user_id, role, status, input, parent_job_id, root_job_id) VALUES (31, 5, 1, 'ra', 'waiting_for_user', 'find', 30, 30)");
+    await chats.startChatJob(mine.id, 30);
+    insertJob(32, { status: 'done', chatId: mineIdle.id });
+    await chats.startChatJob(mineIdle.id, 32);
+    querySync("INSERT INTO jobs (id, project_id, user_id, role, status, error, input, chat_id) VALUES (33, 5, 2, 'pm', 'error', 'token budget exceeded', 'go', $1)", [theirs.id]);
+    await chats.startChatJob(theirs.id, 33);
+
+    expect(await chats.listChatActivity(1, { userId: 1 })).toEqual([
+      { chatId: mine.id, projectId: 5, userId: 1, agent: 'pm', status: 'waiting_for_user', jobId: 30, waitingJobId: 31 },
+    ]);
+    expect(await chats.listChatActivity(1, { userId: 1, everyone: true })).toEqual([
+      { chatId: mine.id, projectId: 5, userId: 1, agent: 'pm', status: 'waiting_for_user', jobId: 30, waitingJobId: 31 },
+      { chatId: theirs.id, projectId: 5, userId: 2, agent: 'pm', status: 'paused', jobId: 33, waitingJobId: null },
+    ]);
+    // Another org sees nothing; a deleted project drops out.
+    expect(await chats.listChatActivity(2, { userId: 1, everyone: true })).toEqual([]);
+    querySync("UPDATE projects SET deleted_at = '2026-09-19T00:00:00Z' WHERE id = 5");
+    expect(await chats.listChatActivity(1, { userId: 1, everyone: true })).toEqual([]);
+  });
+
   it('lists only the caller\'s chats in the project, most recently active first', async () => {
     const pm = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'pm', userId: 1 });
     const writer = await chats.getOrCreateChat({ projectId: 5, agentSlug: 'writer', userId: 1 });

@@ -117,6 +117,10 @@ export const WEB_SEARCH_TOOL = {
  *   with product-side effects and when a parked question wakes. Resolves
  *   null to proceed, or the cancel reason when the run has been stopped
  *   (the gate itself aborts the run; the tool just refuses)
+ * @property {((question: string|null) => Promise<void>)|null} waiting
+ *   - issue #113 item 3: ask_user reports that the run is parked on a
+ *   question (the text) or working again (null); the runtime stamps the
+ *   job row and announces the chat's status on the org activity feed
  */
 
 /**
@@ -126,7 +130,7 @@ export const WEB_SEARCH_TOOL = {
  */
 export function createToolContext({
   agent, projectId, depth, budget, parentJob, channel,
-  userId = null, seeding = false, context = null, dispatch, signal = null, gate = null,
+  userId = null, seeding = false, context = null, dispatch, signal = null, gate = null, waiting = null,
 }) {
   if (!agent || !Array.isArray(agent.tools)) throw new Error('createToolContext: agent row with tool grants is required');
   if (typeof dispatch !== 'function') {
@@ -145,6 +149,7 @@ export function createToolContext({
     dispatch,
     signal,
     gate,
+    waiting,
   };
 }
 
