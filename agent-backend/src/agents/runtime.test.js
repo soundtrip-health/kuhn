@@ -1866,6 +1866,61 @@ describe('ask_user reconnect (story 027)', () => {
     expect(getRun(42)).toBeUndefined();
   });
 
+  // Issue #113 item 2: a chat turn (chatId set) is kept alive on ANY
+  // disconnect — the user switched projects or reloaded — and re-attaches
+  // to what buffered meanwhile.
+  const sayThenWait = (gate) => async function* () {
+    yield {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'first turn' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    };
+    await gate.promise;
+    yield {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'second turn' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    };
+    yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+  };
+  const makeGate = () => { const g = {}; g.promise = new Promise((r) => { g.release = r; }); return g; };
+
+  it('keeps a chat run alive when its consumer drops mid-turn and replays the buffered turns on reconnect', async () => {
+    const gate = makeGate();
+    sdkState.generator = sayThenWait(gate);
+
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', chatId: 9, detachable: true })) {
+      if (ev.type === 'text') break; // the browser went away mid-run
+    }
+    expect(sdkState.interrupt).not.toHaveBeenCalled();
+    expect(updateJob).not.toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
+    const run = getRun(42);
+    expect(run).toBeDefined();
+    expect(run.consumerAttached).toBe(false);
+    expect(run.channel.detached).toBe(true);
+    expect(run).toMatchObject({ userId: null, chatId: 9 });
+
+    gate.release();
+    // Let the second turn land in the buffer while nobody is attached.
+    await new Promise((r) => setTimeout(r, 20));
+    const events = [];
+    for await (const ev of reattach(run)) events.push(ev);
+    expect(events.map((e) => e.type)).toContain('text');
+    expect(events.find((e) => e.type === 'text')).toMatchObject({ content: 'second turn' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', jobId: 42 });
+    expect(getRun(42)).toBeUndefined();
+  });
+
+  it('still cancels a detachable run WITHOUT a chat that drops mid-turn (compose, dispatch)', async () => {
+    const gate = makeGate();
+    sdkState.generator = sayThenWait(gate);
+    for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', detachable: true })) {
+      if (ev.type === 'text') break;
+    }
+    expect(sdkState.interrupt).toHaveBeenCalled();
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'cancelled' }));
+    expect(getRun(42)).toBeUndefined();
+    gate.release();
+  });
+
   it('does not register a run that finishes normally without disconnect', async () => {
     sdkState.messages = [
       { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
