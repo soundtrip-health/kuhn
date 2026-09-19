@@ -46,6 +46,7 @@ import { initHelp } from './help';
 import { notify, setVersion } from './status';
 import { toast } from './toast';
 import { initUserMenu } from './user-menu';
+import { initWaitingIndicator } from './waiting';
 import { refreshSuggestionsSoon } from './suggestion-hunks';
 import * as workspace from './workspace';
 import { openSetupWizard } from './wizard';
@@ -437,6 +438,7 @@ async function main(): Promise<void> {
   initAgentSelector();
   initHelp();
   initUserMenu();
+  initWaitingIndicator(); // top-bar "Waiting for you" marker + title badge (issue #113 item 4)
   setSetupHandler((projectId) => openSetupWizard(projectId));
   initHistoryButton(() => ({
     projectId: workspace.activeProject()?.id ?? 0,

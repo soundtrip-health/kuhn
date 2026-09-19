@@ -25,6 +25,9 @@
         <nav id="breadcrumb" class="breadcrumb" aria-label="Workspace location"></nav>
       </div>
       <div class="topbar-right">
+        <!-- Waiting-on-you marker (issue #113 item 4) — waiting.ts owns it; a sibling of the save/seeding slot. -->
+        <button id="topbar-waiting" type="button" class="topbar-activity topbar-waiting" hidden
+          title="An agent is waiting for your answer — click to go to that chat"></button>
         <span id="topbar-activity" class="topbar-activity" role="status" aria-live="polite" hidden></span>
         <button id="toggle-chat" type="button" class="btn btn-quiet" title="Toggle chat panel">Chat</button>
         <button id="toggle-files" type="button" class="btn btn-quiet" title="Toggle files panel">Files</button>

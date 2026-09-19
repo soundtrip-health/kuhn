@@ -7,6 +7,7 @@
 import { openApiTokensDialog } from './api-tokens';
 import { icon } from './icons';
 import { authMode, currentUser, signOut } from './login';
+import { notificationsSupported, notifyWaitingEnabled, setNotifyWaiting } from './waiting';
 import * as workspace from './workspace';
 
 const ROLE_LABEL: Record<string, string> = {
@@ -133,6 +134,25 @@ function renderMenu(menu: HTMLElement): void {
 
   const foot = document.createElement('div');
   foot.className = 'user-menu-foot';
+  // Browser notification when an agent is waiting for an answer (issue #113
+  // item 4): per user, per browser, off by default; the top-bar marker and
+  // the title badge work regardless.
+  if (me && notificationsSupported()) {
+    const row = document.createElement('label');
+    row.className = 'user-menu-item user-menu-toggle';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = notifyWaitingEnabled();
+    box.setAttribute('aria-label', 'Notify me when an agent is waiting for my answer');
+    const text = document.createElement('span');
+    text.textContent = 'Notify me when an agent is waiting';
+    row.title = 'Show a browser notification when an agent asks you a question in a chat you are not looking at';
+    row.append(box, text);
+    box.addEventListener('change', () => {
+      void setNotifyWaiting(box.checked).then((on) => { box.checked = on; });
+    });
+    foot.append(row);
+  }
   // Personal API tokens (issue #152): scripts and external tools (the
   // sciwriter interchange) act as this user with a bearer token. Works in
   // dev mode too, so it sits above the mode-specific sign-out line.
