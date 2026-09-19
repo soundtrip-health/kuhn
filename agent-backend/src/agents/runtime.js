@@ -153,6 +153,13 @@ export async function* runAgentTask(task, internal = {}) {
     // on a question, so a reconnect can resume them (story 027). Sub-agent and
     // seeding-pipeline runs are not detachable: they keep today's teardown.
     detachable: task.detachable === true,
+    // A chat turn (issue #113 item 2) survives a disconnect at ANY point, not
+    // only while parked: the chat is the durable thing the user comes back to
+    // — after a project switch, a reload, or a closed tab — and the run keeps
+    // accumulating on the server until they re-attach (GET /api/agent/live +
+    // POST /jobs/:id/reconnect) or it ends. Compose (/write) runs, dispatch
+    // re-runs and seeding stages have no chat and keep the old teardown.
+    keepAlive: task.detachable === true && topLevel && task.chatId != null,
   });
 
   const pump = runTask(task, internal, channel, state)
@@ -222,10 +229,11 @@ function raceNext(channel, signal) {
 
 /**
  * Decide what happens when a run's SSE consumer stops. A detachable run that
- * is currently parked on an ask_user question is left alive (its channel keeps
- * buffering) so POST /api/agent/jobs/:id/reconnect can resume it; every other
- * case interrupts the in-flight turn through the runtime adapter and marks
- * the job cancelled. A run that already finished just settles its pump.
+ * is currently parked on an ask_user question — or any chat turn (keepAlive,
+ * issue #113 item 2) — is left alive (its channel keeps buffering) so
+ * POST /api/agent/jobs/:id/reconnect can resume it; every other case
+ * interrupts the in-flight turn through the runtime adapter and marks the
+ * job cancelled. A run that already finished just settles its pump.
  * (story 027)
  */
 async function teardownOrDetach(state, reason = 'disconnect') {
@@ -234,12 +242,13 @@ async function teardownOrDetach(state, reason = 'disconnect') {
     return;
   }
   const jobId = state.job?.id;
-  if (state.detachable && jobId != null && hasPendingQuestion(jobId) && state.runHandle) {
+  if (state.detachable && jobId != null && state.runHandle && (state.keepAlive || hasPendingQuestion(jobId))) {
     // Drop the abandoned channel waiter so events pushed after the user replies
     // are buffered for the reconnecting consumer instead of lost to a dead one.
     state.runHandle.channel.detach();
     state.runHandle.consumerAttached = false;
-    return; // leave the run alive and parked; do NOT interrupt or await the pump
+    log.info('job_detached', { jobId, agent: state.job?.role ?? null, parked: hasPendingQuestion(jobId) });
+    return; // leave the run alive; do NOT interrupt or await the pump
   }
   await cancelRun(state, { reason });
   await state.pump;
@@ -351,6 +360,8 @@ function createRunGate({ state, job, projectId, userId, depth, agent, deadlineAt
  */
 export async function* reattach(run, signal) {
   try {
+    run.channel.attach();
+    log.info('job_reattached', { jobId: run.jobId, agent: run.role, buffered: run.channel.buffer.length });
     const q = getPendingQuestion(run.jobId);
     if (q) yield { type: 'question', agent: q.agent ?? run.role, jobId: run.jobId, content: q.question };
     yield* consume(run.channel, signal);
@@ -508,6 +519,8 @@ async function runTask(task, internal, channel, state) {
   if (state.detachable) {
     const handle = {
       jobId: job.id, projectId, role: agent.slug, channel, state, consumerAttached: true,
+      // Who may re-attach (issue #113 item 2): the run's user, on its chat.
+      userId, chatId,
       // Tenancy hooks stop a live run through this without importing the runtime (issue #118).
       cancel: (reason) => cancelRun(state, { reason }),
     };

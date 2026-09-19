@@ -16,6 +16,13 @@ export class EventChannel {
     this.waiters = [];
     this.ended = false;
     this.onEvent = onEvent;
+    // Set while a detachable run has no consumer (issue #113 item 2): the
+    // buffer then keeps the durable events only — token-level `text_delta`
+    // frames are dropped, since the `text` event that closes the turn
+    // carries the full text and a reconnecting client renders from that.
+    // Without this a run left unattended for an hour would buffer every
+    // token it streamed (threat T-28).
+    this.detached = false;
   }
 
   push(event) {
@@ -27,7 +34,7 @@ export class EventChannel {
     }
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value: event, done: false });
-    else this.buffer.push(event);
+    else if (!(this.detached && event?.type === 'text_delta')) this.buffer.push(event);
   }
 
   end() {
@@ -46,6 +53,12 @@ export class EventChannel {
    */
   detach() {
     this.waiters.length = 0;
+    this.detached = true;
+  }
+
+  /** A consumer is back (reconnect): buffer everything again. */
+  attach() {
+    this.detached = false;
   }
 
   next() {

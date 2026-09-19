@@ -11,7 +11,9 @@
  * vLLM / Ollama / LiteLLM deployment would see, minus the model.
  *
  * Script entries:
- *   { kind: 'message', deltas: string[], toolCalls: [{ id, name, args }], usage: { input, output } }
+ *   { kind: 'message', deltas: string[], toolCalls: [{ id, name, args }], usage: { input, output }, wait?: Promise }
+ *     — with `wait`, the reply is held until that promise settles (a check
+ *       script's gate), so a run can be kept in flight deliberately
  *   { kind: 'pause' }                  hold the request until the client aborts
  *   { kind: 'error', code }            a provider failure (see ERROR_STATUS)
  */
@@ -99,6 +101,12 @@ export function createFakeOpenAIServer() {
       return;
     }
     // A streamed assistant message.
+    if (entry.wait) {
+      let closed = false;
+      req.on('close', () => { closed = true; });
+      await entry.wait;
+      if (closed) { res.destroy(); return; }
+    }
     counter += 1;
     const id = `chatcmpl-fake-${counter}`;
     const base = { id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model };

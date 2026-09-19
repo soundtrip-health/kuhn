@@ -201,6 +201,8 @@ const ROUTES = [
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/jobs', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/agent/jobs/${JOB_A}/trace`, ok: { status: 200 } },
   { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/pending', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
+  // Issue #113 item 2: the caller's re-attachable chat runs.
+  { scope: 'project', minRole: 'viewer', method: 'GET', path: '/api/agent/live', req: () => ({ query: { projectId: String(PROJECT_A) } }), ok: { status: 200 } },
   // Issue #113: the caller's durable chats in a project.
   { scope: 'project', minRole: 'viewer', method: 'GET', path: `/api/projects/${PROJECT_A}/chats`, ok: { status: 200 } },
 

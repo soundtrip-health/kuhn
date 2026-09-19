@@ -13,6 +13,9 @@
  * @property {number} jobId
  * @property {number|string|null} projectId
  * @property {string} role               - agent slug, for discovery
+ * @property {number|null} [userId]      - whose run (issue #113 item 2): only
+ *   they may list it (GET /api/agent/live) and re-attach to it
+ * @property {number|null} [chatId]      - the chat the run belongs to, or null
  * @property {import('./events.js').EventChannel} channel
  * @property {Promise<void>|null} pump   - the detached run promise
  * @property {object} state              - runtime task state (sdkQuery, finished, job)
