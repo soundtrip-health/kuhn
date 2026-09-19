@@ -112,6 +112,8 @@ const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || '50');
  *     period + resetsAt — resume via POST /api/agent/jobs/:jobId/resume (issue #110)
  *   { type: 'error', agent, message, reason: 'budget_exhausted', budget: { used, limit, scope }, period, resetsAt } — a user/project org budget is already
  *     used up, so no job was started (issue #110); resets at resetsAt or when an org owner resets it
+ *   { type: 'error', agent, message, reason: 'concurrency_limit', runs: { scope: 'user'|'org', used, limit } } — the user (or the org) already has
+ *     the configured number of runs open (issue #113 item 5, AGENT_MAX_CONCURRENT_RUNS_PER_USER / _PER_ORG); no job was started
  */
 export async function* runAgentTask(task, internal = {}) {
   // Tee top-level runs into the per-project feed (story 005-001). Sub-agent
@@ -486,7 +488,26 @@ async function runTask(task, internal, channel, state) {
     rootJobId = parentRow?.root_job_id ?? parentJobId;
     deadlineAt = parentRow?.deadline_at ?? null;
   }
-  const job = await createJob({ role: agent.slug, projectId, input, context, parentJobId, userId, chatId, rootJobId, deadlineAt });
+  // Concurrency ceilings (issue #113 item 5, T-21): counted and inserted in
+  // one transaction; a run past the cap is refused HERE, before any job row
+  // or side effect exists. The client shows "N of M runs in use" from it.
+  let job;
+  try {
+    job = await createJob(
+      { role: agent.slug, projectId, input, context, parentJobId, userId, chatId, rootJobId, deadlineAt },
+      { limits: depth === 0 && project?.org_id != null
+        ? { orgId: project.org_id, perUser: config.agent.maxConcurrentRunsPerUser, perOrg: config.agent.maxConcurrentRunsPerOrg }
+        : null },
+    );
+  } catch (err) {
+    if (err?.code !== 'concurrency_limit') throw err;
+    log.warn('run_cap_refused', { agent: agent.slug, projectId: Number(projectId), userId, scope: err.scope, used: err.used, limit: err.limit });
+    channel.push({
+      type: 'error', agent: agent.slug, reason: 'concurrency_limit', message: err.message,
+      runs: { scope: err.scope, used: err.used, limit: err.limit },
+    });
+    return;
+  }
   state.job = job;
   state.rootJobId = job.root_job_id ?? rootJobId ?? job.id;
   if (depth === 0 && deadlineAt) {
