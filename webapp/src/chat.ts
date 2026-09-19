@@ -1683,3 +1683,27 @@ function setStickToBottom(pc: ProjectChat, on: boolean): void {
 export function liveRuns(): ChatRun[] {
   return allRuns();
 }
+
+/**
+ * Bring a chat's pending question into view (issue #113 item 4: the
+ * waiting-on-you marker jumps here). The caller has already switched the
+ * project and selected the agent; the card may still be on its way — a
+ * project visited for the first time restores its transcript and re-attaches
+ * to the parked run asynchronously — so this waits for it briefly.
+ */
+export function revealQuestion(projectId: number, agent: string): void {
+  const started = Date.now();
+  const attempt = (): void => {
+    const pc = projects.get(projectId);
+    const run = getRun(projectId, agent);
+    const card = run?.questionCard?.element ?? pc?.log.querySelector<HTMLElement>(`.question-card.is-pending[data-agent="${CSS.escape(agent)}"]`) ?? null;
+    if (pc && pc === current && card) {
+      setStickToBottom(pc, true);
+      card.scrollIntoView({ block: 'center' });
+      (document.getElementById('chat-input') as HTMLTextAreaElement | null)?.focus();
+      return;
+    }
+    if (Date.now() - started < 8000) setTimeout(attempt, 150);
+  };
+  attempt();
+}
