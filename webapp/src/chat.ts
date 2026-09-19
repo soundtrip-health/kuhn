@@ -1032,6 +1032,10 @@ function createEventHandler(pc: ProjectChat, run: ChatRun): (event: AgentEvent) 
           // An org budget (the user's or the project's) is already used up,
           // so no run started (issue #110): explain, no Resume to offer.
           appendBudgetExhaustedNotice(pc, event, owner);
+        } else if (event.reason === 'concurrency_limit') {
+          // The concurrent-run ceiling refused the run (issue #113 item 5):
+          // nothing started; say how many are in use — only now, at the cap.
+          appendRunCapNotice(pc, event, owner);
         } else if (event.reason === 'provider_overloaded') {
           // Transient upstream failure that outlasted the runtime's retries —
           // the chat row keeps the session so a chat "Try again" resumes it;
@@ -1556,6 +1560,26 @@ function appendBudgetExhaustedNotice(pc: ProjectChat, event: AgentEvent, owner: 
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} ${scope} ${escapeHtml(PERIOD_ADJECTIVE[event.period ?? ''] ?? '')} token budget is used up</div>` +
     `<p>The task was not started${escapeHtml(used)}. It resets ${escapeHtml(resetWhen(event.resetsAt))}; ` +
     'an organization owner can raise the budget or reset the usage sooner (Organization → Budgets).</p>';
+  pc.log.append(card);
+  scrollLog(pc);
+}
+
+/**
+ * Concurrent-run ceiling (issue #113 item 5): the run was refused before it
+ * started because the user (or the organization) already has the configured
+ * number of runs open. "N of M runs in use" is shown only here, at the cap.
+ */
+function appendRunCapNotice(pc: ProjectChat, event: AgentEvent, owner: string): void {
+  const card = document.createElement('div');
+  card.className = 'chat-notice chat-notice-runcap';
+  tagConversation(pc, card, owner);
+  const runs = event.runs;
+  const whose = runs?.scope === 'org' ? 'Your organization\u2019s' : 'Your';
+  const inUse = runs ? `${runs.used} of ${runs.limit} runs in use` : 'run limit reached';
+  card.innerHTML =
+    `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} ${whose} concurrent runs are all in use — <span class="mono">${escapeHtml(inUse)}</span></div>` +
+    `<p>${escapeHtml(event.message ?? 'The task was not started.')}</p>` +
+    '<p class="notice-muted">Running chats are marked in the agent menu and the project browser; stop one there, or wait for it to finish, then send again.</p>';
   pc.log.append(card);
   scrollLog(pc);
 }

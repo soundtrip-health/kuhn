@@ -85,7 +85,10 @@ const dismissWizard = async () => {
 const switchTo = async (project) => {
   await page.click('.breadcrumb-project');
   await page.waitForSelector('#project-browser:not([hidden])', { timeout: 5000 });
-  await page.click(`.pb-card:has(.pb-card-name:text-is("${project.name}"))`);
+  // The grid grows with every project in the org; the card may sit below the fold.
+  const card = page.locator(`.pb-card:has(.pb-card-name:text-is("${project.name}"))`);
+  await card.scrollIntoViewIfNeeded().catch(() => {});
+  await card.click({ force: true });
   await page.waitForFunction((n) => (document.querySelector('.breadcrumb-project')?.textContent ?? '').includes(n), project.name, { timeout: 10000 });
   await dismissWizard();
   await page.waitForTimeout(600); // transcript restore
@@ -254,6 +257,8 @@ check(!(await page.title()).startsWith('●'), `answering clears the title badge
 await page.screenshot({ path: '/tmp/kuhn-parallel-check.png' });
 await browser.close();
 await fake.close();
+// Purge the fixtures so repeated runs stay readable (soft delete, issue #190).
+for (const p of [A, B]) await fetch(`${BACKEND}/api/projects/${p.id}`, { method: 'DELETE' });
 if (errors.length) {
   console.log(`\n${errors.length} check(s) failed:`);
   for (const e of errors) console.log(` - ${e}`);

@@ -1,7 +1,26 @@
-import { query } from '../db.js';
+import { query, querySync, transaction } from '../db.js';
 import { getHistory } from './conversation.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/**
+ * A run refused at the concurrency ceiling (issue #113 item 5, T-21). The
+ * runtime turns it into a terminal `error` event with reason
+ * 'concurrency_limit'; `code` is what callers test for (mocks included).
+ */
+export class RunCapError extends Error {
+  /** @param {'user'|'org'} scope @param {number} used @param {number} limit */
+  constructor(scope, used, limit) {
+    super(scope === 'user'
+      ? `You already have ${used} of ${limit} runs in progress. Wait for one to finish, or stop it, before starting another.`
+      : `Your organization already has ${used} of ${limit} runs in progress. Wait for one to finish before starting another.`);
+    this.name = 'RunCapError';
+    this.code = 'concurrency_limit';
+    this.scope = scope;
+    this.used = used;
+    this.limit = limit;
+  }
+}
 
 /** Parse a job row's JSON columns (TEXT in SQLite) to objects. */
 function parseJob(row) {
@@ -32,26 +51,70 @@ function parseJob(row) {
  * @param {object|null} [job.continuation] - Canonical continuation envelope (STH-47)
  * @param {number|null} [job.chatId] - The chat this top-level run belongs to
  *   (issue #113); null for sub-agent, compose and seeding runs
+ * @param {object} [opts]
+ * @param {{ orgId: number, perUser?: number, perOrg?: number }|null} [opts.limits]
+ *   - concurrency ceilings (issue #113 item 5): the insert is refused with a
+ *   RunCapError when the user (in this org) or the org already has that many
+ *   top-level runs open. Counted and inserted in ONE transaction, so two
+ *   simultaneous requests cannot both squeeze under the cap. 0 / absent
+ *   disables a cap; sub-jobs (parentJobId set) are never counted or capped.
  * @returns {Promise<object>} The inserted job row
+ * @throws {RunCapError} at the ceiling
  */
-export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null, chatId = null, rootJobId = null, deadlineAt = null }) {
-  const { rows } = await query(
-    `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation, chat_id, root_job_id, deadline_at)
+export async function createJob({ role, projectId = null, input, context = null, parentJobId = null, userId = null, provider = null, model = null, continuation = null, chatId = null, rootJobId = null, deadlineAt = null }, { limits = null } = {}) {
+  const INSERT = `INSERT INTO jobs (role, project_id, input, context, parent_job_id, user_id, provider, model, continuation, chat_id, root_job_id, deadline_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING *`,
-    [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null, chatId, rootJobId, deadlineAt],
-  );
-  const job = parseJob(rows[0]);
-  if (job && rootJobId == null) {
-    // A top-level job is its own root (issue #118): one row to query the
-    // tree by, one row that carries the tree's budget.
-    const { rows: rooted } = await query(
-      'UPDATE jobs SET root_job_id = id WHERE id = $1 RETURNING *',
-      [job.id],
-    );
-    return parseJob(rooted[0] ?? { ...job, root_job_id: job.id });
+     RETURNING *`;
+  const params = [role, projectId, input, context ? JSON.stringify(context) : null, parentJobId, userId, provider, model, continuation ? JSON.stringify(continuation) : null, chatId, rootJobId, deadlineAt];
+  // A top-level job is its own root (issue #118): one row to query the
+  // tree by, one row that carries the tree's budget.
+  const ROOT = 'UPDATE jobs SET root_job_id = id WHERE id = $1 RETURNING *';
+  const finish = (job, rooted) => (job && rootJobId == null ? parseJob(rooted?.[0] ?? { ...job, root_job_id: job.id }) : job);
+
+  const capped = limits && parentJobId == null && limits.orgId != null && ((limits.perUser ?? 0) > 0 || (limits.perOrg ?? 0) > 0);
+  if (!capped) {
+    const { rows } = await query(INSERT, params);
+    const job = parseJob(rows[0]);
+    const rooted = job && rootJobId == null ? (await query(ROOT, [job.id])).rows : null;
+    return finish(job, rooted);
   }
-  return job;
+  // Count and insert in one synchronous transaction (better-sqlite3), so
+  // two simultaneous requests cannot both squeeze under the cap.
+  return transaction(() => {
+    const used = countOpenRunsSync({ orgId: limits.orgId, userId });
+    if ((limits.perUser ?? 0) > 0 && userId != null && used.user >= limits.perUser) {
+      throw new RunCapError('user', used.user, limits.perUser);
+    }
+    if ((limits.perOrg ?? 0) > 0 && used.org >= limits.perOrg) {
+      throw new RunCapError('org', used.org, limits.perOrg);
+    }
+    const { rows } = querySync(INSERT, params);
+    const job = parseJob(rows[0]);
+    const rooted = job && rootJobId == null ? querySync(ROOT, [job.id]).rows : null;
+    return finish(job, rooted);
+  });
+}
+
+/**
+ * Open top-level runs in an organization, and the user's share of them
+ * (issue #113 item 5). Synchronous so createJob can count inside its
+ * transaction.
+ * @param {{ orgId: number, userId?: number|null }} where
+ * @returns {{ org: number, user: number }}
+ */
+export function countOpenRunsSync({ orgId, userId = null }) {
+  const { rows } = querySync(
+    `SELECT COUNT(*) AS org, SUM(CASE WHEN j.user_id = $2 THEN 1 ELSE 0 END) AS user
+     FROM jobs j JOIN projects p ON p.id = j.project_id
+     WHERE p.org_id = $1 AND j.parent_job_id IS NULL AND j.status IN (${OPEN_LIST})`,
+    [orgId, userId],
+  );
+  return { org: Number(rows[0]?.org ?? 0), user: Number(rows[0]?.user ?? 0) };
+}
+
+/** @see countOpenRunsSync */
+export async function countOpenRuns(where) {
+  return countOpenRunsSync(where);
 }
 
 /**
