@@ -10,12 +10,22 @@
 // the reply is POSTed back into the running job while its event stream stays
 // open. On load the panel restores the recent transcript (story 020), and the
 // Seed button runs the seeding pipeline (015), narrated by the seeding panel.
+//
+// Parallel chats (issue #113 item 2): the panel keeps one chat log PER PROJECT
+// and one run PER CHAT (project + agent, see chat-runs.ts). Switching projects
+// swaps which log is mounted and leaves every stream open — a run keeps
+// rendering into its own project's log, and the composer, Stop and the status
+// bar follow the chat in view (the active project's selected agent). A project
+// whose runs are all idle is dropped when you switch away again, so returning
+// restores its transcript afresh from the server; a project with a live run is
+// kept, so returning shows what streamed while you were elsewhere. After a
+// reload the server lists the runs it kept alive and the panel re-attaches.
 
 import {
   cancelAgentJob,
   getConversations,
+  getLiveRuns,
   getOrCreateChat,
-  getPendingQuestions,
   listJobs,
   listProjectChats,
   patchChat,
@@ -31,61 +41,79 @@ import {
   type Job,
 } from './api';
 import { agentIdentity } from './agents';
+import { allRuns, endRun, getRun, projectRuns, startRun, type ChatRun } from './chat-runs';
 import type { FileChange } from './files';
 import { icon } from './icons';
 import { escapeHtml, renderInlineMarkdown, renderMarkdown } from './markdown';
 import { clearPinnedProfile, initModelPicker, pinnedProfile, primeChatPins, refreshModelPicker, resetModelPicker } from './model-picker';
 import { QuestionCard } from './question-card';
-import { RunTracker } from './run-tracker';
-import { applyStage, completeSeeding, showSeedingPanel } from './seeding';
+import { applyStage, completeSeeding, seedingActive, showSeedingPanel } from './seeding';
 import { addTokenUsage, notify, setAgentActivity, setAgentModel, setBudget, type ModelChip } from './status';
 import { isUnder, selectedDir } from './tree-state';
 import * as workspace from './workspace';
 
 const DEFAULT_PLACEHOLDER = 'Ask an agent, or describe an edit…';
 const VIEW_ONLY_PLACEHOLDER = 'View only — directing agents needs the editor role';
+const ANSWER_PLACEHOLDER = 'Type your answer…';
 
-// The user's chats in the active project, by agent slug (issue #113): the
-// durable server-side thread. The provider session, the canonical
-// continuation (STH-47), the model pin (issue #134) and the fresh-start
-// hand-off note (STH-55) all live on the row, so a follow-up from any tab
-// or device continues the same conversation. This map is a per-tab mirror —
-// loaded on project switch, refreshed after each run; the server is
-// authoritative and the app only names the chat when it sends a message.
-const chats = new Map<string, Chat>();
-// Agents whose fresh start is still being applied server-side (the reset
-// includes the hand-off scan): a message sent meanwhile would resume the
-// old session, so sends wait for it.
-const resetting = new Set<string>();
 // jobs.error of a run the token budget paused (issue #110) — the durable
 // signal the pause card is rebuilt from after a reload. Mirrors
 // agent-backend/src/agents/budget-pause.js.
 const BUDGET_EXCEEDED_ERROR = 'token budget exceeded';
 
-let activeProjectId = 0;
-// Whether the active project has already been seeded/configured. Gates the
-// "Start project interview" greeting so it only shows for brand-new projects.
-let projectSeeded = false;
+/**
+ * Everything the panel knows about one project: its log element (mounted
+ * while the project is active, kept alive otherwise) and the per-agent state
+ * that used to be module-level and wiped on every switch.
+ */
+interface ProjectChat {
+  projectId: number;
+  /** The chat log for this project. Exactly one is in the document at a time (id `chat-log`). */
+  log: HTMLElement;
+  // The user's chats in the project, by agent slug (issue #113): the durable
+  // server-side thread. The provider session, the canonical continuation
+  // (STH-47), the model pin (issue #134) and the fresh-start hand-off note
+  // (STH-55) all live on the row, so a follow-up from any tab or device
+  // continues the same conversation. This map is a mirror — loaded on first
+  // visit, refreshed after each run; the server is authoritative and the app
+  // only names the chat when it sends a message.
+  chats: Map<string, Chat>;
+  // Agents whose fresh start is still being applied server-side (the reset
+  // includes the hand-off scan): a message sent meanwhile would resume the
+  // old session, so sends wait for it.
+  resetting: Set<string>;
+  // Context assessment (issue #43) per agent: what the agent's session
+  // carried into its last reply, the once-per-agent "getting long" nudge.
+  contextTokens: Map<string, number>;
+  contextSuggested: Set<string>;
+  /** Last model each agent was routed to (issue #107) — from 'model' events, seeded from job rows on load. */
+  agentModels: Map<string, ModelChip>;
+  /** The jobs of each agent's last run, for the model chip's tooltip once the run is over. */
+  lastRunModels: Map<string, ModelChip[]>;
+  // Smart autoscroll (STH-50): the log follows new output only while the
+  // user is at (or near) the bottom.
+  stickToBottom: boolean;
+  /** Whether the project has been seeded/configured (gates the interview greeting). */
+  seeded: boolean;
+  /** The transcript and chats have been loaded (once per cached project). */
+  restored: boolean;
+  // The last user-initiated action in this project (a chat turn or the
+  // seeding pipeline), so "Try again" on a transient-overload failure re-runs
+  // exactly it without the user having to guess what to retype (story 029).
+  retryAction: (() => Promise<void>) | null;
+  /** main.ts's file-change handler for this project; only called while the project is active. */
+  onFileChange: (change: FileChange) => void;
+  /** file_change events a background run produced; replayed when the project is next mounted. */
+  deferredFileChanges: FileChange[];
+  /** Assistant turns the transcript restore rendered, so a re-attached run does not render them again. */
+  restoredTexts: Set<string>;
+}
+
+const projects = new Map<number, ProjectChat>();
+/** The mounted project — the one the composer, filter and status bar address. */
+let current: ProjectChat | null = null;
+
 let listenersWired = false;
-let running = false;
-// What the run has in flight (issues #136/#137): the innermost running job
-// drives the activity text and the model chip — a dispatched RA shows as the
-// RA, and the PM again once it returns — and the root job is what Stop
-// addresses.
-const tracker = new RunTracker();
-// Client-side abort of the run's event stream: the fallback Stop when no job
-// exists yet, and the only Stop for the seeding pipeline (no addressable job).
-let runAbort: AbortController | null = null;
-let stopping = false;
-// The last user-initiated action (a chat turn or the seeding pipeline), so the
-// "Try again" affordance on a transient-overload failure re-runs exactly it
-// without the user having to guess what to retype (story 029).
-let retryAction: (() => Promise<void>) | null = null;
-// Job waiting on an ask_user reply; the input box answers it instead of
-// starting a new task
-let pendingQuestionJobId: number | null = null;
-let activeQuestionCard: QuestionCard | null = null;
-let onFileChange: (change: FileChange) => void = () => {};
 // The greeting CTA opens the setup wizard; main wires this so chat.ts doesn't
 // import wizard.ts (which imports startSeeding from here — would be a cycle).
 let setupHandler: (projectId: number) => void = () => {};
@@ -103,51 +131,70 @@ function canUseComposer(): boolean {
 /** Snapshot of canUseComposer() at the last chrome render (skip no-op emits). */
 let composerEditable: boolean | null = null;
 
-/** Enable/disable the composer to match the role, with the view-only hint. */
-function applyComposerRole(): void {
-  composerEditable = canUseComposer();
-  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
-  if (input) {
-    input.disabled = !composerEditable;
-    // Answer mode never survives a role flip (viewers can't start tasks), so
-    // overwriting the placeholder here is safe.
-    input.placeholder = composerEditable ? DEFAULT_PLACEHOLDER : VIEW_ONLY_PLACEHOLDER;
-    input.title = composerEditable ? '' : VIEW_ONLY_PLACEHOLDER;
-  }
-  refreshSendButton();
+/** The run of the chat in view: the active project's selected agent. */
+function viewRun(): ChatRun | null {
+  return current ? getRun(current.projectId, selectedAgent()) : null;
+}
+
+function inView(run: ChatRun): boolean {
+  return current?.projectId === run.projectId && selectedAgent() === run.agent;
 }
 
 /**
- * The send button doubles as Stop while a run is in flight and not waiting
- * on an answer (issue #136); in answer mode it sends the reply, and the
- * question card carries its own stop link.
+ * Render the composer for the chat in view: the role (viewers get a disabled
+ * box with the view-only hint), answer mode while that chat's run waits on a
+ * question, and the send button, which doubles as Stop while the run is in
+ * flight and not waiting on an answer (issue #136). Other chats' runs do not
+ * touch the composer — their activity shows only on the agent marks.
  */
-function refreshSendButton(): void {
+function renderComposer(): void {
+  composerEditable = canUseComposer();
+  const run = viewRun();
+  const answering = run?.pendingQuestionJobId != null;
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+  if (input) {
+    input.disabled = !composerEditable;
+    input.placeholder = !composerEditable ? VIEW_ONLY_PLACEHOLDER : answering ? ANSWER_PLACEHOLDER : DEFAULT_PLACEHOLDER;
+    input.title = composerEditable ? '' : VIEW_ONLY_PLACEHOLDER;
+  }
   const send = document.querySelector<HTMLButtonElement>('#chat-form .send-btn');
   if (!send) return;
-  const stopMode = running && pendingQuestionJobId == null;
+  const stopMode = run != null && !answering;
   send.classList.toggle('is-stop', stopMode);
   send.type = stopMode ? 'button' : 'submit';
-  send.disabled = stopMode ? stopping : !composerEditable;
+  send.disabled = stopMode ? run.stopping : !composerEditable;
   send.innerHTML = icon(stopMode ? 'stop' : 'send', { size: 15, stroke: 2 });
-  const label = stopMode ? (stopping ? 'Stopping…' : 'Stop the agent (Esc)') : composerEditable ? 'Send (Enter)' : VIEW_ONLY_PLACEHOLDER;
+  const label = stopMode ? (run.stopping ? 'Stopping…' : 'Stop the agent (Esc)') : composerEditable ? 'Send (Enter)' : VIEW_ONLY_PLACEHOLDER;
   send.title = label;
   send.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send');
 }
 
+/** The status bar, the composer and the model chip all follow the chat in view. */
+function renderRunStatus(): void {
+  setAgentActivity(viewRun()?.activity ?? '');
+  renderComposer();
+  updateModelIndicator();
+}
+
+/** Change a run's activity text; shown at once when that chat is in view. */
+function setRunActivity(run: ChatRun, text: string): void {
+  run.activity = text;
+  if (inView(run)) setAgentActivity(text);
+}
+
 /**
- * Stop the current run (issue #136). The server interrupts the agent and
- * everything it dispatched; the run's stream then ends with a `cancelled`
- * event carrying the provider session, so the next message continues from
- * where it stopped. With no addressable job yet — or for the seeding
- * pipeline, which has none — the stream itself is aborted instead.
+ * Stop a run (issue #136). The server interrupts the agent and everything it
+ * dispatched; the run's stream then ends with a `cancelled` event carrying
+ * the provider session, so the next message continues from where it stopped.
+ * With no addressable job yet — or for the seeding pipeline, which has none —
+ * the stream itself is aborted instead.
  */
-async function stopRun(): Promise<void> {
-  if (!running || stopping) return;
-  stopping = true;
-  refreshSendButton();
-  setAgentActivity('Stopping…');
-  const jobId = tracker.rootJobId;
+async function stopRun(run: ChatRun): Promise<void> {
+  if (run.stopping) return;
+  run.stopping = true;
+  setRunActivity(run, 'Stopping…');
+  renderComposer();
+  const jobId = run.tracker.rootJobId;
   if (jobId != null) {
     try {
       await cancelAgentJob(jobId);
@@ -156,32 +203,33 @@ async function stopRun(): Promise<void> {
       // Not live on the server (already finished, or a restart) — fall through.
     }
   }
-  runAbort?.abort();
+  run.abort.abort();
 }
 
-function appendStopped(agent: string | null): void {
+function appendStopped(pc: ProjectChat, owner: string, agent: string | null = owner): void {
   const who = agent ? agentLabel(agent) : 'The agent';
-  appendSystemLine(`${who} stopped. Say what to do next to continue from here, or start a fresh conversation.`);
+  appendSystemLine(pc, `${who} stopped. Say what to do next to continue from here, or start a fresh conversation.`, 'info', owner);
 }
 
 /** Activity text for the innermost running job (issue #137); a pending question or a stop in progress keeps its own text. */
-function updateRunActivity(): void {
-  if (!running || stopping || pendingQuestionJobId != null) return;
-  const agent = tracker.current?.agent ?? conversationAgent;
-  if (agent) setAgentActivity(`${agentLabel(agent)} is working…`);
+function updateRunActivity(run: ChatRun): void {
+  if (run.stopping || run.pendingQuestionJobId != null) return;
+  const agent = run.tracker.current?.agent ?? run.agent;
+  setRunActivity(run, `${agentLabel(agent)} is working…`);
 }
 
 /**
  * A run's stream failed. A stop the user asked for is not an error; a drop
- * while parked on a question re-attaches (STH-48); anything else is shown.
+ * while the run is still alive on the server re-attaches (STH-48; since
+ * issue #113 item 2 every chat run stays alive); anything else is shown.
  */
-async function handleRunFailure(err: unknown, onEvent: (event: AgentEvent) => void, jobId: number | null = pendingQuestionJobId): Promise<void> {
-  if (stopping) {
-    appendStopped(conversationAgent);
+async function handleRunFailure(pc: ProjectChat, run: ChatRun, err: unknown): Promise<void> {
+  if (run.stopping) {
+    appendStopped(pc, run.agent);
     return;
   }
-  if (!(await resumeAfterStreamDrop(onEvent, jobId))) {
-    appendSystemLine((err as Error).message, 'error');
+  if (!(await resumeAfterStreamDrop(run))) {
+    appendSystemLine(pc, (err as Error).message, 'error', run.agent);
   }
 }
 
@@ -193,17 +241,7 @@ async function handleRunFailure(err: unknown, onEvent: (event: AgentEvent) => vo
 const SHOW_ALL_KEY = 'kuhn-chat-show-all';
 let showAllAgents = localStorage.getItem(SHOW_ALL_KEY) === '1';
 
-// Smart autoscroll (STH-50): the log follows new output only while the user
-// is at (or near) the bottom. Scrolling back into the history parks
-// autoscroll so earlier output stays readable while tokens stream; new
-// content then lights the “new messages” pill, which (like scrolling back
-// down manually) re-engages following.
-let stickToBottom = true;
 const NEAR_BOTTOM_PX = 40;
-// The role the in-flight run is addressed to. Everything appended during the
-// run — including subagent bubbles and file-change lines — belongs to that
-// conversation, not to the event's author agent.
-let conversationAgent: string | null = null;
 
 // Context assessment (issue #43): a run's inputTokens is what the agent's SDK
 // session carried into its last reply — a good proxy for the context it will
@@ -214,39 +252,68 @@ const CONTEXT_SUGGEST_TOKENS = 100_000;
 // Denominator for the context meter (STH-52); refined by live 'context'
 // events, which carry the backend's configured window size.
 let contextWindow = 200_000;
-const contextTokens = new Map<string, number>();
-/** Last model each agent was routed to (issue #107) — from 'model' events, seeded from job rows on reload. */
-const agentModels = new Map<string, ModelChip>();
-/** Every job the current (or last) run started, in order — the addressed agent first, then its dispatches. */
-let runModels: ModelChip[] = [];
-const contextSuggested = new Set<string>();
+
+/** How many idle projects' logs to keep mounted-ready; live runs are never dropped. */
+function createProjectChat(projectId: number, seeded: boolean, onFileChange: (change: FileChange) => void): ProjectChat {
+  const log = document.createElement('div');
+  log.id = 'chat-log';
+  const pc: ProjectChat = {
+    projectId, log, seeded, onFileChange,
+    chats: new Map(), resetting: new Set(), contextTokens: new Map(), contextSuggested: new Set(),
+    agentModels: new Map(), lastRunModels: new Map(), stickToBottom: true, restored: false,
+    retryAction: null, deferredFileChanges: [], restoredTexts: new Set(),
+  };
+  // Smart autoscroll (STH-50): park following when the user scrolls up;
+  // re-engage when they return to the bottom. Our own programmatic scrolls
+  // land at the bottom, so this listener is a no-op for them.
+  log.addEventListener('scroll', () => {
+    setStickToBottom(pc, log.scrollHeight - log.scrollTop - log.clientHeight <= NEAR_BOTTOM_PX);
+  });
+  return pc;
+}
+
+/** Put a project's log in the document in place of whichever one is there. */
+function mountLog(pc: ProjectChat): void {
+  const mounted = document.getElementById('chat-log');
+  if (mounted && mounted !== pc.log) mounted.replaceWith(pc.log);
+}
 
 export function initChat(
   projectId: number,
   fileChangeHandler: (change: FileChange) => void,
   seeded = false,
 ): void {
-  activeProjectId = projectId;
-  projectSeeded = seeded;
-  onFileChange = fileChangeHandler;
-
-  // Reset per-project conversation state so switching projects (story 006)
-  // doesn't carry a previous project's transcript or agent sessions over.
-  chats.clear();
-  resetting.clear();
-  contextTokens.clear();
-  contextSuggested.clear();
-  running = false;
-  pendingQuestionJobId = null;
-  activeQuestionCard = null;
-  document.getElementById('chat-log')!.replaceChildren();
-  setStickToBottom(true);
+  // A project you left with nothing running is forgotten now (its transcript
+  // comes back fresh from the server next time); one with a live run is kept
+  // so its stream keeps a log to render into.
+  for (const [id] of projects) {
+    if (id !== projectId && projectRuns(id).length === 0) projects.delete(id);
+  }
+  let pc = projects.get(projectId);
+  const fresh = !pc;
+  if (!pc) {
+    pc = createProjectChat(projectId, seeded, fileChangeHandler);
+    projects.set(projectId, pc);
+  } else {
+    pc.onFileChange = fileChangeHandler;
+    pc.seeded = seeded;
+  }
+  current = pc;
+  mountLog(pc);
+  // The seeding panel narrates this project's pipeline only.
   const seedingPanel = document.getElementById('seeding-panel');
-  if (seedingPanel) seedingPanel.hidden = true;
-  applyChatFilter(); // refresh the filter bar for the (possibly new) project
-  applyComposerRole(); // the active org (and so the role) can differ per project
+  if (seedingPanel) seedingPanel.hidden = !(getRun(projectId, 'pm')?.kind === 'seeding' && seedingActive());
+  applyChatFilter(pc); // refresh the filter bar for the (possibly new) project
   resetModelPicker(); // the org's routes (and so the pickable models) differ per project
-  void restore();
+  renderRunStatus(); // the composer, Stop and status bar follow this project's selected chat
+  if (fresh) {
+    void restore(pc);
+  } else {
+    // What the project's background runs changed while it was out of view.
+    for (const change of pc.deferredFileChanges.splice(0)) pc.onFileChange(change);
+    updateContextIndicator();
+    scrollLog(pc, true);
+  }
 
   if (listenersWired) {
     void refreshModelPicker();
@@ -254,45 +321,40 @@ export function initChat(
   }
   listenersWired = true;
   // Which model powers the addressed agent (issue #134): per project + agent.
-  initModelPicker({ projectId: () => activeProjectId, agent: () => selectedAgent() });
+  initModelPicker({ projectId: () => current?.projectId ?? 0, agent: () => selectedAgent() });
   void refreshModelPicker();
 
   // Role changes under us (workspace re-fetches orgs on `kuhn:role-refresh`
   // 403s and on org switches) re-render the composer chrome.
   workspace.subscribe(() => {
-    if (canUseComposer() !== composerEditable) applyComposerRole();
+    if (canUseComposer() !== composerEditable) renderComposer();
   });
 
   const clearBtn = document.getElementById('chat-clear-btn');
   if (clearBtn) {
     clearBtn.innerHTML = icon('refresh', { size: 13, stroke: 1.8 });
-    clearBtn.addEventListener('click', () => clearConversation(selectedAgent(), { confirm: true }));
+    clearBtn.addEventListener('click', () => { if (current) clearConversation(current, selectedAgent(), { confirm: true }); });
   }
   document.getElementById('chat-filter-toggle')?.addEventListener('click', () => {
     showAllAgents = !showAllAgents;
     localStorage.setItem(SHOW_ALL_KEY, showAllAgents ? '1' : '0');
-    applyChatFilter();
+    if (current) applyChatFilter(current);
   });
   // The agent-selector pill mirrors picks into the hidden select and fires
-  // change — re-filter the log for the newly addressed agent.
+  // change — re-filter the log for the newly addressed agent, and show that
+  // chat's run (if any) in the composer and status bar.
   document.getElementById('chat-role')?.addEventListener('change', () => {
-    applyChatFilter();
+    if (current) applyChatFilter(current);
+    renderRunStatus();
     void refreshModelPicker();
   });
 
-  // Smart autoscroll (STH-50): park following when the user scrolls up;
-  // re-engage when they return to the bottom. Our own programmatic scrolls
-  // land at the bottom, so this listener is a no-op for them.
-  const logEl = document.getElementById('chat-log')!;
-  logEl.addEventListener('scroll', () => {
-    setStickToBottom(logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= NEAR_BOTTOM_PX);
-  });
   const jump = document.createElement('button');
   jump.type = 'button';
   jump.id = 'chat-jump';
   jump.hidden = true;
   jump.innerHTML = `${icon('chevron-down', { size: 14, stroke: 2 })}<span>New messages</span>`;
-  jump.addEventListener('click', () => scrollLog(true));
+  jump.addEventListener('click', () => { if (current) scrollLog(current, true); });
   document.getElementById('chat-form')!.append(jump);
 
   const form = document.getElementById('chat-form') as HTMLFormElement;
@@ -306,16 +368,20 @@ export function initChat(
   form.querySelector('.send-btn')?.addEventListener('click', (e) => {
     if ((e.currentTarget as HTMLElement).classList.contains('is-stop')) {
       e.preventDefault();
-      void stopRun();
+      const run = viewRun();
+      if (run) void stopRun(run);
     }
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
-    } else if (e.key === 'Escape' && running && pendingQuestionJobId == null) {
-      e.preventDefault();
-      void stopRun();
+    } else if (e.key === 'Escape') {
+      const run = viewRun();
+      if (run && run.pendingQuestionJobId == null) {
+        e.preventDefault();
+        void stopRun(run);
+      }
     }
   });
   // Auto-grow the single-line field as the user types
@@ -336,20 +402,18 @@ function selectedAgent(): string {
 /**
  * Tag a log element with its owning conversation and hide it immediately if
  * the filter excludes it. During a run the addressed role wins over the
- * event's author agent; untagged elements (dividers, out-of-run errors) show
- * in every view.
+ * event's author agent (callers pass the run's agent as `owner`); untagged
+ * elements (dividers, out-of-run errors) show in every view.
  */
-function tagConversation(el: HTMLElement, agent?: string): void {
-  const owner = conversationAgent ?? agent;
+function tagConversation(pc: ProjectChat, el: HTMLElement, owner?: string | null): void {
   if (!owner) return;
   el.dataset.agent = owner;
-  if (!showAllAgents && owner !== selectedAgent()) el.classList.add('chat-filtered-out');
+  if (pc === current && !showAllAgents && owner !== selectedAgent()) el.classList.add('chat-filtered-out');
 }
 
 /** Re-apply the filter to the whole log and refresh the bar above it. */
-function applyChatFilter(): void {
-  const log = document.getElementById('chat-log');
-  if (!log) return;
+function applyChatFilter(pc: ProjectChat): void {
+  const log = pc.log;
   const agent = selectedAgent();
   let ownCount = 0;
   for (const el of Array.from(log.children) as HTMLElement[]) {
@@ -360,7 +424,7 @@ function applyChatFilter(): void {
 
   // Filtered view with nothing to show: say why, so an inadvertent switch
   // reads as "this agent hasn't seen anything" rather than a wiped chat.
-  document.getElementById('chat-filter-empty')?.remove();
+  log.querySelector('#chat-filter-empty')?.remove();
   if (!showAllAgents && ownCount === 0) {
     const hint = document.createElement('div');
     hint.id = 'chat-filter-empty';
@@ -371,6 +435,7 @@ function applyChatFilter(): void {
     log.append(hint);
   }
 
+  if (pc !== current) return;
   const label = document.getElementById('chat-filter-label');
   const toggle = document.getElementById('chat-filter-toggle');
   if (label) label.textContent = showAllAgents ? 'Showing all agents' : `Showing ${agentLabel(agent)} only`;
@@ -380,7 +445,7 @@ function applyChatFilter(): void {
   }
   updateContextIndicator();
   updateModelIndicator();
-  scrollLog(true);
+  scrollLog(pc, true);
 }
 
 // ---- Context assessment & clearing (issue #43) -----------------------------
@@ -396,13 +461,15 @@ function compactTokens(n: number): string {
  * replace the addressed agent's while it works, and the dispatcher's return
  * once it ends — which is the point: seeing what the dispatcher chose. Idle,
  * it shows the selected agent's last known routing; the run's full list
- * stays in the tooltip. */
+ * stays in the tooltip. Follows the chat in view. */
 function updateModelIndicator(): void {
+  if (!current) return;
   const agent = selectedAgent();
-  const active = running ? tracker.current : null;
-  const current = active ? active.chip : agentModels.get(agent) ?? null;
-  const history = runModels.length > 0 && (running || runModels[0].agent === agent) ? runModels : [];
-  setAgentModel(current, history);
+  const run = viewRun();
+  const active = run ? run.tracker.current : null;
+  const chip = active ? active.chip : current.agentModels.get(agent) ?? null;
+  const history = run ? run.runModels : current.lastRunModels.get(agent) ?? [];
+  setAgentModel(chip, history);
 }
 
 /** Per-agent context meter (STH-52), bottom of the chat window: how much
@@ -412,8 +479,8 @@ function updateModelIndicator(): void {
  * (context_tokens = last-turn context). Hidden until something is known. */
 function updateContextIndicator(): void {
   const meter = document.getElementById('chat-context-meter');
-  if (!meter) return;
-  const tokens = contextTokens.get(selectedAgent());
+  if (!meter || !current) return;
+  const tokens = current.contextTokens.get(selectedAgent());
   if (!tokens) {
     meter.hidden = true;
     return;
@@ -431,16 +498,15 @@ function updateContextIndicator(): void {
 
 /** Record a finished run's context size and suggest a fresh start when it has
  * grown enough that clearing between tasks is worth it. */
-function assessContext(agent: string, inputTokens: number): void {
-  contextTokens.set(agent, inputTokens);
-  updateContextIndicator();
-  if (inputTokens < CONTEXT_SUGGEST_TOKENS || contextSuggested.has(agent)) return;
-  contextSuggested.add(agent); // once per agent; a fresh start re-arms it
+function assessContext(pc: ProjectChat, agent: string, inputTokens: number): void {
+  pc.contextTokens.set(agent, inputTokens);
+  if (pc === current) updateContextIndicator();
+  if (inputTokens < CONTEXT_SUGGEST_TOKENS || pc.contextSuggested.has(agent)) return;
+  pc.contextSuggested.add(agent); // once per agent; a fresh start re-arms it
   const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
-  const log = document.getElementById('chat-log')!;
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-context';
-  tagConversation(card, agent);
+  tagConversation(pc, card, agent);
   card.innerHTML =
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} This conversation is getting long</div>` +
     `<p>${label} is carrying ~${compactTokens(inputTokens)} tokens of chat context into every reply, which ` +
@@ -463,11 +529,11 @@ function assessContext(agent: string, inputTokens: number): void {
     btn.disabled = true;
     // A refused clear (agent still running) leaves the card — re-arm the
     // button; a successful one removes the card via clearConversation.
-    if (!clearConversation(agent, { confirm: false, handoff: carryBox.checked })) btn.disabled = false;
+    if (!clearConversation(pc, agent, { confirm: false, handoff: carryBox.checked })) btn.disabled = false;
   });
   card.append(carry, btn);
-  log.append(card);
-  scrollLog();
+  pc.log.append(card);
+  scrollLog(pc);
 }
 
 /**
@@ -476,9 +542,9 @@ function assessContext(agent: string, inputTokens: number): void {
  * divider announced a fresh start read as "not cleared yet". The divider is
  * the durable record of the break; the suggestion has served its purpose.
  */
-function dismissContextNotices(agent: string): void {
-  document
-    .querySelectorAll<HTMLElement>(`#chat-log .chat-notice-context[data-agent="${CSS.escape(agent)}"]`)
+function dismissContextNotices(pc: ProjectChat, agent: string): void {
+  pc.log
+    .querySelectorAll<HTMLElement>(`.chat-notice-context[data-agent="${CSS.escape(agent)}"]`)
     .forEach((card) => card.remove());
 }
 
@@ -490,15 +556,15 @@ function dismissContextNotices(agent: string): void {
  * the log. Returns whether the reset was started (false when refused or
  * cancelled).
  */
-function clearConversation(agent: string, opts: { confirm: boolean; handoff?: boolean }): boolean {
+function clearConversation(pc: ProjectChat, agent: string, opts: { confirm: boolean; handoff?: boolean }): boolean {
   const label = agentLabel(agent);
-  if (running) {
+  if (getRun(pc.projectId, agent)) {
     notify(`${label} is still working — wait for the task to finish before clearing`);
     return false;
   }
-  if (resetting.has(agent)) return false;
-  const chat = chats.get(agent);
-  if (!chat?.session_id && !chat?.continuation && !contextTokens.has(agent)) {
+  if (pc.resetting.has(agent)) return false;
+  const chat = pc.chats.get(agent);
+  if (!chat?.session_id && !chat?.continuation && !pc.contextTokens.has(agent)) {
     notify(`No conversation context with ${label} to clear`);
     return false;
   }
@@ -506,19 +572,19 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
   if (opts.confirm && !window.confirm(
     `Start a fresh conversation with ${label}?\n\nIt will no longer remember this chat. Your files and drafts are unaffected.\nKuhn will scan the recent chat for open action items and carry a short hand-off note forward.`,
   )) return false;
-  contextTokens.delete(agent);
-  contextSuggested.delete(agent);
-  dismissContextNotices(agent);
+  pc.contextTokens.delete(agent);
+  pc.contextSuggested.delete(agent);
+  dismissContextNotices(pc, agent);
   // A stale note card must not outlive two clears; the server drops its note too.
-  document.querySelectorAll(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
+  pc.log.querySelectorAll(`.chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
   const divider = document.createElement('div');
   divider.className = 'chat-divider';
   divider.textContent = `fresh conversation with ${label} — earlier chat context cleared`;
-  tagConversation(divider, agent);
-  document.getElementById('chat-log')!.append(divider);
-  updateContextIndicator();
-  scrollLog(true);
-  void resetChatOnServer(agent, opts.handoff !== false);
+  tagConversation(pc, divider, agent);
+  pc.log.append(divider);
+  if (pc === current) updateContextIndicator();
+  scrollLog(pc, true);
+  void resetChatOnServer(pc, agent, opts.handoff !== false);
   return true;
 }
 
@@ -530,24 +596,24 @@ function clearConversation(agent: string, opts: { confirm: boolean; handoff?: bo
  * "No hand-off" is a normal outcome and reads as starting clean; a failed
  * scan still resets the chat (the pre-STH-55 behaviour).
  */
-async function resetChatOnServer(agent: string, handoff: boolean): Promise<void> {
-  resetting.add(agent);
-  if (handoff) appendSystemLine(`scanning the previous conversation with ${agentLabel(agent)} for open action items…`);
+async function resetChatOnServer(pc: ProjectChat, agent: string, handoff: boolean): Promise<void> {
+  pc.resetting.add(agent);
+  if (handoff) appendSystemLine(pc, `scanning the previous conversation with ${agentLabel(agent)} for open action items…`, 'info', agent);
   try {
-    const chat = chats.get(agent) ?? await getOrCreateChat(activeProjectId, agent);
+    const chat = pc.chats.get(agent) ?? await getOrCreateChat(pc.projectId, agent);
     const result = await resetChat(chat.id, { handoff });
-    chats.set(agent, result.chat);
+    pc.chats.set(agent, result.chat);
     if (result.handoff_error) {
-      appendSystemLine(`hand-off scan failed: ${result.handoff_error} — starting clean`, 'error');
+      appendSystemLine(pc, `hand-off scan failed: ${result.handoff_error} — starting clean`, 'error', agent);
     } else if (handoff && !result.handoff) {
-      appendSystemLine('no open hand-off found — starting clean');
+      appendSystemLine(pc, 'no open hand-off found — starting clean', 'info', agent);
     } else if (result.handoff) {
-      showHandoffCard(agent, result.handoff);
+      showHandoffCard(pc, agent, result.handoff);
     }
   } catch (err) {
-    appendSystemLine(`could not start a fresh conversation with ${agentLabel(agent)}: ${(err as Error).message}`, 'error');
+    appendSystemLine(pc, `could not start a fresh conversation with ${agentLabel(agent)}: ${(err as Error).message}`, 'error', agent);
   } finally {
-    resetting.delete(agent);
+    pc.resetting.delete(agent);
   }
 }
 
@@ -557,11 +623,11 @@ async function resetChatOnServer(agent: string, handoff: boolean): Promise<void>
  * discards it. Rendered after a fresh start and again on load while a note
  * is still pending — including one parked from another tab.
  */
-function showHandoffCard(agent: string, note: string): void {
-  document.querySelectorAll(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
+function showHandoffCard(pc: ProjectChat, agent: string, note: string): void {
+  pc.log.querySelectorAll(`.chat-notice-handoff[data-agent="${CSS.escape(agent)}"]`).forEach((el) => el.remove());
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-handoff';
-  tagConversation(card, agent);
+  tagConversation(pc, card, agent);
   card.innerHTML =
     `<div class="notice-title">${icon('arrow-right', { size: 14, stroke: 2 })} Hand-off note — goes out with your next message to ${escapeHtml(agentLabel(agent))}</div>`;
   const body = document.createElement('div');
@@ -574,7 +640,7 @@ function showHandoffCard(agent: string, note: string): void {
   discard.textContent = 'Discard note';
   discard.addEventListener('click', () => {
     card.remove();
-    const chat = chats.get(agent);
+    const chat = pc.chats.get(agent);
     if (!chat) return;
     chat.pending_handoff = null;
     void patchChat(chat.id, { pending_handoff: null }).catch((err: Error) => {
@@ -582,22 +648,24 @@ function showHandoffCard(agent: string, note: string): void {
     });
   });
   card.append(discard);
-  document.getElementById('chat-log')!.append(card);
-  scrollLog();
+  pc.log.append(card);
+  scrollLog(pc);
 }
 
-// Restore prior state on page load (story 020): render the recent transcript
-// from the conversation log, load the user's chats (issue #113: the server
-// holds each agent's session, pin and parked hand-off), and seed the context
-// meter from recorded jobs.
-async function restore(): Promise<void> {
+// Restore prior state on first visit (story 020): render the recent
+// transcript from the conversation log, load the user's chats (issue #113:
+// the server holds each agent's session, pin and parked hand-off), seed the
+// context meter from recorded jobs, and re-attach to runs the server kept
+// alive for this project (issue #113 item 2).
+async function restore(pc: ProjectChat): Promise<void> {
+  pc.restored = true;
   try {
-    await restoreTranscript();
-    applyChatFilter(); // restored messages carry mixed conversation tags
-    const [jobs, chatRows] = await Promise.all([listJobs(activeProjectId), listProjectChats(activeProjectId)]);
-    for (const c of chatRows) chats.set(c.agent_slug, c);
-    primeChatPins(activeProjectId, chatRows);
-    void refreshModelPicker(); // the pill now knows the pins
+    await restoreTranscript(pc);
+    applyChatFilter(pc); // restored messages carry mixed conversation tags
+    const [jobs, chatRows] = await Promise.all([listJobs(pc.projectId), listProjectChats(pc.projectId)]);
+    for (const c of chatRows) pc.chats.set(c.agent_slug, c);
+    primeChatPins(pc.projectId, chatRows);
+    if (pc === current) void refreshModelPicker(); // the pill now knows the pins
     const seen = new Set<string>();
     for (const job of jobs) {
       // Jobs are newest first; the most recent per role speaks for the
@@ -613,28 +681,30 @@ async function restore(): Promise<void> {
         // Chats predating #113 have no row: fall back to the job's session.
         // Older job rows predate the column; leave the meter unseeded rather
         // than fall back to cumulative input_tokens, which overstates context.
-        const chat = chats.get(job.role);
+        const chat = pc.chats.get(job.role);
         const live = chat ? chat.current_job_id === job.id : Boolean(job.session_id);
-        if (live && job.context_tokens > 0) contextTokens.set(job.role, job.context_tokens);
+        if (live && job.context_tokens > 0) pc.contextTokens.set(job.role, job.context_tokens);
       }
       // Newest job per role also says where it ran and why (issue #107), so
       // the chip survives a reload. Rows older than the columns show model
       // and profile only.
-      if (!agentModels.has(job.role) && (job.model || job.profile)) {
-        agentModels.set(job.role, {
+      if (!pc.agentModels.has(job.role) && (job.model || job.profile)) {
+        pc.agentModels.set(job.role, {
           agent: job.role, label: agentLabel(job.role), model: job.model ?? null, profile: job.profile ?? null,
           source: job.route_source ?? undefined,
           difficulty: job.difficulty ?? undefined,
         });
       }
     }
-    updateContextIndicator();
-    updateModelIndicator();
-    restorePausedRuns(jobs);
+    if (pc === current) {
+      updateContextIndicator();
+      updateModelIndicator();
+    }
+    restorePausedRuns(pc, jobs);
     // A note parked by a fresh start — here or in another tab — still awaits
     // the next message to that agent.
-    for (const c of chatRows) if (c.pending_handoff) showHandoffCard(c.agent_slug, c.pending_handoff);
-    await reconnectPendingQuestion();
+    for (const c of chatRows) if (c.pending_handoff) showHandoffCard(pc, c.agent_slug, c.pending_handoff);
+    await reconnectLiveRuns(pc);
   } catch (err) {
     // A fresh project restores an *empty* transcript without erroring, so a
     // rejection here is a real failure — surface it non-blockingly instead of
@@ -650,7 +720,7 @@ async function restore(): Promise<void> {
  * a budget pause. A newer job on that role means the pause was already
  * resumed or superseded by a fresh instruction, so no card.
  */
-function restorePausedRuns(jobs: Job[]): void {
+function restorePausedRuns(pc: ProjectChat, jobs: Job[]): void {
   const latestByRole = new Map<string, Job>();
   for (const job of jobs) { // newest first
     if (job.parent_job_id != null) continue;
@@ -662,7 +732,7 @@ function restorePausedRuns(jobs: Job[]): void {
   for (const job of paused) {
     // The row carries whose budget and when it resets (issue #129 item 3),
     // so the rebuilt card matches the one that streamed in.
-    appendBudgetNotice({
+    appendBudgetNotice(pc, {
       agent: job.role, jobId: job.id, handoff: job.handoff, isoTime: job.created_at,
       scope: job.pause?.scope ?? 'task', period: job.pause?.period, resetsAt: job.pause?.resetsAt,
     });
@@ -670,34 +740,44 @@ function restorePausedRuns(jobs: Job[]): void {
 }
 
 /**
- * Story 027: if a run is still parked on an ask_user question (the browser
- * dropped while waiting), reconnect to it. The server re-emits the question
- * event, which createEventHandler turns back into a card + answer mode, and the
- * reattached stream carries the agent's continuation once the user answers.
+ * Re-attach to the runs the server kept alive for this project (issue #113
+ * item 2; story 027 for the parked-on-a-question case): a reload or a
+ * project switch in another tab left them streaming with nobody attached.
+ * Each becomes a run in the registry; the server re-emits a pending
+ * question, then what buffered meanwhile, then the live events.
  */
-async function reconnectPendingQuestion(): Promise<void> {
-  if (running) return;
-  const pending = await getPendingQuestions(activeProjectId);
-  const p = pending[0]; // one parked top-level run at a time in practice
-  if (!p) return;
-  running = true;
-  conversationAgent = p.agent;
-  tracker.reset(p.jobId);
-  runAbort = new AbortController();
-  refreshSendButton();
-  setAgentActivity(`${agentLabel(p.agent)} is waiting for your answer…`);
-  const onEvent = createEventHandler();
-  try {
-    await reconnectAgent(p.jobId, onEvent, runAbort.signal);
-  } catch (err) {
-    await handleRunFailure(err, onEvent, p.jobId);
-  } finally {
-    finishRun();
+async function reconnectLiveRuns(pc: ProjectChat, attempt = 0): Promise<void> {
+  const live = await getLiveRuns(pc.projectId);
+  // A run still attached elsewhere is another tab's to stream — unless it is
+  // this tab's own stream from before a reload, which the server notices a
+  // moment after the page went away: look once more.
+  if (attempt === 0 && live.some((r) => r.attached && !getRun(pc.projectId, r.role))) {
+    setTimeout(() => { if (projects.get(pc.projectId) === pc) void reconnectLiveRuns(pc, 1); }, 1500);
+  }
+  for (const r of live) {
+    if (r.attached || getRun(pc.projectId, r.role)) continue;
+    const waiting = r.status === 'waiting_for_user';
+    const run = startRun({
+      projectId: pc.projectId, agent: r.role, kind: 'reconnect',
+      activity: waiting ? `${agentLabel(r.agent)} is waiting for your answer…` : `${agentLabel(r.role)} is working…`,
+    });
+    run.tracker.reset(r.jobId);
+    run.onEvent = createEventHandler(pc, run);
+    renderRunStatus();
+    void (async () => {
+      try {
+        await reconnectAgent(r.jobId, run.onEvent, run.abort.signal);
+      } catch (err) {
+        await handleRunFailure(pc, run, err);
+      } finally {
+        finishRun(pc, run);
+      }
+    })();
   }
 }
 
-async function restoreTranscript(): Promise<void> {
-  const conversations = await getConversations(activeProjectId);
+async function restoreTranscript(pc: ProjectChat): Promise<void> {
+  const conversations = await getConversations(pc.projectId);
   // Newest conversation first from the API; render oldest → newest
   const messages = conversations
     .reverse()
@@ -707,48 +787,61 @@ async function restoreTranscript(): Promise<void> {
     // with an empty transcript (its seeding ran before chat logging, or its
     // history was cleared) must not re-offer the interview. Also skip if seeding
     // has already auto-started on open — the live pipeline is the greeting then.
-    if (!running && !projectSeeded) appendGreeting();
+    if (!getRun(pc.projectId, 'pm') && !pc.seeded) appendGreeting(pc);
     return;
   }
 
-  appendDivider('session restored', messages[0].created_at);
+  appendDivider(pc, 'session restored', messages[0].created_at);
   for (const message of messages) {
     if (message.role === 'user') {
-      appendUserMessage(message.content, message.agent);
+      appendUserMessage(pc, message.content, message.agent);
     } else {
-      const { body } = appendAgentMessage(message.agent, message.created_at);
+      const { body } = appendAgentMessage(pc, message.agent, message.created_at);
       renderAgentBody(body, message.agent, message.content);
+      pc.restoredTexts.add(`${message.agent}\n${message.content}`);
     }
   }
 }
 
 /**
- * Handle a streamed AgentEvent, shared by chat sends and the seeding
- * pipeline. Keeps one streaming bubble per assistant turn; a new delta after
- * a finalized turn (or from a different agent) starts a new bubble.
+ * Handle a streamed AgentEvent for one run, shared by chat sends, re-attached
+ * runs and the seeding pipeline. Keeps one streaming bubble per assistant
+ * turn; a new delta after a finalized turn (or from a different agent) starts
+ * a new bubble. Renders into the run's own project log, whether or not that
+ * project is in view; the status bar and composer are updated only when the
+ * run's chat is the one in view.
  */
-function createEventHandler(): (event: AgentEvent) => void {
+function createEventHandler(pc: ProjectChat, run: ChatRun): (event: AgentEvent) => void {
   let wrapper: HTMLElement | null = null;
   let body: HTMLElement | null = null;
   let bubbleAgent = '';
   let streamed = '';
+  const owner = run.agent;
 
   const ensureBubble = (agent: string): HTMLElement => {
     if (!body || bubbleAgent !== agent) {
-      const created = appendAgentMessage(agent, new Date().toISOString());
+      const created = appendAgentMessage(pc, agent, new Date().toISOString(), owner);
       wrapper = created.wrapper;
       body = created.body;
       bubbleAgent = agent;
       streamed = '';
-      setActive(wrapper, agent, true); // it's streaming → role color
+      setActive(wrapper, true); // it's streaming → role color
     }
     return body;
   };
 
   const finalize = (): void => {
-    if (wrapper) setActive(wrapper, bubbleAgent, false);
+    if (wrapper) setActive(wrapper, false);
     wrapper = null;
     body = null;
+  };
+
+  // A file change from a background run waits for the project to be mounted
+  // again: main.ts's handler drives the files panel and editor of the ACTIVE
+  // project only.
+  const deliverFileChange = (change: FileChange): void => {
+    if (pc === current) pc.onFileChange(change);
+    else pc.deferredFileChanges.push(change);
   };
 
   return (event: AgentEvent): void => {
@@ -757,15 +850,19 @@ function createEventHandler(): (event: AgentEvent) => void {
         const node = ensureBubble(event.agent);
         streamed += event.content ?? '';
         node.textContent = streamed;
-        scrollLog();
+        scrollLog(pc);
         break;
       }
       case 'text': {
+        // A re-attached run replays the turns that buffered while nobody was
+        // attached; the ones that also made it into the restored transcript
+        // are already on screen.
+        if (run.kind === 'reconnect' && !body && pc.restoredTexts.has(`${event.agent}\n${event.content ?? ''}`)) break;
         // Final turn text: replace accumulated deltas with rendered markdown
         const node = ensureBubble(event.agent);
         renderAgentBody(node, event.agent, event.content ?? '');
         finalize();
-        scrollLog();
+        scrollLog(pc);
         break;
       }
       case 'file_change': {
@@ -775,51 +872,49 @@ function createEventHandler(): (event: AgentEvent) => void {
         // it the open editor can't retarget and its next autosave resurrects
         // the old path.
         const from = event.kind === 'moved' ? event.meta?.from : undefined;
-        appendSystemLine(from
+        appendSystemLine(pc, from
           ? `${event.agent} moved ${from} → ${event.path}`
-          : `${event.agent} ${event.kind ?? 'changed'} ${event.path}`);
+          : `${event.agent} ${event.kind ?? 'changed'} ${event.path}`, 'info', owner);
         if (event.path) {
-          onFileChange({ path: event.path, kind: event.kind, agent: event.agent, from });
+          deliverFileChange({ path: event.path, kind: event.kind, agent: event.agent, from });
         }
         break;
       }
       case 'citation': {
-        appendSystemLine(`${event.agent} added citation [@${event.key}]`);
-        if (event.path) onFileChange({ path: event.path, kind: 'update', agent: event.agent });
+        appendSystemLine(pc, `${event.agent} added citation [@${event.key}]`, 'info', owner);
+        if (event.path) deliverFileChange({ path: event.path, kind: 'update', agent: event.agent });
         break;
       }
       case 'question': {
         // The agent is blocked waiting for an answer: render the question card
-        // and switch the input box into answer mode.
+        // and switch the input box into answer mode (when this chat is in view).
         finalize();
-        activeQuestionCard = new QuestionCard(event.agent, event.content ?? '', { onStop: () => void stopRun() });
-        tagConversation(activeQuestionCard.element, event.agent);
-        document.getElementById('chat-log')!.append(activeQuestionCard.element);
-        pendingQuestionJobId = event.jobId ?? null;
-        setAgentActivity(`${agentLabel(event.agent)} is waiting for your answer…`);
-        refreshSendButton(); // answer mode: the button sends the reply again
-        const input = document.getElementById('chat-input') as HTMLTextAreaElement;
-        input.placeholder = 'Type your answer…';
-        input.focus();
-        scrollLog();
+        run.questionCard = new QuestionCard(event.agent, event.content ?? '', { onStop: () => void stopRun(run) });
+        tagConversation(pc, run.questionCard.element, owner);
+        pc.log.append(run.questionCard.element);
+        run.pendingQuestionJobId = event.jobId ?? null;
+        setRunActivity(run, `${agentLabel(event.agent)} is waiting for your answer…`);
+        renderComposer(); // answer mode: the button sends the reply again
+        if (inView(run)) (document.getElementById('chat-input') as HTMLTextAreaElement).focus();
+        scrollLog(pc);
         break;
       }
       case 'question_expired': {
-        if (pendingQuestionJobId === event.jobId) {
-          activeQuestionCard?.markExpired();
-          activeQuestionCard = null;
-          exitAnswerMode();
+        if (run.pendingQuestionJobId === event.jobId) {
+          run.questionCard?.markExpired();
+          run.questionCard = null;
+          exitAnswerMode(run);
         }
-        updateRunActivity();
+        updateRunActivity(run);
         break;
       }
       case 'stage': {
         // Seeding pipeline progress (story 015) → the seeding panel.
         if (!applyStage(event)) {
           const label = STAGE_LABELS[event.stage ?? ''] ?? event.stage;
-          if (event.status === 'error') appendSystemLine(`${label} failed${event.detail ? `: ${event.detail}` : ''}`, 'error');
+          if (event.status === 'error') appendSystemLine(pc, `${label} failed${event.detail ? `: ${event.detail}` : ''}`, 'error', owner);
         }
-        if (event.status === 'start') setAgentActivity(`seeding: ${STAGE_LABELS[event.stage ?? ''] ?? event.stage}…`);
+        if (event.status === 'start') setRunActivity(run, `seeding: ${STAGE_LABELS[event.stage ?? ''] ?? event.stage}…`);
         break;
       }
       case 'notice': {
@@ -828,21 +923,21 @@ function createEventHandler(): (event: AgentEvent) => void {
         // isn't an ambiguous silent spinner (story 029).
         if (event.reason === 'provider_overloaded') {
           const secs = event.nextRetryMs ? Math.round(event.nextRetryMs / 1000) : 0;
-          setAgentActivity(
+          setRunActivity(run,
             `${agentLabel(event.agent)} paused — model provider busy, retrying${secs ? ` in ${secs}s` : ''}`
             + ` (${event.attempt}/${event.maxAttempts})…`,
           );
-          notify('Model provider is busy — retrying automatically…');
+          if (inView(run)) notify('Model provider is busy — retrying automatically…');
         } else if (event.reason === 'session_reconstructed') {
           // The provider dropped the session we asked to resume (issue #109
           // — typically after a budget stop); the runtime continues in a
           // fresh one seeded from Kuhn's transcript. The `done` event
           // carries the new session id, which replaces the dead one.
-          appendSystemLine(event.message ?? 'Previous session unavailable — continuing in a fresh session.');
+          appendSystemLine(pc, event.message ?? 'Previous session unavailable — continuing in a fresh session.', 'info', owner);
         } else if (event.reason === 'budget_reached') {
           // The budget stopped the run; the pause card follows once the
           // hand-off note is written (issue #110) — name the wait.
-          setAgentActivity(`${agentLabel(event.agent)} reached its token budget — writing a hand-off note…`);
+          setRunActivity(run, `${agentLabel(event.agent)} reached its token budget — writing a hand-off note…`);
         }
         break;
       }
@@ -852,11 +947,11 @@ function createEventHandler(): (event: AgentEvent) => void {
         // It is also the first event a job emits: the job is now running.
         if (event.model) {
           const chip: ModelChip = { agent: event.agent, label: agentLabel(event.agent), ...event.model };
-          runModels.push(chip);
-          if (!event.depth) agentModels.set(event.agent, chip);
-          tracker.start({ jobId: event.jobId ?? null, agent: event.agent, depth: event.depth ?? 0, chip });
-          updateModelIndicator();
-          updateRunActivity();
+          run.runModels.push(chip);
+          if (!event.depth) pc.agentModels.set(event.agent, chip);
+          run.tracker.start({ jobId: event.jobId ?? null, agent: event.agent, depth: event.depth ?? 0, chip });
+          updateRunActivity(run);
+          if (inView(run)) updateModelIndicator();
         }
         break;
       }
@@ -864,9 +959,9 @@ function createEventHandler(): (event: AgentEvent) => void {
         // A dispatched sub-agent's job ended (issue #137) — its own 'done' is
         // not forwarded. The indicators fall back to the dispatcher.
         if (event.status && event.status !== 'started') {
-          tracker.end(event.jobId, { agent: event.agent, depth: event.depth ?? 1 });
-          updateModelIndicator();
-          updateRunActivity();
+          run.tracker.end(event.jobId, { agent: event.agent, depth: event.depth ?? 1 });
+          updateRunActivity(run);
+          if (inView(run)) updateModelIndicator();
         }
         break;
       }
@@ -875,9 +970,9 @@ function createEventHandler(): (event: AgentEvent) => void {
         // session, so the next message picks up exactly where the agent stopped.
         finalize();
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
-        tracker.end(event.jobId);
-        if (!event.depth) appendStopped(event.agent);
-        updateModelIndicator();
+        run.tracker.end(event.jobId);
+        if (!event.depth) appendStopped(pc, owner, event.agent);
+        if (inView(run)) updateModelIndicator();
         break;
       }
       case 'context': {
@@ -886,9 +981,9 @@ function createEventHandler(): (event: AgentEvent) => void {
         // fresh sessions — only the addressed agent's belongs on the meter.
         if (event.context) {
           if (event.context.window) contextWindow = event.context.window;
-          if (!conversationAgent || event.agent === conversationAgent) {
-            contextTokens.set(event.agent, event.context.tokens);
-            updateContextIndicator();
+          if (event.agent === owner) {
+            pc.contextTokens.set(event.agent, event.context.tokens);
+            if (pc === current) updateContextIndicator();
           }
         }
         break;
@@ -901,14 +996,14 @@ function createEventHandler(): (event: AgentEvent) => void {
         // across turns (cache reads re-counted every turn) and overstates
         // context wildly on tool-heavy runs.
         if (event.context?.tokens) {
-          assessContext(conversationAgent ?? event.agent, event.context.tokens);
+          assessContext(pc, owner, event.context.tokens);
         }
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
         if (event.jobId != null) {
           // A seeding stage's job (or the addressed agent's) ended.
-          tracker.end(event.jobId);
-          updateModelIndicator();
-          updateRunActivity();
+          run.tracker.end(event.jobId);
+          updateRunActivity(run);
+          if (inView(run)) updateModelIndicator();
         }
         break;
       }
@@ -916,41 +1011,41 @@ function createEventHandler(): (event: AgentEvent) => void {
         finalize();
         if (event.budget) setBudget(event.budget.used, event.budget.limit);
         if (event.jobId != null) {
-          tracker.end(event.jobId);
-          updateModelIndicator();
-          updateRunActivity();
+          run.tracker.end(event.jobId);
+          updateRunActivity(run);
+          if (inView(run)) updateModelIndicator();
         }
         if (event.reason === 'budget_exceeded') {
           // The chat row keeps the session, so a follow-up resumes this exact conversation.
           // The pause card belongs to the user's own run. A dispatched
           // sub-agent's cutoff (forwarded under the child's slug) is a
           // line — the parent's own cutoff, with the hand-off note, follows.
-          if (event.jobId != null && (!conversationAgent || event.agent === conversationAgent)) {
-            appendBudgetNotice({
+          if (event.jobId != null && event.agent === owner) {
+            appendBudgetNotice(pc, {
               agent: event.agent, jobId: event.jobId, handoff: event.handoff ?? null,
               scope: event.budget?.scope ?? 'task', period: event.period, resetsAt: event.resetsAt,
             });
           } else {
-            appendSystemLine(`${agentLabel(event.agent)} reached the token budget.`, 'error');
+            appendSystemLine(pc, `${agentLabel(event.agent)} reached the token budget.`, 'error', owner);
           }
         } else if (event.reason === 'budget_exhausted') {
           // An org budget (the user's or the project's) is already used up,
           // so no run started (issue #110): explain, no Resume to offer.
-          appendBudgetExhaustedNotice(event);
+          appendBudgetExhaustedNotice(pc, event, owner);
         } else if (event.reason === 'provider_overloaded') {
           // Transient upstream failure that outlasted the runtime's retries —
           // the chat row keeps the session so a chat "Try again" resumes it;
           // offer a one-click retry of the original action (story 029).
-          appendOverloadNotice();
+          appendOverloadNotice(pc, owner);
         } else if (event.reason === 'route_invalid') {
           // The pinned model is no longer on this agent's route (issue #134)
           // — drop the pin so the next message falls back to the route.
-          if (conversationAgent && event.profile && pinnedProfile(activeProjectId, conversationAgent) === event.profile) {
-            clearPinnedProfile(activeProjectId, conversationAgent);
+          if (event.profile && pinnedProfile(pc.projectId, owner) === event.profile) {
+            clearPinnedProfile(pc.projectId, owner);
           }
-          appendSystemLine(event.message ?? 'agent error', 'error');
+          appendSystemLine(pc, event.message ?? 'agent error', 'error', owner);
         } else {
-          appendSystemLine(event.message ?? 'agent error', 'error');
+          appendSystemLine(pc, event.message ?? 'agent error', 'error', owner);
         }
         break;
       }
@@ -966,57 +1061,59 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 async function send(): Promise<void> {
-  if (!canUseComposer()) return; // view-only chrome; the server 403s too
+  const pc = current;
+  if (!pc || !canUseComposer()) return; // view-only chrome; the server 403s too
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
-  const role = (document.getElementById('chat-role') as HTMLSelectElement).value;
+  const role = selectedAgent();
   const text = input.value.trim();
   if (!text) return;
 
   // Answer mode: route the input to the job waiting on ask_user. The reply
   // unblocks the agent; its events keep arriving on the original stream.
-  if (pendingQuestionJobId != null) {
-    const jobId = pendingQuestionJobId;
-    exitAnswerMode();
+  const run = getRun(pc.projectId, role);
+  if (run?.pendingQuestionJobId != null) {
+    const jobId = run.pendingQuestionJobId;
+    exitAnswerMode(run);
     input.value = '';
     autoGrow(input);
-    appendUserMessage(text, role);
-    activeQuestionCard?.markAnswered(text);
-    activeQuestionCard = null;
-    setAgentActivity(`${agentLabel(role)} is working…`);
+    appendUserMessage(pc, text, role);
+    run.questionCard?.markAnswered(text);
+    run.questionCard = null;
+    setRunActivity(run, `${agentLabel(role)} is working…`);
     try {
       await replyToAgent(jobId, text);
     } catch (err) {
       // 409: the question is gone (timed out or its task ended) — story 020
       const message = (err as Error).message;
       if (/no pending question/i.test(message)) {
-        appendSystemLine('that question is no longer waiting for an answer (it may have timed out) — your reply was not delivered', 'error');
-        setAgentActivity('');
+        appendSystemLine(pc, 'that question is no longer waiting for an answer (it may have timed out) — your reply was not delivered', 'error', role);
+        setRunActivity(run, '');
       } else {
-        appendSystemLine(message, 'error');
+        appendSystemLine(pc, message, 'error', role);
       }
     }
     return;
   }
 
-  if (running) return;
-  if (resetting.has(role)) {
+  if (run) return; // this chat is busy: the button is Stop
+  if (pc.resetting.has(role)) {
     notify(`${agentLabel(role)}'s fresh start is still being set up — one moment`);
     return;
   }
   input.value = '';
   autoGrow(input);
 
-  appendUserMessage(text, role);
+  appendUserMessage(pc, text, role);
   // STH-55: a parked hand-off note goes out with this message — the server
   // splices it ahead of the input (issue #113) — so retire the card's
   // discard button here.
-  const chat = chats.get(role);
+  const chat = pc.chats.get(role);
   if (chat?.pending_handoff) {
     chat.pending_handoff = null;
-    document.querySelector(`#chat-log .chat-notice-handoff[data-agent="${CSS.escape(role)}"] .notice-action`)?.remove();
+    pc.log.querySelector(`.chat-notice-handoff[data-agent="${CSS.escape(role)}"] .notice-action`)?.remove();
   }
-  retryAction = () => dispatchTask(role, text);
-  await dispatchTask(role, text);
+  pc.retryAction = () => dispatchTask(pc, role, text);
+  await dispatchTask(pc, role, text);
 }
 
 /**
@@ -1058,140 +1155,142 @@ function taskContext(): AgentTaskParams['context'] {
  * Run a single chat turn. Separated from send() so the user message is appended
  * once but the run itself can be re-invoked by "Try again" after a transient
  * overload (story 029). The server resolves the chat from role + project and
- * resumes the session recorded on it (issue #113).
+ * resumes the session recorded on it (issue #113). The run belongs to its
+ * project's log and keeps streaming if the user switches projects meanwhile.
  */
-async function dispatchTask(role: string, text: string): Promise<void> {
-  if (running) return;
-  running = true;
-  conversationAgent = role;
-  runModels = [];
-  tracker.reset();
-  runAbort = new AbortController();
-  refreshSendButton();
-  setAgentActivity(`${agentLabel(role)} is working…`);
+async function dispatchTask(pc: ProjectChat, role: string, text: string): Promise<void> {
+  if (getRun(pc.projectId, role)) return;
+  const run = startRun({ projectId: pc.projectId, agent: role, kind: 'chat', activity: `${agentLabel(role)} is working…` });
+  run.onEvent = createEventHandler(pc, run);
+  renderRunStatus();
   // The user steered the paused agent with their own instruction (issue
   // #110): that supersedes the pause — retire its Resume affordance.
-  retireBudgetCards(role, 'superseded by your instruction');
+  retireBudgetCards(pc, role, 'superseded by your instruction');
 
-  const onEvent = createEventHandler();
   try {
     await runAgentTask(
       {
         role,
-        projectId: activeProjectId,
+        projectId: pc.projectId,
         input: text,
         context: taskContext(),
         // The user's pick for this agent (issue #134); absent → the route decides.
-        profile: pinnedProfile(activeProjectId, role) ?? undefined,
+        profile: pinnedProfile(pc.projectId, role) ?? undefined,
       },
-      onEvent,
-      runAbort.signal,
+      run.onEvent,
+      run.abort.signal,
     );
   } catch (err) {
-    // STH-48: a dropped stream while the run is parked on an ask_user
-    // question must not surface as an error — the run is still alive on the
-    // server (story 027 keeps it parked), so re-attach to it instead.
-    await handleRunFailure(err, onEvent);
+    // STH-48: a dropped stream must not surface as an error while the run is
+    // still alive on the server (parked on a question, or — since issue #113
+    // item 2 — any chat turn): re-attach to it instead.
+    await handleRunFailure(pc, run, err);
   } finally {
-    finishRun();
+    finishRun(pc, run);
   }
 }
 
-/** Run the seeding pipeline (story 015), narrated by the seeding panel. */
+/** Run the seeding pipeline (story 015) for the active project, narrated by the seeding panel. */
 export async function startSeeding(): Promise<void> {
-  if (running) return;
+  if (current) await startSeedingFor(current);
+}
+
+async function startSeedingFor(pc: ProjectChat): Promise<void> {
+  if (getRun(pc.projectId, 'pm')) return;
+  if (seedingActive()) {
+    // The seeding panel narrates one pipeline at a time.
+    notify('Another project is still seeding — wait for it to finish');
+    return;
+  }
   if (!canUseComposer()) {
     notify('View only — seeding a project needs the editor role');
     return;
   }
   // "Try again" after a transient overload re-runs the whole seeding pipeline —
   // the correct retry for a new-doc request, which is not a resumable chat turn.
-  retryAction = () => startSeeding();
-  running = true;
-  runModels = [];
-  tracker.reset();
-  runAbort = new AbortController();
-  refreshSendButton();
-  conversationAgent = 'pm'; // seeding is the PM-led interview conversation
+  pc.retryAction = () => startSeedingFor(pc);
+  // Seeding is the PM-led interview conversation.
+  const run = startRun({ projectId: pc.projectId, agent: 'pm', kind: 'seeding', activity: 'seeding…' });
+  run.onEvent = createEventHandler(pc, run);
   // The interview is starting — drop the empty-state greeting card so its
   // "Start project interview" CTA doesn't linger alongside the live pipeline.
-  document.querySelector('#chat-log .chat-msg.is-greeting')?.remove();
+  pc.log.querySelector('.chat-msg.is-greeting')?.remove();
   showSeedingPanel();
-  setAgentActivity('seeding…');
+  renderRunStatus();
 
   try {
-    await seedProject(activeProjectId, createEventHandler(), runAbort.signal);
+    await seedProject(pc.projectId, run.onEvent, run.abort.signal);
   } catch (err) {
     // Stop during seeding aborts the stream (the pipeline has no addressable
     // job); the server tears the stage down on disconnect.
-    if (stopping) appendStopped('pm');
-    else appendSystemLine((err as Error).message, 'error');
+    if (run.stopping) appendStopped(pc, 'pm');
+    else appendSystemLine(pc, (err as Error).message, 'error', 'pm');
   } finally {
     completeSeeding();
-    finishRun();
+    finishRun(pc, run);
   }
 }
 
 /**
- * STH-48: recover from a dropped event stream while a question is pending.
+ * STH-48: recover from a dropped event stream while the run is still alive on
+ * the server.
  *
  * The ask_user wait is indefinite by design, but the SSE response carrying it
  * can die (idle timeouts, network blips). The run itself survives on the
- * server — a detachable run parked on a question is left alive (story 027) —
- * so the right response is to re-attach, not to render the question card as
- * expired and print `network error`. The dropped stream is also what made the
- * agent "forget" its question: the parked run's session id never reached the
- * sessions map, so the next chat turn resumed an older session without the
- * question in it. Re-attaching keeps the original session (and its context).
+ * server — a detachable run parked on a question is left alive (story 027),
+ * and since issue #113 item 2 so is every chat turn — so the right response
+ * is to re-attach, not to render the question card as expired and print
+ * `network error`. Re-attaching keeps the original session (and its context).
  *
  * Retries with backoff — the server may not have noticed the disconnect yet,
  * so reconnect can 409 until it does. Returns true when the run was
  * re-attached and its stream ran to completion; false when the run is truly
  * gone and the caller should surface the original error.
  */
-async function resumeAfterStreamDrop(
-  onEvent: (event: AgentEvent) => void,
-  jobId: number | null = pendingQuestionJobId,
-): Promise<boolean> {
-  if (jobId == null) return false;
+async function resumeAfterStreamDrop(run: ChatRun): Promise<boolean> {
+  const jobId = run.pendingQuestionJobId ?? run.tracker.rootJobId;
+  if (jobId == null || run.kind === 'seeding') return false;
   for (let attempt = 0; attempt < 6; attempt++) {
-    setAgentActivity('Connection lost — reconnecting…');
+    if (run.abort.signal.aborted) return false;
+    setRunActivity(run, 'Connection lost — reconnecting…');
     await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 15_000)));
     try {
-      await reconnectAgent(jobId, onEvent);
+      await reconnectAgent(jobId, run.onEvent, run.abort.signal);
       return true; // re-attached; the stream ran to completion
     } catch (err) {
+      const message = (err as Error).message;
       // 404 "no live run": the run has actually ended — nothing to resume.
-      if (/no live run/i.test((err as Error).message)) return false;
+      // 403: it is not ours to attach to.
+      if (/no live run|not your run/i.test(message)) return false;
       // 409 (previous consumer not yet detached) or transient failure: retry.
     }
   }
   return false;
 }
 
-function finishRun(): void {
-  running = false;
-  stopping = false;
-  runAbort = null;
-  conversationAgent = null;
-  void refreshChats();
+function finishRun(pc: ProjectChat, run: ChatRun): void {
+  endRun(run);
+  run.stopping = false;
+  run.activity = '';
+  pc.lastRunModels.set(run.agent, run.runModels);
+  void refreshChats(pc);
   // The task is over — an unanswered question can no longer be replied to
-  if (pendingQuestionJobId != null) {
-    activeQuestionCard?.markExpired();
-    activeQuestionCard = null;
-    exitAnswerMode();
+  if (run.pendingQuestionJobId != null) {
+    run.questionCard?.markExpired();
+    run.questionCard = null;
+    run.pendingQuestionJobId = null;
   }
-  refreshSendButton();
-  updateModelIndicator();
-  // The owner may have changed the routes meanwhile (issue #134).
-  void refreshModelPicker({ fresh: true });
-  setAgentActivity('');
-  notify('');
+  renderRunStatus();
+  if (pc === current) {
+    // The owner may have changed the routes meanwhile (issue #134).
+    void refreshModelPicker({ fresh: true });
+    notify('');
+  }
 }
 
-function exitAnswerMode(): void {
-  pendingQuestionJobId = null;
-  applyComposerRole(); // restores the role-appropriate placeholder + state
+function exitAnswerMode(run: ChatRun): void {
+  run.pendingQuestionJobId = null;
+  renderComposer(); // restores the role-appropriate placeholder + state
 }
 
 // ---- Rendering ------------------------------------------------------------
@@ -1199,13 +1298,11 @@ function exitAnswerMode(): void {
 /** Re-read the project's chat rows (after a run: the server created or
  * advanced the addressed agent's chat). Failures are silent — the mirror only
  * gates the fresh-start button and names chat ids; the server stays right. */
-async function refreshChats(): Promise<void> {
-  const projectId = activeProjectId;
+async function refreshChats(pc: ProjectChat): Promise<void> {
   try {
-    const rows = await listProjectChats(projectId);
-    if (projectId !== activeProjectId) return; // the project switched under us
-    for (const c of rows) chats.set(c.agent_slug, c);
-    primeChatPins(projectId, rows);
+    const rows = await listProjectChats(pc.projectId);
+    for (const c of rows) pc.chats.set(c.agent_slug, c);
+    primeChatPins(pc.projectId, rows);
   } catch {
     // see above
   }
@@ -1221,14 +1318,13 @@ interface AgentBubble {
   body: HTMLElement;
 }
 
-function appendAgentMessage(slug: string, isoTime: string): AgentBubble {
-  const log = document.getElementById('chat-log')!;
+function appendAgentMessage(pc: ProjectChat, slug: string, isoTime: string, owner: string = slug): AgentBubble {
   const id = agentIdentity(slug);
 
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-agent';
   wrapper.style.setProperty('--role', `var(${id.colorVar})`);
-  tagConversation(wrapper, slug);
+  tagConversation(pc, wrapper, owner);
 
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
@@ -1252,16 +1348,15 @@ function appendAgentMessage(slug: string, isoTime: string): AgentBubble {
 
   main.append(head, body);
   wrapper.append(avatar, main);
-  log.append(wrapper);
-  scrollLog();
+  pc.log.append(wrapper);
+  scrollLog(pc);
   return { wrapper, head, body };
 }
 
-function appendUserMessage(text: string, agent?: string): void {
-  const log = document.getElementById('chat-log')!;
+function appendUserMessage(pc: ProjectChat, text: string, owner?: string): void {
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-user';
-  tagConversation(wrapper, agent);
+  tagConversation(pc, wrapper, owner);
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
   avatar.textContent = 'You';
@@ -1272,12 +1367,12 @@ function appendUserMessage(text: string, agent?: string): void {
   body.append(textFragment(text));
   main.append(body);
   wrapper.append(avatar, main);
-  log.append(wrapper);
-  scrollLog(true);
+  pc.log.append(wrapper);
+  scrollLog(pc, true);
 }
 
 /** Toggle the single-active-agent color treatment on a message. */
-function setActive(wrapper: HTMLElement, slug: string, on: boolean): void {
+function setActive(wrapper: HTMLElement, on: boolean): void {
   const head = wrapper.querySelector('.chat-head');
   if (on) {
     wrapper.classList.add('is-active');
@@ -1291,7 +1386,6 @@ function setActive(wrapper: HTMLElement, slug: string, on: boolean): void {
     wrapper.classList.remove('is-active');
     head?.querySelector('.chat-working')?.remove();
   }
-  void slug;
 }
 
 /**
@@ -1334,13 +1428,12 @@ function renderReportCard(body: HTMLElement, markdown: string): void {
 }
 
 /** Empty-state PM welcome (story 025 screen 3): invites the user to seed. */
-function appendGreeting(): void {
-  const log = document.getElementById('chat-log')!;
+function appendGreeting(pc: ProjectChat): void {
   const id = agentIdentity('pm');
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-msg chat-agent is-greeting';
   wrapper.style.setProperty('--role', `var(${id.colorVar})`);
-  tagConversation(wrapper, 'pm');
+  tagConversation(pc, wrapper, 'pm');
 
   const avatar = document.createElement('div');
   avatar.className = 'chat-avatar';
@@ -1361,32 +1454,30 @@ function appendGreeting(): void {
   cta.className = 'btn btn-accent';
   cta.style.marginTop = '4px';
   cta.innerHTML = `Set up project ${icon('arrow-right', { size: 13, stroke: 2 })}`;
-  cta.addEventListener('click', () => setupHandler(activeProjectId));
+  cta.addEventListener('click', () => setupHandler(pc.projectId));
   body.append(cta);
 
   main.append(head, body);
   wrapper.append(avatar, main);
-  log.append(wrapper);
+  pc.log.append(wrapper);
 }
 
-function appendDivider(label: string, isoTime?: string): void {
-  const log = document.getElementById('chat-log')!;
+function appendDivider(pc: ProjectChat, label: string, isoTime?: string): void {
   const div = document.createElement('div');
   div.className = 'chat-divider';
   const time = isoTime ? `<span class="mono">${clockOf(isoTime)}</span> · ` : '';
   div.innerHTML = `${time}${label}`;
-  log.append(div);
-  scrollLog();
+  pc.log.append(div);
+  scrollLog(pc);
 }
 
-function appendSystemLine(text: string, variant: 'info' | 'error' = 'info'): void {
-  const log = document.getElementById('chat-log')!;
+function appendSystemLine(pc: ProjectChat, text: string, variant: 'info' | 'error' = 'info', owner?: string | null): void {
   const line = document.createElement('div');
   line.className = `chat-system chat-system-${variant}`;
   line.textContent = text;
-  tagConversation(line); // owned by the in-flight conversation, if any
-  log.append(line);
-  scrollLog();
+  tagConversation(pc, line, owner); // owned by the conversation it belongs to, if any
+  pc.log.append(line);
+  scrollLog(pc);
 }
 
 /**
@@ -1404,16 +1495,15 @@ function resetWhen(iso: string | undefined): string {
     : 'at the start of the next period';
 }
 
-function appendBudgetNotice({ agent, jobId, handoff, isoTime, scope = 'task', period, resetsAt }: {
+function appendBudgetNotice(pc: ProjectChat, { agent, jobId, handoff, isoTime, scope = 'task', period, resetsAt }: {
   agent: string; jobId: number; handoff: string | null; isoTime?: string;
   scope?: 'task' | 'user' | 'project'; period?: string; resetsAt?: string;
 }): void {
-  const log = document.getElementById('chat-log')!;
   const label = escapeHtml(agentLabel(agent)); // spliced into innerHTML below
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-budget';
   card.dataset.jobId = String(jobId);
-  tagConversation(card, agent);
+  tagConversation(pc, card, agent);
   const when = isoTime ? ` <span class="notice-time mono">${clockOf(isoTime)}</span>` : '';
   const note = handoff
     ? `<div class="notice-subtitle">Hand-off note</div><div class="handoff-note">${renderMarkdown(handoff)}</div>`
@@ -1423,7 +1513,7 @@ function appendBudgetNotice({ agent, jobId, handoff, isoTime, scope = 'task', pe
   // it resets, or an owner resets it).
   const orgScope = scope === 'user' || scope === 'project';
   const title = orgScope
-    ? `${scope === 'user' ? 'Your' : 'This project\u2019s'} ${escapeHtml(PERIOD_ADJECTIVE[period ?? ''] ?? '')} token budget is used up — task paused`
+    ? `${scope === 'user' ? 'Your' : 'This project’s'} ${escapeHtml(PERIOD_ADJECTIVE[period ?? ''] ?? '')} token budget is used up — task paused`
     : 'Token budget reached — task paused';
   const resume = orgScope
     ? `<p>The budget resets ${escapeHtml(resetWhen(resetsAt))}; an organization owner can raise or reset it sooner. ` +
@@ -1444,11 +1534,11 @@ function appendBudgetNotice({ agent, jobId, handoff, isoTime, scope = 'task', pe
   btn.innerHTML = `Resume ${label} ${icon('arrow-right', { size: 13, stroke: 2 })}`;
   btn.addEventListener('click', () => {
     btn.disabled = true;
-    void continueAfterBudget(agent, jobId);
+    void continueAfterBudget(pc, agent, jobId);
   });
   card.append(btn);
-  log.append(card);
-  scrollLog();
+  pc.log.append(card);
+  scrollLog(pc);
 }
 
 /**
@@ -1456,19 +1546,18 @@ function appendBudgetNotice({ agent, jobId, handoff, isoTime, scope = 'task', pe
  * parts 3–4): nothing ran, so there is nothing to resume — say when it
  * resets and who can reset it.
  */
-function appendBudgetExhaustedNotice(event: AgentEvent): void {
-  const log = document.getElementById('chat-log')!;
+function appendBudgetExhaustedNotice(pc: ProjectChat, event: AgentEvent, owner: string): void {
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-budget';
-  tagConversation(card, event.agent);
-  const scope = event.budget?.scope === 'project' ? 'This project\u2019s' : 'Your';
+  tagConversation(pc, card, owner);
+  const scope = event.budget?.scope === 'project' ? 'This project’s' : 'Your';
   const used = event.budget ? ` (${Math.round(event.budget.used).toLocaleString()} of ${event.budget.limit.toLocaleString()} tokens)` : '';
   card.innerHTML =
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} ${scope} ${escapeHtml(PERIOD_ADJECTIVE[event.period ?? ''] ?? '')} token budget is used up</div>` +
     `<p>The task was not started${escapeHtml(used)}. It resets ${escapeHtml(resetWhen(event.resetsAt))}; ` +
     'an organization owner can raise the budget or reset the usage sooner (Organization → Budgets).</p>';
-  log.append(card);
-  scrollLog();
+  pc.log.append(card);
+  scrollLog(pc);
 }
 
 /**
@@ -1476,11 +1565,11 @@ function appendBudgetExhaustedNotice(event: AgentEvent): void {
  * pause was resumed, or a fresh instruction superseded it. The card itself
  * stays — the hand-off note is still the record of where the run stopped.
  */
-function retireBudgetCards(agent: string, outcome: string, jobId?: number): void {
+function retireBudgetCards(pc: ProjectChat, agent: string, outcome: string, jobId?: number): void {
   const selector = jobId != null
-    ? `#chat-log .chat-notice-budget[data-job-id="${jobId}"]`
-    : `#chat-log .chat-notice-budget[data-agent="${CSS.escape(agent)}"]`;
-  for (const card of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+    ? `.chat-notice-budget[data-job-id="${jobId}"]`
+    : `.chat-notice-budget[data-agent="${CSS.escape(agent)}"]`;
+  for (const card of Array.from(pc.log.querySelectorAll<HTMLElement>(selector))) {
     const btn = card.querySelector('.notice-action');
     if (!btn) continue;
     const done = document.createElement('div');
@@ -1496,11 +1585,10 @@ function retireBudgetCards(agent: string, outcome: string, jobId?: number): void
  * one-click action re-runs the original request — the chat turn (resuming the
  * session) or the seeding pipeline, whichever failed.
  */
-function appendOverloadNotice(): void {
-  const log = document.getElementById('chat-log')!;
+function appendOverloadNotice(pc: ProjectChat, owner: string): void {
   const card = document.createElement('div');
   card.className = 'chat-notice chat-notice-overload';
-  tagConversation(card);
+  tagConversation(pc, card, owner);
   card.innerHTML =
     `<div class="notice-title">${icon('clock', { size: 14, stroke: 2 })} Model provider is overloaded — task paused</div>` +
     `<p>This is a temporary capacity issue upstream (a 529 from the model provider), ` +
@@ -1512,21 +1600,20 @@ function appendOverloadNotice(): void {
   btn.innerHTML = `Try again ${icon('arrow-right', { size: 13, stroke: 2 })}`;
   btn.addEventListener('click', () => {
     btn.disabled = true;
-    void retryLast();
+    void retryLast(pc);
   });
   card.append(btn);
-  log.append(card);
-  scrollLog();
+  pc.log.append(card);
+  scrollLog(pc);
 }
 
-/** Re-run the last user-initiated action (chat turn or seeding) — story 029. */
-async function retryLast(): Promise<void> {
-  if (running) return;
-  if (!retryAction) {
-    appendSystemLine('Nothing to retry.', 'error');
+/** Re-run the last user-initiated action in the project (chat turn or seeding) — story 029. */
+async function retryLast(pc: ProjectChat): Promise<void> {
+  if (!pc.retryAction) {
+    appendSystemLine(pc, 'Nothing to retry.', 'error');
     return;
   }
-  await retryAction();
+  await pc.retryAction();
 }
 
 /**
@@ -1534,25 +1621,20 @@ async function retryLast(): Promise<void> {
  * the hand-off note stored on the paused job and resumes its session with a
  * fresh budget; a dead session falls back to Kuhn's transcript (issue #109).
  */
-async function continueAfterBudget(agent: string, jobId: number): Promise<void> {
-  if (running) return;
-  retireBudgetCards(agent, 'resumed', jobId);
-  appendSystemLine(`Resuming ${agentLabel(agent)} from the hand-off note…`);
-  running = true;
-  runModels = [];
-  tracker.reset();
-  runAbort = new AbortController();
-  refreshSendButton();
-  conversationAgent = agent;
-  setAgentActivity(`${agentLabel(agent)} is working…`);
-  retryAction = () => continueAfterBudget(agent, jobId);
-  const onEvent = createEventHandler();
+async function continueAfterBudget(pc: ProjectChat, agent: string, jobId: number): Promise<void> {
+  if (getRun(pc.projectId, agent)) return;
+  retireBudgetCards(pc, agent, 'resumed', jobId);
+  appendSystemLine(pc, `Resuming ${agentLabel(agent)} from the hand-off note…`, 'info', agent);
+  const run = startRun({ projectId: pc.projectId, agent, kind: 'resume', activity: `${agentLabel(agent)} is working…` });
+  run.onEvent = createEventHandler(pc, run);
+  renderRunStatus();
+  pc.retryAction = () => continueAfterBudget(pc, agent, jobId);
   try {
-    await resumeJob(jobId, taskContext(), onEvent, runAbort.signal);
+    await resumeJob(jobId, taskContext(), run.onEvent, run.abort.signal);
   } catch (err) {
-    await handleRunFailure(err, onEvent);
+    await handleRunFailure(pc, run, err);
   } finally {
-    finishRun();
+    finishRun(pc, run);
   }
 }
 
@@ -1576,23 +1658,28 @@ function textFragment(text: string): DocumentFragment {
  * scrolled back into the history (STH-50). While parked, appended content
  * reveals the “new messages” pill instead. `force` marks user actions
  * (sending, the pill, filter/agent switches, fresh starts) that re-engage
- * following regardless of scroll position.
+ * following regardless of scroll position. A background project's log
+ * scrolls too (it is laid out once mounted); the pill is the mounted one's.
  */
-function scrollLog(force = false): void {
-  const log = document.getElementById('chat-log')!;
-  if (force) setStickToBottom(true);
-  if (stickToBottom) {
-    log.scrollTop = log.scrollHeight;
-  } else {
+function scrollLog(pc: ProjectChat, force = false): void {
+  if (force) setStickToBottom(pc, true);
+  if (pc.stickToBottom) {
+    pc.log.scrollTop = pc.log.scrollHeight;
+  } else if (pc === current) {
     const pill = document.getElementById('chat-jump');
     if (pill) pill.hidden = false;
   }
 }
 
-function setStickToBottom(on: boolean): void {
-  stickToBottom = on;
-  if (on) {
+function setStickToBottom(pc: ProjectChat, on: boolean): void {
+  pc.stickToBottom = on;
+  if (on && pc === current) {
     const pill = document.getElementById('chat-jump');
     if (pill) pill.hidden = true;
   }
+}
+
+/** Test/diagnostic hook: every run in flight across projects. */
+export function liveRuns(): ChatRun[] {
+  return allRuns();
 }

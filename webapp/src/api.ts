@@ -2330,6 +2330,29 @@ export async function getPendingQuestions(projectId: number): Promise<PendingQue
 }
 
 /**
+ * One of the caller's chat runs still alive on the server with nobody
+ * attached (issue #113 item 2): a reload or a project switch left it; the
+ * client re-attaches with reconnectAgent. `agent` is the asker when parked
+ * on a question (a dispatched sub-agent may ask); `role` is the chat's agent.
+ */
+export interface LiveRun {
+  jobId: number;
+  chatId: number | null;
+  agent: string;
+  role: string;
+  status: 'running' | 'waiting_for_user';
+  question: string | null;
+  /** A consumer still holds the stream — another tab, or this one before its reload was noticed. */
+  attached: boolean;
+}
+
+/** The caller's live runs in a project (in-memory server state: empty after a restart). */
+export async function getLiveRuns(projectId: number): Promise<LiveRun[]> {
+  const res = await expectOk(await apiFetch(`${BACKEND_URL}/api/agent/live?projectId=${projectId}`));
+  return ((await res.json()) as { runs: LiveRun[] }).runs;
+}
+
+/**
  * Re-attach to a still-alive run after a reload (story 027). The server
  * re-emits the pending `question` event, then streams subsequent live events.
  */
