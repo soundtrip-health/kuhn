@@ -1,7 +1,7 @@
 ---
 title: Agents and chat
 area: agents
-keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions
+keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once
 ---
 
 # Agents and chat
@@ -80,7 +80,7 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 ## The chat panel
 
-**What it does.** One transcript per project, tagged by agent; each agent keeps its own conversation context. That context is a server-side chat per agent, project and user, so the same conversation continues from another tab or device instead of forking. Transcripts are restored on reload ("session restored").
+**What it does.** One transcript per project, tagged by agent; each agent keeps its own conversation context. That context is a server-side chat per agent, project and user, so the same conversation continues from another tab or device instead of forking. Transcripts are restored on reload ("session restored"). Several chats can be running at once — see "Parallel chats" below.
 
 **How to use it.** Toggle the panel with "Chat" in the top bar. Type in the box ("Ask an agent, or describe an edit…") and press Enter or the send button ("Send (Enter)"); Shift+Enter inserts a newline. The message goes to the agent shown in the pill at the bottom-left of the composer ("Choose which agent to address"). The bar above the log says "Showing PM only" (or the current agent); its button "All agents" shows the full tagged history, and "PM only" switches back. The choice persists across reloads. Your open document, selection and cursor are sent with every message, so "this document" means the one in the editor.
 
@@ -98,15 +98,25 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 **Gotchas.** As the menu says: "Applies to the agent you are addressing, for this project. Sub-agents it dispatches are routed by task difficulty." If an owner later removes a pinned model from the route, the next message fails once with a route error and the pin is dropped.
 
-## Stopping a run
+## Parallel chats
 
-**What it does.** Interrupts the running agent and every sub-agent it dispatched. The conversation is kept, so your next message continues from where it stopped.
+**What it does.** Each chat — one agent in one project — runs independently. You can send a task to the PM, switch to the Writer and send another, or switch to a different project entirely, and every run keeps going. A run renders into its own project's chat log whether or not you are looking at it, so when you come back the transcript is complete, including anything a dispatched sub-agent said meanwhile.
 
-**How to use it.** While a run is in flight the send button becomes a stop button ("Stop the agent (Esc)"); click it or press Esc in the chat box. It reads "Stopping…" until the run ends, then the log says "PM stopped. Say what to do next to continue from here, or start a fresh conversation." A question card offers "Or stop the agent".
+**How to use it.** Nothing to switch on. Pick an agent in the agent pill and send; pick another agent (or another project from the project browser) and send again. The composer, the stop button and the status bar always describe the chat you are looking at: the selected agent in the open project. A project you leave with nothing running is reloaded from the server when you return; one with a run in flight is kept as it was.
 
 **Prerequisites.** The editor role.
 
-**Gotchas.** Files an agent already wrote stay written. Stopping a seeding pipeline aborts the stream rather than a single job.
+**Gotchas.** One agent runs one task at a time: while the PM is working, a new message to the PM is not accepted (the send button is Stop) — pick another agent or wait. A question an agent asks while you are in another project waits for you; it shows on the question card when you return to that chat (a top-bar marker for waiting chats arrives with the next items of this feature). File changes a background run makes appear in the file tree when you return to the project. The seeding pipeline narrates one project at a time.
+
+## Stopping a run
+
+**What it does.** Interrupts the running agent and every sub-agent it dispatched. The conversation is kept, so your next message continues from where it stopped. Stop is per chat: it stops the selected agent's run in the open project and nothing else.
+
+**How to use it.** While the chat in view has a run in flight the send button becomes a stop button ("Stop the agent (Esc)"); click it or press Esc in the chat box. It reads "Stopping…" until the run ends, then the log says "PM stopped. Say what to do next to continue from here, or start a fresh conversation." A question card offers "Or stop the agent".
+
+**Prerequisites.** The editor role.
+
+**Gotchas.** Files an agent already wrote stay written. Stopping a seeding pipeline aborts the stream rather than a single job. To stop a run of another agent, select that agent first.
 
 ## Runs that stop on their own
 
@@ -134,13 +144,13 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 ## Reconnecting after a reload
 
-**What it does.** A run parked on a question survives a browser reload or disconnect. On load the app asks the backend for pending questions in the project and re-attaches to the run, re-showing the question card ("PM is waiting for your answer…").
+**What it does.** A chat run survives a browser reload, a closed tab or a dropped connection: the backend keeps it going and holds what the agent said meanwhile. On load the app asks the backend for your live runs in the project and re-attaches to each one — the status bar shows the agent working again, a question card is re-shown if the run is waiting on you ("PM is waiting for your answer…"), and the turns that finished while you were away are rendered once.
 
 **How to use it.** Nothing; it happens on load.
 
 **Prerequisites.** The backend process that started the run must still be running.
 
-**Gotchas.** Pending runs live in the backend's memory: a backend restart forgets them, and the question is gone. Only runs waiting on a question are reconnectable; a finished run's text is restored from history.
+**Gotchas.** Live runs are in the backend's memory: a backend restart marks them interrupted and a pending question is gone. A run still attached in another tab is left to that tab. A closed tab does not stop a run — use Stop if you want it stopped.
 
 ## Budget pause and resume
 
@@ -184,7 +194,7 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 ## Run activity in the status bar
 
-**What it does.** The bottom bar follows the innermost running job: "Research is working…" while a dispatched RA runs, then back to the PM. Beside it: the model chip (previous section), the budget, and the token total for the session ("12,345 tokens").
+**What it does.** The bottom bar describes the chat in view (the selected agent in the open project) and follows its innermost running job: "Research is working…" while a dispatched RA runs, then back to the PM. Beside it: the model chip (previous section), the budget, and the token total for the session ("12,345 tokens"). Runs of other agents or projects do not show here.
 
 **How to use it.** Read only. The top bar shows "Saving…"/"Saved" and, during seeding, "Seeding · 2/3".
 

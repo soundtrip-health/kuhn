@@ -5,7 +5,15 @@ by chat (or role + project), session/continuation/pin/hand-off on the chat row, 
 `POST /api/chats/:id/reset`, `GET /api/projects/:id/chats`; the webapp reads its per-agent state
 from the chat. Deferred from item 1: `status` is a read-time projection of the current job
 (`idle | running | paused`) rather than a column, and `waiting_for_user` waits for #118 stage 1
-(no persisted question state yet). Items 2–5 remain as drafted.
+(no persisted question state yet).
+§7 item 2 landed (2026-09-19, #177): the webapp keeps one log per project and one run per
+chat (`webapp/src/chat-runs.ts`); a project switch leaves every stream open and the composer,
+Stop and status bar follow the chat in view. Re-attach after a reload uses the in-memory run
+registry (`GET /api/agent/live` + `POST /jobs/:id/reconnect`) rather than a `job_events`
+cursor: a chat turn is now kept alive on any disconnect (not only while parked on a question),
+its channel drops `text_delta` frames while unattached, and the client skips replayed turns the
+restored transcript already shows. Cursor replay that survives a backend restart still waits
+for #118 stage 3. Items 3–5 remain as drafted.
 **Issue:** [#113 — manage multiple projects and chats in parallel](https://github.com/soundtrip-health/kuhn/issues/113)
 **Depends on:** [#118 durable jobs](118-durable-agent-jobs.md) stages 1–3 for indicators and
 reconnection that survive reloads and restarts; builds on #136 (Stop), #137 (run tracker),
