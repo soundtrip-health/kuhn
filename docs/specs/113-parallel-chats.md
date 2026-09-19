@@ -20,7 +20,11 @@ runtime at job start, terminals and budget pause, and by `ask_user` as it parks 
 which now stamps `waiting_for_user` on the parked job, so `chatStatus` projects
 `waiting_for_user` (a sub-agent's question counts). Marks: `webapp/src/activity.ts`, the
 project browser cards and the agent pill/menu. Owners receive other members' records (status
-and agent only); nothing renders those yet. Items 4–5 remain as drafted.
+and agent only); nothing renders those yet.
+§7 item 4 landed (2026-09-19, #179): `webapp/src/waiting.ts` — the top-bar "Waiting for you"
+pill (sibling of the save/seeding slot), the "●" title prefix, jump-to-chat (project switch +
+agent select + `chat.ts` `revealQuestion`), and the opt-in browser notification stored per user
+in `localStorage` (no server-side preference store exists). Item 5 remains as drafted.
 **Issue:** [#113 — manage multiple projects and chats in parallel](https://github.com/soundtrip-health/kuhn/issues/113)
 **Depends on:** [#118 durable jobs](118-durable-agent-jobs.md) stages 1–3 for indicators and
 reconnection that survive reloads and restarts; builds on #136 (Stop), #137 (run tracker),

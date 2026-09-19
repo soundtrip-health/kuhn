@@ -1,7 +1,7 @@
 ---
 title: Agents and chat
 area: agents
-keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once, status mark, ring, dot, activity, waiting for you
+keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once, status mark, ring, dot, activity, waiting for you, notification, title badge, jump to chat
 ---
 
 # Agents and chat
@@ -117,6 +117,16 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 **Prerequisites.** None.
 
 **Gotchas.** Marks show your own chats only. A run paused on its token budget shows no mark — its pause card in the chat is the affordance. After a backend restart every run is interrupted and no mark shows. Organization owners receive other members' chat status in the same stream (agent and status only, never text), but nothing renders it yet.
+
+## Waiting for you
+
+**What it does.** Whenever one of your chats is waiting for your answer — in any project, started from any tab — a quiet "Waiting for you" pill appears in the top bar next to the "Saved" indicator, and the browser tab's title gains a "●" prefix so a background tab shows it. Clicking the pill takes you to that chat: the project opens, the agent is selected and the question card is scrolled into view with the chat box focused. Optionally, a browser notification says who is waiting.
+
+**How to use it.** Nothing to switch on for the pill and the title. Hover the pill to see which chats are waiting ("PM in My grant"); with several waiting, each click goes to one you are not looking at. For notifications, open the account menu (the initials button at the top right) and tick "Notify me when an agent is waiting"; the browser asks for permission once. A notification fires when a question arrives in a chat you are not looking at (or while the tab is in the background); clicking it brings the window forward and jumps to the chat.
+
+**Prerequisites.** Notifications need a browser that supports them and the permission granted; the setting is per user and per browser, off by default.
+
+**Gotchas.** The pill and the notification are fed by the same activity stream as the status marks: a backend restart drops a pending question, so nothing is shown for it. Answering the question, or stopping the run, clears the pill and the title badge. Denying the browser permission leaves the setting off.
 
 ## Stopping a run
 
