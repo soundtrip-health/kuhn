@@ -7,6 +7,7 @@
 import './kuhn-tokens.css';
 import './style.css';
 
+import { initActivity } from './activity';
 import { initAgentSelector } from './agent-selector';
 import { subscribeProjectEvents, writeTextFile } from './api';
 import { initBreadcrumb } from './breadcrumb';
@@ -432,6 +433,7 @@ async function main(): Promise<void> {
   setVersion();
   wirePanelToggles();
   wireExportMenu();
+  initActivity(); // org chat-activity feed → status marks (issue #113 item 3)
   initAgentSelector();
   initHelp();
   initUserMenu();

@@ -1,7 +1,7 @@
 ---
 title: Agents and chat
 area: agents
-keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once
+keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once, status mark, ring, dot, activity, waiting for you
 ---
 
 # Agents and chat
@@ -106,7 +106,17 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 
 **Prerequisites.** The editor role.
 
-**Gotchas.** One agent runs one task at a time: while the PM is working, a new message to the PM is not accepted (the send button is Stop) — pick another agent or wait. A question an agent asks while you are in another project waits for you; it shows on the question card when you return to that chat (a top-bar marker for waiting chats arrives with the next items of this feature). File changes a background run makes appear in the file tree when you return to the project. The seeding pipeline narrates one project at a time.
+**Gotchas.** One agent runs one task at a time: while the PM is working, a new message to the PM is not accepted (the send button is Stop) — pick another agent or wait. A question an agent asks while you are in another project waits for you; the status marks (next section) show where, and the question card is there when you return to that chat. File changes a background run makes appear in the file tree when you return to the project. The seeding pipeline narrates one project at a time.
+
+## Status marks
+
+**What it does.** A small mark says which of your chats are busy without you having to visit them: a spinning ring while a chat is running, a filled dot while one is waiting for your answer, nothing when idle. The project browser shows one per project (next to the type pill), the agent pill at the bottom of the composer shows one for the selected agent, and the agent menu shows one per agent in the open project. No counts.
+
+**How to use it.** Read only; hover a mark for the agent names ("Working: PM", "Waiting for your answer: PM"). Open the project browser from the breadcrumb to see every project's mark from wherever you are. The marks are fed by an organization-wide activity stream, so they cover runs started in another tab or on another device and are correct immediately after a reload.
+
+**Prerequisites.** None.
+
+**Gotchas.** Marks show your own chats only. A run paused on its token budget shows no mark — its pause card in the chat is the affordance. After a backend restart every run is interrupted and no mark shows. Organization owners receive other members' chat status in the same stream (agent and status only, never text), but nothing renders it yet.
 
 ## Stopping a run
 

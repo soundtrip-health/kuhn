@@ -3,8 +3,10 @@
 // stays in the DOM and remains the source of truth — chat.ts reads its
 // `.value`, so this only mirrors the selection into it.
 
+import * as activity from './activity';
 import { agentIdentity, selectableAgents, type AgentIdentity } from './agents';
 import { icon } from './icons';
+import * as workspace from './workspace';
 
 let pick: ((slug: string) => void) | null = null;
 
@@ -54,12 +56,29 @@ export function initAgentSelector(): void {
 
   pick = setValue;
   renderButton(button, agentIdentity(select.value));
+  // The marks follow the user's chats in the open project (issue #113 item 3).
+  const refresh = (): void => {
+    renderButton(button, agentIdentity(select.value));
+    if (!menu.hidden) renderMenu(menu, select.value, setValue, close);
+  };
+  activity.subscribe(refresh);
+  workspace.subscribe((change) => { if (change === 'project') refresh(); });
+}
+
+/** The mark for an agent's chat in the open project, or null. */
+function markFor(slug: string): HTMLElement | null {
+  const projectId = workspace.activeProject()?.id;
+  if (projectId == null) return null;
+  const mark = activity.agentMark(projectId, slug);
+  return mark ? activity.renderMark(mark, [slug]) : null;
 }
 
 function renderButton(button: HTMLElement, agent: AgentIdentity): void {
   button.style.setProperty('--role', `var(${agent.colorVar})`);
   button.innerHTML =
     `<span class="dot"></span><span class="agent-pill-label">${agent.label}</span>${icon('chevron-down', { size: 11, stroke: 2 })}`;
+  const mark = markFor(agent.slug);
+  if (mark) button.querySelector('.agent-pill-label')?.after(mark);
 }
 
 function renderMenu(
@@ -81,6 +100,8 @@ function renderMenu(
       const label = document.createElement('span');
       label.textContent = agent.label;
       option.append(dot, label);
+      const mark = markFor(agent.slug);
+      if (mark) option.append(mark);
       option.addEventListener('click', () => { onPick(agent.slug); close(); });
       return option;
     }),

@@ -6,6 +6,7 @@
 // is the project surface.
 
 import { trapFocus } from './a11y';
+import * as activity from './activity';
 import { icon } from './icons';
 import { typeLabel, typeOptions } from './project-types';
 import { toast } from './toast';
@@ -35,6 +36,10 @@ function ensureOverlay(): HTMLElement {
   // Keep the dashboard live while open as projects load or are created.
   workspace.subscribe((change) => {
     if (!overlay!.hidden && (change === 'projects' || change === 'project')) render();
+  });
+  // …and as the user's chats start, finish or wait (issue #113 item 3).
+  activity.subscribe(() => {
+    if (!overlay!.hidden) render();
   });
   return overlay;
 }
@@ -172,6 +177,10 @@ function render(): void {
         open.textContent = 'Open';
         meta.append(open);
       }
+      // Status mark (issue #113 item 3): a ring while one of the user's
+      // chats here is running, a dot while one waits on them, else nothing.
+      const mark = activity.projectMark(project.id);
+      if (mark) meta.append(activity.renderMark(mark, activity.markedAgents(project.id, mark)));
       card.append(name, meta);
       card.addEventListener('click', () => {
         workspace.setActiveProject(project.id);

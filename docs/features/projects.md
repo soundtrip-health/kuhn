@@ -20,7 +20,7 @@ A project is one document effort — a manuscript, a grant, a protocol, an SOP �
 
 ## Project browser
 
-**What it does.** The "Projects" overlay is the dashboard for the active organization: one card per project with a type pill, "Open" on the current one, and per-card rename, setup and delete controls.
+**What it does.** The "Projects" overlay is the dashboard for the active organization: one card per project with a type pill, "Open" on the current one, a status mark when one of your chats there is running (ring) or waiting for your answer (dot) — see "Status marks" in `agents-and-chat.md` — and per-card rename, setup and delete controls.
 
 **How to use it.** Click a card to switch to it. The pencil button ("Rename project") turns the name into an inline editor — Enter or clicking away commits, Escape cancels. The sparkle button reads "Set up" for an untouched project, "Resume setup" when a wizard draft exists, and "Edit setup" once setup is complete; it opens the wizard prefilled with the saved answers. Escape or a backdrop click closes the overlay; a failed load shows "Could not load projects: …" with "Retry".
 

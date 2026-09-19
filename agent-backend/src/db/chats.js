@@ -9,32 +9,42 @@
 // Status is NOT stored: `status` is a read-time projection of
 // current_job_id's job row — see chatStatus(). #118 stage 1 widened the job
 // states (queued | running | waiting_for_user | retry_wait are all open);
-// a distinct 'waiting' chat status arrives with stage 2, when a parked
-// ask_user becomes a persisted job state instead of in-memory runtime state.
+// since issue #113 item 3 ask_user stamps `waiting_for_user` on the parked
+// job (the question itself is still in-memory runtime state until #118
+// stage 2), so a chat projects 'waiting_for_user' while its run — or a
+// sub-agent of it — waits on the user.
 
 import { query } from '../db.js';
 import { isBudgetPaused } from '../agents/budget-pause.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+// A job of the current job's tree parked on ask_user — a dispatched
+// sub-agent may be the one asking (issue #113 item 3).
+const WAITING_JOB = `(SELECT w.id FROM jobs w
+     WHERE w.root_job_id = c.current_job_id AND w.status = 'waiting_for_user'
+     ORDER BY w.id LIMIT 1)`;
+
 // The row plus the columns of its current job the projection needs.
 const SELECT = `
-  SELECT c.*, j.status AS job_status, j.error AS job_error
+  SELECT c.*, j.status AS job_status, j.error AS job_error, ${WAITING_JOB} AS waiting_job_id
   FROM chats c
   LEFT JOIN jobs j ON j.id = c.current_job_id`;
 
 /**
  * Project a chat's status from its current job (see the module note):
- * 'running' while that job is open (queued, running, parked on a question
- * or in a retry wait), 'paused' when the token budget paused it (the
- * budget-pause convention: status 'error' with the BUDGET_EXCEEDED_ERROR
- * text), else 'idle'.
- * @param {{ status?: string, error?: string|null } | null | undefined} job
- * @returns {'idle'|'running'|'paused'}
+ * 'waiting_for_user' while that job — or a sub-agent job of its tree —
+ * is parked on an ask_user question, 'running' while it is otherwise open
+ * (queued, running, in a retry wait), 'paused' when the token budget paused
+ * it (the budget-pause convention: status 'error' with the
+ * BUDGET_EXCEEDED_ERROR text), else 'idle'.
+ * @param {{ status?: string, error?: string|null, waitingJobId?: number|null } | null | undefined} job
+ * @returns {'idle'|'running'|'waiting_for_user'|'paused'}
  */
 const OPEN = new Set(['queued', 'running', 'waiting_for_user', 'retry_wait']);
 export function chatStatus(job) {
   if (!job) return 'idle';
+  if (job.status === 'waiting_for_user' || (job.waitingJobId != null && OPEN.has(job.status))) return 'waiting_for_user';
   if (OPEN.has(job.status)) return 'running';
   if (isBudgetPaused(job)) return 'paused';
   return 'idle';
@@ -43,9 +53,9 @@ export function chatStatus(job) {
 /** Parse the JSON column and fold the joined job columns into `status`. */
 function parseChat(row) {
   if (!row) return undefined;
-  const { job_status: jobStatus, job_error: jobError, ...chat } = row;
+  const { job_status: jobStatus, job_error: jobError, waiting_job_id: waitingJobId, ...chat } = row;
   if (typeof chat.continuation === 'string') chat.continuation = JSON.parse(chat.continuation);
-  chat.status = chatStatus(jobStatus != null ? { status: jobStatus, error: jobError } : null);
+  chat.status = chatStatus(jobStatus != null ? { status: jobStatus, error: jobError, waitingJobId } : null);
   return chat;
 }
 
@@ -87,6 +97,40 @@ export async function listProjectChats(projectId, userId) {
     [projectId, userId],
   );
   return rows.map(parseChat);
+}
+
+/**
+ * The chats of an organization that are not idle (issue #113 item 3): the
+ * durable half of the activity feed's snapshot, right after a reload or a
+ * restart (a restart marks every open job interrupted, so nothing is
+ * listed). Own chats only unless `everyone` (owners): status and agent, no
+ * content. `waitingJobId` names the parked job so the caller can attach the
+ * in-memory question text for the user's own chats.
+ * @param {number} orgId
+ * @param {{ userId: number, everyone?: boolean }} who
+ * @returns {Promise<Array<{ chatId: number, projectId: number, userId: number, agent: string,
+ *   status: 'running'|'waiting_for_user'|'paused', jobId: number, waitingJobId: number|null }>>}
+ */
+export async function listChatActivity(orgId, { userId, everyone = false }) {
+  const { rows } = await query(
+    `SELECT c.id AS chat_id, c.project_id, c.user_id, c.agent_slug, c.current_job_id,
+            j.status AS job_status, j.error AS job_error, ${WAITING_JOB} AS waiting_job_id
+     FROM chats c
+     JOIN projects p ON p.id = c.project_id
+     JOIN jobs j ON j.id = c.current_job_id
+     WHERE p.org_id = $1 AND p.deleted_at IS NULL
+       AND ($2 IS NULL OR c.user_id = $2)
+     ORDER BY c.id`,
+    [orgId, everyone ? null : userId],
+  );
+  return rows.flatMap((r) => {
+    const status = chatStatus({ status: r.job_status, error: r.job_error, waitingJobId: r.waiting_job_id });
+    if (status === 'idle') return [];
+    return [{
+      chatId: r.chat_id, projectId: r.project_id, userId: r.user_id, agent: r.agent_slug,
+      status, jobId: r.current_job_id, waitingJobId: r.waiting_job_id ?? null,
+    }];
+  });
 }
 
 /**

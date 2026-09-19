@@ -13,7 +13,14 @@ registry (`GET /api/agent/live` + `POST /jobs/:id/reconnect`) rather than a `job
 cursor: a chat turn is now kept alive on any disconnect (not only while parked on a question),
 its channel drops `text_delta` frames while unattached, and the client skips replayed turns the
 restored transcript already shows. Cursor replay that survives a backend restart still waits
-for #118 stage 3. Items 3–5 remain as drafted.
+for #118 stage 3.
+§7 item 3 landed (2026-09-19, #178): `GET /api/orgs/:id/activity` (`routes/activity.js`, org
+hub) opens with a DB snapshot and streams `{ type: 'chat', … }` records announced by the
+runtime at job start, terminals and budget pause, and by `ask_user` as it parks and wakes —
+which now stamps `waiting_for_user` on the parked job, so `chatStatus` projects
+`waiting_for_user` (a sub-agent's question counts). Marks: `webapp/src/activity.ts`, the
+project browser cards and the agent pill/menu. Owners receive other members' records (status
+and agent only); nothing renders those yet. Items 4–5 remain as drafted.
 **Issue:** [#113 — manage multiple projects and chats in parallel](https://github.com/soundtrip-health/kuhn/issues/113)
 **Depends on:** [#118 durable jobs](118-durable-agent-jobs.md) stages 1–3 for indicators and
 reconnection that survive reloads and restarts; builds on #136 (Stop), #137 (run tracker),
