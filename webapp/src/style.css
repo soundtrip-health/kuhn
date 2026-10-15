@@ -312,6 +312,10 @@ body {
 .topbar-activity.is-error { color: var(--warn); }
 .topbar-activity .mono { font-family: var(--font-mono); color: var(--ink); }
 .topbar-activity .ring { width: 13px; height: 13px; }
+/* Waiting-on-you marker (issue #113 item 4): the same pill chrome, clickable. */
+.topbar-waiting { cursor: pointer; color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); font: inherit; font-size: 12.5px; }
+.topbar-waiting:hover { border-color: var(--accent); }
+.topbar-waiting .chat-mark { box-shadow: none; }
 
 /* Chat status marks (issue #113 item 3): a ring while one of the user's
    chats is running, a filled dot while one waits on them. No counts. */
@@ -481,6 +485,8 @@ body.resizing-pane { cursor: col-resize; user-select: none; }
 .user-menu-role-detail { font: var(--ui-small); color: var(--ink-3); }
 .user-menu-note { font: var(--ui-small); color: var(--ink-3); padding: 0 2px; }
 .user-menu-foot { border-top: 1px solid var(--line-2); padding-top: 6px; }
+.user-menu-toggle { cursor: pointer; }
+.user-menu-toggle input { margin: 0; accent-color: var(--accent); }
 .user-menu-item {
   display: flex; align-items: center; gap: 8px; width: 100%;
   text-align: left; border: none; background: none; cursor: pointer;

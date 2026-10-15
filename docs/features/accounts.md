@@ -88,6 +88,16 @@ Kuhn has no passwords. In production you sign in with a single-use emailed link,
 
 **Gotchas.** Creating an organization for someone else's email hands it over — that address gets an owner invitation (or a direct owner membership if the account exists) and you get no access. "Suspend" asks for confirmation and locks every member out until "Reactivate". A super-admin can always sign in, even with no memberships.
 
+## Notification setting
+
+**What it does.** The account popover carries one preference: "Notify me when an agent is waiting" — a browser notification when an agent asks you a question in a chat you are not looking at (see "Waiting for you" in `agents-and-chat.md`).
+
+**How to use it.** Account popover → tick the box; the browser asks for notification permission once. Untick to stop.
+
+**Prerequisites.** A browser with notification support. The setting is stored per user in this browser, off by default.
+
+**Gotchas.** If the browser permission is denied the box unticks itself; grant it in the browser's site settings and try again.
+
 ## Personal API tokens
 
 **What it does.** A bearer token that lets scripts and external tools act as you — same organizations, roles and attribution — sent as an `Authorization: Bearer` header. Tokens power the interchange with other writing tools; see `interchange.md`.

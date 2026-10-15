@@ -1,9 +1,10 @@
-// Issue #113 items 2 and 3 (#177, #178): parallel chats. Runs are per chat
+// Issue #113 items 2–4 (#177, #178, #179): parallel chats. Runs are per chat
 // (project + agent) and survive a project switch; the composer, Stop and the
 // status bar follow the chat in view; a reload re-attaches to the runs the
 // server kept alive; the project browser and the agent pill carry status
-// marks (ring = running, dot = waiting on you) fed by the org activity feed.
-// Token-free: the PM, RA and Writer are routed to the scripted
+// marks (ring = running, dot = waiting on you) fed by the org activity feed;
+// a top-bar "Waiting for you" marker (and a ● title prefix) jumps to a chat
+// waiting on the user wherever it is. Token-free: the PM, RA and Writer are routed to the scripted
 // OpenAI-compatible fake server, whose replies can be HELD until the check
 // releases them, so a run stays in flight exactly as long as the scenario
 // needs. Needs a FRESH isolated backend (dev auth mode, scratch data dir) +
@@ -228,8 +229,16 @@ await page.waitForTimeout(800);
 check((await statusAgent()) === '', 'B: the question in A does not touch B\'s composer');
 check(!(await page.$('.question-card')), 'B: no question card in B\'s log');
 check(await waitMark(() => cardMark(A), /is-waiting/, 'waiting dot on A'), 'B: the project browser shows the waiting dot on A');
-await switchTo(A);
-await page.selectOption('#chat-role', 'pm');
+// Issue #113 item 4: the top-bar marker appears within a second, the title
+// gains the badge, and clicking the marker lands on the question card.
+check(await until(async () => !(await page.$eval('#topbar-waiting', (el) => el.hidden)), 'top-bar marker', 1500), 'B: the "Waiting for you" marker appears in the top bar within a second');
+check((await page.title()).startsWith('●'), `B: the document title carries the ● badge (${await page.title()})`);
+check(/PM in Parallel A/.test(await page.$eval('#topbar-waiting', (el) => el.title)), `B: the marker names the chat (${await page.$eval('#topbar-waiting', (el) => el.title)})`);
+await page.click('#topbar-waiting');
+await page.waitForFunction((n) => (document.querySelector('.breadcrumb-project')?.textContent ?? '').includes(n), A.name, { timeout: 10000 });
+await dismissWizard();
+check((await page.$eval('#chat-role', (el) => el.value)) === 'pm', 'marker click: the PM chat is selected');
+check(await until(async () => page.$eval('.question-card.is-pending', (el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight; }).catch(() => false), 'question card in view', 10000), 'marker click: the question card is scrolled into view');
 check(await waitMark(pillMark, /is-waiting/, 'pill waiting mark'), 'A: the agent pill shows the waiting dot for the PM');
 await page.selectOption('#chat-role', 'pm');
 check(await until(async () => Boolean(await page.$('.question-card.is-pending')), 'question card in A'), 'A: the question card is there');
@@ -239,6 +248,8 @@ await page.fill('#chat-input', 'JAMA');
 await page.press('#chat-input', 'Enter');
 check(await until(async () => (await bubbles('Thanks, noted.')) === 1, 'answer delivered'), 'A: the answer reaches the parked run and it finishes');
 check(await waitMark(pillMark, /^$/, 'pill mark clears'), 'A: the agent pill mark clears once the run ends');
+check(await until(async () => page.$eval('#topbar-waiting', (el) => el.hidden), 'marker hidden'), 'answering clears the top-bar marker');
+check(!(await page.title()).startsWith('●'), `answering clears the title badge (${await page.title()})`);
 
 await page.screenshot({ path: '/tmp/kuhn-parallel-check.png' });
 await browser.close();
