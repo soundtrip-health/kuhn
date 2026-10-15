@@ -26,6 +26,20 @@ describe('EventChannel', () => {
     expect(await pending).toEqual({ value: undefined, done: true });
   });
 
+  it('drops text_delta frames while detached but keeps every other event (issue #113 item 2)', async () => {
+    const ch = new EventChannel();
+    ch.detach();
+    ch.push({ type: 'text_delta', content: 'a' });
+    ch.push({ type: 'text', content: 'a' });
+    ch.push({ type: 'text_delta', content: 'b' });
+    ch.attach();
+    ch.push({ type: 'text_delta', content: 'c' });
+    ch.end();
+    const seen = [];
+    for await (const v of ch) seen.push(v);
+    expect(seen).toEqual([{ type: 'text', content: 'a' }, { type: 'text_delta', content: 'c' }]);
+  });
+
   it('ignores pushes after end()', async () => {
     const ch = new EventChannel();
     ch.end();

@@ -361,11 +361,50 @@ router.get('/api/agent/pending', async (req, res) => {
 });
 
 /**
+ * GET /api/agent/live?projectId=
+ * The caller's chat runs in the project that are alive on this server
+ * (issue #113 item 2) — the ones a tab that reloaded, or came back to the
+ * project, can re-attach to with POST /jobs/:id/reconnect. Each carries the
+ * chat, the agent, whether the run is parked on a question
+ * (`status: 'waiting_for_user'`, with the question text) or working
+ * (`'running'`), and `attached`: whether a consumer still holds its stream
+ * (another tab, or the one that just reloaded and has not been noticed yet
+ * — reconnect answers 409 until it has). Own runs only: another member's run
+ * is theirs to watch. Like /pending this is in-memory runtime state — empty
+ * after a restart.
+ */
+router.get('/api/agent/live', async (req, res) => {
+  if (req.query.projectId == null) {
+    res.status(400).json({ error: 'projectId query parameter is required' });
+    return;
+  }
+  const project = await requireProjectRole(req, res, req.query.projectId, 'viewer');
+  if (!project) return;
+  const runs = listLiveRuns(project.id)
+    .filter((r) => r.userId === req.user.id)
+    .map((r) => {
+      const q = getPendingQuestion(r.jobId);
+      return {
+        jobId: r.jobId,
+        chatId: r.chatId ?? null,
+        agent: q?.agent ?? r.role,
+        role: r.role,
+        status: q ? 'waiting_for_user' : 'running',
+        question: q?.question ?? null,
+        attached: r.consumerAttached === true,
+      };
+    });
+  res.json({ runs });
+});
+
+/**
  * POST /api/agent/jobs/:id/reconnect
- * Re-attach an SSE stream to a still-alive run whose consumer dropped while it
- * was parked on a question (story 027). Re-emits the pending question, then
- * streams subsequent live events. 404 if no live run; 409 if one is already
- * attached (the EventChannel is single-consumer).
+ * Re-attach an SSE stream to a still-alive run whose consumer dropped — while
+ * parked on a question (story 027), or at any point of a chat turn (issue
+ * #113 item 2). Re-emits the pending question if any, then streams what
+ * buffered meanwhile and the live events after. 404 if no live run; 409 if
+ * one is already attached (the EventChannel is single-consumer); 403 for a
+ * run that belongs to another member.
  */
 router.post('/api/agent/jobs/:id/reconnect', async (req, res) => {
   const job = await requireJobRole(req, res, 'editor');
@@ -373,6 +412,10 @@ router.post('/api/agent/jobs/:id/reconnect', async (req, res) => {
   const run = getRun(job.id);
   if (!run) {
     res.status(404).json({ error: 'no live run for this job' });
+    return;
+  }
+  if (run.userId != null && run.userId !== req.user.id) {
+    res.status(403).json({ error: 'not your run' });
     return;
   }
   if (run.consumerAttached) {

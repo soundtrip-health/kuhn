@@ -329,6 +329,36 @@ describe('GET /api/agent/pending (story 027)', () => {
   });
 });
 
+describe('GET /api/agent/live (issue #113 item 2)', () => {
+  it('lists the caller\'s runs in the project — parked or working, attached or not — never another member\'s', async () => {
+    const mk = (jobId, extra) => ({ jobId, projectId: 77, role: 'pm', channel: new EventChannel(), state: {}, consumerAttached: false, userId: 1, chatId: 5, ...extra });
+    const working = mk(160, {});
+    const parked = mk(161, { role: 'writer', chatId: 6 });
+    const attached = mk(162, { consumerAttached: true });
+    const someoneElses = mk(163, { userId: 2 });
+    const otherProject = mk(164, { projectId: 88 });
+    for (const r of [working, parked, attached, someoneElses, otherProject]) registerRun(r);
+    waitForReply(161, 10000, { question: 'Which journal?', agent: 'writer' });
+    try {
+      const res = await fetch(`${base}/api/agent/live?projectId=77`);
+      expect(res.status).toBe(200);
+      const { runs } = await res.json();
+      expect(runs).toEqual([
+        { jobId: 160, chatId: 5, agent: 'pm', role: 'pm', status: 'running', question: null, attached: false },
+        { jobId: 161, chatId: 6, agent: 'writer', role: 'writer', status: 'waiting_for_user', question: 'Which journal?', attached: false },
+        { jobId: 162, chatId: 5, agent: 'pm', role: 'pm', status: 'running', question: null, attached: true },
+      ]);
+    } finally {
+      deliverReply(161, 'x');
+      for (const id of [160, 161, 162, 163, 164]) unregisterRun(id);
+    }
+  });
+
+  it('requires projectId', async () => {
+    expect((await fetch(`${base}/api/agent/live`)).status).toBe(400);
+  });
+});
+
 describe('POST /api/agent/jobs/:id/reconnect (story 027)', () => {
   it('404s when no live run exists for the job', async () => {
     const res = await fetch(`${base}/api/agent/jobs/999/reconnect`, { method: 'POST' });
@@ -344,6 +374,20 @@ describe('POST /api/agent/jobs/:id/reconnect (story 027)', () => {
         expect(res.status).toBe(409);
       } finally {
         unregisterRun(70);
+      }
+    });
+  });
+
+  it('refuses another member\'s run (issue #113 item 2)', async () => {
+    await withJob(71, {}, async () => {
+      const run = { jobId: 71, projectId: 5, role: 'pm', channel: new EventChannel(), state: {}, consumerAttached: false, userId: 2 };
+      registerRun(run);
+      try {
+        const res = await fetch(`${base}/api/agent/jobs/71/reconnect`, { method: 'POST' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'not your run' });
+      } finally {
+        unregisterRun(71);
       }
     });
   });

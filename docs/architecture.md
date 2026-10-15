@@ -176,7 +176,14 @@ code.
   carrying the provider session and canonical continuation — so the next message continues from
   where it stopped. The chat's send button doubles as Stop while a run is in flight (Esc too);
   the status bar follows the innermost *running* job via `dispatch_agent`'s `job` markers
-  (issue #137, `webapp/src/run-tracker.ts`). Token-free check: `npm run stop-check` in `webapp/`
+  (issue #137, `webapp/src/run-tracker.ts`). Token-free check: `npm run stop-check` in `webapp/`.
+  **Parallel chats** (issue #113 item 2): the webapp keeps one run per chat (project + agent,
+  `webapp/src/chat-runs.ts`) and one log per project, so a project switch leaves every stream
+  open and Stop / the status bar / answer mode follow the chat in view. Server-side a chat turn
+  is kept alive on any consumer disconnect (`runtime.js` `keepAlive`; its channel drops
+  `text_delta` frames while unattached), `GET /api/agent/live` lists the caller's live runs in
+  a project and `POST /api/agent/jobs/:id/reconnect` re-attaches — the reload path until #118
+  stage 3 replays `job_events` by cursor. Token-free check: `npm run parallel-check`.
 - **Model profiles and per-role routing** (issues #107/#111/#112) — an agent's model is
   resolved at dispatch time by `agents/model-routing.js` from the org's ranked route list
   (`agent_model_routes`: profile × difficulty ceiling) over *model profiles*
