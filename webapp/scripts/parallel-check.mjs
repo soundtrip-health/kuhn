@@ -1,7 +1,9 @@
-// Issue #113 item 2 (#177): parallel chats. Runs are per chat (project +
-// agent) and survive a project switch; the composer, Stop and the status bar
-// follow the chat in view; a reload re-attaches to the runs the server kept
-// alive. Token-free: the PM, RA and Writer are routed to the scripted
+// Issue #113 items 2 and 3 (#177, #178): parallel chats. Runs are per chat
+// (project + agent) and survive a project switch; the composer, Stop and the
+// status bar follow the chat in view; a reload re-attaches to the runs the
+// server kept alive; the project browser and the agent pill carry status
+// marks (ring = running, dot = waiting on you) fed by the org activity feed.
+// Token-free: the PM, RA and Writer are routed to the scripted
 // OpenAI-compatible fake server, whose replies can be HELD until the check
 // releases them, so a run stays in flight exactly as long as the scenario
 // needs. Needs a FRESH isolated backend (dev auth mode, scratch data dir) +
@@ -97,6 +99,18 @@ const sendTo = async (agent, text) => {
   await page.press('#chat-input', 'Enter');
 };
 const requestCount = () => fake.requests.length;
+// Status marks (issue #113 item 3): the project browser's card for a project,
+// and the agent pill, carry `.chat-mark.is-running` / `.is-waiting`.
+const cardMark = async (project) => {
+  await page.click('.breadcrumb-project');
+  await page.waitForSelector('#project-browser:not([hidden])', { timeout: 5000 });
+  const mark = await page.$eval(`.pb-card:has(.pb-card-name:text-is("${project.name}"))`, (card) => card.querySelector('.chat-mark')?.className ?? '');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#project-browser[hidden]', { timeout: 5000 }).catch(() => {});
+  return mark;
+};
+const pillMark = () => page.$eval('#agent-selector-btn', (b) => b.querySelector('.chat-mark')?.className ?? '');
+const waitMark = (fn, re, label) => until(async () => re.test(await fn()), label, 8000);
 
 await switchTo(A);
 check((await logText()).length >= 0, 'project A open');
@@ -110,15 +124,20 @@ check(await until(() => requestCount() === n + 1, 'PM request reached the fake')
 check(/^PM is working/.test(await statusAgent()), `A: status shows the PM working (${await statusAgent()})`);
 check(await sendIsStop(), 'A: send button is Stop');
 
+check(await waitMark(pillMark, /is-running/, 'pill mark while the PM runs'), 'A: the agent pill shows the running mark for the PM');
 await switchTo(B);
 check((await statusAgent()) === '', `B: status bar is empty — the run is A's (${await statusAgent()})`);
 check(!(await sendIsStop()), 'B: send button is Send');
 check(!(await logText()).includes('Go A'), 'B: A\'s message is not in B\'s log');
+check(await waitMark(() => cardMark(A), /is-running/, 'ring on A from B'), 'B: the project browser shows the ring on A');
+check(!/chat-mark/.test(await cardMark(B)), 'B: no mark on B (nothing running there)');
+check((await pillMark()) === '', 'B: no mark on the agent pill (the PM is idle here)');
 g1.release();
 check(await until(() => requestCount() === n + 3, 'RA and final PM requests arrived'), 'A\'s run continued in the background (RA dispatched, PM finished)');
 await page.waitForTimeout(500);
 check(!(await logText()).includes('Done in A.'), 'B: A\'s reply did not leak into B\'s log');
 check((await statusAgent()) === '', 'B: status bar still empty after A finished');
+check(await waitMark(() => cardMark(A), /^$/, 'ring clears on A'), 'B: the ring on A clears when the run ends');
 
 await switchTo(A);
 check((await logText()).includes('Go A'), 'A: the user message is in the log');
@@ -183,6 +202,8 @@ await page.reload();
 await page.waitForSelector('#chat-input', { timeout: 15000 });
 await dismissWizard();
 await page.selectOption('#chat-role', 'pm');
+check(await waitMark(pillMark, /is-running/, 'pill mark after reload'), 'after reload: the agent pill shows the running mark (feed snapshot)');
+check(await waitMark(() => cardMark(A), /is-running/, 'card mark after reload'), 'after reload: the project browser shows the ring on A');
 check(await until(async () => /^PM is working/.test(await statusAgent()), 'reconnected status', 10000), `after reload: re-attached to the live run (${await statusAgent()})`);
 check(await sendIsStop(), 'after reload: Stop addresses the re-attached run');
 g5.release();
@@ -206,7 +227,10 @@ g6.release();
 await page.waitForTimeout(800);
 check((await statusAgent()) === '', 'B: the question in A does not touch B\'s composer');
 check(!(await page.$('.question-card')), 'B: no question card in B\'s log');
+check(await waitMark(() => cardMark(A), /is-waiting/, 'waiting dot on A'), 'B: the project browser shows the waiting dot on A');
 await switchTo(A);
+await page.selectOption('#chat-role', 'pm');
+check(await waitMark(pillMark, /is-waiting/, 'pill waiting mark'), 'A: the agent pill shows the waiting dot for the PM');
 await page.selectOption('#chat-role', 'pm');
 check(await until(async () => Boolean(await page.$('.question-card.is-pending')), 'question card in A'), 'A: the question card is there');
 check(/waiting for your answer/.test(await statusAgent()), `A: status says the PM is waiting (${await statusAgent()})`);
@@ -214,6 +238,7 @@ check((await page.$eval('#chat-input', (el) => el.placeholder)).includes('answer
 await page.fill('#chat-input', 'JAMA');
 await page.press('#chat-input', 'Enter');
 check(await until(async () => (await bubbles('Thanks, noted.')) === 1, 'answer delivered'), 'A: the answer reaches the parked run and it finishes');
+check(await waitMark(pillMark, /^$/, 'pill mark clears'), 'A: the agent pill mark clears once the run ends');
 
 await page.screenshot({ path: '/tmp/kuhn-parallel-check.png' });
 await browser.close();

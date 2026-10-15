@@ -352,6 +352,9 @@ Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
   hand-off note; a top-level job is stamped with `jobs.chat_id` and the chat's `status` is
   projected at read time from its current job (no stored state until #118 stage 1). The client
   names the chat; the server resumes it — so two tabs or devices continue one conversation.
+  `status` projects `waiting_for_user` while the run (or a sub-agent of it) is parked on
+  `ask_user`, and every transition is announced on the org hub (`agents/activity.js`,
+  `GET /api/orgs/:id/activity`) for the webapp's status marks (issue #113 item 3).
 - Tenant KB under the tenant's storage; shared guidance corpus in a separate global store
 
 ## Decision Revisions (2026-06-11)

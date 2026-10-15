@@ -123,7 +123,7 @@ beforeAll(async () => {
   app.use(session);
   // The full post-session() tenant surface, in index.js mount order.
   for (const mod of [
-    './agent.js', './agent-prompts.js', './chats.js', './citations.js', './comments.js', './files.js',
+    './agent.js', './agent-prompts.js', './chats.js', './activity.js', './citations.js', './comments.js', './files.js',
     './history.js', './memory.js', './knowledge.js', './orgs.js', './org-admin.js', './org-library.js',
     './pending-edits.js', './projects.js', './promotions.js', './render.js',
     './review-links.js', './scripts.js',
@@ -251,6 +251,8 @@ const ROUTES = [
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/library/999`, ok: { status: 404, error: 'document not found' } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/library/999/content`, ok: { status: 404, error: 'document not found' } },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/events`, sse: true },
+  // Issue #113 item 3: the chat activity feed.
+  { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/activity`, sse: true },
   { scope: 'org', minRole: 'viewer', method: 'GET', path: `/api/orgs/${ORG_A}/knowledge`, ok: { status: 200 } },
   // Issue #67: every member may view prompts (the agents table is unseeded
   // here, so the list is just empty — the 200 proves the guard threshold).

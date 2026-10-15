@@ -2487,8 +2487,58 @@ export interface Chat {
   pending_handoff: string | null;
   current_job_id: number | null;
   last_message_at: string | null;
-  /** Projected from the current job; 'waiting_for_user' arrives with #118 stage 1. */
-  status: 'idle' | 'running' | 'paused';
+  /** Projected from the current job: parked on an ask_user question (its own or a sub-agent's) = waiting_for_user. */
+  status: 'idle' | 'running' | 'waiting_for_user' | 'paused';
+}
+
+// ---- Org activity feed (issue #113 item 3) ----
+
+/**
+ * One chat's status on the org activity feed: the caller's own chats carry
+ * the pending question; other members' chats (owners only) never carry
+ * content. `idle` records retire the chat from the feed.
+ */
+export interface ChatActivity {
+  type: 'chat';
+  chatId: number;
+  projectId: number;
+  userId: number | null;
+  agent: string;
+  status: 'idle' | 'running' | 'waiting_for_user' | 'paused';
+  jobId: number | null;
+  question: string | null;
+}
+
+/** The feed opens with everything that is not idle right now. */
+export interface ChatActivitySnapshot {
+  type: 'snapshot';
+  chats: ChatActivity[];
+}
+
+export interface ActivityFeedHandlers {
+  onEvent: (event: ChatActivity | ChatActivitySnapshot) => void;
+  onOpen?: () => void;
+  onError?: () => void;
+}
+
+/**
+ * Subscribe to the org's chat activity feed (GET /api/orgs/:id/activity)
+ * via EventSource, which reconnects automatically — and re-sends the
+ * snapshot on every (re)connect, so the store can be rebuilt from it.
+ * Returns an unsubscribe function.
+ */
+export function subscribeOrgActivity(orgId: number, handlers: ActivityFeedHandlers): () => void {
+  const source = new EventSource(`${BACKEND_URL}/api/orgs/${orgId}/activity`, { withCredentials: true });
+  source.onopen = () => handlers.onOpen?.();
+  source.onerror = () => handlers.onError?.();
+  source.onmessage = (msg) => {
+    try {
+      handlers.onEvent(JSON.parse(msg.data) as ChatActivity | ChatActivitySnapshot);
+    } catch {
+      // Malformed frame — skip; the stream itself is still healthy.
+    }
+  };
+  return () => source.close();
 }
 
 /** The caller's chats in a project, most recently active first. */

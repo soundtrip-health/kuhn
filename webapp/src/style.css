@@ -313,6 +313,19 @@ body {
 .topbar-activity .mono { font-family: var(--font-mono); color: var(--ink); }
 .topbar-activity .ring { width: 13px; height: 13px; }
 
+/* Chat status marks (issue #113 item 3): a ring while one of the user's
+   chats is running, a filled dot while one waits on them. No counts. */
+.chat-mark { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.chat-mark.is-running {
+  width: 9px; height: 9px; box-sizing: border-box;
+  border: 1.5px solid var(--line-strong); border-top-color: var(--accent);
+  animation: kuhn-spin .9s linear infinite;
+}
+.chat-mark.is-waiting { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.agent-pill .chat-mark { margin-left: 1px; }
+.agent-option .chat-mark { margin-left: auto; }
+.pb-card-meta .chat-mark { margin-left: auto; }
+
 /* spinning ring used in chips, files, stages */
 .ring {
   display: inline-block; flex: none;

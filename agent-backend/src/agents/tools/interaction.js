@@ -80,7 +80,16 @@ export function createInteractionTools(ctx) {
     },
     execute: async (_id, { question }) => {
       ctx.channel.push({ type: 'question', agent: agentSlug, jobId, content: question });
-      const reply = await waitForReply(jobId, config.agent.questionTimeoutMs, { question, agent: agentSlug });
+      // The wait is registered before anything is awaited: a reply that
+      // arrives on the heels of the question event must find it.
+      const pending = waitForReply(jobId, config.agent.questionTimeoutMs, { question, agent: agentSlug });
+      // The job row says it is parked (issue #113 item 3) — the chat's
+      // status projects 'waiting_for_user' and the activity feed says so.
+      await ctx.waiting?.(question);
+      const reply = await pending;
+      // Back to running — unless the run was stopped while parked, in which
+      // case the cancel already stamped the row (cancelRun) and must stand.
+      if (!ctx.signal?.aborted) await ctx.waiting?.(null);
       // Control point 4 (issue #118 §5): a cancel, suspension or deadline
       // that landed while the run was parked is honoured as it wakes.
       const stopped = reply != null && ctx.gate ? await ctx.gate('wake', 'ask_user') : null;

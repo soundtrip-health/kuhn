@@ -263,7 +263,7 @@ import { extractProjectPdfText } from '../ingest.js';
 import { recordFileEvent } from '../db/file-activity.js';
 import { applyMove, findPendingEditConflicts } from '../db/move-paths.js';
 import { listThreads, addReply, setResolved } from '../db/comments.js';
-import { subscribeProjectEvents } from '../project-events.js';
+import { subscribeOrgEvents, subscribeProjectEvents } from '../project-events.js';
 import { getAgentWithTools } from '../db/agents.js';
 import { getOrgAgentPrompt } from '../db/org-agent-prompts.js';
 import { resolveDocType } from '../db/doc-types.js';
@@ -1806,6 +1806,98 @@ describe('PM agent tools (story 012)', () => {
 });
 
 // --- Story 027: survive a disconnect while parked on a question -------------
+
+// --- Issue #113 item 3: chat activity on the org feed ----------------------
+
+describe('chat activity announcements (issue #113 item 3)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+  });
+  const chatEvents = () => {
+    const seen = [];
+    const off = subscribeOrgEvents(3, (e) => { if (e.type === 'chat') seen.push(e); });
+    return { seen, off };
+  };
+
+  it('announces running at the start and idle at the done terminal of a chat run', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const { seen, off } = chatEvents();
+    try {
+      await collect({ role: 'pm', projectId: 1, input: 'go', chatId: 9, userId: 4 });
+    } finally {
+      off();
+    }
+    expect(seen.map((e) => e.status)).toEqual(['running', 'idle']);
+    expect(seen[0]).toMatchObject({ type: 'chat', chatId: 9, projectId: 1, userId: 4, agent: 'pm', jobId: 42, question: null });
+  });
+
+  it('announces nothing for a run without a chat (compose, seeding, dispatch)', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const { seen, off } = chatEvents();
+    try {
+      await collect({ role: 'pm', projectId: 1, input: 'go' });
+    } finally {
+      off();
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it('stamps waiting_for_user on the job and announces the question while ask_user is parked, running again on the reply', async () => {
+    sdkState.generator = async function* () {
+      const { tools } = createSdkMcpServer.mock.calls[0][0];
+      const askUser = tools.find((t) => t.name === 'ask_user');
+      const result = await askUser.handler({ question: 'Which journal?' });
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: `Answer: ${result.content[0].text}` }], usage: { input_tokens: 1, output_tokens: 1 } },
+      };
+      yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    const { seen, off } = chatEvents();
+    try {
+      for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', chatId: 9, detachable: true })) {
+        if (ev.type === 'question') {
+          // Let the park announcement land before answering.
+          await new Promise((r) => setTimeout(r, 10));
+          deliverReply(42, 'JAMA');
+        }
+      }
+    } finally {
+      off();
+    }
+    expect(seen.map((e) => [e.status, e.question])).toEqual([
+      ['running', null], ['waiting_for_user', 'Which journal?'], ['running', null], ['idle', null],
+    ]);
+    expect(updateJob).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'waiting_for_user', waitingSince: expect.any(String) }));
+    expect(updateJob).toHaveBeenCalledWith(42, { status: 'running', waitingSince: null });
+  });
+
+  it('announces idle when the user stops a run parked on a question, without marking it running again', async () => {
+    sdkState.generator = async function* () {
+      const { tools } = createSdkMcpServer.mock.calls[0][0];
+      const askUser = tools.find((t) => t.name === 'ask_user');
+      await askUser.handler({ question: 'Still there?' });
+      yield { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    const { seen, off } = chatEvents();
+    try {
+      for await (const ev of runAgentTask({ role: 'pm', projectId: 1, input: 'start', chatId: 9, detachable: true })) {
+        if (ev.type === 'question') {
+          await new Promise((r) => setTimeout(r, 10));
+          await cancelRun(getRun(42).state, { reason: 'user' });
+        }
+      }
+    } finally {
+      off();
+    }
+    expect(seen.map((e) => e.status)).toEqual(['running', 'waiting_for_user', 'idle']);
+    expect(updateJob).not.toHaveBeenCalledWith(42, { status: 'running', waitingSince: null });
+  });
+});
 
 describe('ask_user reconnect (story 027)', () => {
   beforeEach(() => {

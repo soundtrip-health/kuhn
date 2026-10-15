@@ -28,6 +28,7 @@ import { publishProjectEvent } from '../project-events.js';
 import { log } from '../logger.js';
 import { checkOrgAccess } from '../db/orgs.js';
 import { EventChannel } from './events.js';
+import { publishChatActivity } from './activity.js';
 import { cancelQuestion, hasPendingQuestion, getPendingQuestion } from './questions.js';
 import { registerRun, unregisterRun, WORKER_ID } from './runs.js';
 import { createToolContext, listTools } from './tools/index.js';
@@ -177,6 +178,7 @@ export async function* runAgentTask(task, internal = {}) {
       });
       if (state.job) {
         await updateJob(state.job.id, { status: 'error', error: err.message }).catch(() => {});
+        await state.announceTerminal?.('idle');
       }
     })
     .finally(() => {
@@ -500,6 +502,40 @@ async function runTask(task, internal, channel, state) {
     // with it); the spliced hand-off note counts as delivered from here.
     await startChatJob(chatId, job.id);
   }
+  // Chat activity (issue #113 item 3): the chat's status on the org feed at
+  // every transition, from the same places that write the job row. A
+  // sub-agent has no chat of its own — its ask_user announces on the root
+  // job's chat (looked up once, lazily) — and only the root's terminals
+  // change the chat's status.
+  const orgId = project?.org_id ?? null;
+  let activityChat = chatId != null ? { chatId, agent: agent.slug } : null;
+  const announce = async (status, extra = {}) => {
+    if (orgId == null) return;
+    if (!activityChat && depth > 0 && state.rootJobId != null) {
+      const root = await getJob(state.rootJobId).catch(() => null);
+      activityChat = root?.chat_id != null ? { chatId: root.chat_id, agent: root.role } : { chatId: null };
+    }
+    if (activityChat?.chatId == null) return;
+    publishChatActivity(orgId, {
+      chatId: activityChat.chatId, projectId: Number(projectId), userId, agent: activityChat.agent,
+      status, jobId: state.rootJobId ?? job.id, ...extra,
+    });
+  };
+  const announceTerminal = (status) => (depth === 0 ? announce(status) : Promise.resolve());
+  state.announceTerminal = announceTerminal;
+  if (depth === 0) await announce('running');
+  // ask_user's park / wake (tools/interaction.js): the job row says it is
+  // waiting — so the chat projects 'waiting_for_user' after a reload — and
+  // the feed carries the question text to the user's own tabs.
+  const waiting = async (question) => {
+    if (question != null) {
+      await updateJob(job.id, { status: 'waiting_for_user', waitingSince: new Date().toISOString() }).catch(() => {});
+      await announce('waiting_for_user', { question });
+    } else {
+      await updateJob(job.id, { status: 'running', waitingSince: null }).catch(() => {});
+      await announce('running');
+    }
+  };
   // What this run leaves on its chat (issue #113): the provider session and
   // the canonical record a follow-up from ANY tab resumes. Best effort at
   // every terminal — the run's own outcome never fails because of it.
@@ -570,6 +606,7 @@ async function runTask(task, internal, channel, state) {
     // Stopping this run stops what it dispatched (issue #136).
     signal: state.controller.signal,
     gate,
+    waiting,
   });
   const neutralTools = listTools(toolContext);
 
@@ -676,6 +713,7 @@ async function runTask(task, internal, channel, state) {
       // and usage on it (status again, in case a retry landed 'running').
       await updateJob(job.id, { status: 'cancelled', cancelReason: 'user', ...fields, ...jobIdentity() }).catch(() => {});
       await syncChat();
+      await announceTerminal('idle');
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason: 'user',
         contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
@@ -696,6 +734,7 @@ async function runTask(task, internal, channel, state) {
       // budget pause — leaves a hand-off note so the user can continue.
       await updateJob(job.id, { status: 'cancelled', cancelReason: reason, ...fields, ...jobIdentity() }).catch(() => {});
       await syncChat();
+      await announceTerminal('idle');
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'cancelled', reason,
         contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
@@ -718,6 +757,8 @@ async function runTask(task, internal, channel, state) {
     }
     await updateJob(job.id, { ...fields, ...(reason && reason !== 'budget' ? { cancelReason: reason } : {}) }).catch(() => {});
     await syncChat();
+    // A budget cutoff already announced 'paused' with its own terminal.
+    if (reason !== 'budget') await announceTerminal('idle');
     log.info('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: reason === 'budget' ? 'error' : 'cancelled',
       reason: reason ?? 'cancelled', contextTokens: lastContextTokens,
@@ -790,6 +831,7 @@ async function runTask(task, internal, channel, state) {
         continuation: state.continuation ?? null,
       });
       await syncChat();
+      await announceTerminal('idle');
       recordRunOutcome({ job, agent, projectId, userId, depth, state });
       log.info('job_end', {
         jobId: job.id, agent: agent.slug, depth, status: 'done',
@@ -912,6 +954,7 @@ async function runTask(task, internal, channel, state) {
       continuation: state.continuation ?? null,
     });
     await syncChat();
+    await announceTerminal('idle');
     log.error('job_end', {
       jobId: job.id, agent: agent.slug, depth, status: 'error', reason,
       contextTokens: lastContextTokens, inputTokens: jobTokens.inputTokens,
@@ -1088,6 +1131,7 @@ async function runTask(task, internal, channel, state) {
             // The paused session stays on the chat: a resume (or the user's
             // next message from any tab) continues this exact conversation.
             await syncChat();
+            await announceTerminal('paused');
             // Hand-off before the pause (issue #110). The interrupted agent
             // cannot write its own note — its turn was just aborted — so one
             // is distilled from Kuhn's record of the conversation (the turn
