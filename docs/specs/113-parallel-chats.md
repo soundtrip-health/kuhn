@@ -24,7 +24,13 @@ and agent only); nothing renders those yet.
 §7 item 4 landed (2026-09-19, #179): `webapp/src/waiting.ts` — the top-bar "Waiting for you"
 pill (sibling of the save/seeding slot), the "●" title prefix, jump-to-chat (project switch +
 agent select + `chat.ts` `revealQuestion`), and the opt-in browser notification stored per user
-in `localStorage` (no server-side preference store exists). Item 5 remains as drafted.
+in `localStorage` (no server-side preference store exists).
+§7 item 5 landed (2026-09-19, #180): `AGENT_MAX_CONCURRENT_RUNS_PER_USER` (4) / `_PER_ORG`
+(16), enforced where a top-level job is created (`db/jobs.js` `createJob` counts open root jobs
+of the org and inserts in one transaction; `RunCapError` → a `concurrency_limit` error event
+before any job row exists). #118 stage 4 has no claim loop yet, so "at claim time" is "at job
+creation", which is the same moment today; when the loop lands the check moves with it. The
+chat shows "N of M runs in use" only on refusal. Item 6 (admin chat) is not scheduled.
 **Issue:** [#113 — manage multiple projects and chats in parallel](https://github.com/soundtrip-health/kuhn/issues/113)
 **Depends on:** [#118 durable jobs](118-durable-agent-jobs.md) stages 1–3 for indicators and
 reconnection that survive reloads and restarts; builds on #136 (Stop), #137 (run tracker),

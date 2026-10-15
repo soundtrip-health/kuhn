@@ -99,6 +99,9 @@ vi.mock('../config.js', () => ({
       maxDispatchDepth: 2,
       contextWindow: 200000,
       questionTimeoutMs: 15 * 60 * 1000,
+      // Concurrency caps (issue #113 item 5): passed to createJob, which is mocked.
+      maxConcurrentRunsPerUser: 4,
+      maxConcurrentRunsPerOrg: 16,
       model: undefined,
       modelWeights: { haiku: 1, sonnet: 3, opus: 5, default: 5 },
       // Zero delays so the backoff retry path (story 029) runs instantly in tests.
@@ -1807,6 +1810,47 @@ describe('PM agent tools (story 012)', () => {
 
 // --- Story 027: survive a disconnect while parked on a question -------------
 
+// --- Issue #113 item 5: concurrency caps ------------------------------------
+
+describe('concurrency caps (issue #113 item 5)', () => {
+  beforeEach(() => {
+    getAgentWithTools.mockResolvedValue(PM_AGENT);
+  });
+
+  it('passes the org ceilings to createJob for a top-level run', async () => {
+    sdkState.messages = [
+      { type: 'result', subtype: 'success', session_id: 's', usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await collect({ role: 'pm', projectId: 1, input: 'go', userId: 4 });
+    expect(createJob).toHaveBeenLastCalledWith(
+      expect.objectContaining({ role: 'pm', userId: 4 }),
+      { limits: { orgId: 3, perUser: 4, perOrg: 16 } },
+    );
+  });
+
+  it('turns a refusal into a concurrency_limit error before any job or provider call, and announces nothing', async () => {
+    const refusal = Object.assign(new Error('You already have 2 of 2 runs in progress. Wait for one to finish, or stop it, before starting another.'), {
+      code: 'concurrency_limit', scope: 'user', used: 2, limit: 2,
+    });
+    createJob.mockRejectedValueOnce(refusal);
+    const seen = [];
+    const off = subscribeOrgEvents(3, (e) => { if (e.type === 'chat') seen.push(e); });
+    let events;
+    try {
+      events = await collect({ role: 'pm', projectId: 1, input: 'go', userId: 4, chatId: 9 });
+    } finally {
+      off();
+    }
+    expect(events).toEqual([{
+      type: 'error', agent: 'pm', reason: 'concurrency_limit', message: refusal.message,
+      runs: { scope: 'user', used: 2, limit: 2 },
+    }]);
+    expect(sdkQuery).not.toHaveBeenCalled();
+    expect(updateJob).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+  });
+});
+
 // --- Issue #113 item 3: chat activity on the org feed ----------------------
 
 describe('chat activity announcements (issue #113 item 3)', () => {
@@ -2592,7 +2636,7 @@ describe('durable chats (issue #113)', () => {
     okRun();
     const events = await collect({ role: 'ra', projectId: 1, input: 'hi', chatId: 9 });
     expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 'sess-1' });
-    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: 9 }));
+    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: 9 }), expect.anything());
     expect(startChatJob).toHaveBeenCalledWith(9, 42);
     // Recorded when the provider session initialised, and again at the terminal with the record.
     expect(recordChatRun).toHaveBeenCalledWith(9, 42, { sessionId: 'sess-1', continuation: null });
@@ -2606,13 +2650,13 @@ describe('durable chats (issue #113)', () => {
   it('without a chatId nothing touches a chat, and a sub-agent run never does', async () => {
     okRun();
     await collect({ role: 'ra', projectId: 1, input: 'hi' });
-    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: null }));
+    expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ chatId: null }), expect.anything());
     expect(startChatJob).not.toHaveBeenCalled();
     expect(recordChatRun).not.toHaveBeenCalled();
 
     okRun();
     await collect({ role: 'ra', projectId: 1, input: 'hi', chatId: 9 }, { depth: 1, parentJobId: 41 });
-    expect(createJob).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: null, parentJobId: 41 }));
+    expect(createJob).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: null, parentJobId: 41 }), expect.anything());
     expect(startChatJob).not.toHaveBeenCalled();
     expect(recordChatRun).not.toHaveBeenCalled();
   });
@@ -2867,7 +2911,7 @@ describe('run gate (issue #118 stage 1)', () => {
     };
     try {
       const events = await collect({ role: 'pm', projectId: 7, input: 'go', detachable: true });
-      expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ deadlineAt: expect.any(String), rootJobId: null }));
+      expect(createJob).toHaveBeenCalledWith(expect.objectContaining({ deadlineAt: expect.any(String), rootJobId: null }), expect.anything());
       const terminal = events.at(-1);
       expect(terminal).toMatchObject({ type: 'error', reason: 'deadline_exceeded', jobId: 42, sessionId: 'sess-d' });
       expect(terminal.message).toMatch(/time limit/);
@@ -2899,7 +2943,7 @@ describe('run gate (issue #118 stage 1)', () => {
     };
     const events = await collect({ role: 'pm', projectId: 7, input: 'delegate' });
     expect(events.at(-1).type).toBe('done');
-    expect(createJob).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentJobId: 42, rootJobId: 42, deadlineAt: '2030-01-01T00:00:00.000Z' }));
+    expect(createJob).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentJobId: 42, rootJobId: 42, deadlineAt: '2030-01-01T00:00:00.000Z' }), expect.anything());
     // The child's turn books the tree's spend on the root row, not its own.
     expect(updateJob).toHaveBeenCalledWith(42, { budgetUsed: expect.any(Number) });
   });

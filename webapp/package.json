@@ -30,6 +30,7 @@
     "stop-check": "node scripts/stop-check.mjs",
     "model-pick-check": "node scripts/model-pick-check.mjs",
     "parallel-check": "node scripts/parallel-check.mjs",
+    "run-cap-check": "node scripts/run-cap-check.mjs",
     "stale-room-check": "node scripts/stale-room-check.mjs"
   },
   "devDependencies": {

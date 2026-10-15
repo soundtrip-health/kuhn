@@ -169,6 +169,13 @@ export const config = {
     // dispatches; issue #118 stage 1, threat T-29). Past it the run is
     // cancelled with a hand-off note so the user can continue. 2 h default.
     runMaxMs: parseInt(process.env.AGENT_RUN_MAX_MS || String(2 * 60 * 60 * 1000)),
+    // Concurrent-run ceilings (issue #113 item 5, threat T-21): how many
+    // top-level runs — chat turns, compose calls, seeding stages, resumes —
+    // one user, and one organization, may have open at once. A run past the
+    // cap is refused before a job exists, with a message that says so. 0
+    // disables a cap. Sub-agents are part of their root run and never count.
+    maxConcurrentRunsPerUser: parseInt(process.env.AGENT_MAX_CONCURRENT_RUNS_PER_USER || '4'),
+    maxConcurrentRunsPerOrg: parseInt(process.env.AGENT_MAX_CONCURRENT_RUNS_PER_ORG || '16'),
     // Global fallback model, used only when an agent's model is NULL. Per-agent
     // models (agents.model, story 021) win and are set in db/seed.sql.
     model: process.env.AGENT_MODEL || undefined,

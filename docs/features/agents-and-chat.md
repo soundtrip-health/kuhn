@@ -1,7 +1,7 @@
 ---
 title: Agents and chat
 area: agents
-keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once, status mark, ring, dot, activity, waiting for you, notification, title badge, jump to chat
+keywords: agents, chat, PM, writer, research assistant, advisor, reviewer, analyst, help, agent selector, model, pin, difficulty, stop, question, reconnect, budget, resume, context, fresh start, hand-off, sub-agent, dispatch, slash commands, project memory, remember, recall, forget, decisions, parallel, switch project, background run, several agents at once, status mark, ring, dot, activity, waiting for you, notification, title badge, jump to chat, concurrent runs, run limit, runs in use, cap
 ---
 
 # Agents and chat
@@ -117,6 +117,16 @@ The chat panel on the left is where you direct Kuhn's agents. Each agent has its
 **Prerequisites.** None.
 
 **Gotchas.** Marks show your own chats only. A run paused on its token budget shows no mark — its pause card in the chat is the affordance. After a backend restart every run is interrupted and no mark shows. Organization owners receive other members' chat status in the same stream (agent and status only, never text), but nothing renders it yet.
+
+## Concurrent run limits
+
+**What it does.** The backend caps how many runs may be open at once: per user (`AGENT_MAX_CONCURRENT_RUNS_PER_USER`, default 4) and per organization (`AGENT_MAX_CONCURRENT_RUNS_PER_ORG`, default 16). A run is any top-level agent task — a chat turn, a `/write` call, a seeding stage, a budget resume; the sub-agents a run dispatches belong to it and do not count. A message sent past the cap is refused before anything starts.
+
+**How to use it.** Nothing, until you hit it: the chat then shows a card, "Your concurrent runs are all in use — 2 of 2 runs in use", with the refusal ("You already have 2 of 2 runs in progress. Wait for one to finish, or stop it, before starting another."; the organization variant reads "Your organization already has …"). Stop or wait for a running chat — they are marked in the agent menu and the project browser — and send again.
+
+**Prerequisites.** The caps are set on the backend at startup; 0 disables one.
+
+**Gotchas.** The count is per organization: your runs in another organization do not count against this one. The seeding pipeline runs its research stages in parallel, so it takes two of your slots while they run. A run that ended with a backend restart no longer counts.
 
 ## Waiting for you
 

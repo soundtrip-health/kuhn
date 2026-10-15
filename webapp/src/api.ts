@@ -140,6 +140,9 @@ export interface AgentEvent {
   // says which budget bounded the run: the per-task one, or the user's /
   // project's org budget (issue #110).
   budget?: { used: number; limit: number; scope?: 'task' | 'user' | 'project' };
+  // Concurrent-run ceiling that refused the run (issue #113 item 5), on a
+  // 'concurrency_limit' error: whose cap and where it stands.
+  runs?: { scope: 'user' | 'org'; used: number; limit: number };
   // Org budget period and reset time, on budget_exceeded (org scope) and
   // budget_exhausted errors (issue #110).
   period?: 'day' | 'week' | 'month';
