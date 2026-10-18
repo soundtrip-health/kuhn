@@ -20,6 +20,7 @@ import { publishProjectEvent } from '../project-events.js';
 import { StorageError, readProjectFile } from '../storage.js';
 import { CLOSE_LINK_REVOKED, closeReviewerConnections } from '../yjs-websocket.js';
 import { requireProjectRole } from './guards.js';
+import { publicUrl } from '../public-url.js';
 
 const router = Router();
 
@@ -54,8 +55,7 @@ function handle(minRole, fn) {
  * POST /api/projects/:projectId/review-links — body { path, mode, ttlMs? }.
  * Validates the document exists (404 otherwise), mints, and returns
  * { url, link }. The raw token appears ONLY in this response — the row keeps
- * its hash. URL built from req.protocol/host like magic links (trust proxy is
- * set in index.js, so deployed links mint as https on the public host).
+ * its hash. URL built from KUHN_APP_URL like magic links (public-url.js).
  */
 router.post('/api/projects/:projectId/review-links', handle('editor', async (projectId, req, res) => {
   const { path, mode, ttlMs } = req.body ?? {};
@@ -77,7 +77,7 @@ router.post('/api/projects/:projectId/review-links', handle('editor', async (pro
     linkId: link.id, path: link.path, mode: link.mode,
   }, { userId: req.user.id });
   res.status(201).json({
-    url: `${req.protocol}://${req.get('host')}/review/${token}`,
+    url: publicUrl(`/review/${token}`),
     link,
   });
 }));
