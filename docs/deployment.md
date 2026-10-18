@@ -18,6 +18,29 @@ as a Cloudflare Tunnel.
 > out below (fail-closed auth, backups, sandbox isolation) are tracked work, not
 > yet implemented on `main`.
 
+## As deployed today (2026-10)
+
+The production instance (`https://kuhn.soundtrip.ai`) runs the **current single-process
+build**, not ADR 002's target topology. Recorded here so the docs describe what actually runs;
+the target is unchanged.
+
+| Aspect | As deployed (2026-10-18) | Target (ADR 002) |
+|---|---|---|
+| Process model | One Node process: `npm run start` in `agent-backend/` (`node src/index.js`), serving the API, WebSockets and the built `webapp/dist` on one port | Separate web process, durable-job worker and narrowly scoped sandbox service (ADR 002 §1–2, §6) |
+| Supervision | A `tmux` window on the host under a regular (non-root) login account; restarted by hand. No systemd unit, no container | Supervised service from an immutable artifact (ADR 002 §9) |
+| Source | A git checkout on the host (not a built/tagged artifact) | Reproducible, versioned artifact with rollback (STH-29) |
+| Bind | `127.0.0.1:3002` (`KUHN_HOST` default) — not reachable from the LAN | Same: origin reachable only from the proxy |
+| Proxy / TLS | Remote-managed **Cloudflare Tunnel**; `cloudflared` on the same host forwards the public hostname to `http://localhost:3002`. No Cloudflare Access policy in front — the app's own sign-in is the gate | Reverse proxy required; vendor-neutral (ADR 002 §7) |
+| Proxy trust | `trust proxy` = `loopback` (`KUHN_TRUST_PROXY` default) | Bounded to the known proxy (ADR 002 §7) — met |
+| Emailed links | Built from `KUHN_APP_URL` only, never the request `Host` (PR #200) | Same — met |
+| Auth | `KUHN_AUTH_MODE=magic-link`, invite-only, Gmail SMTP for sign-in mail | Same, plus boot-time refusal of unsafe config (STH-17) |
+| Sandboxes | `docker run` on the host's Docker engine, invoked directly by the web process | Dedicated sandbox service; web process holds no Docker control (ADR 002 §6, STH-21) — **pending** |
+| Data | SQLite + project/org files under the repo's `data/` directory on local disk | Same storage class; with a tested backup/restore (ADR 002 §8) — **pending** |
+| Backups | None automated yet | Nightly, encrypted, restore-tested (STH-23) |
+
+Upgrades today are: `git pull` in the checkout, `npm install`, `npm run build`, then restart
+the process in its tmux window. Configuration and `.env` are read only at start-up.
+
 ## Requirements
 
 - **Node.js LTS** (e.g. 24). Node 26 currently fails to build the native
@@ -38,9 +61,11 @@ as a Cloudflare Tunnel.
   that Dockerfile and rebuilding; there are no runtime installs.
 
 - An **`ANTHROPIC_API_KEY`** with sufficient quota for agent runs.
-- A public hostname with TLS. The examples below use a Cloudflare Tunnel. The current
-  build also trusts request Host/forwarding metadata too broadly; do not treat proxying
-  alone as the completed production fix described in ADR 002/STH-17.
+- A public hostname with TLS. The examples below use a Cloudflare Tunnel running on the same
+  host. The backend listens on `127.0.0.1` by default (`KUHN_HOST`) and trusts forwarding
+  headers only from loopback (`KUHN_TRUST_PROXY`, default `loopback`). Set
+  `KUHN_HOST=0.0.0.0` only inside a container whose port is published to the proxy alone,
+  and set `KUHN_TRUST_PROXY` to the proxy's address/subnet in that case.
 
 ## Build and run
 
@@ -78,9 +103,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 KUHN_AUTH_MODE=magic-link
 KUHN_SESSION_SECRET=<output of: openssl rand -hex 32>
 
-# Public origin of the deployment — post-login redirect target; also marks the
-# session cookie Secure.
+# Public origin of the deployment — post-login redirect target, the origin every
+# emailed sign-in/invitation/review link is built from, and what marks the
+# session cookie Secure. Must be the exact public https origin.
 KUHN_APP_URL=https://kuhn.example.com
+
+# Listen address and proxy trust. Defaults suit a tunnel/proxy on the same host;
+# change both only for a container (KUHN_HOST=0.0.0.0, KUHN_TRUST_PROXY=<proxy subnet>).
+# KUHN_HOST=127.0.0.1
+# KUHN_TRUST_PROXY=loopback
 
 # Platform operators (comma-separated). Super-admins create, rename, and
 # suspend organizations via the admin console; the flag is synced into the
@@ -173,12 +204,12 @@ ingress:
   `ws_upgrade` / `ws_room_join` lines of the sockets that were accepted. A
   genuine tunnel outage shows up instead as `Unable to reach the origin
   service` in `journalctl -u cloudflared`.
-- **Current security gap:** the backend trusts all proxy hops and currently builds
-  login, invitation, and review URLs from request protocol/Host. A trusted tunnel often
-  makes the URL look correct, but Host remains attacker-influenced if the origin is
-  reachable or forwarding headers are passed through. STH-17 must mint every
-  credential-bearing URL from validated `KUHN_APP_URL`, bound proxy trust to known
-  hops/subnets, strip client forwarding headers, and block direct origin reachability.
+- **Credential-bearing URLs** (sign-in, invitation, review links) are minted from
+  `KUHN_APP_URL` only, never from the request `Host` or forwarding headers (PR #200,
+  `agent-backend/src/public-url.js`). `KUHN_APP_URL` must therefore be the exact public https
+  origin. Proxy trust is bounded to loopback and the origin binds loopback by default.
+  Still open under STH-17: boot-time validation that refuses dev auth, a non-https
+  `KUHN_APP_URL`, or magic-link without SMTP.
 
 ## Authentication and inviting users
 
@@ -230,14 +261,13 @@ on:
 - **Per-email is the load-bearing limit.** It is keyed on the address being
   mailed, so nothing the sender controls can sidestep it. This is what stops
   the form being used to flood someone's inbox.
-- **Per-IP is best-effort.** `req.ip` is derived from `X-Forwarded-For`
-  because the backend runs with Express `trust proxy` enabled (it has to, to
-  mint links on the public hostname). Proxies generally *append* to that
-  header rather than replace it, so a client that sends its own
-  `X-Forwarded-For` can rotate the key and get a fresh budget. Treat the
+- **Per-IP is best-effort.** `req.ip` comes from `X-Forwarded-For` as
+  interpreted by Express `trust proxy`, which defaults to `loopback`: only the
+  hop added by a proxy on the same host is trusted, so the key is the address
+  that proxy reports. That is only as good as the proxy's own header handling
+  (and a shared NAT puts a whole institution behind one address). Treat the
   per-IP cap as a guard against noise and accidents, not against a determined
-  attacker, and size it generously — an entire institution can share one NAT
-  address.
+  attacker, and size it generously.
 
 Malformed submissions count against the per-IP budget too, so the `400` path
 is not a free channel. Limits are held in memory, per process: they reset on
@@ -293,7 +323,9 @@ as `api_token_minted` / `api_token_revoked` log lines; a refused bearer token lo
 ## Running as a service
 
 Any process supervisor works; the backend is a single foreground Node
-process. Example systemd unit:
+process. (The production instance currently runs under `tmux` rather than a
+supervisor — see [As deployed today](#as-deployed-today-2026-10).) Example
+systemd unit:
 
 ```ini
 # /etc/systemd/system/kuhn.service
@@ -315,8 +347,8 @@ WantedBy=multi-user.target
 
 The current build can serve the webapp from a different origin than the API (for example
 `app.example.com` + `api.example.com`) with additional configuration, but this layout is
-**outside ADR 002's proposed production baseline**. The current Host-derived
-credential-URL behavior and shared-domain cookie assumptions need a separate validated
+**outside ADR 002's proposed production baseline**. Credential URLs are minted from the
+single `KUHN_APP_URL`, and the shared-domain cookie assumptions need a separate validated
 public API origin and end-to-end security tests before this is a supported production
 topology.
 

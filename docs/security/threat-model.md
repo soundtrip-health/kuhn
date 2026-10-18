@@ -1,7 +1,8 @@
 # Kuhn production threat model & data classification
 
 > **Status:** Proposed production-pilot baseline, awaiting human review; revised
-> 2026-08-20 (STH-2), 2026-08-31 (STH-16).
+> 2026-08-20 (STH-2), 2026-08-31 (STH-16), 2026-10-18 (fact refresh: PR #200 link minting,
+> loopback bind and bounded proxy trust; WebFetch execution location).
 > **Scope:** the small-team, single-deployment production pilot defined in
 > [ADR 002 — production deployment topology](../adr/002-production-deployment-topology.md).
 > **Companion documents:** [architecture.md](../architecture.md) (what the system is),
@@ -88,7 +89,7 @@ flowchart TB
   subgraph Egress["Outbound egress"]
     Anthropic["Anthropic API<br/>(model turns + file contents read by tools)"]
     Scholar["PubMed / arXiv"]
-    WebTool["Claude-hosted WebSearch/WebFetch<br/>(model-chosen URLs)"]
+    WebTool["WebSearch (Anthropic-side) / WebFetch (fetched from the backend host)<br/>(model-chosen URLs)"]
     SMTP["SMTP relay (optional)"]
   end
 
@@ -137,7 +138,7 @@ flowchart TB
 | B17 | Docker/container control plane | Host privilege | `spawn('docker', …)` `sandbox.js:56` | **The web process holds host-root-equivalent Docker access.** This is the sharpest topology boundary — see T-25, STH-21. |
 | B18 | SMTP | Network | `mailer.js:10-15` | Optional; unset → links printed to stdout. |
 | B19 | Future OIDC / identity provider | Network | *Not built* — STH-18 | Magic-link is the only real-auth mode today. |
-| B20 | Reverse proxy / TLS boundary | Network | Operator-provided; `trust proxy` **trusts all hops** `index.js:38` | See T-27 (host-header injection). |
+| B20 | Reverse proxy / TLS boundary | Network | Operator-provided; backend binds `KUHN_HOST` (default `127.0.0.1`, `config.js:26`) and `trust proxy` is bounded to `KUHN_TRUST_PROXY` (default `loopback`, `index.js:55`) | Credential URLs no longer depend on request Host — see T-27 (fixed in PR #200). |
 | B21 | Backups | Storage | *Not built* — STH-23 | No backup/restore/retention exists. |
 | B22 | Deployment / operator access | Host | `.env`, DB file, `git pull` upgrade | `.env` edit + restart ⇒ self-provisioned super-admin (T-05). |
 
@@ -301,8 +302,15 @@ Four backend outbound paths exist (`data-pipeline.md` §5, verified):
 1. **Anthropic API** — every agent turn. Sends the system prompt, the user message +
    editor context, prior turns, and **any project/org content the model reads with its
    tools**. One deployment-wide `ANTHROPIC_API_KEY`.
-2. **Claude-hosted `WebSearch`/`WebFetch`** — for roles `ra`/`advisor` only
-   (`seed-data.js:103`); fetches **model-chosen URLs** from Anthropic's side. This is a
+2. **Claude `WebSearch`/`WebFetch`** — for roles `ra`/`advisor` only (the `web_search`
+   grant, `seed-data.js:157`; mapped to the SDK built-ins in `claude-tools.js:26`), on the
+   Claude adapter only (Pi omits provider built-ins). **`WebSearch`** runs on Anthropic's
+   side. **`WebFetch` does not:** the Agent SDK's bundled CLI, a child of the backend
+   process, fetches the model-chosen URL **from the backend host's own network** after an
+   Anthropic domain-blocklist preflight (verified in `@anthropic-ai/claude-agent-sdk`
+   0.3.277; upgrades `http:`→`https:`, refuses dot-less hosts, does not auto-follow
+   cross-host redirects). Its egress is therefore bounded by the host's network policy, not
+   the provider's — host egress controls are pending (STH-20/STH-21). This is a
    provider-specific capability, not a product invariant (ADR 001 §"Hosted web search";
    STH-11 replaces it with Kuhn-owned research tools).
 3. **PubMed / arXiv** — query text and identifiers only; no credentials.
@@ -405,7 +413,7 @@ tracked, not built.
 | **T-24** | **Sandbox escape → host** — container escape from Typst/Pandoc/poppler | **High** | Malicious document + a container 0-day | Reach the host; the web process runs as a Docker-privileged user | `--network none`, `:ro` project mount, cpu/mem/pids caps, 60 s kill; no credential variables are passed into the container | `sandbox.js:23-36`, verified no `-e` | **Hardening gaps**: no `--user`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--tmpfs`, `--ulimit fsize`; the host-side `docker` child still inherits the application environment | **STH-21** |
 | **T-25** | **Web-process compromise ⇒ host-root via Docker** — the public Node process directly invokes the `docker` CLI; Docker socket access is host-root-equivalent | **Critical** | Any RCE foothold in the web process (e.g. via a dependency) | Full host compromise | None — Docker control is co-resident with request serving | `sandbox.js:56` | **Not fixed** — the central topology finding | **STH-21** (isolate behind a narrow sandbox service; ADR 002 §6) |
 | **T-26** | **Supply-chain / unpinned images** — `:latest` for Typst/Pandoc/poppler; no digest pinning | Medium | Upstream image compromise between pulls | Malicious parser runs on untrusted docs | Sandbox contains network; images process untrusted input. The analyst R image (`kuhn/r-analysis`, issue #68b) is locally **built** from `docker/r-analysis/Dockerfile` (rocker base + CRAN packages) — no registry pull at run time, but the base/package supply chain is unpinned like the rest | `config.js` sandbox images | **Not fixed** | STH-21 (pin), STH-28/STH-29 (build gates) |
-| **T-27** | **Reverse-proxy / trusted-header mistake** — `trust proxy` trusts *all* hops; magic-link/invite/review URLs built from `req.protocol`+`Host` | High | Direct origin reach, or a proxy that forwards client `X-Forwarded-*` | **Host-header injection**: trigger `request-link` for a victim, emailed login link points at attacker host | Correct behind a proxy that sets the headers and blocks direct reach | `index.js:38`, `routes/auth.js:48`, `routes/orgs.js:109`, `routes/review-links.js:80` | **Not fixed** — production credential URLs must be minted from the canonical configured origin (`KUHN_APP_URL`), removing request Host from the path entirely; bounded `trust proxy` remains defense-in-depth for request metadata | **STH-17**, ADR 002 §7 |
+| **T-27** | **Reverse-proxy / trusted-header mistake** — formerly `trust proxy` trusted *all* hops and magic-link/invite/review URLs were built from `req.protocol`+`Host` | Low (was High) | Direct origin reach, or a proxy that forwards client `X-Forwarded-*` | Host-header injection into emailed credential URLs — **no longer possible**: URLs come from `KUHN_APP_URL` | `publicUrl()` builds every emailed link from `KUHN_APP_URL`; `trust proxy` bounded to `KUHN_TRUST_PROXY` (default `loopback`); listen on `KUHN_HOST` (default `127.0.0.1`) | `public-url.js:9`, `index.js:55`, `config.js:26`; regression test with forged `Host`/`X-Forwarded-Host` in `routes/auth.test.js` | **Fixed** (PR #200, 2026-10-18). Residual: `KUHN_APP_URL` is not yet validated as https at boot (T-02); per-IP rate-limit keys are only as trustworthy as the proxy's `X-Forwarded-For` handling | **STH-17**, ADR 002 §7 |
 | **T-28** | **Stale/uncontrolled jobs after suspension/removal** — org suspension does **not** kill in-flight agent runs; parked `ask_user` runs live indefinitely with unbounded event buffers | High | Suspended tenant with a run in flight; or any run parked on a question | Suspended tenant keeps mutating files + spending budget until the run ends; memory growth from parked runs | Suspension and membership removal flag every open job of the tenant (`jobs.cancel_requested_at`, `agents/tenancy.js`) and abort the live ones; the run gate (`runtime.js createRunGate`) re-checks tenancy at every control point (before a provider turn, before a mutating tool, on a question's wake), so a run stops within one tool call of the revocation. Parked runs still have no TTL. | `agents/tenancy.js`, `runtime.js createRunGate`, `tools/registry.js gated` | **Partially fixed** (#118 stage 1; parked-run TTL with stage 2) | #118 |
 | **T-29** | **Provider outage / retry storm** — 5-attempt exponential backoff per turn; resume-on-retry can re-stream a half-completed turn | Medium | Provider degradation | Amplified load; duplicated partial output | Full-jitter backoff, cap 30 s; transient classification; wall-clock deadline per run tree (`jobs.deadline_at`, `AGENT_RUN_MAX_MS`, default 2 h) cancels with reason `deadline` and a hand-off note | `runtime.js createRunGate`, `config.js agent.runMaxMs` | No circuit breaker (#118 stage 5) | #118 |
 | **T-39** | **Yjs / WebSocket resource exhaustion** — no doc-sync message-size cap, no per-room memory bound, no per-member connection/room-creation cap; a member can open many rooms or push oversized updates | Medium | Authenticated member (or removed member within the 60 s sweep window) | Web-process memory/CPU growth from oversized Yjs updates and unbounded room/connection creation; degrades the single web instance for every tenant | Auth at upgrade + 60 s sweep; SSE subscriber cap 20/project; only a close-reason byte cap on the WS path | `yjs-websocket.js` (no `maxPayload`/room cap), `config.js:125` (SSE cap), no per-member WS quota (grep) | **Not fixed** — needs WS message-size limits, per-room/connection caps, and matching proxy body limits | **STH-19**, STH-26 |
@@ -462,8 +470,9 @@ whether it **holds today** or is a **target** the owning issue must deliver.
 7. **Provider credentials never enter prompts, browser responses, logs, model
    metadata, continuation state, or DB-backed tool arguments.** The application and SDK
    necessarily consume `ANTHROPIC_API_KEY` from the process environment today, and host
-   children inherit that environment unless explicitly narrowed; containers receive no
-   credential variables. *(Partly holds — STH-20/STH-21 must isolate credentials and
+   children inherit that environment unless explicitly narrowed; sandbox containers receive
+   no deployment credential variables (org secrets are injected only into secrets-enabled
+   script runs, B16). *(Partly holds — STH-20/STH-21 must isolate credentials and
    minimize child environments. T-08's raw-token logging is a separate live violation
    to close in STH-17.)*
 8. **Backups retain tenant isolation and encryption expectations — and never contain

@@ -189,12 +189,14 @@ see the threat model §5.3 (T-12/T-13) and invariant 11.
 
 | Destination | When | What is sent |
 |---|---|---|
-| **Anthropic API** (via the Claude Agent SDK) | Every agent turn (chat, `/write`, seeding, review…) | The agent's system prompt, your message + editor context, prior turns, and **any project file contents the model reads with its tools** (`read_file`, `search_files`, org-library search results). Agents `ra`/`advisor` also have Anthropic-side `WebSearch`/`WebFetch`, which fetch model-chosen URLs. Provider-side retention/training is governed by **your Anthropic account settings**, not this repo. The credential is process environment (`ANTHROPIC_API_KEY` in `agent-backend/.env`) consumed by the SDK in the application process; it is not intentionally logged, sent to the browser/model, or passed into sandbox containers. Unrelated host child processes currently inherit `process.env`, an exposure STH-20/STH-21 must remove with minimal explicit environments. |
+| **Anthropic API** (via the Claude Agent SDK) | Every agent turn (chat, `/write`, seeding, review…) | The agent's system prompt, your message + editor context, prior turns, and **any project file contents the model reads with its tools** (`read_file`, `search_files`, org-library search results). Agents `ra`/`advisor` also have `WebSearch` (runs Anthropic-side) and `WebFetch` (the Agent SDK fetches the model-chosen URL **from this host's network**, after an Anthropic domain-blocklist check — see the threat model §4.1), which fetch model-chosen URLs. Provider-side retention/training is governed by **your Anthropic account settings**, not this repo. The credential is process environment (`ANTHROPIC_API_KEY` in `agent-backend/.env`) consumed by the SDK in the application process; it is not intentionally logged, sent to the browser/model, or passed into sandbox containers. Unrelated host child processes currently inherit `process.env`, an exposure STH-20/STH-21 must remove with minimal explicit environments. |
 | **NCBI PubMed** | `/cite` picker, `pubmed_search`, `add_citation` | Search query text and PMIDs. No API key; rate-limited ~3 req/s. |
 | **arXiv API** | `arxiv_search` tool | Query string. |
 | **SMTP** (only if `KUHN_SMTP_URL` is set) | Magic-link login | Recipient email + login URL. **Without SMTP the link is printed to the server console** — fine for dev, not for shared logs. |
 
-No other outbound calls exist in the backend. The webapp itself talks only to
+Beyond these, the backend calls only the model providers an operator (`KUHN_PLATFORM_MODELS`,
+`KUHN_PI_*`) or org owner (model profiles) configures — OpenAI, OpenRouter, Google, or an
+OpenAI-compatible endpoint; see [architecture.md](architecture.md) § Model profiles. The webapp itself talks only to
 the backend (plus Google Fonts in `index.html`).
 
 ## 6. Identity, access, tenancy

@@ -14,6 +14,15 @@
   narrow `AgentRuntime` seam beneath `runAgentTask`, implemented in phases under
   STH-1/STH-7) but does not depend on that implementation's internal details.
 
+> **Implementation status (2026-10-18):** this ADR is the *target*. Production still runs
+> the single-process "current implementation" row below (a git checkout under `tmux`,
+> loopback bind, Cloudflare Tunnel) — see
+> [deployment.md § As deployed today](../deployment.md#as-deployed-today-2026-10). Of §7,
+> credential URLs from `KUHN_APP_URL`, bounded `trust proxy` and a loopback default bind
+> landed in PR #200; boot-time config validation (STH-17), the worker split (§2), the
+> sandbox boundary (§6) and backups (§8) remain open. Line references below predate that
+> change.
+
 ## Review orientation
 
 This PR changes architecture documentation only. It does not make the current build
@@ -756,6 +765,10 @@ this decision and worth evaluating inside STH-21, but orthogonal to moving the b
 ---
 
 ## 7. Reverse proxy and TLS
+
+> **Status (2026-10-18):** the canonical-origin and bounded-proxy-trust requirements below
+> are implemented (PR #200: `public-url.js`, `index.js:55`, `config.js:26`); boot-time
+> validation of `KUHN_APP_URL` remains STH-17.
 
 **Decision:** a reverse proxy in front is **required** in production; the app has no TLS
 of its own. Vendor-neutral (Cloudflare Tunnel and nginx both work — `deployment.md:97-116`).
