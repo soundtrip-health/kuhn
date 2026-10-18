@@ -41,6 +41,7 @@ import { log } from '../logger.js';
 import { publishOrgEvent } from '../project-events.js';
 import { StorageError, deleteProjectDir } from '../storage.js';
 import { evictRoomsUnder } from '../yjs-websocket.js';
+import { publicUrl } from '../public-url.js';
 
 const router = Router();
 
@@ -282,7 +283,7 @@ router.post('/api/orgs/:orgId/invitations', async (req, res) => {
     role,
     invitedBy: req.user.id,
   });
-  const verifyUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?invite=${encodeURIComponent(token)}`;
+  const verifyUrl = publicUrl(`/api/auth/verify?invite=${encodeURIComponent(token)}`);
   await sendInviteLink(email, verifyUrl, { orgName: ctx.org.name });
   // An owner inviting someone directly settles any queued access request from
   // that address (STH-35) — the super-admin queue should not still show work

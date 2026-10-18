@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +46,7 @@ beforeAll(async () => {
   app.get('/api/probe', (req, res) => res.json({ email: req.user.email }));
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
+  config.auth.appUrl = base; // links are minted from KUHN_APP_URL (public-url.js)
 });
 
 afterAll(async () => {
@@ -568,5 +570,28 @@ describe('personal API tokens (issue #152)', () => {
     })).status).toBe(400);
     const events = querySync("SELECT type FROM auth_events WHERE type LIKE 'token.%' ORDER BY id").rows.map((r) => r.type);
     expect(events).toEqual(['token.minted']);
+  });
+});
+
+describe('links are never minted from the request host', () => {
+  it('mints the link on KUHN_APP_URL even when Host / X-Forwarded-Host are forged', async () => {
+    seedMember('victim@lab.org');
+    const { port } = server.address();
+    const body = JSON.stringify({ email: 'victim@lab.org' });
+    const status = await new Promise((ok, fail) => {
+      const req = httpRequest({
+        host: '127.0.0.1', port, method: 'POST', path: '/api/auth/request-link',
+        headers: {
+          'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+          Host: 'evil.example', 'X-Forwarded-Host': 'evil.example', 'X-Forwarded-Proto': 'https',
+        },
+      }, (res) => { res.resume(); ok(res.statusCode); });
+      req.on('error', fail);
+      req.end(body);
+    });
+    expect(status).toBe(200);
+    const [, url] = sendLoginLink.mock.calls.at(-1);
+    expect(url.startsWith(`${config.auth.appUrl}/api/auth/verify?token=`)).toBe(true);
+    expect(url).not.toContain('evil.example');
   });
 });

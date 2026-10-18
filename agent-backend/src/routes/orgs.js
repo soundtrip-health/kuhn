@@ -14,6 +14,7 @@ import { recordAuthEvent } from '../db/auth-events.js';
 import { requireOrgRole, requireSuperadmin } from './guards.js';
 import { sendInviteLink } from '../mailer.js';
 import { cancelTenantJobs } from '../agents/tenancy.js';
+import { publicUrl } from '../public-url.js';
 
 const router = Router();
 
@@ -107,7 +108,7 @@ router.post('/api/orgs', async (req, res) => {
       role: 'owner',
       invitedBy: req.user.id,
     });
-    const verifyUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?invite=${encodeURIComponent(token)}`;
+    const verifyUrl = publicUrl(`/api/auth/verify?invite=${encodeURIComponent(token)}`);
     await sendInviteLink(email, verifyUrl, { orgName: org.name });
     recordAuthEvent({
       type: 'invite.issued',

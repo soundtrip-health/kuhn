@@ -21,6 +21,9 @@ function parseModelWeights(env) {
 
 export const config = {
   port: parseInt(process.env.PORT || '3002'),
+  // Loopback by default: the tunnel/proxy on this host is the only way in.
+  // Set KUHN_HOST=0.0.0.0 inside a container.
+  host: process.env.KUHN_HOST || '127.0.0.1',
   // Structured logging (STH-51): leveled console output + append-only NDJSON
   // audit files, one per UTC day, under <dataDir>/logs. LOG_LEVEL:
   // debug|info|warn|error (default info). KUHN_LOG_DIR relocates the audit

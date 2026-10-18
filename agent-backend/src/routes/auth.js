@@ -41,6 +41,7 @@ import {
   readSessionCookie,
 } from '../session.js';
 import { createRateLimiter } from '../rate-limit.js';
+import { publicUrl } from '../public-url.js';
 
 const authRouter = Router();
 
@@ -113,7 +114,7 @@ async function routeSignIn(req, email, note) {
   const user = await findEligibleUser(email);
   if (user) {
     const { token } = await createAuthToken(email);
-    const verifyUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?token=${encodeURIComponent(token)}`;
+    const verifyUrl = publicUrl(`/api/auth/verify?token=${encodeURIComponent(token)}`);
     await sendLoginLink(email, verifyUrl);
     return 'link';
   }
@@ -126,7 +127,7 @@ async function routeSignIn(req, email, note) {
       role: pending.role,
       invitedBy: pending.invited_by,
     });
-    const inviteUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?invite=${encodeURIComponent(token)}`;
+    const inviteUrl = publicUrl(`/api/auth/verify?invite=${encodeURIComponent(token)}`);
     await sendInviteLink(email, inviteUrl, { orgName: pending.org_name });
     recordAuthEvent({
       type: 'invite.issued',

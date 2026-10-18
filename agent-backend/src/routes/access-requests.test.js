@@ -50,6 +50,7 @@ beforeAll(async () => {
   app.use(accessRequestsRouter);
   await new Promise((ok) => { server = app.listen(0, ok); });
   base = `http://localhost:${server.address().port}`;
+  config.auth.appUrl = base; // links are minted from KUHN_APP_URL (public-url.js)
 });
 
 afterAll(async () => {

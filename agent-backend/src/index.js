@@ -48,11 +48,11 @@ import { handleYjsConnection } from './yjs-websocket.js';
 import { log } from './logger.js';
 
 const app = express();
-// Deployed behind a TLS-terminating proxy/tunnel (cloudflared, nginx), the
-// forwarded proto/host must be trusted so magic links are minted as https://
-// on the public hostname (routes/auth.js builds them from req.protocol/host).
-// Harmless locally: no X-Forwarded-* headers, nothing changes.
-app.set('trust proxy', true);
+// Deployed behind a local TLS-terminating proxy/tunnel (cloudflared, nginx):
+// trust X-Forwarded-* only from loopback, so a client that reaches the port
+// some other way can't spoof req.ip (per-IP rate limits) or req.protocol.
+// Links in mail use KUHN_APP_URL, never the request host (public-url.js).
+app.set('trust proxy', process.env.KUHN_TRUST_PROXY || 'loopback');
 // credentials: the session cookie rides cross-origin fetches from the webapp
 // dev server (story 007-002); the allowlist above stays the gate.
 app.use(cors({ origin: config.cors.origin, credentials: true }));
@@ -174,7 +174,7 @@ async function main() {
     console.error('[kuhn] Server starting without DB — some features will be unavailable.');
   }
 
-  server.listen(config.port, () => {
+  server.listen(config.port, config.host, () => {
     console.log(`[kuhn] Agent backend listening on http://localhost:${config.port}`);
     log.info('server_start', {
       port: config.port, logLevel: config.log.level, logDir: config.log.dir || null,

@@ -22,6 +22,7 @@ import { createInvitation, inviteeIsMember } from '../db/invitations.js';
 import { recordAuthEvent } from '../db/auth-events.js';
 import { ROLES } from '../db/orgs.js';
 import { sendInviteLink } from '../mailer.js';
+import { publicUrl } from '../public-url.js';
 
 const router = Router();
 
@@ -90,7 +91,7 @@ router.post('/api/admin/access-requests/:id/approve', async (req, res) => {
     role,
     invitedBy: req.user.id,
   });
-  const verifyUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?invite=${encodeURIComponent(token)}`;
+  const verifyUrl = publicUrl(`/api/auth/verify?invite=${encodeURIComponent(token)}`);
   await sendInviteLink(request.email, verifyUrl, { orgName: org.name });
 
   const decided = decideAccessRequest(request.id, 'approved', {
