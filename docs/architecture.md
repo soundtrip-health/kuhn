@@ -1,6 +1,7 @@
 # System Architecture
 
-> **Status:** Active — revised 2026-08-14. Markdown-first editor (Milkdown), transitional agent
+> **Status:** Active — revised 2026-08-14; fact-checked against `main` 2026-10-18 (code
+> references are `agent-backend/src/` paths with line numbers as of commit `119fc10`). Markdown-first editor (Milkdown), transitional agent
 > runtime on the Claude Agent SDK, and multi-tenancy invariants adopted. The provider-neutral
 > execution direction is recorded in [ADR 001](adr/001-provider-agnostic-runtime-foundation.md).
 > This supersedes the TeXlyre-based architecture finalized 2026-04-17 (historical Epic 001
@@ -15,7 +16,8 @@ three surfaces:
 1. **Editor** — a browser-based WYSIWYG markdown editor (Milkdown) with citations, math,
    cross-references, and slash commands
 2. **Agent chat** — conversational interface to the seven agents (PM interview, project seeding,
-   review cycles)
+   review cycles). The seeded agent slugs are `pm`, `writer`, `ra` (Research Assistant),
+   `advisor`, `reviewer`, `analyst` and `help` (feature-guide Q&A) — `db/seed-data.js:14-23`
 3. **File manager** — project tree, uploads, previews
 
 A Node.js backend hosts the agent runtime, project storage, rendering/export, and Yjs
@@ -64,8 +66,8 @@ captioned figures/tables, math (LaTeX syntax inside `$...$`).
 │  ┌─────────────┐ ┌─────────────┐ ┌──────────┐ ┌──────────┐   │
 │  │ Agent       │ │ Storage API │ │ Render/  │ │ Yjs      │   │
 │  │ Runtime     │ │ (project-   │ │ Export   │ │ signaling│   │
-│  │ (Claude     │ │  root       │ │ (Typst,  │ │ + WS     │   │
-│  │  Agent SDK) │ │  enforced)  │ │  Pandoc) │ │          │   │
+│  │ (Claude SDK │ │  root       │ │ (Typst,  │ │ + WS     │   │
+│  │  or Pi)     │ │  enforced)  │ │  Pandoc) │ │          │   │
 │  └──────┬──────┘ └─────────────┘ └──────────┘ └──────────┘   │
 │         │                                                    │
 │  ┌──────▼───────────────────────────────────────────────┐    │
@@ -127,7 +129,7 @@ internal contract is:
 
 ```
 runAgentTask({
-  role,        // pm | writer | analyst | advisor | research | review
+  role,        // agent slug: pm | writer | ra | advisor | reviewer | analyst | help
   projectId,   // project root the task may touch
   input,       // user message or dispatch instruction
   context,     // selection, cursor, file refs
@@ -136,10 +138,35 @@ runAgentTask({
 ```
 
 Everything above this interface (routes, UI, job model, logging and product policy) is intended
-to be provider-neutral. Today `runtime.js` still translates Claude events, MCP wrappers, session
-ids, cache usage and provider errors directly. The migration adds one normalized execution
-adapter below this application boundary; it does not expose raw chat-completion calls to product
-code.
+to be provider-neutral. The normalized execution seam now exists: `agents/runtime.js`
+(`runAgentTask`, `agents/runtime.js:118`) builds an `AgentRuntime` through
+`createAgentRuntime(...)` (`agents/runtime.js:642`) and consumes the normalized event contract
+(`agents/provider-runtime/contract.js`); it never names a provider adapter directly. Raw
+chat-completion calls are not exposed to product code.
+
+### Provider runtime adapters (Claude, Pi)
+
+`agents/provider-runtime/factory.js` is the one place the provider choice is made
+(`createAgentRuntime`, `factory.js:72`):
+
+| Selector | Adapter | How it executes |
+|---|---|---|
+| `KUHN_AGENT_RUNTIME=claude` (default, production) | `claude-runtime.js` | Spawns the Claude Agent SDK's bundled Claude Code CLI as a **child process** per turn (`sdkQuery`, `claude-runtime.js:204-222`) with `cwd` = the project workspace, `permissionMode: 'bypassPermissions'`, `settingSources: []` (no host `CLAUDE.md`/settings), and `tools` restricted to the provider built-ins the role is granted (only `WebSearch`/`WebFetch`, via the `web_search` grant — `claude-tools.js:26`). Every Kuhn tool is exposed through one in-process MCP server (`mcp__kuhn__*`), so the agent has **no** shell, filesystem or Read/Write built-ins of its own. The child inherits the backend's environment; an org-scoped Anthropic credential, when a profile supplies one, overrides `ANTHROPIC_API_KEY` for that child only (`claude-runtime.js:92-94`). |
+| `KUHN_AGENT_RUNTIME=pi` (preview) | `pi-adapter.js` | Runs in-process on `@earendil-works/pi-agent-core` / `pi-ai` against an explicit provider (`KUHN_PI_PROVIDER`: openrouter, openai, google, openai-compatible), model (`KUHN_PI_MODEL`), optional base URL and a **named** credential variable (`KUHN_PI_API_KEY_ENV`; `config.js:48-64`). Kuhn's per-agent Claude model ids are deliberately not reinterpreted. `provider_builtin` tools (hosted web search/fetch) are omitted — Pi only receives Kuhn tools with an `execute` (`pi-adapter.js:118-126`). |
+
+There is no silent fallback: an unknown selector fails the boot (`index.js:155`,
+`factory.js:41-49`) and a misconfigured Pi selection fails the task. Model profiles (below)
+also pick the adapter per task: an `anthropic` profile runs on the Claude adapter, every
+other provider on Pi (`factory.js:72-178`).
+
+**Where the web tools run.** Claude's `WebSearch` is a provider-side (server) tool executed by
+Anthropic. `WebFetch` is **not**: the bundled Claude Code CLI performs the HTTP fetch itself,
+from the backend host's network, after a domain-blocklist preflight call to Anthropic; it
+upgrades `http:` to `https:`, refuses dot-less hostnames, and does not automatically follow
+cross-host redirects (verified in `@anthropic-ai/claude-agent-sdk` 0.3.277 —
+`sdk.d.ts` describes WebFetch as an "in-process" tool, and the bundled CLI's fetch path issues
+the request locally). WebFetch egress is therefore governed by the backend host's network
+policy, not by Anthropic's; see the [threat model](security/threat-model.md) §4.1.
 
 **Kept from the original design:**
 
@@ -189,7 +216,7 @@ code.
   (`agent_model_routes`: profile × difficulty ceiling) over *model profiles*
   (`db/model-profiles.js`): deployment-managed profiles derived from config (the operator's
   Anthropic key behind the seeded `agents.model` ids, the `KUHN_PI_*` preview) plus org-owned
-  rows naming a provider (`anthropic` / `openai` / `openrouter` / `openai-compatible`), model id,
+  rows naming a provider (`anthropic` / `openai` / `openrouter` / `google` / `openai-compatible`), model id,
   endpoint, declared capabilities, cost weight, and a credential *reference* (an org secret
   name — the value is resolved server-side into the adapter constructor and nowhere else;
   an `openai-compatible` endpoint may be plain `http:` for a local vLLM/Ollama, and a
@@ -220,9 +247,16 @@ quotas, not a rewrite (epic 011 built on them — see the roles section below):
 2. **One storage API, project-root enforced.** All agent and frontend file access goes through a
    single storage service that resolves paths inside the project root — no traversal, no symlink
    following. Agents never get raw filesystem access outside their project.
-3. **All execution is sandboxed, even single-user.** Typst/Pandoc rendering, analyst Python, and
-   any future terminal run in per-session containers. Document compilation is arbitrary code
-   execution; treat it that way from day one.
+3. **All execution is sandboxed, even single-user.** Typst/Pandoc rendering, Marp slide decks,
+   poppler PDF ingestion, and analyst scripts (R today — `RUNNABLE_LANGUAGES`, `sandbox.js`)
+   run in a fresh `docker run --rm` container **per invocation** (not per session) built by
+   `buildDockerArgs` (`sandbox.js:33-57`): `--network none`, project mounted read-only, a
+   separate writable `/out`, CPU/memory/pids caps and a kill timer. Image and argv are composed
+   server-side; agents choose only the script and constrained arguments. Secrets-enabled script
+   runs join the operator-created **internal** docker network (`SANDBOX_SECRETS_NETWORK`,
+   `sandbox.js` `runScriptSandboxed`) instead of `--network none`. Container hardening and
+   removing the web process's direct Docker access are pending (ADR 002 §6, STH-21).
+   Document compilation is arbitrary code execution; treat it that way from day one.
 
 Yjs rooms are membership-authorized at upgrade time (story 007-003) and role-aware since
 010-003: viewers get read-only sockets, and a 60-second member sweep closes live sockets on
@@ -272,6 +306,67 @@ The advisor's knowledge base is **per-tenant by default**:
   curation is an explicit, Kuhn-side editorial act, and a catalog version bump surfaces as
   an explicit per-org "update available" state rather than an automatic re-import.
 
+## Identity, Credentials and Secrets
+
+### Sign-in and sessions
+
+- **Auth modes** (`KUHN_AUTH_MODE`, `config.js:100`). `dev` (the default) has *no*
+  authentication: the `x-kuhn-user` header or the seeded dev user is the identity
+  (`session.js:186-190`) and must never be network-exposed. Any other value (canonically
+  `magic-link`) requires a signed session cookie on every request and refuses to boot without
+  `KUHN_SESSION_SECRET` (`assertAuthConfig`, `session.js:61`, called at `index.js:152`).
+- **Magic links.** `POST /api/auth/request-link` always answers `200` and decides by mailbox
+  only: member → single-use sign-in link (15-minute TTL), pending invitee → re-issued
+  invitation, stranger → access-request queue (`routeSignIn`, `routes/auth.js:113-145`).
+  Tokens are random and stored hashed (`db/auth.js:47-75`). Per-email and per-IP limits
+  (`config.js:136-141`, `rate-limit.js`).
+- **Sessions** are DB-backed rows keyed by the hash of a random token; the cookie
+  `kuhn_session` carries that token plus an HMAC-SHA256 signature under
+  `KUHN_SESSION_SECRET`, verified with `timingSafeEqual` (`db/auth.js:19-37`, `:77-110`).
+  Cookie flags: `HttpOnly`, `SameSite=Lax`, `Secure` when `KUHN_APP_URL` is https
+  (`routes/auth.js:92-97`); 30-day default TTL (`config.js:105`).
+- **Public origin for emailed links.** Magic links, invitations and review links are built by
+  `publicUrl()` from `KUHN_APP_URL` only — never from the request's `Host` /
+  `X-Forwarded-Host` (`public-url.js:9`; used at `routes/auth.js:117,130`,
+  `routes/orgs.js:111`, `routes/org-admin.js:286`, `routes/access-requests.js:94`,
+  `routes/review-links.js:80`; PR #200).
+- **Network posture.** The backend binds `KUHN_HOST` (default `127.0.0.1`, `config.js:26`) and
+  sets Express `trust proxy` to `KUHN_TRUST_PROXY` (default `loopback`, `index.js:55`), so
+  `X-Forwarded-*` is honoured only from a proxy/tunnel on the same host.
+- **External reviewers** use a separate review-link cookie on `/api/review/*`, mounted before
+  `session()` (`index.js:65-69`, `review-auth.js`).
+
+### Personal API tokens
+
+`Authorization: Bearer kuhn_…` (issue #152) is checked **first, in every auth mode**
+(`session.js:170-185`). Tokens are `kuhn_` + 32 random bytes (base64url), stored only as
+SHA-256 in `api_tokens`, expire after 90 days by default (max 365), and are revocable
+(`db/api-tokens.js:18-20`, `:54-74`). A valid token resolves to the same `users` row a cookie
+would — including `is_superadmin` — so guards, tenancy and attribution are unchanged
+(`db/api-tokens.js:107-120`); an invalid token is refused outright and never falls back to
+the cookie or dev header. A token cannot mint, list or revoke tokens (`requireSessionNotToken`, `routes/auth.js:290-296`).
+Mint/revoke are audited in `auth_events`.
+
+### Org secrets store
+
+Named, org-scoped credentials (a data-warehouse DSN for analyst scripts, a provider API key
+for a model profile) — `db/org-secrets.js`, `routes/org-secrets.js`:
+
+- **Write-only.** The HTTP surface lists metadata and accepts `PUT`/`DELETE` (editor role and
+  up); values are never returned. Saves/deletes are audited with the *name* only.
+- **Encrypted at rest** with AES-256-GCM (random 96-bit IV, auth tag) in `org_secrets`
+  (`db/org-secrets.js:64-76`). The key is `KUHN_SECRETS_KEY` (64 hex chars); when unset it is
+  derived with scrypt from `KUHN_SESSION_SECRET`, and with neither a fixed dev key is used
+  (`db/org-secrets.js:41-57`, `config.js:222-227`). Production should set a dedicated
+  `KUHN_SECRETS_KEY` held outside the data backup (threat model TB-7).
+- **Use sites.** (1) Analyst `run_script` calls that name `secrets: [...]`: values are
+  resolved server-side (`agents/tools/scripts.js:196`) and injected into that one sandbox as
+  `KUHN_SECRET_<NAME>` environment variables (`secretEnvName`, `db/org-secrets.js:36`), and
+  the run joins the internal data network. The agent sees names only (`list_secrets`).
+  (2) Model profiles reference a secret by name; `resolveCredential`
+  (`agents/model-routing.js:172`) hands the value to the adapter constructor and nowhere else.
+  Lookups are keyed by `(org_id, name)`, so one org cannot name another's secret.
+
 ## Interchange with External Writing Tools
 
 Kuhn can act as the **feedback surface** for a manuscript whose source of truth lives in
@@ -315,17 +410,18 @@ the map.
 
 ## Slash Commands
 
-| Command | Agent | Action |
-|---------|-------|--------|
-| `/cite <query>` | Research | Search PubMed/bioRxiv, insert `[@citekey]` + update `.bib` |
-| `/write <request>` | Writer | Contextual drafting/edits at cursor or selection |
-| `/research <question>` | Research | Quick literature lookup, return summary |
-| `/figure <description>` | Analyst | Generate a figure via Python, insert it |
-| `/review` | Reviewer | Critique the current section |
-| `/ask <question>` | Advisor | Domain expertise question |
-| `/status` | PM | Project status summary |
+| Command | Agent | Action | Status |
+|---------|-------|--------|--------|
+| `/cite <query>` | `ra` | Search PubMed, insert `[@citekey]` + update `.bib` | implemented |
+| `/write <request>` | `writer` | Contextual drafting/edits at cursor or selection | implemented |
+| `/research <question>` | `ra` | Quick literature lookup, return summary | planned |
+| `/figure <description>` | `analyst` | Generate a figure or table, insert it | planned |
+| `/review` | `reviewer` | Critique the current section | planned |
+| `/ask <question>` | `pm` | Ask any agent inline | planned |
+| `/status` | `pm` | Project status summary | planned |
 
-Implemented as ProseMirror/Milkdown plugins calling the agent-task API.
+Defined in `webapp/src/slash-commands.ts:16-22` (the `implemented` flag); implemented as
+ProseMirror/Milkdown plugins calling the agent-task API.
 
 ## Data Model
 
